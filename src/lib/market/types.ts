@@ -45,6 +45,16 @@ export interface EfficiencyMetrics {
   verdict: EfficiencyVerdict;
 }
 
+export interface SignalStates {
+  trendActive: boolean;
+  cleanFlow: boolean;
+  highConviction: boolean;
+  structureGaining: boolean;
+  volatilityExpanding: boolean;
+  trendingMode: boolean;
+  mtfAligned?: boolean;
+}
+
 export interface AnalysisResult {
   ticker: TickerInfo;
   timeframe: Timeframe;
@@ -54,6 +64,7 @@ export interface AnalysisResult {
   currentPrice: number;
   trendCore: TrendCore;
   efficiency: EfficiencyMetrics;
+  atr: number;
   
   // Derived signals
   bias: BiasDirection;
@@ -64,6 +75,14 @@ export interface AnalysisResult {
   
   // Narrative
   narrative: string;
+  
+  // AI Reasoning
+  efficiencyReason: string;
+  confidenceReason: string;
+  strategyReason: string;
+  
+  // Signal states for toggles
+  signals: SignalStates;
 }
 
 export interface MultiTimeframeAnalysis {
