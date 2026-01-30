@@ -173,20 +173,22 @@ export const MarketScanner = () => {
 
       {/* Market tabs */}
       <Tabs value={selectedMarket} onValueChange={handleMarketChange}>
-        <TabsList className="bg-muted/50 border border-border/50">
-          <TabsTrigger value="all" className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
-            All Markets
-          </TabsTrigger>
-          {Object.entries(MARKET_LABELS).map(([type, label]) => (
-            <TabsTrigger
-              key={type}
-              value={type}
-              className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground"
-            >
-              {label}
+        <div className="overflow-x-auto pb-2 -mb-2">
+          <TabsList className="bg-muted/50 border border-border/50 inline-flex w-auto min-w-full sm:min-w-0">
+            <TabsTrigger value="all" className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground whitespace-nowrap">
+              All Markets
             </TabsTrigger>
-          ))}
-        </TabsList>
+            {Object.entries(MARKET_LABELS).map(([type, label]) => (
+              <TabsTrigger
+                key={type}
+                value={type}
+                className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground whitespace-nowrap"
+              >
+                {label}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </div>
       </Tabs>
 
       {/* Results count */}

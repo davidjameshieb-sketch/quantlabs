@@ -1,10 +1,11 @@
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ChevronDown, Activity, ArrowRight } from 'lucide-react';
+import { ChevronDown, Activity, ArrowRight, HelpCircle } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { EfficiencyMetrics } from '@/lib/market/types';
+import { EfficiencyTooltip } from './HelpTooltip';
 import { cn } from '@/lib/utils';
 
 interface EfficiencyInsightProps {
@@ -51,7 +52,10 @@ export const EfficiencyInsight = ({ efficiency, reason, className }: EfficiencyI
               <Activity className="w-5 h-5" />
             </div>
             <div className="text-left">
-              <p className="text-sm text-muted-foreground">Efficiency Score</p>
+              <div className="flex items-center gap-1">
+                <p className="text-sm text-muted-foreground">Efficiency Score</p>
+                <EfficiencyTooltip />
+              </div>
               <div className="flex items-center gap-2">
                 <motion.span
                   className="text-2xl font-bold text-foreground"
