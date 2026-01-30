@@ -1,12 +1,7 @@
-import { DashboardLayout } from '@/components/dashboard/DashboardLayout';
-import { MarketScanner } from '@/components/dashboard/MarketScanner';
+import { SplitViewDashboard } from '@/components/dashboard/SplitViewDashboard';
 
 const Dashboard = () => {
-  return (
-    <DashboardLayout>
-      <MarketScanner />
-    </DashboardLayout>
-  );
+  return <SplitViewDashboard />;
 };
 
 export default Dashboard;

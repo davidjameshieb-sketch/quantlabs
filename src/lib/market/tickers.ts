@@ -685,8 +685,8 @@ export const MARKET_LABELS: Record<MarketType, string> = {
   stocks: 'Stocks',
 };
 
-// Stock sector categories (for filtering)
-export const STOCK_SECTORS = [
+// Stock sector categories (for filtering) - Deprecated, use sectors.ts instead
+export const SECTOR_LIST = [
   'Technology',
   'Healthcare',
   'Financials',
