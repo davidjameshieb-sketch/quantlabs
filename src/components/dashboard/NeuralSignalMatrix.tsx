@@ -1,4 +1,5 @@
 import { motion } from 'framer-motion';
+import { Link } from 'react-router-dom';
 import { 
   TrendingUp, 
   Waves, 
@@ -7,9 +8,11 @@ import {
   Radio,
   Activity,
   Layers,
-  Gauge
+  Gauge,
+  HelpCircle
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
 import { SignalToggle } from './SignalToggle';
 import { SignalStates } from '@/lib/market/types';
 
@@ -109,16 +112,23 @@ export const NeuralSignalMatrix = ({ signals, className }: NeuralSignalMatrixPro
             <Radio className="w-5 h-5 text-primary" />
             Neural Signal Matrix
           </CardTitle>
-          <motion.div
-            className="flex items-center gap-2 px-3 py-1 rounded-full bg-muted/50 border border-border/50"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-          >
-            <span className="text-xs text-muted-foreground">Active:</span>
-            <span className="text-sm font-bold text-primary">
-              {activeCount}/{totalCount}
-            </span>
-          </motion.div>
+          <div className="flex items-center gap-2">
+            <Button variant="ghost" size="sm" asChild className="text-muted-foreground hover:text-foreground">
+              <Link to="/guide?tab=signals">
+                <HelpCircle className="w-4 h-4" />
+              </Link>
+            </Button>
+            <motion.div
+              className="flex items-center gap-2 px-3 py-1 rounded-full bg-muted/50 border border-border/50"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+            >
+              <span className="text-xs text-muted-foreground">Active:</span>
+              <span className="text-sm font-bold text-primary">
+                {activeCount}/{totalCount}
+              </span>
+            </motion.div>
+          </div>
         </div>
       </CardHeader>
       <CardContent>

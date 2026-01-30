@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Brain, Home, BarChart3, Settings, LogOut, Search, ChevronDown, Menu } from 'lucide-react';
+import { Brain, Home, BarChart3, Settings, LogOut, Search, ChevronDown, Menu, BookOpen, HelpCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
@@ -11,7 +11,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet';
-import { TICKERS, MARKET_LABELS } from '@/lib/market';
+import { TICKERS, MARKET_LABELS, getTickerCounts } from '@/lib/market';
 import { cn } from '@/lib/utils';
 
 interface DashboardLayoutProps {
@@ -76,15 +76,29 @@ export const DashboardLayout = ({ children }: DashboardLayoutProps) => {
           <p className="px-3 py-2 text-xs text-muted-foreground uppercase tracking-wider">
             Markets
           </p>
-          {Object.entries(MARKET_LABELS).map(([type, label]) => (
-            <Link
-              key={type}
-              to={`/dashboard?market=${type}`}
-              className="flex items-center gap-3 px-3 py-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
-            >
-              <span>{label}</span>
-            </Link>
-          ))}
+          {Object.entries(MARKET_LABELS).map(([type, label]) => {
+            const count = getTickerCounts()[type as keyof ReturnType<typeof getTickerCounts>];
+            return (
+              <Link
+                key={type}
+                to={`/dashboard?market=${type}`}
+                className="flex items-center justify-between px-3 py-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+              >
+                <span>{label}</span>
+                <span className="text-xs text-muted-foreground/60">{count}</span>
+              </Link>
+            );
+          })}
+        </div>
+
+        <div className="pt-4 border-t border-border/30 mt-4">
+          <Link
+            to="/guide"
+            className="flex items-center gap-3 px-3 py-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+          >
+            <BookOpen className="w-5 h-5" />
+            <span>Platform Guide</span>
+          </Link>
         </div>
       </nav>
 

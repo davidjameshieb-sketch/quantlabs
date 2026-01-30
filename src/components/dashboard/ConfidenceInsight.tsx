@@ -4,6 +4,7 @@ import { ChevronDown, Target, TrendingUp, TrendingDown } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { TrendCore, MacroStrength, BiasDirection } from '@/lib/market/types';
+import { ConfidenceTooltip } from './HelpTooltip';
 import { cn } from '@/lib/utils';
 
 interface ConfidenceInsightProps {
@@ -60,7 +61,10 @@ export const ConfidenceInsight = ({
               <Target className="w-5 h-5" />
             </div>
             <div className="text-left">
-              <p className="text-sm text-muted-foreground">Confidence</p>
+              <div className="flex items-center gap-1">
+                <p className="text-sm text-muted-foreground">Confidence</p>
+                <ConfidenceTooltip />
+              </div>
               <div className="flex items-center gap-2">
                 <motion.span
                   className="text-2xl font-bold text-foreground"
