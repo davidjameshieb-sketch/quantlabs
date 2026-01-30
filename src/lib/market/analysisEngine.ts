@@ -11,6 +11,7 @@ import {
   TrendCore,
   EfficiencyMetrics,
   MultiTimeframeAnalysis,
+  SignalStates,
 } from './types';
 import { getMarketData } from './dataGenerator';
 
@@ -129,6 +130,65 @@ const determineStrategyState = (
   return 'watching';
 };
 
+// Generate efficiency reason
+const generateEfficiencyReason = (efficiency: EfficiencyMetrics): string => {
+  const scorePercent = (efficiency.score * 100).toFixed(0);
+  const netMoveStr = efficiency.netMove.toFixed(4);
+  const pathNoiseStr = efficiency.pathNoise.toFixed(4);
+  
+  if (efficiency.verdict === 'clean') {
+    return `Price traveled ${netMoveStr} with only ${pathNoiseStr} deviation. Direct movement indicates strong directional conviction.`;
+  } else if (efficiency.verdict === 'noisy') {
+    return `High path noise (${pathNoiseStr}) relative to net movement (${netMoveStr}). Choppy conditions - structure unclear.`;
+  }
+  return `Movement efficiency at ${scorePercent}%. Some noise present but trend structure remains visible.`;
+};
+
+// Generate confidence reason
+const generateConfidenceReason = (trendCore: TrendCore, atr: number, confidence: number): string => {
+  const spreadStr = trendCore.spread.toFixed(4);
+  const atrStr = atr.toFixed(4);
+  const multiplier = atr > 0 ? (trendCore.spread / atr).toFixed(1) : '0';
+  
+  if (confidence > 80) {
+    return `Trend cores separated by ${spreadStr}, which is ${multiplier}x the average volatility. Strong structural divergence.`;
+  } else if (confidence < 40) {
+    return `Trend cores are compressed (${spreadStr}) within normal volatility range (ATR: ${atrStr}). No clear directional commitment.`;
+  }
+  return `Core separation (${spreadStr}) is moderate relative to volatility (ATR: ${atrStr}). Developing structure.`;
+};
+
+// Generate strategy reason
+const generateStrategyReason = (strategyState: StrategyState, macroStrength: MacroStrength, efficiency: EfficiencyMetrics): string => {
+  const reasons: Record<StrategyState, string> = {
+    pressing: 'Optimal conditions. Clear structure with efficient price action. Favorable for trend-following approaches.',
+    tracking: 'Good structure but some noise. Standard trend-following with measured position sizing.',
+    holding: 'Strong bias but choppy execution. Wait for cleaner price action before adding.',
+    watching: 'Developing conditions. Monitor for setup formation before committing.',
+    avoiding: 'Chop zone. No clear edge - structure unclear and efficiency too low.',
+  };
+  return reasons[strategyState];
+};
+
+// Calculate signal states for toggles
+const calculateSignalStates = (
+  trendCore: TrendCore,
+  efficiency: EfficiencyMetrics,
+  confidence: number,
+  atr: number
+): SignalStates => {
+  const coreSpreadNormalized = atr > 0 ? trendCore.spread / atr : 0;
+  
+  return {
+    trendActive: coreSpreadNormalized > 0.5,
+    cleanFlow: efficiency.score > 0.6,
+    highConviction: confidence > 70,
+    structureGaining: trendCore.spreadDelta > 0,
+    volatilityExpanding: false, // Would need historical ATR comparison
+    trendingMode: efficiency.score >= 0.3,
+  };
+};
+
 // Generate narrative
 const generateNarrative = (
   bias: BiasDirection,
@@ -142,7 +202,6 @@ const generateNarrative = (
   const strengthStr = macroStrength.toUpperCase();
   const effStr = efficiency.verdict.toUpperCase();
   const strategyStr = strategyState.toUpperCase();
-  const convictionStr = conviction === 'gaining' ? 'strengthening' : 'weakening';
   
   const parts: string[] = [];
   
@@ -208,6 +267,14 @@ export const analyzeMarket = (
     confidencePercent
   );
   
+  // Generate AI reasoning
+  const efficiencyReason = generateEfficiencyReason(efficiency);
+  const confidenceReason = generateConfidenceReason(trendCore, atr, confidencePercent);
+  const strategyReason = generateStrategyReason(strategyState, macroStrength, efficiency);
+  
+  // Calculate signal states
+  const signals = calculateSignalStates(trendCore, efficiency, confidencePercent, atr);
+  
   return {
     ticker,
     timeframe,
@@ -215,12 +282,17 @@ export const analyzeMarket = (
     currentPrice,
     trendCore,
     efficiency,
+    atr,
     bias,
     conviction,
     confidencePercent,
     macroStrength,
     strategyState,
     narrative,
+    efficiencyReason,
+    confidenceReason,
+    strategyReason,
+    signals,
   };
 };
 

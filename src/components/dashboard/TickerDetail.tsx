@@ -5,22 +5,23 @@ import {
   ArrowLeft, 
   TrendingUp, 
   TrendingDown, 
-  Activity, 
-  Zap, 
-  Target,
-  BarChart3,
+  AlertCircle,
   Clock,
-  AlertCircle
+  BarChart3
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Progress } from '@/components/ui/progress';
 import { getTickerBySymbol, TIMEFRAME_LABELS, MARKET_LABELS } from '@/lib/market';
 import { analyzeMultiTimeframe } from '@/lib/market/analysisEngine';
-import { BiasDirection, EfficiencyVerdict, StrategyState, Timeframe } from '@/lib/market/types';
+import { BiasDirection, Timeframe } from '@/lib/market/types';
 import { PriceChart } from './PriceChart';
 import { MetricGauge } from './MetricGauge';
+import { NeuralSignalMatrix } from './NeuralSignalMatrix';
+import { EfficiencyInsight } from './EfficiencyInsight';
+import { ConfidenceInsight } from './ConfidenceInsight';
+import { StrategyInsight } from './StrategyInsight';
+import { TrendCoreVisual } from './TrendCoreVisual';
 import { cn } from '@/lib/utils';
 
 const biasColors: Record<BiasDirection, string> = {
@@ -31,20 +32,6 @@ const biasColors: Record<BiasDirection, string> = {
 const biasBgColors: Record<BiasDirection, string> = {
   bullish: 'bg-neural-green/20 border-neural-green/30',
   bearish: 'bg-neural-red/20 border-neural-red/30',
-};
-
-const efficiencyColors: Record<EfficiencyVerdict, string> = {
-  clean: 'bg-neural-green/20 text-neural-green border-neural-green/30',
-  mixed: 'bg-neural-orange/20 text-neural-orange border-neural-orange/30',
-  noisy: 'bg-neural-red/20 text-neural-red border-neural-red/30',
-};
-
-const strategyColors: Record<StrategyState, string> = {
-  pressing: 'bg-neural-cyan/20 text-neural-cyan border-neural-cyan/30',
-  tracking: 'bg-neural-purple/20 text-neural-purple border-neural-purple/30',
-  holding: 'bg-neural-orange/20 text-neural-orange border-neural-orange/30',
-  watching: 'bg-muted text-muted-foreground border-border',
-  avoiding: 'bg-neural-red/20 text-neural-red border-neural-red/30',
 };
 
 export const TickerDetail = () => {
@@ -72,6 +59,16 @@ export const TickerDetail = () => {
   const primaryAnalysis = analysis.analyses['1h'];
   const BiasIcon = primaryAnalysis.bias === 'bullish' ? TrendingUp : TrendingDown;
 
+  // Calculate MTF aligned signal
+  const timeframes = Object.keys(analysis.analyses) as Timeframe[];
+  const biases = timeframes.map(tf => analysis.analyses[tf].bias);
+  const mtfAligned = biases.every(b => b === biases[0]);
+  
+  const signalsWithMtf = {
+    ...primaryAnalysis.signals,
+    mtfAligned,
+  };
+
   return (
     <div className="space-y-6">
       {/* Back button & header */}
@@ -81,7 +78,7 @@ export const TickerDetail = () => {
             <ArrowLeft className="w-5 h-5" />
           </Link>
         </Button>
-        <div>
+        <div className="flex-1">
           <div className="flex items-center gap-3">
             <h1 className="font-display text-2xl md:text-3xl font-bold text-foreground">
               {ticker.symbol}
@@ -89,6 +86,10 @@ export const TickerDetail = () => {
             <Badge variant="outline" className="text-xs">
               {MARKET_LABELS[ticker.type]}
             </Badge>
+            <div className={cn('flex items-center gap-1 ml-auto', biasColors[primaryAnalysis.bias])}>
+              <BiasIcon className="w-5 h-5" />
+              <span className="text-sm font-bold uppercase">{primaryAnalysis.bias}</span>
+            </div>
           </div>
           <p className="text-muted-foreground">{ticker.name}</p>
         </div>
@@ -100,157 +101,131 @@ export const TickerDetail = () => {
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.3 }}
       >
-        <PriceChart ticker={ticker} height={350} />
+        <PriceChart ticker={ticker} height={300} />
       </motion.div>
 
-      {/* Main metrics row */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        {/* Price & Bias */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.3, delay: 0.1 }}
-        >
-          <Card className="border-border/50 bg-card/50">
-            <CardContent className="p-4">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-sm text-muted-foreground">Current Price</span>
-                <div className={cn('flex items-center gap-1', biasColors[primaryAnalysis.bias])}>
-                  <BiasIcon className="w-4 h-4" />
-                  <span className="text-xs font-bold uppercase">{primaryAnalysis.bias}</span>
-                </div>
-              </div>
-              <p className="text-3xl font-bold text-foreground">
-                {primaryAnalysis.currentPrice.toLocaleString(undefined, {
-                  minimumFractionDigits: ticker.type === 'forex' ? 4 : 2,
-                  maximumFractionDigits: ticker.type === 'forex' ? 5 : 2,
-                })}
-              </p>
-            </CardContent>
-          </Card>
-        </motion.div>
+      {/* Neural Signal Matrix */}
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.3, delay: 0.1 }}
+      >
+        <NeuralSignalMatrix 
+          signals={signalsWithMtf} 
+          className="border-border/50 bg-gradient-to-br from-card to-muted/10"
+        />
+      </motion.div>
 
-        {/* Efficiency */}
+      {/* AI Insight Cards - 3 column grid */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.3, delay: 0.2 }}
         >
-          <Card className="border-border/50 bg-card/50">
-            <CardContent className="p-4">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-sm text-muted-foreground">Efficiency</span>
-                <Activity className="w-4 h-4 text-muted-foreground" />
-              </div>
-              <div className="flex items-center gap-3">
-                <p className="text-3xl font-bold text-foreground">
-                  {(primaryAnalysis.efficiency.score * 100).toFixed(0)}%
-                </p>
-                <Badge
-                  variant="outline"
-                  className={cn('text-xs', efficiencyColors[primaryAnalysis.efficiency.verdict])}
-                >
-                  {primaryAnalysis.efficiency.verdict.toUpperCase()}
-                </Badge>
-              </div>
-            </CardContent>
-          </Card>
+          <EfficiencyInsight
+            efficiency={primaryAnalysis.efficiency}
+            reason={primaryAnalysis.efficiencyReason}
+          />
         </motion.div>
 
-        {/* Confidence */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.3, delay: 0.3 }}
         >
-          <Card className="border-border/50 bg-card/50">
-            <CardContent className="p-4">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-sm text-muted-foreground">Confidence</span>
-                <Target className="w-4 h-4 text-muted-foreground" />
-              </div>
-              <div className="space-y-2">
-                <p className="text-3xl font-bold text-foreground">
-                  {primaryAnalysis.confidencePercent.toFixed(0)}%
-                </p>
-                <Progress value={primaryAnalysis.confidencePercent} className="h-2" />
-              </div>
-            </CardContent>
-          </Card>
+          <ConfidenceInsight
+            confidence={primaryAnalysis.confidencePercent}
+            trendCore={primaryAnalysis.trendCore}
+            atr={primaryAnalysis.atr}
+            macroStrength={primaryAnalysis.macroStrength}
+            bias={primaryAnalysis.bias}
+            reason={primaryAnalysis.confidenceReason}
+          />
         </motion.div>
 
-        {/* Strategy */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.3, delay: 0.4 }}
         >
-          <Card className="border-border/50 bg-card/50">
-            <CardContent className="p-4">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-sm text-muted-foreground">Strategy State</span>
-                <Zap className="w-4 h-4 text-muted-foreground" />
+          <StrategyInsight
+            strategyState={primaryAnalysis.strategyState}
+            macroStrength={primaryAnalysis.macroStrength}
+            efficiencyVerdict={primaryAnalysis.efficiency.verdict}
+            confidence={primaryAnalysis.confidencePercent}
+            efficiencyScore={primaryAnalysis.efficiency.score}
+            reason={primaryAnalysis.strategyReason}
+          />
+        </motion.div>
+      </div>
+
+      {/* Trend Core Visual + Gauges */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.3, delay: 0.5 }}
+        >
+          <TrendCoreVisual
+            trendCore={primaryAnalysis.trendCore}
+            currentPrice={primaryAnalysis.currentPrice}
+            bias={primaryAnalysis.bias}
+          />
+        </motion.div>
+
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.3, delay: 0.6 }}
+        >
+          <Card className="border-border/50 bg-card/50 h-full">
+            <CardHeader className="pb-2">
+              <CardTitle className="font-display text-lg">Performance Gauges</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="flex flex-wrap justify-around gap-4 py-4">
+                <MetricGauge
+                  value={primaryAnalysis.confidencePercent}
+                  label="Confidence"
+                  colorClass="text-primary"
+                  size="sm"
+                />
+                <MetricGauge
+                  value={primaryAnalysis.efficiency.score * 100}
+                  label="Efficiency"
+                  colorClass={
+                    primaryAnalysis.efficiency.verdict === 'clean' 
+                      ? 'text-neural-green' 
+                      : primaryAnalysis.efficiency.verdict === 'noisy' 
+                      ? 'text-neural-red' 
+                      : 'text-neural-orange'
+                  }
+                  size="sm"
+                />
+                <MetricGauge
+                  value={Math.abs(analysis.aggregatedScore * 100)}
+                  label="MTF Score"
+                  colorClass={analysis.dominantBias === 'bullish' ? 'text-neural-green' : 'text-neural-red'}
+                  size="sm"
+                />
               </div>
-              <Badge
-                variant="outline"
-                className={cn('text-lg px-4 py-2', strategyColors[primaryAnalysis.strategyState])}
-              >
-                {primaryAnalysis.strategyState.toUpperCase()}
-              </Badge>
             </CardContent>
           </Card>
         </motion.div>
       </div>
 
-      {/* Gauges Section */}
-      <motion.div
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.3, delay: 0.5 }}
-      >
-        <Card className="border-border/50 bg-card/50">
-          <CardHeader>
-            <CardTitle className="font-display text-lg">Performance Metrics</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="flex flex-wrap justify-around gap-6">
-              <MetricGauge
-                value={primaryAnalysis.confidencePercent}
-                label="Confidence"
-                colorClass="text-primary"
-              />
-              <MetricGauge
-                value={primaryAnalysis.efficiency.score * 100}
-                label="Efficiency"
-                colorClass={
-                  primaryAnalysis.efficiency.verdict === 'clean' 
-                    ? 'text-neural-green' 
-                    : primaryAnalysis.efficiency.verdict === 'noisy' 
-                    ? 'text-neural-red' 
-                    : 'text-neural-orange'
-                }
-              />
-              <MetricGauge
-                value={Math.abs(analysis.aggregatedScore * 100)}
-                label="Alignment Score"
-                colorClass={analysis.dominantBias === 'bullish' ? 'text-neural-green' : 'text-neural-red'}
-              />
-            </div>
-          </CardContent>
-        </Card>
-      </motion.div>
-
       {/* Narrative */}
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.3, delay: 0.6 }}
+        transition={{ duration: 0.3, delay: 0.7 }}
       >
-        <Card className="border-border/50 bg-gradient-to-br from-card to-muted/20">
-          <CardHeader>
+        <Card className="border-border/50 bg-gradient-to-br from-card to-primary/5">
+          <CardHeader className="pb-2">
             <CardTitle className="font-display text-lg flex items-center gap-2">
               <BarChart3 className="w-5 h-5 text-primary" />
-              Neural Analysis
+              Neural Analysis Summary
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -265,7 +240,7 @@ export const TickerDetail = () => {
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.3, delay: 0.7 }}
+        transition={{ duration: 0.3, delay: 0.8 }}
       >
         <Card className="border-border/50 bg-card/50">
           <CardHeader>
@@ -292,12 +267,13 @@ export const TickerDetail = () => {
           <CardContent>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
               {Object.entries(analysis.analyses).map(([tf, tfAnalysis]) => (
-                <div
+                <motion.div
                   key={tf}
                   className={cn(
-                    'p-4 rounded-xl border',
+                    'p-4 rounded-xl border transition-all hover:scale-[1.02]',
                     biasBgColors[tfAnalysis.bias]
                   )}
+                  whileHover={{ boxShadow: '0 0 20px rgba(0,0,0,0.2)' }}
                 >
                   <div className="flex items-center justify-between mb-3">
                     <span className="font-display font-bold">
@@ -324,7 +300,7 @@ export const TickerDetail = () => {
                       <span className="font-medium">{tfAnalysis.strategyState.toUpperCase()}</span>
                     </div>
                   </div>
-                </div>
+                </motion.div>
               ))}
             </div>
 
