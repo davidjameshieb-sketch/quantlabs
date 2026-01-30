@@ -5,13 +5,13 @@ import { TrendingUp, TrendingDown, Activity, Zap } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { 
-  AnalysisResult, 
   BiasDirection, 
   EfficiencyVerdict, 
   StrategyState,
   TickerInfo 
 } from '@/lib/market/types';
 import { analyzeMarket } from '@/lib/market/analysisEngine';
+import { MiniSparkline } from './MiniSparkline';
 import { cn } from '@/lib/utils';
 
 interface TickerCardProps {
@@ -63,7 +63,7 @@ export const TickerCard = ({ ticker, index = 0 }: TickerCardProps) => {
 
           <CardContent className="relative p-4">
             {/* Header */}
-            <div className="flex items-start justify-between mb-3">
+            <div className="flex items-start justify-between mb-2">
               <div>
                 <h3 className="font-display font-bold text-lg text-foreground">
                   {ticker.symbol}
@@ -75,6 +75,9 @@ export const TickerCard = ({ ticker, index = 0 }: TickerCardProps) => {
                 <span className="font-bold text-sm uppercase">{analysis.bias}</span>
               </div>
             </div>
+
+            {/* Mini Sparkline Chart */}
+            <MiniSparkline ticker={ticker} height={50} className="mb-2 -mx-1" />
 
             {/* Price */}
             <div className="mb-3">

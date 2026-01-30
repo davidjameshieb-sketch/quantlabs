@@ -19,6 +19,8 @@ import { Progress } from '@/components/ui/progress';
 import { getTickerBySymbol, TIMEFRAME_LABELS, MARKET_LABELS } from '@/lib/market';
 import { analyzeMultiTimeframe } from '@/lib/market/analysisEngine';
 import { BiasDirection, EfficiencyVerdict, StrategyState, Timeframe } from '@/lib/market/types';
+import { PriceChart } from './PriceChart';
+import { MetricGauge } from './MetricGauge';
 import { cn } from '@/lib/utils';
 
 const biasColors: Record<BiasDirection, string> = {
@@ -92,13 +94,22 @@ export const TickerDetail = () => {
         </div>
       </div>
 
+      {/* Price Chart - Full width */}
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.3 }}
+      >
+        <PriceChart ticker={ticker} height={350} />
+      </motion.div>
+
       {/* Main metrics row */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         {/* Price & Bias */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.3 }}
+          transition={{ duration: 0.3, delay: 0.1 }}
         >
           <Card className="border-border/50 bg-card/50">
             <CardContent className="p-4">
@@ -123,7 +134,7 @@ export const TickerDetail = () => {
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.3, delay: 0.1 }}
+          transition={{ duration: 0.3, delay: 0.2 }}
         >
           <Card className="border-border/50 bg-card/50">
             <CardContent className="p-4">
@@ -150,7 +161,7 @@ export const TickerDetail = () => {
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.3, delay: 0.2 }}
+          transition={{ duration: 0.3, delay: 0.3 }}
         >
           <Card className="border-border/50 bg-card/50">
             <CardContent className="p-4">
@@ -172,7 +183,7 @@ export const TickerDetail = () => {
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.3, delay: 0.3 }}
+          transition={{ duration: 0.3, delay: 0.4 }}
         >
           <Card className="border-border/50 bg-card/50">
             <CardContent className="p-4">
@@ -191,11 +202,49 @@ export const TickerDetail = () => {
         </motion.div>
       </div>
 
+      {/* Gauges Section */}
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.3, delay: 0.5 }}
+      >
+        <Card className="border-border/50 bg-card/50">
+          <CardHeader>
+            <CardTitle className="font-display text-lg">Performance Metrics</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="flex flex-wrap justify-around gap-6">
+              <MetricGauge
+                value={primaryAnalysis.confidencePercent}
+                label="Confidence"
+                colorClass="text-primary"
+              />
+              <MetricGauge
+                value={primaryAnalysis.efficiency.score * 100}
+                label="Efficiency"
+                colorClass={
+                  primaryAnalysis.efficiency.verdict === 'clean' 
+                    ? 'text-neural-green' 
+                    : primaryAnalysis.efficiency.verdict === 'noisy' 
+                    ? 'text-neural-red' 
+                    : 'text-neural-orange'
+                }
+              />
+              <MetricGauge
+                value={Math.abs(analysis.aggregatedScore * 100)}
+                label="Alignment Score"
+                colorClass={analysis.dominantBias === 'bullish' ? 'text-neural-green' : 'text-neural-red'}
+              />
+            </div>
+          </CardContent>
+        </Card>
+      </motion.div>
+
       {/* Narrative */}
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.3, delay: 0.4 }}
+        transition={{ duration: 0.3, delay: 0.6 }}
       >
         <Card className="border-border/50 bg-gradient-to-br from-card to-muted/20">
           <CardHeader>
@@ -216,7 +265,7 @@ export const TickerDetail = () => {
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.3, delay: 0.5 }}
+        transition={{ duration: 0.3, delay: 0.7 }}
       >
         <Card className="border-border/50 bg-card/50">
           <CardHeader>
