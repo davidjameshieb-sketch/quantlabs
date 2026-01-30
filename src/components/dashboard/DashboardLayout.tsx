@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Brain, Home, BarChart3, Settings, LogOut, Search, ChevronDown, Menu, BookOpen, HelpCircle } from 'lucide-react';
+import { Brain, Home, BarChart3, Settings, LogOut, Search, ChevronDown, Menu, BookOpen } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
@@ -13,6 +13,7 @@ import {
 import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet';
 import { TICKERS, MARKET_LABELS, getTickerCounts } from '@/lib/market';
 import { cn } from '@/lib/utils';
+import { useAuth } from '@/contexts/AuthContext';
 
 interface DashboardLayoutProps {
   children: React.ReactNode;
@@ -20,23 +21,24 @@ interface DashboardLayoutProps {
 
 export const DashboardLayout = ({ children }: DashboardLayoutProps) => {
   const navigate = useNavigate();
+  const { user, signOut } = useAuth();
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<typeof TICKERS>([]);
   const [showSearch, setShowSearch] = useState(false);
 
-  // Mock user data
-  const user = {
-    email: 'trader@example.com',
-    tier: 3,
-    tierName: 'Strategist',
-  };
+  // User display info
+  const userEmail = user?.email || 'user@example.com';
+  const userTier = 3; // This would come from a profiles table in a real app
+  const userTierName = 'Strategist';
 
   useEffect(() => {
     if (searchQuery.length > 0) {
+      // Sanitize search input
+      const sanitizedQuery = searchQuery.trim().slice(0, 50);
       const results = TICKERS.filter(
         t =>
-          t.symbol.toLowerCase().includes(searchQuery.toLowerCase()) ||
-          t.name.toLowerCase().includes(searchQuery.toLowerCase())
+          t.symbol.toLowerCase().includes(sanitizedQuery.toLowerCase()) ||
+          t.name.toLowerCase().includes(sanitizedQuery.toLowerCase())
       ).slice(0, 5);
       setSearchResults(results);
       setShowSearch(true);
@@ -46,7 +48,8 @@ export const DashboardLayout = ({ children }: DashboardLayoutProps) => {
     }
   }, [searchQuery]);
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    await signOut();
     navigate('/');
   };
 
@@ -107,13 +110,13 @@ export const DashboardLayout = ({ children }: DashboardLayoutProps) => {
         <div className="flex items-center justify-between">
           <div>
             <p className="text-sm font-medium text-foreground truncate max-w-[120px]">
-              {user.email}
+              {userEmail}
             </p>
             <div className="flex items-center gap-1 mt-1">
               <span className="text-xs px-2 py-0.5 rounded-full bg-primary/20 text-primary font-medium">
-                Tier {user.tier}
+                Tier {userTier}
               </span>
-              <span className="text-xs text-muted-foreground">{user.tierName}</span>
+              <span className="text-xs text-muted-foreground">{userTierName}</span>
             </div>
           </div>
         </div>
@@ -156,6 +159,7 @@ export const DashboardLayout = ({ children }: DashboardLayoutProps) => {
                 onChange={(e) => setSearchQuery(e.target.value)}
                 onBlur={() => setTimeout(() => setShowSearch(false), 200)}
                 onFocus={() => searchQuery.length > 0 && setShowSearch(true)}
+                maxLength={50}
               />
               {showSearch && searchResults.length > 0 && (
                 <div className="absolute top-full left-0 right-0 mt-2 bg-card border border-border rounded-lg shadow-lg overflow-hidden z-50">
@@ -194,16 +198,16 @@ export const DashboardLayout = ({ children }: DashboardLayoutProps) => {
                 <DropdownMenuTrigger asChild>
                   <Button variant="ghost" className="gap-2">
                     <div className="w-8 h-8 rounded-full bg-gradient-to-br from-primary to-secondary flex items-center justify-center text-sm font-bold text-background">
-                      {user.email[0].toUpperCase()}
+                      {userEmail[0].toUpperCase()}
                     </div>
                     <ChevronDown className="w-4 h-4" />
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="w-56">
                   <div className="px-2 py-1.5">
-                    <p className="text-sm font-medium">{user.email}</p>
+                    <p className="text-sm font-medium">{userEmail}</p>
                     <p className="text-xs text-muted-foreground">
-                      {user.tierName} (Tier {user.tier})
+                      {userTierName} (Tier {userTier})
                     </p>
                   </div>
                   <DropdownMenuSeparator />
