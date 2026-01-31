@@ -40,11 +40,21 @@ export const HeroSection = () => {
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5, delay: 0.2 }}
-          className="text-lg md:text-xl text-muted-foreground max-w-3xl mx-auto mb-10"
+          className="text-lg md:text-xl text-muted-foreground max-w-2xl mx-auto mb-4"
         >
-          The Neural Brain reveals the <span className="text-primary">why</span> behind every market move. 
-          Transparent AI analysis across Forex, Indices, Commodities, and Crypto — 
-          with plain-English explanations you can trust.
+          Transparent AI market intelligence across stocks, crypto, forex, and commodities.
+          <br />
+          Plain-English explanations. No black boxes.
+        </motion.p>
+
+        {/* Credibility anchor */}
+        <motion.p
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.5, delay: 0.25 }}
+          className="text-sm text-muted-foreground/70 max-w-xl mx-auto mb-10"
+        >
+          Historical condition outcomes · Market structure analysis · Multi-timeframe context
         </motion.p>
 
         {/* CTA buttons */}
@@ -52,40 +62,47 @@ export const HeroSection = () => {
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5, delay: 0.3 }}
-          className="flex flex-col sm:flex-row items-center justify-center gap-4 mb-16"
+          className="flex flex-col sm:flex-row items-center justify-center gap-4 mb-12"
         >
-          <Button asChild size="lg" className="glow-cyan text-lg px-8 py-6 font-display">
+          <Button asChild size="lg" className="text-base px-7 py-5 font-display bg-primary/90 hover:bg-primary text-primary-foreground">
             <Link to="/auth">
               Start Free Trial
-              <ArrowRight className="ml-2 w-5 h-5" />
+              <ArrowRight className="ml-2 w-4 h-4" />
             </Link>
           </Button>
-          <Button asChild variant="outline" size="lg" className="text-lg px-8 py-6 border-primary/30 hover:bg-primary/10">
+          <Button asChild variant="ghost" size="lg" className="text-base px-7 py-5 text-muted-foreground hover:text-foreground hover:bg-muted/30">
             <a href="#pricing">View Pricing</a>
           </Button>
         </motion.div>
+
+        {/* Audience filter */}
+        <motion.p
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ duration: 0.5, delay: 0.35 }}
+          className="text-xs text-muted-foreground/50 mb-12"
+        >
+          For traders seeking clarity over noise.
+        </motion.p>
 
         {/* Feature highlights */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5, delay: 0.4 }}
-          className="grid grid-cols-1 md:grid-cols-3 gap-6 max-w-4xl mx-auto"
+          className="grid grid-cols-1 md:grid-cols-3 gap-4 max-w-3xl mx-auto"
         >
           {[
-            { icon: '🎯', label: 'Efficiency Scores', desc: 'Clean vs noisy market detection' },
-            { icon: '🧠', label: 'Neural Trend Cores', desc: 'Adaptive structure analysis' },
-            { icon: '📊', label: 'Strategy Mapping', desc: 'Explainable decision logic' },
+            { label: 'Efficiency Detection', desc: 'Measures directional clarity vs noise' },
+            { label: 'Structure Analysis', desc: 'Adaptive trend and regime identification' },
+            { label: 'Condition Mapping', desc: 'Transparent reasoning at every step' },
           ].map((feature, i) => (
             <div
               key={i}
-              className="flex items-center gap-4 p-4 rounded-xl border border-border/50 bg-card/50 backdrop-blur-sm"
+              className="p-4 rounded-lg border border-border/30 bg-card/30 backdrop-blur-sm text-center"
             >
-              <span className="text-3xl">{feature.icon}</span>
-              <div className="text-left">
-                <p className="font-medium text-foreground">{feature.label}</p>
-                <p className="text-sm text-muted-foreground">{feature.desc}</p>
-              </div>
+              <p className="text-sm font-medium text-foreground/90">{feature.label}</p>
+              <p className="text-xs text-muted-foreground mt-1">{feature.desc}</p>
             </div>
           ))}
         </motion.div>
