@@ -79,7 +79,7 @@ export const PriceChart = ({
   useEffect(() => {
     const interval = setInterval(() => {
       fetchData();
-    }, 60000);
+    }, 5 * 60 * 1000);
 
     return () => clearInterval(interval);
   }, [fetchData]);
