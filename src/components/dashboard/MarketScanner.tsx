@@ -465,15 +465,6 @@ export const MarketScanner = () => {
         </div>
       </Tabs>
 
-      {/* Results count */}
-      <div className="flex items-center justify-between">
-        <p className="text-sm text-muted-foreground">
-          Showing {displayedTickers.length} of {filteredTickers.length} {filteredTickers.length === 1 ? 'ticker' : 'tickers'}
-          {hasMoreTickers && (
-            <span className="text-muted-foreground/60"> • Increase "tickers per view" for more</span>
-          )}
-        </p>
-      </div>
 
       {/* Ticker grid */}
       <div
