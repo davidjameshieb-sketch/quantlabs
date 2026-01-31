@@ -138,10 +138,10 @@ export const TradingViewChart = ({
   const [hoveredZone, setHoveredZone] = useState<ConditionZone | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
-  
-  // Start with simulated data for instant display, then replace with real
-  const initialData = useMemo(() => getMarketData(ticker, timeframe, 200), [ticker, timeframe]);
-  const [rawData, setRawData] = useState<OHLC[]>(initialData);
+
+  // Keep last-known data on screen to avoid flashing back to the simulated ~$100 baseline
+  // while a real/cached fetch is in-flight.
+  const [rawData, setRawData] = useState<OHLC[]>([]);
   
   // Fetch real market data
   const fetchRealData = useCallback(async () => {
@@ -149,9 +149,14 @@ export const TradingViewChart = ({
       const data = await getMarketDataAsync(ticker, timeframe, 200);
       if (data && data.length > 0) {
         setRawData(data);
+        return;
       }
+
+      // If provider returns no data, fall back to simulated (but with realistic per-symbol baselines).
+      setRawData(getMarketData(ticker, timeframe, 200));
     } catch (err) {
       console.warn('Failed to fetch real data, using simulated:', err);
+      setRawData(getMarketData(ticker, timeframe, 200));
     } finally {
       setIsLoading(false);
       setIsRefreshing(false);
@@ -161,7 +166,6 @@ export const TradingViewChart = ({
   // Fetch on mount and when ticker/timeframe changes
   useEffect(() => {
     setIsLoading(true);
-    setRawData(getMarketData(ticker, timeframe, 200)); // Reset to simulated immediately
     fetchRealData();
   }, [ticker, timeframe, fetchRealData]);
   
