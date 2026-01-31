@@ -13,7 +13,7 @@ const SNAPSHOT_SYMBOLS: Record<MarketType, string[]> = {
   stocks: ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA'],
   crypto: ['BTCUSD', 'ETHUSD', 'BNBUSD', 'SOLUSD', 'XRPUSD'],
   forex: ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'AUDUSD'],
-  commodities: ['XAUUSD', 'XAGUSD', 'WTIUSD', 'NATGAS', 'WHEAT'],
+  commodities: ['GLD', 'SLV', 'USO', 'UNG', 'WEAT'],
   indices: ['SPX', 'NDX', 'DJI', 'VIX', 'RUT'],
 };
 

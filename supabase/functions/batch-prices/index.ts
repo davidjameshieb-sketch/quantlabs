@@ -80,17 +80,25 @@ const symbolConfig: Record<string, SymbolConfig> = {
   'EURJPY': { polygon: 'C:EURJPY', source: 'Polygon FX', minPrice: 100, maxPrice: 200 },
   'GBPJPY': { polygon: 'C:GBPJPY', source: 'Polygon FX', minPrice: 120, maxPrice: 250 },
   
-  // ========== COMMODITIES (use ETFs for reliable data via grouped stocks endpoint) ==========
-  'XAUUSD': { polygon: 'GLD', source: 'GLD ETF Proxy', minPrice: 100, maxPrice: 600 },
-  'XAGUSD': { polygon: 'SLV', source: 'SLV ETF Proxy', minPrice: 15, maxPrice: 100 },
-  // Oil/Gas/Grains via ETFs (clearly labeled)
-  'WTIUSD': { polygon: 'USO', source: 'USO ETF Proxy', minPrice: 30, maxPrice: 150 },
-  'NATGAS': { polygon: 'UNG', source: 'UNG ETF Proxy', minPrice: 5, maxPrice: 100 },
-  'WHEAT': { polygon: 'WEAT', source: 'WEAT ETF Proxy', minPrice: 3, maxPrice: 30 },
+  // ========== COMMODITIES (ETFs - direct mapping) ==========
+  'GLD': { polygon: 'GLD', source: 'SPDR Gold ETF', minPrice: 100, maxPrice: 600 },
+  'SLV': { polygon: 'SLV', source: 'iShares Silver ETF', minPrice: 15, maxPrice: 100 },
+  'USO': { polygon: 'USO', source: 'US Oil Fund', minPrice: 30, maxPrice: 150 },
+  'BNO': { polygon: 'BNO', source: 'Brent Oil Fund', minPrice: 15, maxPrice: 100 },
+  'UNG': { polygon: 'UNG', source: 'US Natural Gas Fund', minPrice: 5, maxPrice: 100 },
+  'CPER': { polygon: 'CPER', source: 'US Copper Index', minPrice: 10, maxPrice: 50 },
+  'PPLT': { polygon: 'PPLT', source: 'Platinum Shares', minPrice: 50, maxPrice: 200 },
+  'PALL': { polygon: 'PALL', source: 'Palladium Shares', minPrice: 50, maxPrice: 400 },
+  'WEAT': { polygon: 'WEAT', source: 'Wheat Fund', minPrice: 3, maxPrice: 30 },
+  'CORN': { polygon: 'CORN', source: 'Teucrium Corn', minPrice: 15, maxPrice: 40 },
+  'SOYB': { polygon: 'SOYB', source: 'Teucrium Soybean', minPrice: 20, maxPrice: 50 },
+  'JO': { polygon: 'JO', source: 'iPath Coffee', minPrice: 20, maxPrice: 100 },
+  'CANE': { polygon: 'CANE', source: 'Sugar Fund', minPrice: 5, maxPrice: 20 },
+  'BAL': { polygon: 'BAL', source: 'iPath Cotton', minPrice: 30, maxPrice: 100 },
   
-  // ========== ADDITIONAL INDICES (via ETFs) ==========
-  'VIX': { polygon: 'VIXY', source: 'VIXY ETF Proxy', minPrice: 5, maxPrice: 200 },
-  'RUT': { polygon: 'IWM', source: 'IWM ETF Proxy', minPrice: 100, maxPrice: 400 },
+  // ========== INDICES (via ETFs) ==========
+  'VIX': { polygon: 'VIXY', source: 'VIXY ETF', minPrice: 5, maxPrice: 200 },
+  'RUT': { polygon: 'IWM', source: 'IWM ETF', minPrice: 100, maxPrice: 400 },
 };
 
 const json = (body: unknown, status = 200) =>

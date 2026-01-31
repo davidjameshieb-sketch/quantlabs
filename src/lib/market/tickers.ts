@@ -627,20 +627,20 @@ const INDICES: TickerInfo[] = [
 // COMMODITIES
 // ============================================
 const COMMODITIES: TickerInfo[] = [
-  { symbol: 'XAUUSD', name: 'Gold', type: 'commodities' },
-  { symbol: 'XAGUSD', name: 'Silver', type: 'commodities' },
-  { symbol: 'WTIUSD', name: 'Crude Oil WTI', type: 'commodities' },
-  { symbol: 'BRENTUSD', name: 'Brent Crude Oil', type: 'commodities' },
-  { symbol: 'NATGAS', name: 'Natural Gas', type: 'commodities' },
-  { symbol: 'COPPER', name: 'Copper', type: 'commodities' },
-  { symbol: 'PLATINUM', name: 'Platinum', type: 'commodities' },
-  { symbol: 'PALLADIUM', name: 'Palladium', type: 'commodities' },
-  { symbol: 'WHEAT', name: 'Wheat', type: 'commodities' },
-  { symbol: 'CORN', name: 'Corn', type: 'commodities' },
-  { symbol: 'SOYBEAN', name: 'Soybeans', type: 'commodities' },
-  { symbol: 'COFFEE', name: 'Coffee', type: 'commodities' },
-  { symbol: 'SUGAR', name: 'Sugar', type: 'commodities' },
-  { symbol: 'COTTON', name: 'Cotton', type: 'commodities' },
+  { symbol: 'GLD', name: 'SPDR Gold Trust ETF', type: 'commodities' },
+  { symbol: 'SLV', name: 'iShares Silver Trust ETF', type: 'commodities' },
+  { symbol: 'USO', name: 'US Oil Fund ETF', type: 'commodities' },
+  { symbol: 'BNO', name: 'Brent Oil Fund ETF', type: 'commodities' },
+  { symbol: 'UNG', name: 'US Natural Gas Fund ETF', type: 'commodities' },
+  { symbol: 'CPER', name: 'US Copper Index Fund', type: 'commodities' },
+  { symbol: 'PPLT', name: 'Physical Platinum Shares', type: 'commodities' },
+  { symbol: 'PALL', name: 'Physical Palladium Shares', type: 'commodities' },
+  { symbol: 'WEAT', name: 'Teucrium Wheat Fund', type: 'commodities' },
+  { symbol: 'CORN', name: 'Teucrium Corn Fund', type: 'commodities' },
+  { symbol: 'SOYB', name: 'Teucrium Soybean Fund', type: 'commodities' },
+  { symbol: 'JO', name: 'iPath Coffee ETN', type: 'commodities' },
+  { symbol: 'CANE', name: 'Teucrium Sugar Fund', type: 'commodities' },
+  { symbol: 'BAL', name: 'iPath Cotton ETN', type: 'commodities' },
 ];
 
 // ============================================
