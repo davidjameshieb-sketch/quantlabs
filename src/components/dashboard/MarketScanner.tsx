@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
-import { Filter, Grid3X3, List, RefreshCw, ChevronDown, Sparkles, Layers, Search, X } from 'lucide-react';
+import { Filter, Grid3X3, List, RefreshCw, Layers, Search, X, Globe } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -11,8 +11,6 @@ import {
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-  DropdownMenuRadioGroup,
-  DropdownMenuRadioItem,
 } from '@/components/ui/dropdown-menu';
 import {
   Select,
@@ -23,13 +21,13 @@ import {
 } from '@/components/ui/select';
 import { TickerCard } from './TickerCard';
 import { DataFreshnessBadge } from './DataFreshnessBadge';
+import { BrowseMarketModal } from './BrowseMarketModal';
 import { 
   MARKET_LABELS, 
   getTickersByType,
   getSnapshotTickers,
   getFullMarketCount,
   SNAPSHOT_SIZE,
-  MARKET_FULL_LABELS,
   searchTickers,
 } from '@/lib/market';
 import { MarketType, BiasDirection, EfficiencyVerdict, TickerInfo } from '@/lib/market/types';
@@ -76,6 +74,7 @@ export const MarketScanner = () => {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [realPrices, setRealPrices] = useState<Record<string, PriceData>>({});
   const [tickerDensity, setTickerDensity] = useState(() => getInitialDensity(userTier));
+  const [browseModalOpen, setBrowseModalOpen] = useState(false);
   
   // Search state
   const [searchQuery, setSearchQuery] = useState('');
@@ -90,9 +89,6 @@ export const MarketScanner = () => {
     commodities: 'snapshot',
     indices: 'snapshot',
   });
-  
-  // Loading state for individual markets
-  const [loadingMarket, setLoadingMarket] = useState<MarketType | null>(null);
   
   // Persist density preference
   const handleDensityChange = useCallback((value: string) => {
@@ -202,64 +198,32 @@ export const MarketScanner = () => {
     setSearchParams(searchParams);
   };
 
-  const handleLoadFullMarket = useCallback(async (type: MarketType) => {
-    setLoadingMarket(type);
-    // Small delay to show loading state, then load full market
-    await new Promise(resolve => setTimeout(resolve, 100));
+  const handleLoadFullMarket = useCallback((type: MarketType) => {
     setLoadState(prev => ({ ...prev, [type]: 'full' }));
-    setLoadingMarket(null);
+    // Also navigate to that market tab
+    handleMarketChange(type);
   }, []);
 
-  // Check if current view is in snapshot mode
-  const isInSnapshotMode = selectedMarket === 'all' 
-    ? Object.values(loadState).some(s => s === 'snapshot')
-    : loadState[selectedMarket] === 'snapshot';
-
-  // Get counts for display
-  const getDisplayCounts = () => {
-    if (selectedMarket === 'all') {
-      const snapshotCount = Object.entries(loadState)
-        .reduce((acc, [type, state]) => {
-          return acc + (state === 'snapshot' ? SNAPSHOT_SIZE : getFullMarketCount(type as MarketType));
-        }, 0);
-      return { showing: filteredTickers.length, total: snapshotCount };
-    }
-    const fullCount = getFullMarketCount(selectedMarket);
-    const isSnapshot = loadState[selectedMarket] === 'snapshot';
-    return { 
-      showing: filteredTickers.length, 
-      total: isSnapshot ? SNAPSHOT_SIZE : fullCount,
-      fullAvailable: fullCount,
-      isSnapshot,
-    };
-  };
-
-  const counts = getDisplayCounts();
-
-  const hasMoreTickers = filteredTickers.length > tickerDensity;
+  // Check if any filters are active
+  const hasActiveFilters = biasFilter !== 'all' || efficiencyFilter !== 'all';
 
   return (
     <div className="space-y-6">
-      {/* Header */}
+      {/* Header - Clean single row */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <div className="flex items-center gap-3 flex-wrap">
+          <div className="flex items-center gap-3">
             <h1 className="font-display text-2xl md:text-3xl font-bold text-gradient-neural">
               Market Snapshot
             </h1>
             <DataFreshnessBadge level="live" />
-            {isInSnapshotMode && (
-              <span className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full bg-primary/10 text-primary border border-primary/20">
-                <Sparkles className="w-3 h-3" />
-                Focused View
-              </span>
-            )}
           </div>
           <p className="text-muted-foreground mt-1 text-sm">
-            Showing a focused view across markets. Expand or increase ticker count for deeper analysis.
+            Showing a curated snapshot across markets. Increase ticker count or browse full coverage for deeper analysis.
           </p>
         </div>
 
+        {/* Controls row */}
         <div className="flex items-center gap-2 flex-wrap">
           {/* Search bar - searches ALL tickers */}
           <div className="relative">
@@ -270,7 +234,7 @@ export const MarketScanner = () => {
                 placeholder="Search any ticker..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-[180px] sm:w-[220px] pl-9 pr-8 border-border/50"
+                className="w-[180px] sm:w-[200px] pl-9 pr-8 border-border/50"
                 onFocus={() => searchQuery && setShowSearchResults(true)}
               />
               {searchQuery && (
@@ -309,9 +273,9 @@ export const MarketScanner = () => {
             )}
           </div>
 
-          {/* Tickers per view control */}
+          {/* Tickers per view - THE primary density control */}
           <Select value={tickerDensity.toString()} onValueChange={handleDensityChange}>
-            <SelectTrigger className="w-[140px] border-border/50">
+            <SelectTrigger className="w-[130px] border-border/50">
               <Layers className="w-4 h-4 mr-2 text-muted-foreground" />
               <SelectValue placeholder="Per view" />
             </SelectTrigger>
@@ -324,22 +288,18 @@ export const MarketScanner = () => {
             </SelectContent>
           </Select>
 
-          <Button
-            variant="outline"
-            size="icon"
-            onClick={handleRefresh}
-            disabled={isRefreshing}
-            className="border-border/50"
-          >
-            <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} />
-          </Button>
-
-          {/* Filters */}
+          {/* Filters - collapsed by default */}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="outline" className="border-border/50">
+              <Button 
+                variant="outline" 
+                className={`border-border/50 ${hasActiveFilters ? 'border-primary/50 bg-primary/5' : ''}`}
+              >
                 <Filter className="w-4 h-4 mr-2" />
                 Filters
+                {hasActiveFilters && (
+                  <span className="ml-1.5 w-2 h-2 rounded-full bg-primary" />
+                )}
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-48 bg-popover border-border">
@@ -392,6 +352,16 @@ export const MarketScanner = () => {
             </DropdownMenuContent>
           </DropdownMenu>
 
+          <Button
+            variant="outline"
+            size="icon"
+            onClick={handleRefresh}
+            disabled={isRefreshing}
+            className="border-border/50"
+          >
+            <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} />
+          </Button>
+
           {/* View toggle */}
           <div className="flex items-center border border-border/50 rounded-lg p-1">
             <Button
@@ -414,57 +384,47 @@ export const MarketScanner = () => {
         </div>
       </div>
 
-      {/* Expand Market Coverage - PRIMARY LOCATION */}
-      {Object.values(loadState).some(s => s === 'snapshot') && (
-        <div className="flex flex-wrap items-center gap-2 p-3 rounded-lg bg-muted/30 border border-border/50">
-          <span className="text-sm font-medium text-muted-foreground mr-2">
-            Expand Market Coverage:
-          </span>
-          {(Object.entries(loadState) as [MarketType, 'snapshot' | 'full'][])
-            .filter(([, state]) => state === 'snapshot')
-            .map(([type]) => (
-              <Button
-                key={type}
-                variant="outline"
-                size="sm"
-                onClick={() => handleLoadFullMarket(type)}
-                disabled={loadingMarket === type}
-                className="border-primary/30 text-primary hover:bg-primary/10"
-              >
-                {loadingMarket === type ? (
-                  <RefreshCw className="w-3 h-3 mr-1.5 animate-spin" />
-                ) : (
-                  <ChevronDown className="w-3 h-3 mr-1.5" />
-                )}
-                {MARKET_LABELS[type]} ({getFullMarketCount(type)})
-              </Button>
-            ))}
-        </div>
-      )}
-
-      {/* Market tabs */}
-      <Tabs value={selectedMarket} onValueChange={handleMarketChange}>
-        <div className="overflow-x-auto pb-2 -mb-2">
-          <TabsList className="bg-muted/50 border border-border/50 inline-flex w-auto min-w-full sm:min-w-0">
-            <TabsTrigger value="all" className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground whitespace-nowrap">
-              All Markets
-            </TabsTrigger>
-            {Object.entries(MARKET_LABELS).map(([type, label]) => (
-              <TabsTrigger
-                key={type}
-                value={type}
-                className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground whitespace-nowrap"
-              >
-                {label}
-                {loadState[type as MarketType] === 'snapshot' && (
-                  <span className="ml-1 text-xs opacity-60">({SNAPSHOT_SIZE})</span>
-                )}
+      {/* Market tabs - SINGLE SOURCE OF TRUTH for market selection */}
+      <div className="flex items-center justify-between gap-4">
+        <Tabs value={selectedMarket} onValueChange={handleMarketChange} className="flex-1">
+          <div className="overflow-x-auto pb-2 -mb-2">
+            <TabsList className="bg-muted/50 border border-border/50 inline-flex w-auto min-w-full sm:min-w-0">
+              <TabsTrigger value="all" className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground whitespace-nowrap">
+                All Markets
               </TabsTrigger>
-            ))}
-          </TabsList>
-        </div>
-      </Tabs>
+              {Object.entries(MARKET_LABELS).map(([type, label]) => (
+                <TabsTrigger
+                  key={type}
+                  value={type}
+                  className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground whitespace-nowrap"
+                >
+                  {label}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+          </div>
+        </Tabs>
 
+        {/* Browse Full Market - secondary action */}
+        <Button
+          variant="outline"
+          onClick={() => setBrowseModalOpen(true)}
+          className="border-border/50 shrink-0 hidden sm:flex"
+        >
+          <Globe className="w-4 h-4 mr-2" />
+          Browse Full Market
+        </Button>
+      </div>
+
+      {/* Mobile browse button */}
+      <Button
+        variant="outline"
+        onClick={() => setBrowseModalOpen(true)}
+        className="w-full border-border/50 sm:hidden"
+      >
+        <Globe className="w-4 h-4 mr-2" />
+        Browse Full Market Coverage
+      </Button>
 
       {/* Ticker grid */}
       <div
@@ -483,27 +443,19 @@ export const MarketScanner = () => {
         ))}
       </div>
 
-      {/* Progressive disclosure prompt */}
-      {hasMoreTickers && (
-        <div className="text-center py-4 border-t border-border/30">
-          <p className="text-sm text-muted-foreground">
-            {filteredTickers.length - tickerDensity} more tickers available.{' '}
-            <button 
-              onClick={() => handleDensityChange(Math.min(tickerDensity + 20, 100).toString())}
-              className="text-primary hover:underline font-medium"
-            >
-              Increase ticker count
-            </button>
-            {' '}or expand market for deeper analysis.
-          </p>
-        </div>
-      )}
-
       {displayedTickers.length === 0 && (
         <div className="text-center py-12">
           <p className="text-muted-foreground">No tickers match your filters</p>
         </div>
       )}
+
+      {/* Browse Market Modal */}
+      <BrowseMarketModal
+        open={browseModalOpen}
+        onOpenChange={setBrowseModalOpen}
+        onSelectMarket={handleLoadFullMarket}
+        loadState={loadState}
+      />
     </div>
   );
 };

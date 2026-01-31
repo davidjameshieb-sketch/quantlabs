@@ -606,21 +606,31 @@ const FOREX_PAIRS: TickerInfo[] = [
 ];
 
 // ============================================
-// INDICES
+// INDICES & S&P 500 SECTOR ETFs
 // ============================================
 const INDICES: TickerInfo[] = [
-  { symbol: 'SPX500', name: 'S&P 500', type: 'indices' },
-  { symbol: 'NASDAQ', name: 'NASDAQ 100', type: 'indices' },
-  { symbol: 'DJI', name: 'Dow Jones Industrial', type: 'indices' },
-  { symbol: 'DAX', name: 'DAX 40', type: 'indices' },
-  { symbol: 'FTSE', name: 'FTSE 100', type: 'indices' },
-  { symbol: 'NIKKEI', name: 'Nikkei 225', type: 'indices' },
-  { symbol: 'CAC40', name: 'CAC 40', type: 'indices' },
-  { symbol: 'STOXX50', name: 'Euro Stoxx 50', type: 'indices' },
-  { symbol: 'ASX200', name: 'ASX 200', type: 'indices' },
-  { symbol: 'HSI', name: 'Hang Seng', type: 'indices' },
-  { symbol: 'RUSSELL', name: 'Russell 2000', type: 'indices' },
-  { symbol: 'VIX', name: 'VIX Volatility', type: 'indices' },
+  // Market Indices
+  { symbol: 'SPY', name: 'SPDR S&P 500 ETF Trust', type: 'indices' },
+  { symbol: 'QQQ', name: 'Invesco QQQ Trust (NASDAQ)', type: 'indices' },
+  { symbol: 'DIA', name: 'SPDR Dow Jones Industrial ETF', type: 'indices' },
+  { symbol: 'IWM', name: 'iShares Russell 2000 ETF', type: 'indices' },
+  { symbol: 'VIX', name: 'VIX Volatility Index', type: 'indices' },
+  { symbol: 'EFA', name: 'iShares MSCI EAFE ETF', type: 'indices' },
+  { symbol: 'EEM', name: 'iShares MSCI Emerging Markets ETF', type: 'indices' },
+  { symbol: 'VEA', name: 'Vanguard FTSE Developed Markets ETF', type: 'indices' },
+  
+  // S&P 500 Sector ETFs (SPDR Select Sector)
+  { symbol: 'XLB', name: 'Materials Select Sector SPDR', type: 'indices' },
+  { symbol: 'XLE', name: 'Energy Select Sector SPDR', type: 'indices' },
+  { symbol: 'XLF', name: 'Financial Select Sector SPDR', type: 'indices' },
+  { symbol: 'XLI', name: 'Industrial Select Sector SPDR', type: 'indices' },
+  { symbol: 'XLK', name: 'Technology Select Sector SPDR', type: 'indices' },
+  { symbol: 'XLP', name: 'Consumer Staples Select Sector SPDR', type: 'indices' },
+  { symbol: 'XLU', name: 'Utilities Select Sector SPDR', type: 'indices' },
+  { symbol: 'XLV', name: 'Health Care Select Sector SPDR', type: 'indices' },
+  { symbol: 'XLY', name: 'Consumer Discretionary Select Sector SPDR', type: 'indices' },
+  { symbol: 'XLRE', name: 'Real Estate Select Sector SPDR', type: 'indices' },
+  { symbol: 'XLC', name: 'Communication Services Select Sector SPDR', type: 'indices' },
 ];
 
 // ============================================
@@ -679,7 +689,7 @@ export const getTickerBySymbol = (symbol: string): TickerInfo | undefined => {
 // Market type labels
 export const MARKET_LABELS: Record<MarketType, string> = {
   forex: 'Forex',
-  indices: 'Indices',
+  indices: 'Indices & Sectors',
   commodities: 'Commodities',
   crypto: 'Crypto',
   stocks: 'Stocks',
