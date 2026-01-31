@@ -104,6 +104,11 @@ function getPreviousTradingDay(): string {
   return date.toISOString().split('T')[0];
 }
 
+// Crypto trades 24/7 — use current UTC date for grouped daily (otherwise we lag by 1 day).
+function getTodayUTCDate(): string {
+  return new Date().toISOString().split('T')[0];
+}
+
 // Validate price is within expected range (catches x100/x0.01 errors)
 function validatePrice(symbol: string, price: number): boolean {
   const config = symbolConfig[symbol];
@@ -154,7 +159,7 @@ async function fetchStocksGrouped(apiKey: string): Promise<Map<string, PriceData
 // Fetch grouped daily bars for crypto (one API call for all)
 async function fetchCryptoGrouped(apiKey: string): Promise<Map<string, PriceData>> {
   const prices = new Map<string, PriceData>();
-  const dateStr = getPreviousTradingDay();
+  const dateStr = getTodayUTCDate();
   
   try {
     const url = `https://api.polygon.io/v2/aggs/grouped/locale/global/market/crypto/${dateStr}?adjusted=true&apiKey=${apiKey}`;
@@ -304,6 +309,8 @@ serve(async (req) => {
     if (now - lastBatchFetch > BATCH_CACHE_TTL_MS || priceCache.size === 0) {
       await refreshPrices(POLYGON_API_KEY);
     }
+
+    const responseNow = Date.now();
     
     // Return requested symbols or all cached
     const result: Record<string, PriceData> = {};
@@ -324,7 +331,7 @@ serve(async (req) => {
     return json({
       prices: result,
       count: Object.keys(result).length,
-      cacheAge: now - lastBatchFetch,
+      cacheAge: Math.max(0, responseNow - lastBatchFetch),
       lastUpdated: lastBatchFetch,
       lastUpdatedISO: new Date(lastBatchFetch).toISOString(),
     });

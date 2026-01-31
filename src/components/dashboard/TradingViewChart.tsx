@@ -16,6 +16,7 @@ import { TIMEFRAME_LABELS } from '@/lib/market/tickers';
 import { ConditionLabel, getConditionColor, getConditionDisplayText } from '@/lib/market/backtestEngine';
 import { cn } from '@/lib/utils';
 import { CandlestickChart, LineChart, RefreshCw } from 'lucide-react';
+import { useTickerQuote } from '@/hooks/useTickerQuote';
 
 interface TradingViewChartProps {
   ticker: TickerInfo;
@@ -177,17 +178,23 @@ export const TradingViewChart = ({
   const chartData = useMemo(() => {
     return chartType === 'heikin-ashi' ? toHeikinAshi(rawData) : rawData;
   }, [rawData, chartType]);
+
+  // Canonical display quote (raw feed) — do NOT derive from HA.
+  const { priceData: quote, lastUpdatedISO } = useTickerQuote(ticker.symbol, ticker.type);
   
   const conditionZones = useMemo(() => {
     return generateConditionZones(rawData);
   }, [rawData]);
   
-  // Calculate price change
-  const currentPrice = chartData[chartData.length - 1]?.close || 0;
+  // Chart-derived values (may be Heikin Ashi)
+  const chartDerivedPrice = chartData[chartData.length - 1]?.close || 0;
   const firstPrice = chartData[0]?.open || 0;
-  const priceChange = currentPrice - firstPrice;
+  const priceChange = chartDerivedPrice - firstPrice;
   const percentChange = firstPrice > 0 ? (priceChange / firstPrice) * 100 : 0;
   const isPositive = priceChange >= 0;
+
+  const displayPrice = quote?.price ?? (rawData[rawData.length - 1]?.close ?? chartDerivedPrice);
+  const displaySource = quote?.source;
   
   // Initialize and update chart
   useEffect(() => {
@@ -337,10 +344,23 @@ export const TradingViewChart = ({
             <CardTitle className="font-display text-lg">
               Price Chart
             </CardTitle>
-            {/* Current price display */}
-            <span className="font-mono text-lg font-bold">
-              ${currentPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-            </span>
+            {/* Display price (canonical raw quote, not HA close) */}
+            <div className="flex flex-col leading-tight">
+              <span className="font-mono text-lg font-bold">
+                {displayPrice.toLocaleString(undefined, {
+                  minimumFractionDigits: ticker.type === 'forex' ? 4 : 2,
+                  maximumFractionDigits: ticker.type === 'forex' ? 5 : ticker.type === 'crypto' ? 6 : 2,
+                })}
+              </span>
+              <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                <span>Source: {displaySource || 'Simulated'}</span>
+                {lastUpdatedISO ? (
+                  <span className="whitespace-nowrap">
+                    Last refresh: {new Date(lastUpdatedISO).toISOString().replace('.000Z', 'Z')}
+                  </span>
+                ) : null}
+              </div>
+            </div>
             <Badge
               variant="outline"
               className={cn(
