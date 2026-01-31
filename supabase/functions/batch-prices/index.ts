@@ -82,10 +82,15 @@ const symbolConfig: Record<string, SymbolConfig> = {
   
   // ========== COMMODITIES (use ETFs for reliable data via grouped stocks endpoint) ==========
   'XAUUSD': { polygon: 'GLD', source: 'GLD ETF Proxy', minPrice: 100, maxPrice: 600 },
-  'XAGUSD': { polygon: 'SLV', source: 'SLV ETF Proxy', minPrice: 10, maxPrice: 50 },
-  // Oil/Gas via ETFs (clearly labeled)
+  'XAGUSD': { polygon: 'SLV', source: 'SLV ETF Proxy', minPrice: 15, maxPrice: 100 },
+  // Oil/Gas/Grains via ETFs (clearly labeled)
   'WTIUSD': { polygon: 'USO', source: 'USO ETF Proxy', minPrice: 30, maxPrice: 150 },
   'NATGAS': { polygon: 'UNG', source: 'UNG ETF Proxy', minPrice: 5, maxPrice: 100 },
+  'WHEAT': { polygon: 'WEAT', source: 'WEAT ETF Proxy', minPrice: 3, maxPrice: 30 },
+  
+  // ========== ADDITIONAL INDICES (via ETFs) ==========
+  'VIX': { polygon: 'VIXY', source: 'VIXY ETF Proxy', minPrice: 5, maxPrice: 200 },
+  'RUT': { polygon: 'IWM', source: 'IWM ETF Proxy', minPrice: 100, maxPrice: 400 },
 };
 
 const json = (body: unknown, status = 200) =>
