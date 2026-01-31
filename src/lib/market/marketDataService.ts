@@ -12,15 +12,15 @@ interface MarketDataResponse {
 
 // Cache for API data to reduce calls
 const apiDataCache = new Map<string, { data: OHLC[]; timestamp: number }>();
-// Polygon free tier is heavily rate-limited; use a longer TTL to avoid falling back to simulated data.
-const CACHE_TTL = 10 * 60 * 1000; // 10 minutes
+// Faster refresh – will hit rate limits more often and fall back to simulated data
+const CACHE_TTL = 60 * 1000; // 1 minute cache
 
 // Coalesce identical in-flight requests
 const inFlight = new Map<string, Promise<OHLC[]>>();
 
-// Global throttle: at most 1 request every 12 seconds (~5/min)
+// Global throttle: ~5 requests/min allowed by free tier
 let nextAllowedRequestAt = 0;
-const MIN_REQUEST_GAP_MS = 12_000;
+const MIN_REQUEST_GAP_MS = 6_000; // 6 seconds between requests
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
