@@ -1,5 +1,6 @@
-import { useMemo, useState, useEffect } from 'react';
+import { useMemo, useState, useEffect, useCallback } from 'react';
 import { TickerInfo, OHLC } from '@/lib/market/types';
+import { getMarketDataAsync } from '@/lib/market/marketDataService';
 import { getMarketData } from '@/lib/market/dataGenerator';
 import { cn } from '@/lib/utils';
 
@@ -10,43 +11,29 @@ interface MiniSparklineProps {
 }
 
 export const MiniSparkline = ({ ticker, height = 50, className }: MiniSparklineProps) => {
-  const baseData = useMemo(() => {
-    return getMarketData(ticker, '15m', 32); // Fewer bars for clearer candles
+  // Start with mock data for instant display
+  const initialData = useMemo(() => getMarketData(ticker, '15m', 32), [ticker]);
+  const [liveData, setLiveData] = useState<OHLC[]>(initialData);
+
+  // Fetch real data in background
+  const fetchRealData = useCallback(async () => {
+    try {
+      const data = await getMarketDataAsync(ticker, '15m', 32);
+      if (data && data.length > 0) {
+        setLiveData(data);
+      }
+    } catch (error) {
+      // Keep using initial data on error
+      console.warn(`Sparkline data fetch failed for ${ticker.symbol}`);
+    }
   }, [ticker]);
 
-  const [liveData, setLiveData] = useState<OHLC[]>(baseData);
-
-  // Simulate real-time updates with more dramatic movement
   useEffect(() => {
-    setLiveData(baseData);
-    
-    const interval = setInterval(() => {
-      setLiveData(prevData => {
-        if (prevData.length === 0) return prevData;
-        
-        const lastBar = prevData[prevData.length - 1];
-        // Higher volatility for more visible movement
-        const volatility = ticker.type === 'forex' ? 0.0008 : 
-                          ticker.type === 'crypto' ? 0.006 : 0.003;
-        const change = (Math.random() - 0.5) * 2 * volatility * lastBar.close;
-        const newClose = lastBar.close + change;
-        
-        // Also simulate wick extension
-        const wickExtension = Math.abs(change) * (0.5 + Math.random() * 0.5);
-        
-        const updatedLastBar: OHLC = {
-          ...lastBar,
-          close: newClose,
-          high: Math.max(lastBar.high, newClose + wickExtension),
-          low: Math.min(lastBar.low, newClose - wickExtension),
-        };
-        
-        return [...prevData.slice(0, -1), updatedLastBar];
-      });
-    }, 800); // Faster updates
-
+    fetchRealData();
+    // Refresh every 2 minutes
+    const interval = setInterval(fetchRealData, 120000);
     return () => clearInterval(interval);
-  }, [baseData, ticker.type]);
+  }, [fetchRealData]);
 
   // Calculate chart bounds and scale
   const { minPrice, maxPrice, priceRange } = useMemo(() => {
