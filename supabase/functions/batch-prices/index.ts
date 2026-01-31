@@ -17,7 +17,9 @@ interface PriceData {
 
 const priceCache = new Map<string, PriceData>();
 let lastBatchFetch = 0;
-const BATCH_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+let lastCryptoFetch = 0;
+const BATCH_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes for stocks
+const CRYPTO_CACHE_TTL_MS = 30 * 1000; // 30 seconds for crypto (real-time)
 
 // Canonical symbol mapping: frontend symbol -> { polygonTicker, source, priceRange }
 interface SymbolConfig {
@@ -145,9 +147,8 @@ function getPreviousTradingDay(): string {
   return date.toISOString().split('T')[0];
 }
 
-// Crypto/Forex: free tier can't get "today" before market close — use previous day like stocks
+// Get previous day for crypto (Polygon free tier only provides grouped daily)
 function getCryptoPreviousDay(): string {
-  // Polygon free tier doesn't allow today's data until EOD, so use yesterday
   const today = new Date();
   const yesterday = new Date(today.getTime() - 24 * 60 * 60 * 1000);
   return yesterday.toISOString().split('T')[0];
@@ -200,8 +201,8 @@ async function fetchStocksGrouped(apiKey: string): Promise<Map<string, PriceData
   return prices;
 }
 
-// Fetch grouped daily bars for crypto (one API call for all)
-async function fetchCryptoGrouped(apiKey: string): Promise<Map<string, PriceData>> {
+// Fetch crypto prices using grouped daily endpoint (reliable for free tier)
+async function fetchCryptoPrices(apiKey: string): Promise<Map<string, PriceData>> {
   const prices = new Map<string, PriceData>();
   const dateStr = getCryptoPreviousDay();
   
@@ -221,7 +222,8 @@ async function fetchCryptoGrouped(apiKey: string): Promise<Map<string, PriceData
           change,
           changePercent,
           timestamp,
-          source: 'Polygon Crypto',
+          source: 'Polygon Crypto (Prev Close)',
+          isDelayed: true,
         });
       }
       console.log(`Got ${prices.size} crypto prices`);
@@ -260,10 +262,10 @@ async function refreshPrices(apiKey: string): Promise<void> {
   console.log('=== Refreshing batch prices ===');
   const timestamp = Date.now();
   
-  // Fetch stocks and crypto in parallel (grouped endpoints = efficient)
+  // Fetch stocks (grouped) and crypto (real-time last trade) in parallel
   const [stockPrices, cryptoPrices] = await Promise.all([
     fetchStocksGrouped(apiKey),
-    fetchCryptoGrouped(apiKey),
+    fetchCryptoPrices(apiKey),
   ]);
   
   // Map our symbols to fetched prices
