@@ -8,11 +8,12 @@ import { getTickersByType, TICKERS } from './tickers';
  */
 
 // Popular/most-traded tickers per market (deterministic, stable list)
+// IMPORTANT: These symbols must match what the batch-prices backend returns
 const SNAPSHOT_SYMBOLS: Record<MarketType, string[]> = {
   stocks: ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA'],
-  crypto: ['BTC', 'ETH', 'BNB', 'SOL', 'XRP'],
-  forex: ['EUR/USD', 'GBP/USD', 'USD/JPY', 'USD/CHF', 'AUD/USD'],
-  commodities: ['XAUUSD', 'XAGUSD', 'USOIL', 'NATGAS', 'WHEAT'],
+  crypto: ['BTCUSD', 'ETHUSD', 'BNBUSD', 'SOLUSD', 'XRPUSD'],
+  forex: ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'AUDUSD'],
+  commodities: ['XAUUSD', 'XAGUSD', 'WTIUSD', 'NATGAS', 'WHEAT'],
   indices: ['SPX', 'NDX', 'DJI', 'VIX', 'RUT'],
 };
 

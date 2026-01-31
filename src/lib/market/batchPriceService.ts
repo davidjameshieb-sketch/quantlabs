@@ -1,11 +1,13 @@
 // Batch price service - fetches real prices from backend cache
 import { TickerInfo } from './types';
 
-interface PriceData {
+export interface PriceData {
   price: number;
   change: number;
   changePercent: number;
   timestamp: number;
+  source?: string;
+  isDelayed?: boolean;
 }
 
 interface BatchPriceResponse {
@@ -13,11 +15,13 @@ interface BatchPriceResponse {
   count: number;
   cacheAge: number;
   lastUpdated: number;
+  lastUpdatedISO?: string;
 }
 
 // Local cache for batch prices
 let cachedPrices: Record<string, PriceData> = {};
 let lastFetch = 0;
+let lastUpdatedISO = '';
 const LOCAL_CACHE_TTL = 60 * 1000; // 1 minute local cache
 
 // In-flight request deduplication
@@ -63,6 +67,9 @@ export const fetchBatchPrices = async (symbols?: string[]): Promise<Record<strin
       if (data.prices) {
         cachedPrices = { ...cachedPrices, ...data.prices };
         lastFetch = now;
+        if (data.lastUpdatedISO) {
+          lastUpdatedISO = data.lastUpdatedISO;
+        }
       }
       
       return cachedPrices;
@@ -87,7 +94,12 @@ export const getRealPrice = async (ticker: TickerInfo): Promise<number | null> =
   return priceData?.price ?? null;
 };
 
+export const getLastUpdatedISO = (): string => {
+  return lastUpdatedISO;
+};
+
 export const clearBatchPriceCache = (): void => {
   cachedPrices = {};
   lastFetch = 0;
+  lastUpdatedISO = '';
 };

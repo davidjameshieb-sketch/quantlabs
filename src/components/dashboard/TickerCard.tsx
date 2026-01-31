@@ -1,6 +1,6 @@
 import { memo, useMemo } from 'react';
 import { Link } from 'react-router-dom';
-import { TrendingUp, TrendingDown, Activity, Zap } from 'lucide-react';
+import { TrendingUp, TrendingDown, Activity, Zap, Clock } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { 
@@ -12,11 +12,13 @@ import {
 import { analyzeMarket } from '@/lib/market/analysisEngine';
 import { MiniSparkline } from './MiniSparkline';
 import { cn } from '@/lib/utils';
+import type { PriceData } from '@/lib/market/batchPriceService';
 
 interface TickerCardProps {
   ticker: TickerInfo;
   index?: number;
-  realPrice?: number | null;
+  realPriceData?: PriceData | null;
+  realPrice?: number | null; // Backwards compat
 }
 
 const biasColors: Record<BiasDirection, string> = {
@@ -43,11 +45,14 @@ const strategyColors: Record<StrategyState, string> = {
   avoiding: 'bg-neural-red/20 text-neural-red border-neural-red/30',
 };
 
-export const TickerCard = memo(({ ticker, realPrice }: TickerCardProps) => {
+export const TickerCard = memo(({ ticker, realPriceData, realPrice }: TickerCardProps) => {
   const analysis = useMemo(() => analyzeMarket(ticker, '1h'), [ticker]);
   
   // Use real price if available, otherwise fall back to analysis price
-  const displayPrice = realPrice ?? analysis.currentPrice;
+  const priceData = realPriceData;
+  const displayPrice = priceData?.price ?? realPrice ?? analysis.currentPrice;
+  const priceSource = priceData?.source;
+  const hasRealPrice = !!(priceData?.price || realPrice);
   
   const BiasIcon = biasIcons[analysis.bias];
 
@@ -85,6 +90,19 @@ export const TickerCard = memo(({ ticker, realPrice }: TickerCardProps) => {
                 maximumFractionDigits: ticker.type === 'forex' ? 5 : ticker.type === 'crypto' ? 6 : 2,
               })}
             </p>
+            {/* Source label */}
+            {priceSource && hasRealPrice && (
+              <p className="text-xs text-muted-foreground/70 flex items-center gap-1 mt-0.5">
+                <Clock className="w-3 h-3" />
+                {priceSource}
+              </p>
+            )}
+            {!hasRealPrice && (
+              <p className="text-xs text-neural-orange/70 flex items-center gap-1 mt-0.5">
+                <Clock className="w-3 h-3" />
+                Simulated
+              </p>
+            )}
           </div>
 
           {/* Metrics */}

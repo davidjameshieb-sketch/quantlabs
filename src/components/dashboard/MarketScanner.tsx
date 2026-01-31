@@ -35,7 +35,7 @@ import {
 import { MarketType, BiasDirection, EfficiencyVerdict, TickerInfo } from '@/lib/market/types';
 import { analyzeMarket } from '@/lib/market/analysisEngine';
 import { clearMarketDataCache } from '@/lib/market/dataGenerator';
-import { fetchBatchPrices, clearBatchPriceCache } from '@/lib/market/batchPriceService';
+import { fetchBatchPrices, clearBatchPriceCache, PriceData } from '@/lib/market/batchPriceService';
 
 type LoadState = Record<MarketType, 'snapshot' | 'full'>;
 
@@ -74,7 +74,7 @@ export const MarketScanner = () => {
   const [biasFilter, setBiasFilter] = useState<BiasDirection | 'all'>('all');
   const [efficiencyFilter, setEfficiencyFilter] = useState<EfficiencyVerdict | 'all'>('all');
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [realPrices, setRealPrices] = useState<Record<string, { price: number }>>({});
+  const [realPrices, setRealPrices] = useState<Record<string, PriceData>>({});
   const [tickerDensity, setTickerDensity] = useState(() => getInitialDensity(userTier));
   
   // Search state
@@ -487,7 +487,7 @@ export const MarketScanner = () => {
           <TickerCard 
             key={ticker.symbol} 
             ticker={ticker} 
-            realPrice={realPrices[ticker.symbol]?.price}
+            realPriceData={realPrices[ticker.symbol]}
           />
         ))}
       </div>
