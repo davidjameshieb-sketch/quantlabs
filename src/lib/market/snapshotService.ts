@@ -11,7 +11,7 @@ import { getTickersByType, TICKERS } from './tickers';
 // IMPORTANT: These symbols must match what the batch-prices backend returns
 const SNAPSHOT_SYMBOLS: Record<MarketType, string[]> = {
   stocks: ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA'],
-  crypto: ['BTCUSD', 'ETHUSD', 'BNBUSD', 'SOLUSD', 'XRPUSD'],
+  crypto: ['BTCUSD', 'ETHUSD', 'SOLUSD', 'XRPUSD', 'ADAUSD'],
   forex: ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'AUDUSD'],
   commodities: ['GLD', 'SLV', 'USO', 'UNG', 'WEAT'],
   indices: ['SPY', 'QQQ', 'XLK', 'XLF', 'IWM'],

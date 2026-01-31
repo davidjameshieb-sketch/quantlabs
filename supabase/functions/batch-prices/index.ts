@@ -54,17 +54,17 @@ const symbolConfig: Record<string, SymbolConfig> = {
   'VEA': { polygon: 'VEA', source: 'Developed Markets ETF', minPrice: 30, maxPrice: 80 },
   
   // S&P 500 Sector ETFs (SPDR Select Sector series)
-  'XLB': { polygon: 'XLB', source: 'Materials Sector ETF', minPrice: 50, maxPrice: 150 },
-  'XLE': { polygon: 'XLE', source: 'Energy Sector ETF', minPrice: 50, maxPrice: 150 },
+  'XLB': { polygon: 'XLB', source: 'Materials Sector ETF', minPrice: 40, maxPrice: 150 },
+  'XLE': { polygon: 'XLE', source: 'Energy Sector ETF', minPrice: 40, maxPrice: 150 },
   'XLF': { polygon: 'XLF', source: 'Financials Sector ETF', minPrice: 20, maxPrice: 80 },
   'XLI': { polygon: 'XLI', source: 'Industrials Sector ETF', minPrice: 80, maxPrice: 200 },
   'XLK': { polygon: 'XLK', source: 'Technology Sector ETF', minPrice: 100, maxPrice: 350 },
   'XLP': { polygon: 'XLP', source: 'Consumer Staples ETF', minPrice: 50, maxPrice: 120 },
-  'XLU': { polygon: 'XLU', source: 'Utilities Sector ETF', minPrice: 40, maxPrice: 100 },
+  'XLU': { polygon: 'XLU', source: 'Utilities Sector ETF', minPrice: 30, maxPrice: 100 },
   'XLV': { polygon: 'XLV', source: 'Health Care Sector ETF', minPrice: 100, maxPrice: 200 },
   'XLY': { polygon: 'XLY', source: 'Consumer Disc. ETF', minPrice: 100, maxPrice: 300 },
   'XLRE': { polygon: 'XLRE', source: 'Real Estate ETF', minPrice: 25, maxPrice: 70 },
-  'XLC': { polygon: 'XLC', source: 'Comm. Services ETF', minPrice: 40, maxPrice: 120 },
+  'XLC': { polygon: 'XLC', source: 'Comm. Services ETF', minPrice: 40, maxPrice: 150 },
   
   // Legacy index mappings (for backward compatibility)
   'SPX500': { polygon: 'SPY', source: 'SPY ETF Proxy', minPrice: 200, maxPrice: 800 },
@@ -78,21 +78,27 @@ const symbolConfig: Record<string, SymbolConfig> = {
   'RUSSELL': { polygon: 'IWM', source: 'IWM ETF Proxy', minPrice: 100, maxPrice: 400 },
   
   // ========== CRYPTO (Polygon X: prefix, 24/7 trading) ==========
+  // Only include cryptos with confirmed Polygon data feeds
   'BTCUSD': { polygon: 'X:BTCUSD', source: 'Polygon Crypto', minPrice: 10000, maxPrice: 500000 },
   'ETHUSD': { polygon: 'X:ETHUSD', source: 'Polygon Crypto', minPrice: 500, maxPrice: 20000 },
-  'BNBUSD': { polygon: 'X:BNBUSD', source: 'Polygon Crypto', minPrice: 100, maxPrice: 2000 },
   'SOLUSD': { polygon: 'X:SOLUSD', source: 'Polygon Crypto', minPrice: 10, maxPrice: 1000 },
   'XRPUSD': { polygon: 'X:XRPUSD', source: 'Polygon Crypto', minPrice: 0.1, maxPrice: 20 },
   'ADAUSD': { polygon: 'X:ADAUSD', source: 'Polygon Crypto', minPrice: 0.1, maxPrice: 10 },
   'DOGEUSD': { polygon: 'X:DOGEUSD', source: 'Polygon Crypto', minPrice: 0.01, maxPrice: 2 },
-  'MATICUSD': { polygon: 'X:MATICUSD', source: 'Polygon Crypto', minPrice: 0.1, maxPrice: 10 },
-  'DOTUSD': { polygon: 'X:DOTUSD', source: 'Polygon Crypto', minPrice: 1, maxPrice: 100 },
-  'LTCUSD': { polygon: 'X:LTCUSD', source: 'Polygon Crypto', minPrice: 20, maxPrice: 500 },
-  'LINKUSD': { polygon: 'X:LINKUSD', source: 'Polygon Crypto', minPrice: 1, maxPrice: 100 },
   'AVAXUSD': { polygon: 'X:AVAXUSD', source: 'Polygon Crypto', minPrice: 5, maxPrice: 200 },
+  'DOTUSD': { polygon: 'X:DOTUSD', source: 'Polygon Crypto', minPrice: 1, maxPrice: 100 },
+  'LINKUSD': { polygon: 'X:LINKUSD', source: 'Polygon Crypto', minPrice: 1, maxPrice: 100 },
+  'SHIBUSD': { polygon: 'X:SHIBUSD', source: 'Polygon Crypto', minPrice: 0.000001, maxPrice: 0.001 },
+  'LTCUSD': { polygon: 'X:LTCUSD', source: 'Polygon Crypto', minPrice: 20, maxPrice: 500 },
   'UNIUSD': { polygon: 'X:UNIUSD', source: 'Polygon Crypto', minPrice: 1, maxPrice: 100 },
   'ATOMUSD': { polygon: 'X:ATOMUSD', source: 'Polygon Crypto', minPrice: 1, maxPrice: 100 },
-  'SHIBUSD': { polygon: 'X:SHIBUSD', source: 'Polygon Crypto', minPrice: 0.000001, maxPrice: 0.001 },
+  'BCHUSD': { polygon: 'X:BCHUSD', source: 'Polygon Crypto', minPrice: 50, maxPrice: 1000 },
+  'XLMUSD': { polygon: 'X:XLMUSD', source: 'Polygon Crypto', minPrice: 0.05, maxPrice: 2 },
+  'ETCUSD': { polygon: 'X:ETCUSD', source: 'Polygon Crypto', minPrice: 5, maxPrice: 200 },
+  'XMRUSD': { polygon: 'X:XMRUSD', source: 'Polygon Crypto', minPrice: 50, maxPrice: 500 },
+  'AAVEUSD': { polygon: 'X:AAVEUSD', source: 'Polygon Crypto', minPrice: 30, maxPrice: 800 },
+  'ALGOUSD': { polygon: 'X:ALGOUSD', source: 'Polygon Crypto', minPrice: 0.05, maxPrice: 5 },
+  'ZECUSD': { polygon: 'X:ZECUSD', source: 'Polygon Crypto', minPrice: 10, maxPrice: 500 },
   
   // ========== FOREX (Polygon C: prefix, 24/5 trading) ==========
   'EURUSD': { polygon: 'C:EURUSD', source: 'Polygon FX', minPrice: 0.8, maxPrice: 1.5 },
