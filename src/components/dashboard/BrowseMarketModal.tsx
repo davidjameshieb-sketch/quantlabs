@@ -1,5 +1,4 @@
-import { useState } from 'react';
-import { ChevronRight, Globe, TrendingUp } from 'lucide-react';
+import { ChevronRight, TrendingUp, BarChart3 } from 'lucide-react';
 import {
   Dialog,
   DialogContent,
@@ -8,176 +7,135 @@ import {
   DialogDescription,
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Badge } from '@/components/ui/badge';
-import { MarketType } from '@/lib/market/types';
-import { MARKET_LABELS, getFullMarketCount } from '@/lib/market';
+import { getFullMarketCount } from '@/lib/market';
 import { SECTOR_ETFS } from '@/lib/market/sectorETFs';
 
 interface BrowseMarketModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onSelectMarket: (type: MarketType) => void;
-  loadState: Record<MarketType, 'snapshot' | 'full'>;
+  onSelectMarket: () => void;
+  stocksExpanded: boolean;
 }
 
-interface MarketOption {
-  type: MarketType;
+interface StockSubset {
   label: string;
   description: string;
-  subsets?: { label: string; description: string }[];
+  count: string;
 }
 
-const MARKET_OPTIONS: MarketOption[] = [
-  {
-    type: 'stocks',
-    label: 'Stocks',
-    description: 'S&P 500, NASDAQ-100, and major US equities',
-    subsets: [
-      { label: 'S&P 500', description: '500 large-cap companies' },
-      { label: 'NASDAQ-100', description: 'Top tech & growth stocks' },
-    ],
-  },
-  {
-    type: 'crypto',
-    label: 'Crypto',
-    description: 'Top 100 cryptocurrencies by market cap',
-  },
-  {
-    type: 'forex',
-    label: 'Forex',
-    description: 'Major, minor, and exotic currency pairs',
-  },
-  {
-    type: 'commodities',
-    label: 'Commodities',
-    description: 'Precious metals, energy, and agriculture ETFs',
-  },
-  {
-    type: 'indices',
-    label: 'Indices & Sectors',
-    description: 'Global indices and S&P 500 sector ETFs',
-  },
+const STOCK_SUBSETS: StockSubset[] = [
+  { label: 'S&P 500', description: 'Large-cap US equities', count: '500' },
+  { label: 'NASDAQ-100', description: 'Top tech & growth stocks', count: '100' },
+  { label: 'Russell 2000', description: 'Small-cap stocks (via IWM)', count: 'ETF' },
 ];
 
 export const BrowseMarketModal = ({
   open,
   onOpenChange,
   onSelectMarket,
-  loadState,
+  stocksExpanded,
 }: BrowseMarketModalProps) => {
-  const [selectedTab, setSelectedTab] = useState<'markets' | 'sectors'>('markets');
-
-  const handleSelectMarket = (type: MarketType) => {
-    onSelectMarket(type);
-    onOpenChange(false);
-  };
+  const stockCount = getFullMarketCount('stocks');
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl max-h-[80vh]">
+      <DialogContent className="max-w-lg max-h-[80vh]">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <Globe className="w-5 h-5 text-primary" />
-            Browse Full Market Coverage
+            <BarChart3 className="w-5 h-5 text-primary" />
+            Browse Full Stock Universe
           </DialogTitle>
           <DialogDescription>
-            Expand your view to analyze complete market universes. Select a market to load all available tickers.
+            Expand your view to analyze the complete stock universe. Other markets (crypto, forex, commodities, indices) already show full visibility.
           </DialogDescription>
         </DialogHeader>
 
-        <Tabs value={selectedTab} onValueChange={(v) => setSelectedTab(v as 'markets' | 'sectors')}>
-          <TabsList className="grid w-full grid-cols-2">
-            <TabsTrigger value="markets">Markets</TabsTrigger>
-            <TabsTrigger value="sectors">S&P 500 Sectors</TabsTrigger>
-          </TabsList>
-
-          <TabsContent value="markets" className="mt-4">
-            <ScrollArea className="h-[400px] pr-4">
-              <div className="space-y-3">
-                {MARKET_OPTIONS.map((option) => {
-                  const isExpanded = loadState[option.type] === 'full';
-                  const count = getFullMarketCount(option.type);
-                  
-                  return (
-                    <button
-                      key={option.type}
-                      onClick={() => handleSelectMarket(option.type)}
-                      className="w-full text-left p-4 rounded-lg border border-border/50 hover:border-primary/50 hover:bg-muted/30 transition-all group"
-                    >
-                      <div className="flex items-center justify-between">
-                        <div className="space-y-1">
-                          <div className="flex items-center gap-2">
-                            <span className="font-medium text-foreground">
-                              {option.label}
-                            </span>
-                            <Badge variant="secondary" className="text-xs">
-                              {count} tickers
-                            </Badge>
-                            {isExpanded && (
-                              <Badge variant="default" className="text-xs bg-primary/20 text-primary border-primary/30">
-                                Loaded
-                              </Badge>
-                            )}
-                          </div>
-                          <p className="text-sm text-muted-foreground">
-                            {option.description}
-                          </p>
-                        </div>
-                        <ChevronRight className="w-5 h-5 text-muted-foreground group-hover:text-primary transition-colors" />
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            </ScrollArea>
-          </TabsContent>
-
-          <TabsContent value="sectors" className="mt-4">
-            <div className="mb-4 p-3 rounded-lg bg-muted/30 border border-border/50">
-              <p className="text-sm text-muted-foreground">
-                <TrendingUp className="w-4 h-4 inline mr-1.5 text-primary" />
-                S&P 500 sector ETFs provide macro context for individual stocks. 
-                They are included in the Indices tab for sector rotation analysis.
-              </p>
-            </div>
-            
-            <ScrollArea className="h-[340px] pr-4">
-              <div className="grid grid-cols-2 gap-2">
-                {SECTOR_ETFS.map((etf) => (
-                  <div
-                    key={etf.symbol}
-                    className="p-3 rounded-lg border border-border/50 hover:border-primary/30 transition-colors"
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="font-mono font-medium text-foreground">
-                        {etf.symbol}
-                      </span>
-                      <Badge variant="outline" className="text-xs">
-                        Sector ETF
+        <ScrollArea className="max-h-[400px] pr-4">
+          <div className="space-y-4">
+            {/* Main expand action */}
+            <div className="p-4 rounded-lg border border-primary/30 bg-primary/5">
+              <div className="flex items-center justify-between mb-3">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium text-foreground">
+                      All Stocks
+                    </span>
+                    <Badge variant="secondary" className="text-xs">
+                      {stockCount} tickers
+                    </Badge>
+                    {stocksExpanded && (
+                      <Badge variant="default" className="text-xs bg-primary/20 text-primary border-primary/30">
+                        Loaded
                       </Badge>
-                    </div>
-                    <p className="text-xs text-muted-foreground mt-1 truncate">
-                      {etf.sectorName}
-                    </p>
+                    )}
                   </div>
-                ))}
+                  <p className="text-sm text-muted-foreground mt-1">
+                    S&P 500, NASDAQ-100, and major US equities
+                  </p>
+                </div>
               </div>
-            </ScrollArea>
-            
-            <div className="mt-4">
+              
               <Button
-                onClick={() => handleSelectMarket('indices')}
+                onClick={onSelectMarket}
+                disabled={stocksExpanded}
                 className="w-full"
-                variant="outline"
               >
-                Load All Indices & Sectors
+                {stocksExpanded ? 'Already Expanded' : 'Load Full Stock Universe'}
                 <ChevronRight className="w-4 h-4 ml-2" />
               </Button>
             </div>
-          </TabsContent>
-        </Tabs>
+
+            {/* Stock subsets info */}
+            <div className="space-y-2">
+              <p className="text-xs text-muted-foreground uppercase tracking-wider font-medium">
+                Included Universes
+              </p>
+              {STOCK_SUBSETS.map((subset) => (
+                <div
+                  key={subset.label}
+                  className="p-3 rounded-lg border border-border/50 bg-muted/20"
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="font-medium text-foreground text-sm">
+                      {subset.label}
+                    </span>
+                    <Badge variant="outline" className="text-xs">
+                      {subset.count}
+                    </Badge>
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    {subset.description}
+                  </p>
+                </div>
+              ))}
+            </div>
+
+            {/* Sector ETFs reference */}
+            <div className="pt-4 border-t border-border/50">
+              <div className="flex items-center gap-2 mb-3">
+                <TrendingUp className="w-4 h-4 text-primary" />
+                <p className="text-sm font-medium text-foreground">
+                  S&P 500 Sector ETFs
+                </p>
+              </div>
+              <p className="text-xs text-muted-foreground mb-3">
+                Sector ETFs are available in the Indices & Sectors tab with full visibility. Use them for macro context and rotation analysis.
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {SECTOR_ETFS.slice(0, 6).map((etf) => (
+                  <Badge key={etf.symbol} variant="outline" className="text-xs">
+                    {etf.symbol}
+                  </Badge>
+                ))}
+                <Badge variant="outline" className="text-xs text-muted-foreground">
+                  +{SECTOR_ETFS.length - 6} more
+                </Badge>
+              </div>
+            </div>
+          </div>
+        </ScrollArea>
       </DialogContent>
     </Dialog>
   );

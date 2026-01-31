@@ -27,7 +27,6 @@ import {
   getTickersByType,
   getSnapshotTickers,
   getFullMarketCount,
-  SNAPSHOT_SIZE,
   searchTickers,
 } from '@/lib/market';
 import { MarketType, BiasDirection, EfficiencyVerdict, TickerInfo } from '@/lib/market/types';
@@ -35,9 +34,7 @@ import { analyzeMarket } from '@/lib/market/analysisEngine';
 import { clearMarketDataCache } from '@/lib/market/dataGenerator';
 import { fetchBatchPrices, clearBatchPriceCache, PriceData } from '@/lib/market/batchPriceService';
 
-type LoadState = Record<MarketType, 'snapshot' | 'full'>;
-
-// Tier-based default ticker counts
+// Tier-based default ticker counts (only applies to stocks)
 const TIER_DENSITY_DEFAULTS: Record<number, number> = {
   1: 10,  // Observer
   2: 20,  // Analyst
@@ -60,6 +57,14 @@ const getInitialDensity = (tier: number = 1): number => {
   return TIER_DENSITY_DEFAULTS[tier] || 20;
 };
 
+// Markets that show full list by default (small universes)
+const FULL_VISIBILITY_MARKETS: MarketType[] = ['crypto', 'forex', 'commodities', 'indices'];
+
+// Check if a market should show full visibility
+const isFullVisibilityMarket = (market: MarketType): boolean => {
+  return FULL_VISIBILITY_MARKETS.includes(market);
+};
+
 export const MarketScanner = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
@@ -75,20 +80,12 @@ export const MarketScanner = () => {
   const [realPrices, setRealPrices] = useState<Record<string, PriceData>>({});
   const [tickerDensity, setTickerDensity] = useState(() => getInitialDensity(userTier));
   const [browseModalOpen, setBrowseModalOpen] = useState(false);
+  const [stocksExpanded, setStocksExpanded] = useState(false);
   
   // Search state
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<TickerInfo[]>([]);
   const [showSearchResults, setShowSearchResults] = useState(false);
-  
-  // Track which markets are expanded vs snapshot
-  const [loadState, setLoadState] = useState<LoadState>({
-    stocks: 'snapshot',
-    crypto: 'snapshot',
-    forex: 'snapshot',
-    commodities: 'snapshot',
-    indices: 'snapshot',
-  });
   
   // Persist density preference
   const handleDensityChange = useCallback((value: string) => {
@@ -127,24 +124,28 @@ export const MarketScanner = () => {
     setShowSearchResults(false);
   }, []);
 
-  // Get tickers based on load state
+  // Get tickers for a market based on visibility rules
   const getTickersForMarket = useCallback((type: MarketType): TickerInfo[] => {
-    return loadState[type] === 'full' 
-      ? getTickersByType(type)
-      : getSnapshotTickers(type);
-  }, [loadState]);
+    // Full visibility markets always show all tickers
+    if (isFullVisibilityMarket(type)) {
+      return getTickersByType(type);
+    }
+    
+    // Stocks: show snapshot unless expanded
+    return stocksExpanded ? getTickersByType(type) : getSnapshotTickers(type);
+  }, [stocksExpanded]);
 
-  // Get all visible tickers based on selection and load state
+  // Get all visible tickers based on selection
   const visibleTickers = useMemo(() => {
     if (selectedMarket === 'all') {
-      // Show snapshots from all markets
+      // Show snapshots from stocks, full from other markets
       const allMarkets: MarketType[] = ['stocks', 'crypto', 'forex', 'commodities', 'indices'];
       return allMarkets.flatMap(type => getTickersForMarket(type));
     }
     return getTickersForMarket(selectedMarket);
-  }, [selectedMarket, loadState, getTickersForMarket]);
+  }, [selectedMarket, stocksExpanded, getTickersForMarket]);
 
-  // Pre-compute analysis for visible tickers only (not all tickers)
+  // Pre-compute analysis for visible tickers only
   const tickerAnalysisMap = useMemo(() => {
     const map = new Map<string, ReturnType<typeof analyzeMarket>>();
     for (const t of visibleTickers) {
@@ -175,10 +176,22 @@ export const MarketScanner = () => {
     return tickers;
   }, [visibleTickers, biasFilter, efficiencyFilter, tickerAnalysisMap]);
 
-  // Apply density limit - only render what user wants to see
+  // Apply density limit ONLY for stocks view
   const displayedTickers = useMemo(() => {
-    return filteredTickers.slice(0, tickerDensity);
-  }, [filteredTickers, tickerDensity]);
+    // If viewing stocks (or all markets), apply density limit
+    if (selectedMarket === 'stocks' || selectedMarket === 'all') {
+      // For 'all', we need to apply density across stock portion only
+      if (selectedMarket === 'all') {
+        const stockTickers = filteredTickers.filter(t => t.type === 'stocks');
+        const otherTickers = filteredTickers.filter(t => t.type !== 'stocks');
+        const limitedStocks = stockTickers.slice(0, tickerDensity);
+        return [...limitedStocks, ...otherTickers];
+      }
+      return filteredTickers.slice(0, tickerDensity);
+    }
+    // Other markets: show all
+    return filteredTickers;
+  }, [filteredTickers, tickerDensity, selectedMarket]);
 
   const handleRefresh = async () => {
     setIsRefreshing(true);
@@ -198,18 +211,39 @@ export const MarketScanner = () => {
     setSearchParams(searchParams);
   };
 
-  const handleLoadFullMarket = useCallback((type: MarketType) => {
-    setLoadState(prev => ({ ...prev, [type]: 'full' }));
-    // Also navigate to that market tab
-    handleMarketChange(type);
+  const handleExpandStocks = useCallback(() => {
+    setStocksExpanded(true);
+    // Navigate to stocks tab when expanding
+    handleMarketChange('stocks');
+    setBrowseModalOpen(false);
   }, []);
 
   // Check if any filters are active
   const hasActiveFilters = biasFilter !== 'all' || efficiencyFilter !== 'all';
+  
+  // Whether to show density control (only for stocks-related views)
+  const showDensityControl = selectedMarket === 'stocks' || selectedMarket === 'all';
+  
+  // Whether to show browse button (only when stocks are in view and not expanded)
+  const showBrowseButton = (selectedMarket === 'stocks' || selectedMarket === 'all') && !stocksExpanded;
+
+  // Dynamic subtitle based on current view
+  const getSubtitle = () => {
+    if (selectedMarket === 'all') {
+      return 'Showing a curated stock snapshot with full visibility across other markets.';
+    }
+    if (selectedMarket === 'stocks') {
+      return stocksExpanded 
+        ? `Viewing full stock universe (${getFullMarketCount('stocks')} tickers). Use density control to manage view.`
+        : 'Showing curated stock snapshot. Browse full market for complete coverage.';
+    }
+    // Full visibility markets
+    return `Viewing all ${MARKET_LABELS[selectedMarket]} (${getFullMarketCount(selectedMarket)} instruments).`;
+  };
 
   return (
     <div className="space-y-6">
-      {/* Header - Clean single row */}
+      {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <div className="flex items-center gap-3">
@@ -219,13 +253,13 @@ export const MarketScanner = () => {
             <DataFreshnessBadge level="live" />
           </div>
           <p className="text-muted-foreground mt-1 text-sm">
-            Showing a curated snapshot across markets. Increase ticker count or browse full coverage for deeper analysis.
+            {getSubtitle()}
           </p>
         </div>
 
         {/* Controls row */}
         <div className="flex items-center gap-2 flex-wrap">
-          {/* Search bar - searches ALL tickers */}
+          {/* Search bar */}
           <div className="relative">
             <div className="relative">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
@@ -273,22 +307,24 @@ export const MarketScanner = () => {
             )}
           </div>
 
-          {/* Tickers per view - THE primary density control */}
-          <Select value={tickerDensity.toString()} onValueChange={handleDensityChange}>
-            <SelectTrigger className="w-[130px] border-border/50">
-              <Layers className="w-4 h-4 mr-2 text-muted-foreground" />
-              <SelectValue placeholder="Per view" />
-            </SelectTrigger>
-            <SelectContent>
-              {DENSITY_OPTIONS.map((count) => (
-                <SelectItem key={count} value={count.toString()}>
-                  {count} tickers
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          {/* Tickers per view - ONLY for stocks views */}
+          {showDensityControl && (
+            <Select value={tickerDensity.toString()} onValueChange={handleDensityChange}>
+              <SelectTrigger className="w-[130px] border-border/50">
+                <Layers className="w-4 h-4 mr-2 text-muted-foreground" />
+                <SelectValue placeholder="Per view" />
+              </SelectTrigger>
+              <SelectContent>
+                {DENSITY_OPTIONS.map((count) => (
+                  <SelectItem key={count} value={count.toString()}>
+                    {count} tickers
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
 
-          {/* Filters - collapsed by default */}
+          {/* Filters */}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button 
@@ -384,7 +420,7 @@ export const MarketScanner = () => {
         </div>
       </div>
 
-      {/* Market tabs - SINGLE SOURCE OF TRUTH for market selection */}
+      {/* Market tabs */}
       <div className="flex items-center justify-between gap-4">
         <Tabs value={selectedMarket} onValueChange={handleMarketChange} className="flex-1">
           <div className="overflow-x-auto pb-2 -mb-2">
@@ -405,26 +441,30 @@ export const MarketScanner = () => {
           </div>
         </Tabs>
 
-        {/* Browse Full Market - secondary action */}
+        {/* Browse Full Market - only for stocks */}
+        {showBrowseButton && (
+          <Button
+            variant="outline"
+            onClick={() => setBrowseModalOpen(true)}
+            className="border-border/50 shrink-0 hidden sm:flex"
+          >
+            <Globe className="w-4 h-4 mr-2" />
+            Browse Full Stocks
+          </Button>
+        )}
+      </div>
+
+      {/* Mobile browse button - only for stocks */}
+      {showBrowseButton && (
         <Button
           variant="outline"
           onClick={() => setBrowseModalOpen(true)}
-          className="border-border/50 shrink-0 hidden sm:flex"
+          className="w-full border-border/50 sm:hidden"
         >
           <Globe className="w-4 h-4 mr-2" />
-          Browse Full Market
+          Browse Full Stock Universe
         </Button>
-      </div>
-
-      {/* Mobile browse button */}
-      <Button
-        variant="outline"
-        onClick={() => setBrowseModalOpen(true)}
-        className="w-full border-border/50 sm:hidden"
-      >
-        <Globe className="w-4 h-4 mr-2" />
-        Browse Full Market Coverage
-      </Button>
+      )}
 
       {/* Ticker grid */}
       <div
@@ -449,12 +489,12 @@ export const MarketScanner = () => {
         </div>
       )}
 
-      {/* Browse Market Modal */}
+      {/* Browse Market Modal - focused on stocks */}
       <BrowseMarketModal
         open={browseModalOpen}
         onOpenChange={setBrowseModalOpen}
-        onSelectMarket={handleLoadFullMarket}
-        loadState={loadState}
+        onSelectMarket={handleExpandStocks}
+        stocksExpanded={stocksExpanded}
       />
     </div>
   );
