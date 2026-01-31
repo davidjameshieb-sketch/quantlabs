@@ -15,6 +15,7 @@ import {
   getConditionColor,
   formatOutcomeSummary 
 } from '@/lib/market/backtestEngine';
+import { DataFreshnessBadge } from './DataFreshnessBadge';
 import { cn } from '@/lib/utils';
 
 interface HistoricalOutcomesPanelProps {
@@ -63,7 +64,7 @@ export const HistoricalOutcomesPanel = ({ ticker, className }: HistoricalOutcome
   return (
     <Card className={cn('border-border/50 bg-card/50', className)}>
       <CardHeader className="pb-4">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between flex-wrap gap-2">
           <div className="flex items-center gap-2">
             <History className="w-5 h-5 text-primary" />
             <CardTitle className="font-display text-lg">Historical Condition Outcomes</CardTitle>
@@ -76,9 +77,12 @@ export const HistoricalOutcomesPanel = ({ ticker, className }: HistoricalOutcome
               </TooltipContent>
             </Tooltip>
           </div>
-          <Badge variant="outline" className="text-xs">
-            {outcomes.sampleDepth} bars analyzed
-          </Badge>
+          <div className="flex items-center gap-2">
+            <DataFreshnessBadge level="historical" showTooltip={true} />
+            <Badge variant="outline" className="text-xs">
+              {outcomes.sampleDepth} bars analyzed
+            </Badge>
+          </div>
         </div>
       </CardHeader>
       

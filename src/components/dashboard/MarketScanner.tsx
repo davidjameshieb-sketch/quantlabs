@@ -13,6 +13,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { TickerCard } from './TickerCard';
+import { DataFreshnessBadge } from './DataFreshnessBadge';
 import { TICKERS, MARKET_LABELS, getTickersByType } from '@/lib/market';
 import { MarketType, BiasDirection, EfficiencyVerdict } from '@/lib/market/types';
 import { analyzeMarket } from '@/lib/market/analysisEngine';
@@ -72,11 +73,14 @@ export const MarketScanner = () => {
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="font-display text-2xl md:text-3xl font-bold text-gradient-neural">
-            Market Scanner
-          </h1>
+          <div className="flex items-center gap-3 flex-wrap">
+            <h1 className="font-display text-2xl md:text-3xl font-bold text-gradient-neural">
+              Market Scanner
+            </h1>
+            <DataFreshnessBadge level="nightly" />
+          </div>
           <p className="text-muted-foreground mt-1">
-            Real-time neural analysis across all markets
+            Structure analysis across all markets
           </p>
         </div>
 

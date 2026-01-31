@@ -6,6 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { TICKERS, analyzeMarket } from '@/lib/market';
+import { DataFreshnessInline } from './DataFreshnessBadge';
 import { cn } from '@/lib/utils';
 import type { AnalysisResult, StrategyState } from '@/lib/market/types';
 
@@ -96,7 +97,10 @@ export const ConvictionViews = ({ selectedView = 'all', limit = 5 }: ConvictionV
                   {results.length} found
                 </Badge>
               </div>
-              <p className="text-xs text-muted-foreground">{view.description}</p>
+              <div className="flex items-center justify-between">
+                <p className="text-xs text-muted-foreground">{view.description}</p>
+                <DataFreshnessInline level="nightly" className="ml-2" />
+              </div>
             </CardHeader>
             <CardContent>
               <ScrollArea className="h-[200px]">
