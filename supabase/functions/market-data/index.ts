@@ -32,7 +32,7 @@ interface PolygonResponse {
 // Simple in-memory cache to reduce Polygon requests (best-effort per function instance)
 type CacheEntry = { payload: unknown; timestamp: number };
 const responseCache = new Map<string, CacheEntry>();
-const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const CACHE_TTL_MS = 60 * 1000; // 1 minute cache for faster refresh
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), {

@@ -75,11 +75,11 @@ export const PriceChart = ({
     fetchData();
   }, [fetchData]);
 
-  // Refresh data periodically (every 60 seconds for real data)
+  // Refresh data every 30 seconds for fresher prices
   useEffect(() => {
     const interval = setInterval(() => {
       fetchData();
-    }, 5 * 60 * 1000);
+    }, 30 * 1000);
 
     return () => clearInterval(interval);
   }, [fetchData]);
