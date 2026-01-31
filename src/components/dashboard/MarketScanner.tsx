@@ -28,29 +28,38 @@ export const MarketScanner = () => {
   const [efficiencyFilter, setEfficiencyFilter] = useState<EfficiencyVerdict | 'all'>('all');
   const [isRefreshing, setIsRefreshing] = useState(false);
 
+  // Pre-compute analysis for all tickers once, not per filter check
+  const tickerAnalysisMap = useMemo(() => {
+    const map = new Map<string, ReturnType<typeof analyzeMarket>>();
+    for (const t of TICKERS) {
+      map.set(t.symbol, analyzeMarket(t, '1h'));
+    }
+    return map;
+  }, []);
+
   const filteredTickers = useMemo(() => {
     let tickers = selectedMarket === 'all' 
       ? TICKERS 
       : getTickersByType(selectedMarket as MarketType);
 
-    // Apply bias filter
+    // Apply bias filter using cached analysis
     if (biasFilter !== 'all') {
       tickers = tickers.filter(t => {
-        const analysis = analyzeMarket(t, '1h');
-        return analysis.bias === biasFilter;
+        const analysis = tickerAnalysisMap.get(t.symbol);
+        return analysis?.bias === biasFilter;
       });
     }
 
-    // Apply efficiency filter
+    // Apply efficiency filter using cached analysis
     if (efficiencyFilter !== 'all') {
       tickers = tickers.filter(t => {
-        const analysis = analyzeMarket(t, '1h');
-        return analysis.efficiency.verdict === efficiencyFilter;
+        const analysis = tickerAnalysisMap.get(t.symbol);
+        return analysis?.efficiency.verdict === efficiencyFilter;
       });
     }
 
     return tickers;
-  }, [selectedMarket, biasFilter, efficiencyFilter]);
+  }, [selectedMarket, biasFilter, efficiencyFilter, tickerAnalysisMap]);
 
   const handleRefresh = () => {
     setIsRefreshing(true);
@@ -200,22 +209,18 @@ export const MarketScanner = () => {
         Showing {filteredTickers.length} {filteredTickers.length === 1 ? 'ticker' : 'tickers'}
       </p>
 
-      {/* Ticker grid */}
-      <motion.div
-        key={`${selectedMarket}-${biasFilter}-${efficiencyFilter}`}
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        transition={{ duration: 0.3 }}
+      {/* Ticker grid - no motion wrapper for faster render */}
+      <div
         className={
           viewMode === 'grid'
             ? 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4'
             : 'flex flex-col gap-3'
         }
       >
-        {filteredTickers.map((ticker, index) => (
-          <TickerCard key={ticker.symbol} ticker={ticker} index={index} />
+        {filteredTickers.map((ticker) => (
+          <TickerCard key={ticker.symbol} ticker={ticker} />
         ))}
-      </motion.div>
+      </div>
 
       {filteredTickers.length === 0 && (
         <div className="text-center py-12">
