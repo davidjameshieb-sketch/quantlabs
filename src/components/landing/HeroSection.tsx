@@ -1,6 +1,6 @@
 import { motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
-import { ArrowRight, Brain, Sparkles } from 'lucide-react';
+import { ArrowRight, Brain, Check } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
 export const HeroSection = () => {
@@ -12,15 +12,14 @@ export const HeroSection = () => {
       <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-secondary/10 rounded-full blur-3xl pointer-events-none" />
 
       <div className="container relative z-10 max-w-6xl mx-auto text-center">
-        {/* Badge */}
+        {/* Badge - more prominent */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5 }}
-          className="inline-flex items-center gap-2 px-4 py-2 rounded-full border border-primary/30 bg-primary/5 mb-8"
+          className="inline-flex items-center gap-2 px-4 py-2 rounded-full border border-primary/40 bg-primary/10 mb-8"
         >
-          <Sparkles className="w-4 h-4 text-primary" />
-          <span className="text-sm font-medium text-primary">Glass Box Market Intelligence</span>
+          <span className="text-sm font-medium text-primary">14-Day Free Trial · No Credit Card</span>
         </motion.div>
 
         {/* Main heading */}
@@ -35,76 +34,84 @@ export const HeroSection = () => {
           <span className="text-gradient-neural">Don't Just Follow Signals</span>
         </motion.h1>
 
-        {/* Subtitle */}
+        {/* Subtitle - clearer value */}
         <motion.p
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5, delay: 0.2 }}
-          className="text-lg md:text-xl text-muted-foreground max-w-2xl mx-auto mb-4"
+          className="text-lg md:text-xl text-muted-foreground max-w-2xl mx-auto mb-6"
         >
-          Transparent AI market intelligence across stocks, crypto, forex, and commodities.
-          <br />
-          Plain-English explanations. No black boxes.
+          See <span className="text-foreground">why</span> markets move—not just that they did.
+          <br className="hidden sm:block" />
+          Transparent AI analysis with plain-English explanations.
         </motion.p>
 
-        {/* Credibility anchor */}
-        <motion.p
+        {/* Trust bullets */}
+        <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5, delay: 0.25 }}
-          className="text-sm text-muted-foreground/70 max-w-xl mx-auto mb-10"
+          className="flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-sm text-muted-foreground mb-10"
         >
-          Historical condition outcomes · Market structure analysis · Multi-timeframe context
-        </motion.p>
+          {['Stocks, Crypto, Forex, Commodities', 'Multi-timeframe context', 'No black boxes'].map((item, i) => (
+            <span key={i} className="flex items-center gap-1.5">
+              <Check className="w-3.5 h-3.5 text-primary" />
+              {item}
+            </span>
+          ))}
+        </motion.div>
 
-        {/* CTA buttons */}
+        {/* CTA buttons - primary more prominent */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5, delay: 0.3 }}
-          className="flex flex-col sm:flex-row items-center justify-center gap-4 mb-12"
+          className="flex flex-col sm:flex-row items-center justify-center gap-4 mb-6"
         >
-          <Button asChild size="lg" className="text-base px-7 py-5 font-display bg-primary/90 hover:bg-primary text-primary-foreground">
+          <Button asChild size="lg" className="text-base px-8 py-6 font-display bg-primary hover:bg-primary/90 text-primary-foreground shadow-lg shadow-primary/20">
             <Link to="/auth">
-              Start Free Trial
+              Start Your Free Trial
               <ArrowRight className="ml-2 w-4 h-4" />
             </Link>
           </Button>
-          <Button asChild variant="ghost" size="lg" className="text-base px-7 py-5 text-muted-foreground hover:text-foreground hover:bg-muted/30">
-            <a href="#pricing">View Pricing</a>
+          <Button asChild variant="outline" size="lg" className="text-base px-8 py-6 border-border/50 hover:bg-muted/30 text-muted-foreground hover:text-foreground">
+            <a href="#pricing">View Plans</a>
           </Button>
         </motion.div>
 
-        {/* Audience filter */}
+        {/* Low friction reminder */}
         <motion.p
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           transition={{ duration: 0.5, delay: 0.35 }}
-          className="text-xs text-muted-foreground/50 mb-12"
+          className="text-xs text-muted-foreground/60 mb-14"
         >
-          For traders seeking clarity over noise.
+          Free for 14 days. Cancel anytime. Plans from $20/mo.
         </motion.p>
 
-        {/* Feature highlights */}
+        {/* Feature highlights - what you'll see */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5, delay: 0.4 }}
-          className="grid grid-cols-1 md:grid-cols-3 gap-4 max-w-3xl mx-auto"
+          className="space-y-4"
         >
-          {[
-            { label: 'Efficiency Detection', desc: 'Measures directional clarity vs noise' },
-            { label: 'Structure Analysis', desc: 'Adaptive trend and regime identification' },
-            { label: 'Condition Mapping', desc: 'Transparent reasoning at every step' },
-          ].map((feature, i) => (
-            <div
-              key={i}
-              className="p-4 rounded-lg border border-border/30 bg-card/30 backdrop-blur-sm text-center"
-            >
-              <p className="text-sm font-medium text-foreground/90">{feature.label}</p>
-              <p className="text-xs text-muted-foreground mt-1">{feature.desc}</p>
-            </div>
-          ))}
+          <p className="text-xs uppercase tracking-widest text-muted-foreground/50">What you'll understand</p>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 max-w-3xl mx-auto">
+            {[
+              { label: 'Market Efficiency', desc: 'Is price moving cleanly or chopping?' },
+              { label: 'Structure & Bias', desc: 'The dominant regime right now' },
+              { label: 'Condition Outcomes', desc: 'What happened historically when this occurred?' },
+            ].map((feature, i) => (
+              <div
+                key={i}
+                className="p-4 rounded-lg border border-border/30 bg-card/30 backdrop-blur-sm text-center hover:border-primary/20 transition-colors"
+              >
+                <p className="text-sm font-medium text-foreground">{feature.label}</p>
+                <p className="text-xs text-muted-foreground mt-1">{feature.desc}</p>
+              </div>
+            ))}
+          </div>
         </motion.div>
       </div>
 
