@@ -4,4 +4,6 @@ export * from './tickers';
 export * from './dataGenerator';
 export * from './analysisEngine';
 export * from './sectors';
+export * from './industries';
 export * from './tierAccess';
+export * from './backtestEngine';

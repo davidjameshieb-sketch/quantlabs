@@ -15,7 +15,8 @@ import { Badge } from '@/components/ui/badge';
 import { getTickerBySymbol, TIMEFRAME_LABELS, MARKET_LABELS } from '@/lib/market';
 import { analyzeMultiTimeframe } from '@/lib/market/analysisEngine';
 import { BiasDirection, Timeframe } from '@/lib/market/types';
-import { PriceChart } from './PriceChart';
+import { TradingViewChart } from './TradingViewChart';
+import { HistoricalOutcomesPanel } from './HistoricalOutcomesPanel';
 import { MetricGauge } from './MetricGauge';
 import { NeuralSignalMatrix } from './NeuralSignalMatrix';
 import { EfficiencyInsight } from './EfficiencyInsight';
@@ -101,7 +102,7 @@ export const TickerDetail = () => {
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.3 }}
       >
-        <PriceChart ticker={ticker} height={300} />
+        <TradingViewChart ticker={ticker} height={350} showConditionReplay={true} />
       </motion.div>
 
       {/* Neural Signal Matrix */}
@@ -221,19 +222,7 @@ export const TickerDetail = () => {
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.3, delay: 0.7 }}
       >
-        <Card className="border-border/50 bg-gradient-to-br from-card to-primary/5">
-          <CardHeader className="pb-2">
-            <CardTitle className="font-display text-lg flex items-center gap-2">
-              <BarChart3 className="w-5 h-5 text-primary" />
-              Neural Analysis Summary
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-lg text-foreground leading-relaxed">
-              {primaryAnalysis.narrative}
-            </p>
-          </CardContent>
-        </Card>
+        <HistoricalOutcomesPanel ticker={ticker} />
       </motion.div>
 
       {/* Multi-timeframe analysis */}
