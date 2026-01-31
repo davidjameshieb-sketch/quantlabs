@@ -6,6 +6,7 @@ import { Progress } from '@/components/ui/progress';
 import { Badge } from '@/components/ui/badge';
 import { TICKERS, analyzeMarket } from '@/lib/market';
 import { getAllSectors, getSectorForStock, SECTOR_LABELS, type Sector } from '@/lib/market/sectors';
+import { DataFreshnessBadge } from './DataFreshnessBadge';
 import { cn } from '@/lib/utils';
 
 interface SectorMetrics {
@@ -73,12 +74,15 @@ export const SectorDashboard = () => {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-4">
         <div>
-          <h2 className="font-display text-xl font-bold text-foreground flex items-center gap-2">
-            <BarChart3 className="w-5 h-5 text-primary" />
-            Sector Analysis
-          </h2>
+          <div className="flex items-center gap-3 flex-wrap">
+            <h2 className="font-display text-xl font-bold text-foreground flex items-center gap-2">
+              <BarChart3 className="w-5 h-5 text-primary" />
+              Sector Analysis
+            </h2>
+            <DataFreshnessBadge level="nightly" />
+          </div>
           <p className="text-sm text-muted-foreground mt-1">
             Market structure and efficiency by sector
           </p>

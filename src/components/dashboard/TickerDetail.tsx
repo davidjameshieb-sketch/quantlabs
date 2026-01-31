@@ -23,6 +23,7 @@ import { EfficiencyInsight } from './EfficiencyInsight';
 import { ConfidenceInsight } from './ConfidenceInsight';
 import { StrategyInsight } from './StrategyInsight';
 import { TrendCoreVisual } from './TrendCoreVisual';
+import { DataFreshnessBadge } from './DataFreshnessBadge';
 import { cn } from '@/lib/utils';
 
 const biasColors: Record<BiasDirection, string> = {
@@ -80,13 +81,14 @@ export const TickerDetail = () => {
           </Link>
         </Button>
         <div className="flex-1">
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 flex-wrap">
             <h1 className="font-display text-2xl md:text-3xl font-bold text-foreground">
               {ticker.symbol}
             </h1>
             <Badge variant="outline" className="text-xs">
               {MARKET_LABELS[ticker.type]}
             </Badge>
+            <DataFreshnessBadge level="nightly" />
             <div className={cn('flex items-center gap-1 ml-auto', biasColors[primaryAnalysis.bias])}>
               <BiasIcon className="w-5 h-5" />
               <span className="text-sm font-bold uppercase">{primaryAnalysis.bias}</span>
