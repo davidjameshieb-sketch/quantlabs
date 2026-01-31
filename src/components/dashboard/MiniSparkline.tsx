@@ -30,8 +30,8 @@ export const MiniSparkline = ({ ticker, height = 50, className }: MiniSparklineP
 
   useEffect(() => {
     fetchRealData();
-    // Refresh every 2 minutes
-    const interval = setInterval(fetchRealData, 120000);
+    // Free-tier market data is not real-time and is rate-limited; refresh less frequently.
+    const interval = setInterval(fetchRealData, 10 * 60 * 1000);
     return () => clearInterval(interval);
   }, [fetchRealData]);
 

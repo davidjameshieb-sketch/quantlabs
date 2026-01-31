@@ -12,7 +12,24 @@ interface MarketDataResponse {
 
 // Cache for API data to reduce calls
 const apiDataCache = new Map<string, { data: OHLC[]; timestamp: number }>();
-const CACHE_TTL = 60 * 1000; // 1 minute cache
+// Polygon free tier is heavily rate-limited; use a longer TTL to avoid falling back to simulated data.
+const CACHE_TTL = 10 * 60 * 1000; // 10 minutes
+
+// Coalesce identical in-flight requests
+const inFlight = new Map<string, Promise<OHLC[]>>();
+
+// Global throttle: at most 1 request every 12 seconds (~5/min)
+let nextAllowedRequestAt = 0;
+const MIN_REQUEST_GAP_MS = 12_000;
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+const throttle = async () => {
+  const now = Date.now();
+  const wait = Math.max(0, nextAllowedRequestAt - now);
+  if (wait > 0) await sleep(wait);
+  nextAllowedRequestAt = Date.now() + MIN_REQUEST_GAP_MS;
+};
 
 /**
  * Fetches real market data from the Polygon.io API via edge function
@@ -30,47 +47,58 @@ export const fetchRealMarketData = async (
     return cached.data;
   }
 
-  try {
-    const { data, error } = await supabase.functions.invoke('market-data', {
-      body: null,
-      method: 'GET',
-    });
+  // If we already have a request in-flight for this key, reuse it.
+  const existing = inFlight.get(cacheKey);
+  if (existing) return existing;
 
-    // Use query params approach via direct fetch for GET requests
-    const response = await fetch(
-      `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/market-data?symbol=${ticker.symbol}&timeframe=${timeframe}&limit=${barCount}`,
-      {
+  const requestPromise = (async () => {
+    try {
+      // Throttle before making any network call.
+      await throttle();
+
+      // Prefer the official client invoke API (handles auth headers automatically)
+      const { data, error } = await supabase.functions.invoke('market-data', {
         method: 'GET',
-        headers: {
-          'Content-Type': 'application/json',
-          'apikey': import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
+        // @ts-expect-error - supabase-js supports queryParams for functions.invoke
+        queryParams: {
+          symbol: ticker.symbol,
+          timeframe,
+          limit: String(barCount),
         },
+      });
+
+      if (error) {
+        throw new Error(error.message || 'Failed to fetch market data');
       }
-    );
 
-    if (!response.ok) {
-      throw new Error(`API returned ${response.status}`);
+      const result = data as MarketDataResponse;
+
+      if (result?.error) {
+        throw new Error(result.error);
+      }
+
+      if (result?.data && result.data.length > 0) {
+        apiDataCache.set(cacheKey, { data: result.data, timestamp: Date.now() });
+        return result.data;
+      }
+
+      throw new Error('No data returned');
+    } catch (err) {
+      // Prefer stale real data over simulated data.
+      const stale = apiDataCache.get(cacheKey);
+      if (stale) {
+        return stale.data;
+      }
+
+      console.warn(`Falling back to simulated data for ${ticker.symbol}:`, err);
+      return generateOHLCData(ticker, timeframe, barCount);
+    } finally {
+      inFlight.delete(cacheKey);
     }
+  })();
 
-    const result: MarketDataResponse = await response.json();
-    
-    if (result.error) {
-      console.warn(`Market data error for ${ticker.symbol}:`, result.error);
-      throw new Error(result.error);
-    }
-
-    if (result.data && result.data.length > 0) {
-      // Cache the successful result
-      apiDataCache.set(cacheKey, { data: result.data, timestamp: Date.now() });
-      return result.data;
-    }
-
-    throw new Error('No data returned');
-  } catch (error) {
-    console.warn(`Falling back to simulated data for ${ticker.symbol}:`, error);
-    // Fall back to generated data if API fails
-    return generateOHLCData(ticker, timeframe, barCount);
-  }
+  inFlight.set(cacheKey, requestPromise);
+  return requestPromise;
 };
 
 /**

@@ -2,7 +2,7 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version',
 };
 
 interface PolygonAggregateResult {
@@ -28,6 +28,17 @@ interface PolygonResponse {
   error?: string;
   message?: string;
 }
+
+// Simple in-memory cache to reduce Polygon requests (best-effort per function instance)
+type CacheEntry = { payload: unknown; timestamp: number };
+const responseCache = new Map<string, CacheEntry>();
+const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
+const json = (body: unknown, status = 200) =>
+  new Response(JSON.stringify(body), {
+    status,
+    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+  });
 
 // Map our symbols to Polygon tickers
 const symbolMapping: Record<string, string> = {
@@ -87,10 +98,7 @@ serve(async (req) => {
     const limit = parseInt(url.searchParams.get('limit') || '100');
 
     if (!symbol) {
-      return new Response(
-        JSON.stringify({ error: 'Symbol parameter is required' }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+      return json({ error: 'Symbol parameter is required' }, 400);
     }
 
     const polygonTicker = symbolMapping[symbol] || symbol;
@@ -116,19 +124,39 @@ serve(async (req) => {
 
     const polygonUrl = `https://api.polygon.io/v2/aggs/ticker/${polygonTicker}/range/${tf.multiplier}/${tf.timespan}/${fromStr}/${toStr}?adjusted=true&sort=asc&limit=${limit}&apiKey=${POLYGON_API_KEY}`;
 
+    // Serve from cache if fresh
+    const cacheKey = `${polygonTicker}:${timeframe}:${fromStr}:${toStr}:${limit}`;
+    const cached = responseCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+      return json({ ...(cached.payload as Record<string, unknown>), cache: 'hit' });
+    }
+
     const response = await fetch(polygonUrl);
     const data: PolygonResponse = await response.json();
 
     if (!response.ok || data.status === 'ERROR' || data.status === 'NOT_AUTHORIZED') {
       console.error('Polygon API error:', data);
-      return new Response(
-        JSON.stringify({ 
-          error: data.message || data.error || 'Failed to fetch market data',
+
+      // If rate limited, prefer returning last cached payload (even if stale) rather than failing.
+      const errMsg = data.message || data.error || 'Failed to fetch market data';
+      const isRateLimit = /maximum requests per minute/i.test(errMsg);
+      if (isRateLimit && cached) {
+        return json({ ...(cached.payload as Record<string, unknown>), cache: 'stale', note: 'Cached data returned due to rate limit' });
+      }
+
+      return json(
+        {
+          error: errMsg,
           symbol,
           polygonTicker,
-          note: data.status === 'NOT_AUTHORIZED' ? 'Upgrade Polygon plan for intraday data' : undefined
-        }),
-        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          note:
+            data.status === 'NOT_AUTHORIZED'
+              ? 'Upgrade Polygon plan for intraday data'
+              : isRateLimit
+                ? 'Rate limited by data provider'
+                : undefined,
+        },
+        isRateLimit ? 429 : 500
       );
     }
 
@@ -144,23 +172,22 @@ serve(async (req) => {
 
     console.log(`Returning ${ohlcData.length} bars for ${symbol} (requested ${originalTimeframe}, served ${timeframe})`);
 
-    return new Response(
-      JSON.stringify({
-        symbol,
-        timeframe: originalTimeframe,
-        actualTimeframe: timeframe,
-        count: ohlcData.length,
-        data: ohlcData,
-        note: originalTimeframe !== timeframe ? 'Daily data returned (intraday requires paid Polygon plan)' : undefined
-      }),
-      { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    );
+    const payload = {
+      symbol,
+      timeframe: originalTimeframe,
+      actualTimeframe: timeframe,
+      count: ohlcData.length,
+      data: ohlcData,
+      note: originalTimeframe !== timeframe ? 'Daily data returned (intraday requires paid Polygon plan)' : undefined,
+      cache: 'miss',
+    };
+
+    responseCache.set(cacheKey, { payload, timestamp: Date.now() });
+
+    return json(payload);
 
   } catch (error) {
     console.error('Market data error:', error);
-    return new Response(
-      JSON.stringify({ error: error instanceof Error ? error.message : 'Unknown error' }),
-      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    );
+    return json({ error: error instanceof Error ? error.message : 'Unknown error' }, 500);
   }
 });
