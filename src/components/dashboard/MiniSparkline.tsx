@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { memo, useMemo } from 'react';
 import { TickerInfo, OHLC } from '@/lib/market/types';
 import { getMarketData } from '@/lib/market/dataGenerator';
 import { cn } from '@/lib/utils';
@@ -9,11 +9,10 @@ interface MiniSparklineProps {
   className?: string;
 }
 
-export const MiniSparkline = ({ ticker, height = 50, className }: MiniSparklineProps) => {
+export const MiniSparkline = memo(({ ticker, height = 50, className }: MiniSparklineProps) => {
   // Use simulated data for sparklines to avoid exhausting API rate limits
   // Real API data is reserved for the main TradingViewChart when viewing a specific ticker
   const liveData = useMemo(() => getMarketData(ticker, '15m', 32), [ticker]);
-
   // Calculate chart bounds and scale
   const { minPrice, maxPrice, priceRange } = useMemo(() => {
     if (liveData.length === 0) return { minPrice: 0, maxPrice: 0, priceRange: 1 };
@@ -204,38 +203,16 @@ export const MiniSparkline = ({ ticker, height = 50, className }: MiniSparklineP
           vectorEffect="non-scaling-stroke"
         />
         
-        {/* Current price dot */}
+        {/* Current price dot - static to avoid constant repaints */}
         {liveData.length > 0 && (
           <circle
             cx={100}
             cy={100 - ((liveData[liveData.length - 1].close - minPrice) / priceRange) * 100}
             r="2"
             fill={trendColor}
-            className="animate-pulse"
-          >
-            <animate
-              attributeName="r"
-              values="1.5;2.5;1.5"
-              dur="2s"
-              repeatCount="indefinite"
-            />
-            <animate
-              attributeName="opacity"
-              values="1;0.6;1"
-              dur="2s"
-              repeatCount="indefinite"
-            />
-          </circle>
+          />
         )}
       </svg>
-      
-      {/* Shimmer overlay on hover */}
-      <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500 pointer-events-none" 
-        style={{ 
-          transform: 'translateX(-100%)',
-          animation: 'shimmer 2s infinite',
-        }} 
-      />
     </div>
   );
-};
+});
