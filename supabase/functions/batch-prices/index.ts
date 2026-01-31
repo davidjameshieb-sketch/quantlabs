@@ -42,7 +42,31 @@ const symbolConfig: Record<string, SymbolConfig> = {
   'V': { polygon: 'V', source: 'NYSE', minPrice: 100, maxPrice: 500 },
   'UNH': { polygon: 'UNH', source: 'NYSE', minPrice: 200, maxPrice: 800 },
   
-  // ========== INDICES (via ETFs - clearly labeled) ==========
+  // ========== INDICES & SECTOR ETFs ==========
+  // Market Indices (direct ETFs)
+  'SPY': { polygon: 'SPY', source: 'S&P 500 ETF', minPrice: 200, maxPrice: 800 },
+  'QQQ': { polygon: 'QQQ', source: 'NASDAQ-100 ETF', minPrice: 200, maxPrice: 700 },
+  'DIA': { polygon: 'DIA', source: 'Dow Jones ETF', minPrice: 200, maxPrice: 600 },
+  'IWM': { polygon: 'IWM', source: 'Russell 2000 ETF', minPrice: 100, maxPrice: 400 },
+  'VIX': { polygon: 'VIXY', source: 'VIX ETF Proxy', minPrice: 5, maxPrice: 200 },
+  'EFA': { polygon: 'EFA', source: 'MSCI EAFE ETF', minPrice: 50, maxPrice: 150 },
+  'EEM': { polygon: 'EEM', source: 'Emerging Markets ETF', minPrice: 20, maxPrice: 80 },
+  'VEA': { polygon: 'VEA', source: 'Developed Markets ETF', minPrice: 30, maxPrice: 80 },
+  
+  // S&P 500 Sector ETFs (SPDR Select Sector series)
+  'XLB': { polygon: 'XLB', source: 'Materials Sector ETF', minPrice: 50, maxPrice: 150 },
+  'XLE': { polygon: 'XLE', source: 'Energy Sector ETF', minPrice: 50, maxPrice: 150 },
+  'XLF': { polygon: 'XLF', source: 'Financials Sector ETF', minPrice: 20, maxPrice: 80 },
+  'XLI': { polygon: 'XLI', source: 'Industrials Sector ETF', minPrice: 80, maxPrice: 200 },
+  'XLK': { polygon: 'XLK', source: 'Technology Sector ETF', minPrice: 100, maxPrice: 350 },
+  'XLP': { polygon: 'XLP', source: 'Consumer Staples ETF', minPrice: 50, maxPrice: 120 },
+  'XLU': { polygon: 'XLU', source: 'Utilities Sector ETF', minPrice: 40, maxPrice: 100 },
+  'XLV': { polygon: 'XLV', source: 'Health Care Sector ETF', minPrice: 100, maxPrice: 200 },
+  'XLY': { polygon: 'XLY', source: 'Consumer Disc. ETF', minPrice: 100, maxPrice: 300 },
+  'XLRE': { polygon: 'XLRE', source: 'Real Estate ETF', minPrice: 25, maxPrice: 70 },
+  'XLC': { polygon: 'XLC', source: 'Comm. Services ETF', minPrice: 40, maxPrice: 120 },
+  
+  // Legacy index mappings (for backward compatibility)
   'SPX500': { polygon: 'SPY', source: 'SPY ETF Proxy', minPrice: 200, maxPrice: 800 },
   'SPX': { polygon: 'SPY', source: 'SPY ETF Proxy', minPrice: 200, maxPrice: 800 },
   'NASDAQ': { polygon: 'QQQ', source: 'QQQ ETF Proxy', minPrice: 200, maxPrice: 700 },
@@ -50,6 +74,8 @@ const symbolConfig: Record<string, SymbolConfig> = {
   'DJI': { polygon: 'DIA', source: 'DIA ETF Proxy', minPrice: 200, maxPrice: 600 },
   'DAX': { polygon: 'EWG', source: 'EWG ETF Proxy', minPrice: 10, maxPrice: 100 },
   'FTSE': { polygon: 'EWU', source: 'EWU ETF Proxy', minPrice: 10, maxPrice: 100 },
+  'RUT': { polygon: 'IWM', source: 'IWM ETF Proxy', minPrice: 100, maxPrice: 400 },
+  'RUSSELL': { polygon: 'IWM', source: 'IWM ETF Proxy', minPrice: 100, maxPrice: 400 },
   
   // ========== CRYPTO (Polygon X: prefix, 24/7 trading) ==========
   'BTCUSD': { polygon: 'X:BTCUSD', source: 'Polygon Crypto', minPrice: 10000, maxPrice: 500000 },
@@ -95,10 +121,6 @@ const symbolConfig: Record<string, SymbolConfig> = {
   'JO': { polygon: 'JO', source: 'iPath Coffee', minPrice: 20, maxPrice: 100 },
   'CANE': { polygon: 'CANE', source: 'Sugar Fund', minPrice: 5, maxPrice: 20 },
   'BAL': { polygon: 'BAL', source: 'iPath Cotton', minPrice: 30, maxPrice: 100 },
-  
-  // ========== INDICES (via ETFs) ==========
-  'VIX': { polygon: 'VIXY', source: 'VIXY ETF', minPrice: 5, maxPrice: 200 },
-  'RUT': { polygon: 'IWM', source: 'IWM ETF', minPrice: 100, maxPrice: 400 },
 };
 
 const json = (body: unknown, status = 200) =>

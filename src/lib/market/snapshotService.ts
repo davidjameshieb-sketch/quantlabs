@@ -14,7 +14,7 @@ const SNAPSHOT_SYMBOLS: Record<MarketType, string[]> = {
   crypto: ['BTCUSD', 'ETHUSD', 'BNBUSD', 'SOLUSD', 'XRPUSD'],
   forex: ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'AUDUSD'],
   commodities: ['GLD', 'SLV', 'USO', 'UNG', 'WEAT'],
-  indices: ['SPX', 'NDX', 'DJI', 'VIX', 'RUT'],
+  indices: ['SPY', 'QQQ', 'XLK', 'XLF', 'IWM'],
 };
 
 // Full market labels for "Load Full" CTAs
