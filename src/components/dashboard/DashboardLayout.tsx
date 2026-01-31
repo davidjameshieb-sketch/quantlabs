@@ -11,7 +11,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet';
-import { TICKERS, MARKET_LABELS, getTickerCounts } from '@/lib/market';
+import { TICKERS, MARKET_LABELS } from '@/lib/market';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/contexts/AuthContext';
 
@@ -80,7 +80,6 @@ export const DashboardLayout = ({ children }: DashboardLayoutProps) => {
             Markets
           </p>
           {Object.entries(MARKET_LABELS).map(([type, label]) => {
-            const count = getTickerCounts()[type as keyof ReturnType<typeof getTickerCounts>];
             return (
               <Link
                 key={type}
@@ -88,7 +87,7 @@ export const DashboardLayout = ({ children }: DashboardLayoutProps) => {
                 className="flex items-center justify-between px-3 py-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
               >
                 <span>{label}</span>
-                <span className="text-xs text-muted-foreground/60">{count}</span>
+                <span className="text-xs text-muted-foreground/60">5+</span>
               </Link>
             );
           })}
