@@ -19,7 +19,7 @@ class SeededRandom {
 }
 
 // Get base price for ticker (realistic starting prices)
-const getBasePrice = (symbol: string): number => {
+const getBasePrice = (ticker: TickerInfo): number => {
   const basePrices: Record<string, number> = {
     // Forex
     EURUSD: 1.0850,
@@ -46,7 +46,23 @@ const getBasePrice = (symbol: string): number => {
     XRPUSD: 2.15,
     ADAUSD: 0.92,
   };
-  return basePrices[symbol] || 100;
+
+  // Known mappings first.
+  const mapped = basePrices[ticker.symbol];
+  if (typeof mapped === 'number') return mapped;
+
+  // Deterministic fallback so we don't end up with everything clustering at ~$100.
+  // This keeps simulated mode visually credible while still being stable per-symbol.
+  const hash = ticker.symbol.split('').reduce((acc, c) => (acc * 31 + c.charCodeAt(0)) >>> 0, 7);
+  const unit = (hash % 10_000) / 10_000; // 0..1
+
+  if (ticker.type === 'stocks') {
+    // Typical stock range.
+    return 20 + unit * 480; // 20..500
+  }
+
+  // Generic fallback.
+  return 50 + unit * 150; // 50..200
 };
 
 // Get volatility multiplier for ticker
@@ -103,7 +119,7 @@ export const generateOHLCData = (
   const seed = ticker.symbol.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0);
   const rng = new SeededRandom(seed + timeframe.charCodeAt(0));
   
-  const basePrice = getBasePrice(ticker.symbol);
+  const basePrice = getBasePrice(ticker);
   const volatility = getVolatility(ticker.symbol);
   const tfDuration = getTimeframeDuration(timeframe);
   
