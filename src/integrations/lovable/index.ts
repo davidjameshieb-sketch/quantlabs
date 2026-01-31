@@ -3,7 +3,6 @@
 import { createLovableAuth } from "@lovable.dev/cloud-auth-js";
 import { supabase } from "../supabase/client";
 const lovableAuth = createLovableAuth({});
-
 export const lovable = {
   auth: {
     signInWithOAuth: async (provider: "google" | "apple", opts?: { redirect_uri?: string }) => {
