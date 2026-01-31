@@ -1,5 +1,8 @@
 project_id = "guswjpdwfcrvjqzjswnv"
 
+[functions.batch-prices]
+verify_jwt = false
+
 [functions.market-chat]
 verify_jwt = false
 
