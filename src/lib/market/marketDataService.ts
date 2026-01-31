@@ -1,4 +1,3 @@
-import { supabase } from '@/integrations/supabase/client';
 import { OHLC, TickerInfo, Timeframe } from './types';
 import { generateOHLCData } from './dataGenerator';
 
@@ -56,16 +55,25 @@ export const fetchRealMarketData = async (
       // Throttle before making any network call.
       await throttle();
 
-      // Prefer the official client invoke API (handles auth headers automatically)
-      const { data, error } = await supabase.functions.invoke('market-data', {
+      // Build URL with query params and use fetch directly for GET requests
+      const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+      const supabaseKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+      const url = `${supabaseUrl}/functions/v1/market-data?symbol=${encodeURIComponent(ticker.symbol)}&timeframe=${encodeURIComponent(timeframe)}&limit=${barCount}`;
+      
+      const response = await fetch(url, {
         method: 'GET',
-        // @ts-expect-error - supabase-js supports queryParams for functions.invoke
-        queryParams: {
-          symbol: ticker.symbol,
-          timeframe,
-          limit: String(barCount),
+        headers: {
+          'Authorization': `Bearer ${supabaseKey}`,
+          'apikey': supabaseKey,
         },
       });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+
+      const data = await response.json();
+      const error = null;
 
       if (error) {
         throw new Error(error.message || 'Failed to fetch market data');
