@@ -3,7 +3,7 @@ import { Badge } from '@/components/ui/badge';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 
-type FreshnessLevel = 'nightly' | 'hourly' | 'delayed' | 'historical';
+type FreshnessLevel = 'live' | 'nightly' | 'hourly' | 'delayed' | 'historical';
 
 interface DataFreshnessBadgeProps {
   level?: FreshnessLevel;
@@ -17,6 +17,11 @@ const freshnessConfig: Record<FreshnessLevel, {
   description: string;
   colorClass: string;
 }> = {
+  live: {
+    label: 'Live data',
+    description: 'Real market prices updated every 5 minutes from Polygon.io.',
+    colorClass: 'bg-neural-green/10 text-neural-green border-neural-green/30',
+  },
   nightly: {
     label: 'Updated nightly',
     description: 'Data refreshes overnight. Reflects end-of-day analysis for structure clarity.',

@@ -1,6 +1,5 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { motion } from 'framer-motion';
 import { Filter, Grid3X3, List, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -18,6 +17,7 @@ import { TICKERS, MARKET_LABELS, getTickersByType } from '@/lib/market';
 import { MarketType, BiasDirection, EfficiencyVerdict } from '@/lib/market/types';
 import { analyzeMarket } from '@/lib/market/analysisEngine';
 import { clearMarketDataCache } from '@/lib/market/dataGenerator';
+import { fetchBatchPrices, clearBatchPriceCache } from '@/lib/market/batchPriceService';
 
 export const MarketScanner = () => {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -27,6 +27,14 @@ export const MarketScanner = () => {
   const [biasFilter, setBiasFilter] = useState<BiasDirection | 'all'>('all');
   const [efficiencyFilter, setEfficiencyFilter] = useState<EfficiencyVerdict | 'all'>('all');
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [realPrices, setRealPrices] = useState<Record<string, { price: number }>>({});
+
+  // Fetch real prices on mount
+  useEffect(() => {
+    fetchBatchPrices().then(prices => {
+      setRealPrices(prices);
+    });
+  }, []);
 
   // Pre-compute analysis for all tickers once, not per filter check
   const tickerAnalysisMap = useMemo(() => {
@@ -61,11 +69,14 @@ export const MarketScanner = () => {
     return tickers;
   }, [selectedMarket, biasFilter, efficiencyFilter, tickerAnalysisMap]);
 
-  const handleRefresh = () => {
+  const handleRefresh = async () => {
     setIsRefreshing(true);
     clearMarketDataCache();
-    // Force re-render
-    setTimeout(() => setIsRefreshing(false), 500);
+    clearBatchPriceCache();
+    // Re-fetch real prices
+    const prices = await fetchBatchPrices();
+    setRealPrices(prices);
+    setIsRefreshing(false);
   };
 
   const handleMarketChange = (market: string) => {
@@ -86,7 +97,7 @@ export const MarketScanner = () => {
             <h1 className="font-display text-2xl md:text-3xl font-bold text-gradient-neural">
               Market Scanner
             </h1>
-            <DataFreshnessBadge level="nightly" />
+            <DataFreshnessBadge level="live" />
           </div>
           <p className="text-muted-foreground mt-1">
             Structure analysis across all markets
@@ -218,7 +229,11 @@ export const MarketScanner = () => {
         }
       >
         {filteredTickers.map((ticker) => (
-          <TickerCard key={ticker.symbol} ticker={ticker} />
+          <TickerCard 
+            key={ticker.symbol} 
+            ticker={ticker} 
+            realPrice={realPrices[ticker.symbol]?.price}
+          />
         ))}
       </div>
 
