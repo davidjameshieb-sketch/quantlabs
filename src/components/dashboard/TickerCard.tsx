@@ -12,9 +12,11 @@ import {
 import { analyzeMarket } from '@/lib/market/analysisEngine';
 import { MiniSparkline } from './MiniSparkline';
 import { cn } from '@/lib/utils';
+
 interface TickerCardProps {
   ticker: TickerInfo;
   index?: number;
+  realPrice?: number | null;
 }
 
 const biasColors: Record<BiasDirection, string> = {
@@ -41,8 +43,11 @@ const strategyColors: Record<StrategyState, string> = {
   avoiding: 'bg-neural-red/20 text-neural-red border-neural-red/30',
 };
 
-export const TickerCard = memo(({ ticker, index = 0 }: TickerCardProps) => {
+export const TickerCard = memo(({ ticker, realPrice }: TickerCardProps) => {
   const analysis = useMemo(() => analyzeMarket(ticker, '1h'), [ticker]);
+  
+  // Use real price if available, otherwise fall back to analysis price
+  const displayPrice = realPrice ?? analysis.currentPrice;
   
   const BiasIcon = biasIcons[analysis.bias];
 
@@ -75,7 +80,7 @@ export const TickerCard = memo(({ ticker, index = 0 }: TickerCardProps) => {
           {/* Price */}
           <div className="mb-3">
             <p className="text-2xl font-bold text-foreground">
-              {analysis.currentPrice.toLocaleString(undefined, {
+              {displayPrice.toLocaleString(undefined, {
                 minimumFractionDigits: ticker.type === 'forex' ? 4 : ticker.type === 'crypto' ? 2 : 2,
                 maximumFractionDigits: ticker.type === 'forex' ? 5 : ticker.type === 'crypto' ? 6 : 2,
               })}
