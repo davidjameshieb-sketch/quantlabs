@@ -1,7 +1,8 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
-import { useSearchParams } from 'react-router-dom';
-import { Filter, Grid3X3, List, RefreshCw, ChevronDown, Sparkles, Layers } from 'lucide-react';
+import { useSearchParams, useNavigate } from 'react-router-dom';
+import { Filter, Grid3X3, List, RefreshCw, ChevronDown, Sparkles, Layers, Search, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   DropdownMenu,
@@ -29,6 +30,7 @@ import {
   getFullMarketCount,
   SNAPSHOT_SIZE,
   MARKET_FULL_LABELS,
+  searchTickers,
 } from '@/lib/market';
 import { MarketType, BiasDirection, EfficiencyVerdict, TickerInfo } from '@/lib/market/types';
 import { analyzeMarket } from '@/lib/market/analysisEngine';
@@ -62,6 +64,7 @@ const getInitialDensity = (tier: number = 1): number => {
 
 export const MarketScanner = () => {
   const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
   const selectedMarket = (searchParams.get('market') as MarketType | 'all') || 'all';
   
   // TODO: Replace with actual user tier from auth context
@@ -73,6 +76,11 @@ export const MarketScanner = () => {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [realPrices, setRealPrices] = useState<Record<string, { price: number }>>({});
   const [tickerDensity, setTickerDensity] = useState(() => getInitialDensity(userTier));
+  
+  // Search state
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<TickerInfo[]>([]);
+  const [showSearchResults, setShowSearchResults] = useState(false);
   
   // Track which markets are expanded vs snapshot
   const [loadState, setLoadState] = useState<LoadState>({
@@ -98,6 +106,29 @@ export const MarketScanner = () => {
     fetchBatchPrices().then(prices => {
       setRealPrices(prices);
     });
+  }, []);
+
+  // Search handler - searches across ALL tickers, independent of loaded universe
+  useEffect(() => {
+    if (searchQuery.length >= 1) {
+      const results = searchTickers(searchQuery, 8);
+      setSearchResults(results);
+      setShowSearchResults(true);
+    } else {
+      setSearchResults([]);
+      setShowSearchResults(false);
+    }
+  }, [searchQuery]);
+
+  const handleSearchSelect = useCallback((ticker: TickerInfo) => {
+    setSearchQuery('');
+    setShowSearchResults(false);
+    navigate(`/dashboard/ticker/${ticker.symbol}`);
+  }, [navigate]);
+
+  const clearSearch = useCallback(() => {
+    setSearchQuery('');
+    setShowSearchResults(false);
   }, []);
 
   // Get tickers based on load state
@@ -230,6 +261,54 @@ export const MarketScanner = () => {
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
+          {/* Search bar - searches ALL tickers */}
+          <div className="relative">
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+              <Input
+                type="text"
+                placeholder="Search any ticker..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-[180px] sm:w-[220px] pl-9 pr-8 border-border/50"
+                onFocus={() => searchQuery && setShowSearchResults(true)}
+              />
+              {searchQuery && (
+                <button
+                  onClick={clearSearch}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1 hover:bg-muted rounded"
+                >
+                  <X className="w-3 h-3 text-muted-foreground" />
+                </button>
+              )}
+            </div>
+            
+            {/* Search results dropdown */}
+            {showSearchResults && searchResults.length > 0 && (
+              <div className="absolute top-full left-0 right-0 mt-1 bg-popover border border-border rounded-lg shadow-lg z-50 max-h-[300px] overflow-auto">
+                {searchResults.map((ticker) => (
+                  <button
+                    key={ticker.symbol}
+                    onClick={() => handleSearchSelect(ticker)}
+                    className="w-full px-3 py-2 text-left hover:bg-muted/50 flex items-center justify-between gap-2 transition-colors"
+                  >
+                    <div>
+                      <span className="font-medium text-foreground">{ticker.symbol}</span>
+                      <span className="text-xs text-muted-foreground ml-2 truncate">{ticker.name}</span>
+                    </div>
+                    <span className="text-xs text-muted-foreground capitalize">{ticker.type}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+            
+            {showSearchResults && searchQuery && searchResults.length === 0 && (
+              <div className="absolute top-full left-0 right-0 mt-1 bg-popover border border-border rounded-lg shadow-lg z-50 p-3">
+                <p className="text-sm text-muted-foreground">No tickers found for "{searchQuery}"</p>
+              </div>
+            )}
+          </div>
+
           {/* Tickers per view control */}
           <Select value={tickerDensity.toString()} onValueChange={handleDensityChange}>
             <SelectTrigger className="w-[140px] border-border/50">
