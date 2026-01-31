@@ -11,12 +11,12 @@ interface MiniSparklineProps {
 
 export const MiniSparkline = ({ ticker, height = 50, className }: MiniSparklineProps) => {
   const baseData = useMemo(() => {
-    return getMarketData(ticker, '15m', 48); // More data points for detail
+    return getMarketData(ticker, '15m', 32); // Fewer bars for clearer candles
   }, [ticker]);
 
   const [liveData, setLiveData] = useState<OHLC[]>(baseData);
 
-  // Simulate real-time updates
+  // Simulate real-time updates with more dramatic movement
   useEffect(() => {
     setLiveData(baseData);
     
@@ -25,21 +25,25 @@ export const MiniSparkline = ({ ticker, height = 50, className }: MiniSparklineP
         if (prevData.length === 0) return prevData;
         
         const lastBar = prevData[prevData.length - 1];
-        const volatility = ticker.type === 'forex' ? 0.0002 : 
-                          ticker.type === 'crypto' ? 0.002 : 0.001;
+        // Higher volatility for more visible movement
+        const volatility = ticker.type === 'forex' ? 0.0008 : 
+                          ticker.type === 'crypto' ? 0.006 : 0.003;
         const change = (Math.random() - 0.5) * 2 * volatility * lastBar.close;
         const newClose = lastBar.close + change;
+        
+        // Also simulate wick extension
+        const wickExtension = Math.abs(change) * (0.5 + Math.random() * 0.5);
         
         const updatedLastBar: OHLC = {
           ...lastBar,
           close: newClose,
-          high: Math.max(lastBar.high, newClose),
-          low: Math.min(lastBar.low, newClose),
+          high: Math.max(lastBar.high, newClose + wickExtension),
+          low: Math.min(lastBar.low, newClose - wickExtension),
         };
         
         return [...prevData.slice(0, -1), updatedLastBar];
       });
-    }, 1500);
+    }, 800); // Faster updates
 
     return () => clearInterval(interval);
   }, [baseData, ticker.type]);
@@ -97,8 +101,9 @@ export const MiniSparkline = ({ ticker, height = 50, className }: MiniSparklineP
     return `M0,100 L${points.join(' L')} L100,100 Z`;
   }, [liveData, minPrice, priceRange]);
 
-  // Generate mini candlesticks
+  // Generate mini candlesticks with volume simulation
   const candlesticks = useMemo(() => {
+    const barWidth = 100 / liveData.length;
     return liveData.map((bar, i) => {
       const x = (i / (liveData.length - 1)) * 100;
       const openY = 100 - ((bar.open - minPrice) / priceRange) * 100;
@@ -107,6 +112,9 @@ export const MiniSparkline = ({ ticker, height = 50, className }: MiniSparklineP
       const lowY = 100 - ((bar.low - minPrice) / priceRange) * 100;
       const isBullish = bar.close >= bar.open;
       
+      // Simulated volume (random for visual effect)
+      const volume = 0.3 + Math.random() * 0.7;
+      
       return {
         x,
         openY,
@@ -114,9 +122,11 @@ export const MiniSparkline = ({ ticker, height = 50, className }: MiniSparklineP
         highY,
         lowY,
         bodyTop: Math.min(openY, closeY),
-        bodyHeight: Math.abs(closeY - openY) || 0.5,
+        bodyHeight: Math.max(Math.abs(closeY - openY), 1.5), // Minimum body height
         color: isBullish ? bullColor : bearColor,
         isBullish,
+        barWidth: barWidth * 0.7, // 70% of available space
+        volume,
       };
     });
   }, [liveData, minPrice, priceRange, bullColor, bearColor]);
@@ -158,30 +168,60 @@ export const MiniSparkline = ({ ticker, height = 50, className }: MiniSparklineP
         />
         
         {/* Mini candlestick wicks and bodies */}
-        <g className="transition-all duration-300">
+        <g className="transition-all duration-200">
           {candlesticks.map((candle, i) => (
             <g key={i}>
-              {/* Wick line */}
+              {/* Wick line (shadow) */}
               <line
                 x1={candle.x}
                 y1={candle.highY}
                 x2={candle.x}
                 y2={candle.lowY}
                 stroke={candle.color}
-                strokeWidth="0.3"
-                strokeOpacity={0.6}
+                strokeWidth="0.4"
+                strokeOpacity={0.8}
               />
-              {/* Body */}
+              {/* Body with rounded corners */}
               <rect
-                x={candle.x - 0.6}
+                x={candle.x - candle.barWidth / 2}
                 y={candle.bodyTop}
-                width="1.2"
-                height={Math.max(candle.bodyHeight, 0.8)}
-                fill={candle.isBullish ? candle.color : candle.color}
-                fillOpacity={candle.isBullish ? 0.9 : 0.7}
-                rx="0.2"
+                width={candle.barWidth}
+                height={Math.max(candle.bodyHeight, 1.2)}
+                fill={candle.isBullish ? candle.color : 'transparent'}
+                stroke={candle.color}
+                strokeWidth={candle.isBullish ? 0 : 0.3}
+                fillOpacity={candle.isBullish ? 0.95 : 0}
+                rx="0.3"
               />
+              {/* Bearish body fill */}
+              {!candle.isBullish && (
+                <rect
+                  x={candle.x - candle.barWidth / 2}
+                  y={candle.bodyTop}
+                  width={candle.barWidth}
+                  height={Math.max(candle.bodyHeight, 1.2)}
+                  fill={candle.color}
+                  fillOpacity={0.85}
+                  rx="0.3"
+                />
+              )}
             </g>
+          ))}
+        </g>
+        
+        {/* Volume bars at bottom */}
+        <g className="transition-all duration-200">
+          {candlesticks.map((candle, i) => (
+            <rect
+              key={`vol-${i}`}
+              x={candle.x - candle.barWidth / 2}
+              y={92 - candle.volume * 8}
+              width={candle.barWidth}
+              height={candle.volume * 8}
+              fill={candle.color}
+              fillOpacity={0.25}
+              rx="0.2"
+            />
           ))}
         </g>
         
