@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   ComposedChart,
   Area,
@@ -13,8 +13,9 @@ import { motion } from 'framer-motion';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { Skeleton } from '@/components/ui/skeleton';
 import { TickerInfo, Timeframe, OHLC } from '@/lib/market/types';
-import { getMarketData } from '@/lib/market/dataGenerator';
+import { getMarketDataAsync } from '@/lib/market/marketDataService';
 import { TIMEFRAME_LABELS } from '@/lib/market/tickers';
 import { cn } from '@/lib/utils';
 
@@ -49,44 +50,39 @@ export const PriceChart = ({
   showTimeframes = true,
   height = 400 
 }: PriceChartProps) => {
-  const [timeframe, setTimeframe] = useState<Timeframe>('1h');
+  const [timeframe, setTimeframe] = useState<Timeframe>('1d'); // Default to daily for real data
   const [liveData, setLiveData] = useState<OHLC[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  // Get initial data
-  const baseData = useMemo(() => {
-    return getMarketData(ticker, timeframe, 50);
+  // Fetch real market data
+  const fetchData = useCallback(async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const data = await getMarketDataAsync(ticker, timeframe, 50);
+      setLiveData(data);
+    } catch (err) {
+      setError('Failed to load market data');
+      console.error('Chart data error:', err);
+    } finally {
+      setIsLoading(false);
+    }
   }, [ticker, timeframe]);
 
-  // Initialize live data from base data
+  // Load data on mount and when ticker/timeframe changes
   useEffect(() => {
-    setLiveData(baseData);
-  }, [baseData]);
+    fetchData();
+  }, [fetchData]);
 
-  // Simulate real-time updates
+  // Refresh data periodically (every 60 seconds for real data)
   useEffect(() => {
     const interval = setInterval(() => {
-      setLiveData(prevData => {
-        if (prevData.length === 0) return prevData;
-        
-        const lastBar = prevData[prevData.length - 1];
-        const volatility = ticker.type === 'forex' ? 0.0002 : 
-                          ticker.type === 'crypto' ? 0.002 : 0.001;
-        const change = (Math.random() - 0.5) * 2 * volatility * lastBar.close;
-        const newClose = lastBar.close + change;
-        
-        const updatedLastBar: OHLC = {
-          ...lastBar,
-          close: newClose,
-          high: Math.max(lastBar.high, newClose),
-          low: Math.min(lastBar.low, newClose),
-        };
-        
-        return [...prevData.slice(0, -1), updatedLastBar];
-      });
-    }, 1000);
+      fetchData();
+    }, 60000);
 
     return () => clearInterval(interval);
-  }, [ticker.type]);
+  }, [fetchData]);
 
   // Calculate chart data with formatting
   const chartData = useMemo(() => {
@@ -142,7 +138,7 @@ export const PriceChart = ({
           {showTimeframes && (
             <Tabs value={timeframe} onValueChange={(v) => setTimeframe(v as Timeframe)}>
               <TabsList className="bg-muted/50 h-8">
-                {(['15m', '1h', '4h', '1d'] as Timeframe[]).map(tf => (
+                {(['1d', '1w'] as Timeframe[]).map(tf => (
                   <TabsTrigger
                     key={tf}
                     value={tf}
