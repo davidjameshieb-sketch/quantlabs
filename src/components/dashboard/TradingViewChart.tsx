@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useMemo } from 'react';
+import { useEffect, useRef, useState, useMemo, useCallback } from 'react';
 import { createChart, CandlestickData, Time, HistogramData, CandlestickSeries, HistogramSeries, SeriesMarker } from 'lightweight-charts';
 import type { IChartApi, ISeriesApi } from 'lightweight-charts';
 import { motion } from 'framer-motion';
@@ -8,12 +8,14 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
+import { Skeleton } from '@/components/ui/skeleton';
 import { TickerInfo, Timeframe, OHLC } from '@/lib/market/types';
 import { getMarketData } from '@/lib/market/dataGenerator';
+import { getMarketDataAsync } from '@/lib/market/marketDataService';
 import { TIMEFRAME_LABELS } from '@/lib/market/tickers';
 import { ConditionLabel, getConditionColor, getConditionDisplayText } from '@/lib/market/backtestEngine';
 import { cn } from '@/lib/utils';
-import { CandlestickChart, LineChart } from 'lucide-react';
+import { CandlestickChart, LineChart, RefreshCw } from 'lucide-react';
 
 interface TradingViewChartProps {
   ticker: TickerInfo;
@@ -134,11 +136,39 @@ export const TradingViewChart = ({
   const [showOverlay, setShowOverlay] = useState(true);
   const [showOutcomes, setShowOutcomes] = useState(true);
   const [hoveredZone, setHoveredZone] = useState<ConditionZone | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   
-  // Get data
-  const rawData = useMemo(() => {
-    return getMarketData(ticker, timeframe, 200);
+  // Start with simulated data for instant display, then replace with real
+  const initialData = useMemo(() => getMarketData(ticker, timeframe, 200), [ticker, timeframe]);
+  const [rawData, setRawData] = useState<OHLC[]>(initialData);
+  
+  // Fetch real market data
+  const fetchRealData = useCallback(async () => {
+    try {
+      const data = await getMarketDataAsync(ticker, timeframe, 200);
+      if (data && data.length > 0) {
+        setRawData(data);
+      }
+    } catch (err) {
+      console.warn('Failed to fetch real data, using simulated:', err);
+    } finally {
+      setIsLoading(false);
+      setIsRefreshing(false);
+    }
   }, [ticker, timeframe]);
+  
+  // Fetch on mount and when ticker/timeframe changes
+  useEffect(() => {
+    setIsLoading(true);
+    setRawData(getMarketData(ticker, timeframe, 200)); // Reset to simulated immediately
+    fetchRealData();
+  }, [ticker, timeframe, fetchRealData]);
+  
+  const handleRefresh = () => {
+    setIsRefreshing(true);
+    fetchRealData();
+  };
   
   const chartData = useMemo(() => {
     return chartType === 'heikin-ashi' ? toHeikinAshi(rawData) : rawData;
@@ -303,6 +333,10 @@ export const TradingViewChart = ({
             <CardTitle className="font-display text-lg">
               Price Chart
             </CardTitle>
+            {/* Current price display */}
+            <span className="font-mono text-lg font-bold">
+              ${currentPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            </span>
             <Badge
               variant="outline"
               className={cn(
@@ -314,6 +348,17 @@ export const TradingViewChart = ({
             >
               {isPositive ? '+' : ''}{percentChange.toFixed(2)}%
             </Badge>
+            
+            {/* Refresh button */}
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7"
+              onClick={handleRefresh}
+              disabled={isRefreshing}
+            >
+              <RefreshCw className={cn('w-4 h-4', isRefreshing && 'animate-spin')} />
+            </Button>
             
             {/* Chart type toggle */}
             <div className="flex items-center gap-1 ml-2">

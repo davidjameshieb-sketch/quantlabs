@@ -1,6 +1,5 @@
-import { useMemo, useState, useEffect, useCallback } from 'react';
+import { useMemo } from 'react';
 import { TickerInfo, OHLC } from '@/lib/market/types';
-import { getMarketDataAsync } from '@/lib/market/marketDataService';
 import { getMarketData } from '@/lib/market/dataGenerator';
 import { cn } from '@/lib/utils';
 
@@ -11,29 +10,9 @@ interface MiniSparklineProps {
 }
 
 export const MiniSparkline = ({ ticker, height = 50, className }: MiniSparklineProps) => {
-  // Start with mock data for instant display
-  const initialData = useMemo(() => getMarketData(ticker, '15m', 32), [ticker]);
-  const [liveData, setLiveData] = useState<OHLC[]>(initialData);
-
-  // Fetch real data in background
-  const fetchRealData = useCallback(async () => {
-    try {
-      const data = await getMarketDataAsync(ticker, '15m', 32);
-      if (data && data.length > 0) {
-        setLiveData(data);
-      }
-    } catch (error) {
-      // Keep using initial data on error
-      console.warn(`Sparkline data fetch failed for ${ticker.symbol}`);
-    }
-  }, [ticker]);
-
-  useEffect(() => {
-    fetchRealData();
-    // Refresh every 60 seconds for fresher data (will hit rate limits faster)
-    const interval = setInterval(fetchRealData, 60 * 1000);
-    return () => clearInterval(interval);
-  }, [fetchRealData]);
+  // Use simulated data for sparklines to avoid exhausting API rate limits
+  // Real API data is reserved for the main TradingViewChart when viewing a specific ticker
+  const liveData = useMemo(() => getMarketData(ticker, '15m', 32), [ticker]);
 
   // Calculate chart bounds and scale
   const { minPrice, maxPrice, priceRange } = useMemo(() => {
