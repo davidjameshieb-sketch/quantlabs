@@ -23,8 +23,8 @@ const freshnessConfig: Record<FreshnessLevel, {
     colorClass: 'bg-neural-green/10 text-neural-green border-neural-green/30',
   },
   nightly: {
-    label: 'Updated nightly',
-    description: 'Data refreshes overnight. Reflects end-of-day analysis for structure clarity.',
+    label: 'Updated daily',
+    description: 'Data refreshes daily. Reflects end-of-day analysis for structure clarity.',
     colorClass: 'bg-muted/50 text-muted-foreground border-border/50',
   },
   hourly: {

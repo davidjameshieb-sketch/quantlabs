@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useRef, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { 
@@ -7,14 +7,17 @@ import {
   TrendingDown, 
   AlertCircle,
   Clock,
-  BarChart3
+  BarChart3,
+  Share2,
+  Download,
+  Loader2
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { getTickerBySymbol, TIMEFRAME_LABELS, MARKET_LABELS } from '@/lib/market';
 import { analyzeMultiTimeframe } from '@/lib/market/analysisEngine';
-import { BiasDirection, Timeframe } from '@/lib/market/types';
+import { BiasDirection, Timeframe, MarketType } from '@/lib/market/types';
 import { TradingViewChart } from './TradingViewChart';
 import { HistoricalOutcomesPanel } from './HistoricalOutcomesPanel';
 import { MetricGauge } from './MetricGauge';
@@ -24,7 +27,19 @@ import { ConfidenceInsight } from './ConfidenceInsight';
 import { StrategyInsight } from './StrategyInsight';
 import { TrendCoreVisual } from './TrendCoreVisual';
 import { DataFreshnessBadge } from './DataFreshnessBadge';
+import { TickerSnapshot } from './TickerSnapshot';
 import { cn } from '@/lib/utils';
+import { useState } from 'react';
+
+// Helper to get freshness level based on market type
+const getMarketFreshness = (marketType: MarketType): 'live' | 'nightly' | 'hourly' => {
+  // Forex trades 24/5, use hourly for FX
+  if (marketType === 'forex') return 'hourly';
+  // Crypto trades 24/7, use live
+  if (marketType === 'crypto') return 'live';
+  // Stocks/indices use nightly (market closes)
+  return 'nightly';
+};
 
 const biasColors: Record<BiasDirection, string> = {
   bullish: 'text-neural-green',
@@ -39,11 +54,15 @@ const biasBgColors: Record<BiasDirection, string> = {
 export const TickerDetail = () => {
   const { symbol } = useParams<{ symbol: string }>();
   const ticker = getTickerBySymbol(symbol || '');
+  const [showSnapshot, setShowSnapshot] = useState(false);
+  const [isGeneratingSnapshot, setIsGeneratingSnapshot] = useState(false);
 
   const analysis = useMemo(() => {
     if (!ticker) return null;
     return analyzeMultiTimeframe(ticker, ['15m', '1h', '4h', '1d']);
   }, [ticker]);
+
+  const freshnessLevel = ticker ? getMarketFreshness(ticker.type) : 'nightly';
 
   if (!ticker || !analysis) {
     return (
@@ -72,6 +91,7 @@ export const TickerDetail = () => {
   };
 
   return (
+    <>
     <div className="space-y-6">
       {/* Back button & header */}
       <div className="flex items-center gap-4">
@@ -88,10 +108,21 @@ export const TickerDetail = () => {
             <Badge variant="outline" className="text-xs">
               {MARKET_LABELS[ticker.type]}
             </Badge>
-            <DataFreshnessBadge level="nightly" />
-            <div className={cn('flex items-center gap-1 ml-auto', biasColors[primaryAnalysis.bias])}>
-              <BiasIcon className="w-5 h-5" />
-              <span className="text-sm font-bold uppercase">{primaryAnalysis.bias}</span>
+            <DataFreshnessBadge level={freshnessLevel} />
+            <div className="flex items-center gap-2 ml-auto">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setShowSnapshot(true)}
+                className="border-primary/30 text-primary hover:bg-primary/10"
+              >
+                <Share2 className="w-4 h-4 mr-1.5" />
+                Snapshot
+              </Button>
+              <div className={cn('flex items-center gap-1', biasColors[primaryAnalysis.bias])}>
+                <BiasIcon className="w-5 h-5" />
+                <span className="text-sm font-bold uppercase">{primaryAnalysis.bias}</span>
+              </div>
             </div>
           </div>
           <p className="text-muted-foreground">{ticker.name}</p>
@@ -317,5 +348,16 @@ export const TickerDetail = () => {
         </Card>
       </motion.div>
     </div>
+
+    {/* Snapshot Modal */}
+    {showSnapshot && ticker && analysis && (
+      <TickerSnapshot
+        ticker={ticker}
+        analysis={analysis}
+        primaryAnalysis={primaryAnalysis}
+        onClose={() => setShowSnapshot(false)}
+      />
+    )}
+    </>
   );
 };
