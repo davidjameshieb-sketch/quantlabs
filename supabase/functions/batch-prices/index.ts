@@ -80,9 +80,9 @@ const symbolConfig: Record<string, SymbolConfig> = {
   'EURJPY': { polygon: 'C:EURJPY', source: 'Polygon FX', minPrice: 100, maxPrice: 200 },
   'GBPJPY': { polygon: 'C:GBPJPY', source: 'Polygon FX', minPrice: 120, maxPrice: 250 },
   
-  // ========== COMMODITIES (Polygon FX for precious metals) ==========
-  'XAUUSD': { polygon: 'C:XAUUSD', source: 'Polygon FX', minPrice: 1500, maxPrice: 5000 },
-  'XAGUSD': { polygon: 'C:XAGUSD', source: 'Polygon FX', minPrice: 15, maxPrice: 100 },
+  // ========== COMMODITIES (use ETFs for reliable data via grouped stocks endpoint) ==========
+  'XAUUSD': { polygon: 'GLD', source: 'GLD ETF Proxy', minPrice: 100, maxPrice: 600 },
+  'XAGUSD': { polygon: 'SLV', source: 'SLV ETF Proxy', minPrice: 10, maxPrice: 50 },
   // Oil/Gas via ETFs (clearly labeled)
   'WTIUSD': { polygon: 'USO', source: 'USO ETF Proxy', minPrice: 30, maxPrice: 150 },
   'NATGAS': { polygon: 'UNG', source: 'UNG ETF Proxy', minPrice: 5, maxPrice: 100 },
@@ -104,9 +104,12 @@ function getPreviousTradingDay(): string {
   return date.toISOString().split('T')[0];
 }
 
-// Crypto trades 24/7 — use current UTC date for grouped daily (otherwise we lag by 1 day).
-function getTodayUTCDate(): string {
-  return new Date().toISOString().split('T')[0];
+// Crypto/Forex: free tier can't get "today" before market close — use previous day like stocks
+function getCryptoPreviousDay(): string {
+  // Polygon free tier doesn't allow today's data until EOD, so use yesterday
+  const today = new Date();
+  const yesterday = new Date(today.getTime() - 24 * 60 * 60 * 1000);
+  return yesterday.toISOString().split('T')[0];
 }
 
 // Validate price is within expected range (catches x100/x0.01 errors)
@@ -159,7 +162,7 @@ async function fetchStocksGrouped(apiKey: string): Promise<Map<string, PriceData
 // Fetch grouped daily bars for crypto (one API call for all)
 async function fetchCryptoGrouped(apiKey: string): Promise<Map<string, PriceData>> {
   const prices = new Map<string, PriceData>();
-  const dateStr = getTodayUTCDate();
+  const dateStr = getCryptoPreviousDay();
   
   try {
     const url = `https://api.polygon.io/v2/aggs/grouped/locale/global/market/crypto/${dateStr}?adjusted=true&apiKey=${apiKey}`;
@@ -226,11 +229,18 @@ async function refreshPrices(apiKey: string): Promise<void> {
   for (const [ourSymbol, config] of Object.entries(symbolConfig)) {
     const polygonTicker = config.polygon;
     
-    // Check stock prices
+    // Check stock prices (includes ETFs like GLD, SLV, USO, UNG)
     if (!polygonTicker.startsWith('X:') && !polygonTicker.startsWith('C:')) {
       const priceData = stockPrices.get(polygonTicker);
-      if (priceData && validatePrice(ourSymbol, priceData.price)) {
-        priceCache.set(ourSymbol, { ...priceData, source: config.source });
+      if (priceData) {
+        if (validatePrice(ourSymbol, priceData.price)) {
+          priceCache.set(ourSymbol, { ...priceData, source: config.source });
+          console.log(`Mapped ${ourSymbol} -> ${polygonTicker} = $${priceData.price}`);
+        } else {
+          console.warn(`Validation FAILED for ${ourSymbol}: ${priceData.price}`);
+        }
+      } else {
+        console.warn(`No stock data for ${polygonTicker} (wanted by ${ourSymbol})`);
       }
     }
     
