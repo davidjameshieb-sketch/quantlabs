@@ -1,6 +1,6 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Filter, Grid3X3, List, RefreshCw } from 'lucide-react';
+import { Filter, Grid3X3, List, RefreshCw, ChevronDown, Sparkles } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
@@ -13,21 +13,42 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { TickerCard } from './TickerCard';
 import { DataFreshnessBadge } from './DataFreshnessBadge';
-import { TICKERS, MARKET_LABELS, getTickersByType } from '@/lib/market';
-import { MarketType, BiasDirection, EfficiencyVerdict } from '@/lib/market/types';
+import { 
+  MARKET_LABELS, 
+  getTickersByType,
+  getSnapshotTickers,
+  getFullMarketCount,
+  SNAPSHOT_SIZE,
+  MARKET_FULL_LABELS,
+} from '@/lib/market';
+import { MarketType, BiasDirection, EfficiencyVerdict, TickerInfo } from '@/lib/market/types';
 import { analyzeMarket } from '@/lib/market/analysisEngine';
 import { clearMarketDataCache } from '@/lib/market/dataGenerator';
 import { fetchBatchPrices, clearBatchPriceCache } from '@/lib/market/batchPriceService';
 
+type LoadState = Record<MarketType, 'snapshot' | 'full'>;
+
 export const MarketScanner = () => {
   const [searchParams, setSearchParams] = useSearchParams();
-  const selectedMarket = (searchParams.get('market') as MarketType) || 'all';
+  const selectedMarket = (searchParams.get('market') as MarketType | 'all') || 'all';
   
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [biasFilter, setBiasFilter] = useState<BiasDirection | 'all'>('all');
   const [efficiencyFilter, setEfficiencyFilter] = useState<EfficiencyVerdict | 'all'>('all');
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [realPrices, setRealPrices] = useState<Record<string, { price: number }>>({});
+  
+  // Track which markets are expanded vs snapshot
+  const [loadState, setLoadState] = useState<LoadState>({
+    stocks: 'snapshot',
+    crypto: 'snapshot',
+    forex: 'snapshot',
+    commodities: 'snapshot',
+    indices: 'snapshot',
+  });
+  
+  // Loading state for individual markets
+  const [loadingMarket, setLoadingMarket] = useState<MarketType | null>(null);
 
   // Fetch real prices on mount
   useEffect(() => {
@@ -36,19 +57,34 @@ export const MarketScanner = () => {
     });
   }, []);
 
-  // Pre-compute analysis for all tickers once, not per filter check
+  // Get tickers based on load state
+  const getTickersForMarket = useCallback((type: MarketType): TickerInfo[] => {
+    return loadState[type] === 'full' 
+      ? getTickersByType(type)
+      : getSnapshotTickers(type);
+  }, [loadState]);
+
+  // Get all visible tickers based on selection and load state
+  const visibleTickers = useMemo(() => {
+    if (selectedMarket === 'all') {
+      // Show snapshots from all markets
+      const allMarkets: MarketType[] = ['stocks', 'crypto', 'forex', 'commodities', 'indices'];
+      return allMarkets.flatMap(type => getTickersForMarket(type));
+    }
+    return getTickersForMarket(selectedMarket);
+  }, [selectedMarket, loadState, getTickersForMarket]);
+
+  // Pre-compute analysis for visible tickers only (not all tickers)
   const tickerAnalysisMap = useMemo(() => {
     const map = new Map<string, ReturnType<typeof analyzeMarket>>();
-    for (const t of TICKERS) {
+    for (const t of visibleTickers) {
       map.set(t.symbol, analyzeMarket(t, '1h'));
     }
     return map;
-  }, []);
+  }, [visibleTickers]);
 
   const filteredTickers = useMemo(() => {
-    let tickers = selectedMarket === 'all' 
-      ? TICKERS 
-      : getTickersByType(selectedMarket as MarketType);
+    let tickers = visibleTickers;
 
     // Apply bias filter using cached analysis
     if (biasFilter !== 'all') {
@@ -67,13 +103,12 @@ export const MarketScanner = () => {
     }
 
     return tickers;
-  }, [selectedMarket, biasFilter, efficiencyFilter, tickerAnalysisMap]);
+  }, [visibleTickers, biasFilter, efficiencyFilter, tickerAnalysisMap]);
 
   const handleRefresh = async () => {
     setIsRefreshing(true);
     clearMarketDataCache();
     clearBatchPriceCache();
-    // Re-fetch real prices
     const prices = await fetchBatchPrices();
     setRealPrices(prices);
     setIsRefreshing(false);
@@ -88,6 +123,40 @@ export const MarketScanner = () => {
     setSearchParams(searchParams);
   };
 
+  const handleLoadFullMarket = useCallback(async (type: MarketType) => {
+    setLoadingMarket(type);
+    // Small delay to show loading state, then load full market
+    await new Promise(resolve => setTimeout(resolve, 100));
+    setLoadState(prev => ({ ...prev, [type]: 'full' }));
+    setLoadingMarket(null);
+  }, []);
+
+  // Check if current view is in snapshot mode
+  const isInSnapshotMode = selectedMarket === 'all' 
+    ? Object.values(loadState).some(s => s === 'snapshot')
+    : loadState[selectedMarket] === 'snapshot';
+
+  // Get counts for display
+  const getDisplayCounts = () => {
+    if (selectedMarket === 'all') {
+      const snapshotCount = Object.entries(loadState)
+        .reduce((acc, [type, state]) => {
+          return acc + (state === 'snapshot' ? SNAPSHOT_SIZE : getFullMarketCount(type as MarketType));
+        }, 0);
+      return { showing: filteredTickers.length, total: snapshotCount };
+    }
+    const fullCount = getFullMarketCount(selectedMarket);
+    const isSnapshot = loadState[selectedMarket] === 'snapshot';
+    return { 
+      showing: filteredTickers.length, 
+      total: isSnapshot ? SNAPSHOT_SIZE : fullCount,
+      fullAvailable: fullCount,
+      isSnapshot,
+    };
+  };
+
+  const counts = getDisplayCounts();
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -95,12 +164,20 @@ export const MarketScanner = () => {
         <div>
           <div className="flex items-center gap-3 flex-wrap">
             <h1 className="font-display text-2xl md:text-3xl font-bold text-gradient-neural">
-              Market Scanner
+              {isInSnapshotMode ? 'Market Snapshot' : 'Market Scanner'}
             </h1>
             <DataFreshnessBadge level="live" />
+            {isInSnapshotMode && (
+              <span className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full bg-primary/10 text-primary border border-primary/20">
+                <Sparkles className="w-3 h-3" />
+                Quick View
+              </span>
+            )}
           </div>
           <p className="text-muted-foreground mt-1">
-            Structure analysis across all markets
+            {isInSnapshotMode 
+              ? 'Top picks across markets • Expand any market for full analysis'
+              : 'Full structure analysis across all markets'}
           </p>
         </div>
 
@@ -209,18 +286,43 @@ export const MarketScanner = () => {
                 className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground whitespace-nowrap"
               >
                 {label}
+                {loadState[type as MarketType] === 'snapshot' && (
+                  <span className="ml-1 text-xs opacity-60">({SNAPSHOT_SIZE})</span>
+                )}
               </TabsTrigger>
             ))}
           </TabsList>
         </div>
       </Tabs>
 
-      {/* Results count */}
-      <p className="text-sm text-muted-foreground">
-        Showing {filteredTickers.length} {filteredTickers.length === 1 ? 'ticker' : 'tickers'}
-      </p>
+      {/* Results count + Load Full CTA */}
+      <div className="flex items-center justify-between">
+        <p className="text-sm text-muted-foreground">
+          Showing {counts.showing} {counts.showing === 1 ? 'ticker' : 'tickers'}
+          {selectedMarket !== 'all' && counts.isSnapshot && (
+            <span className="text-muted-foreground/60"> of {counts.fullAvailable} available</span>
+          )}
+        </p>
+        
+        {selectedMarket !== 'all' && loadState[selectedMarket] === 'snapshot' && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => handleLoadFullMarket(selectedMarket)}
+            disabled={loadingMarket === selectedMarket}
+            className="border-primary/30 text-primary hover:bg-primary/10"
+          >
+            {loadingMarket === selectedMarket ? (
+              <RefreshCw className="w-3 h-3 mr-2 animate-spin" />
+            ) : (
+              <ChevronDown className="w-3 h-3 mr-2" />
+            )}
+            Load {MARKET_FULL_LABELS[selectedMarket]}
+          </Button>
+        )}
+      </div>
 
-      {/* Ticker grid - no motion wrapper for faster render */}
+      {/* Ticker grid */}
       <div
         className={
           viewMode === 'grid'
@@ -236,6 +338,36 @@ export const MarketScanner = () => {
           />
         ))}
       </div>
+
+      {/* Load More CTAs when viewing "All Markets" in snapshot mode */}
+      {selectedMarket === 'all' && Object.values(loadState).some(s => s === 'snapshot') && (
+        <div className="border-t border-border/30 pt-6 mt-6">
+          <p className="text-sm text-muted-foreground mb-4">
+            Expand markets for full analysis:
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {(Object.entries(loadState) as [MarketType, 'snapshot' | 'full'][])
+              .filter(([, state]) => state === 'snapshot')
+              .map(([type]) => (
+                <Button
+                  key={type}
+                  variant="outline"
+                  size="sm"
+                  onClick={() => handleLoadFullMarket(type)}
+                  disabled={loadingMarket === type}
+                  className="border-border/50"
+                >
+                  {loadingMarket === type ? (
+                    <RefreshCw className="w-3 h-3 mr-2 animate-spin" />
+                  ) : (
+                    <ChevronDown className="w-3 h-3 mr-2" />
+                  )}
+                  {MARKET_LABELS[type]} ({getFullMarketCount(type)})
+                </Button>
+              ))}
+          </div>
+        </div>
+      )}
 
       {filteredTickers.length === 0 && (
         <div className="text-center py-12">

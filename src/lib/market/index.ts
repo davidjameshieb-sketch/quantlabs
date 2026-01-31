@@ -8,3 +8,4 @@ export * from './sectors';
 export * from './industries';
 export * from './tierAccess';
 export * from './backtestEngine';
+export * from './snapshotService';
