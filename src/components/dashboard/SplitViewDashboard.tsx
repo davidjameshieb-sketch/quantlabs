@@ -7,26 +7,25 @@ import {
   Layers, 
   Target,
   MessageSquare,
-  Bot,
+  Brain,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { DashboardLayout } from './DashboardLayout';
+import { AIIntelligencePanel } from './AIIntelligencePanel';
 import { MarketScanner } from './MarketScanner';
 import { SectorDashboard } from './SectorDashboard';
 import { ConvictionViews } from './ConvictionViews';
 import { ChatInterface } from '@/components/chat/ChatInterface';
 import { useAuth } from '@/contexts/AuthContext';
 import { cn } from '@/lib/utils';
-import { useNavigate } from 'react-router-dom';
 
-type DashboardView = 'scanner' | 'sectors' | 'conviction';
+type DashboardView = 'intelligence' | 'scanner' | 'sectors' | 'conviction';
 
 export const SplitViewDashboard = () => {
   const { user } = useAuth();
-  const navigate = useNavigate();
-  const [chatOpen, setChatOpen] = useState(false); // Chat hidden by default on mobile
-  const [activeView, setActiveView] = useState<DashboardView>('scanner');
+  const [chatOpen, setChatOpen] = useState(false);
+  const [activeView, setActiveView] = useState<DashboardView>('intelligence');
   
   const userTier = 3;
 
@@ -36,14 +35,19 @@ export const SplitViewDashboard = () => {
         {/* Main Content Panel */}
         <motion.div
           className="flex-1 overflow-auto p-4 lg:p-6"
-          animate={{ 
-            marginRight: chatOpen ? 0 : 0,
-          }}
+          animate={{ marginRight: chatOpen ? 0 : 0 }}
         >
-          {/* View Tabs */}
+          {/* View Tabs — Intelligence first for trust hierarchy */}
           <Tabs value={activeView} onValueChange={(v) => setActiveView(v as DashboardView)} className="space-y-6">
             <div className="flex items-center justify-between gap-4">
               <TabsList className="bg-muted/50 border border-border/50">
+                <TabsTrigger 
+                  value="intelligence" 
+                  className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground gap-2"
+                >
+                  <Brain className="w-4 h-4" />
+                  <span className="hidden sm:inline">AI Intelligence</span>
+                </TabsTrigger>
                 <TabsTrigger 
                   value="scanner" 
                   className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground gap-2"
@@ -63,18 +67,7 @@ export const SplitViewDashboard = () => {
                   className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground gap-2"
                 >
                   <Target className="w-4 h-4" />
-                  <span className="hidden sm:inline">Views</span>
-                </TabsTrigger>
-                <TabsTrigger 
-                  value="agents" 
-                  className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground gap-2"
-                  onClick={(e) => {
-                    e.preventDefault();
-                    navigate('/dashboard/agents');
-                  }}
-                >
-                  <Bot className="w-4 h-4" />
-                  <span className="hidden sm:inline">AI Agents</span>
+                  <span className="hidden sm:inline">Performance</span>
                 </TabsTrigger>
               </TabsList>
 
@@ -93,6 +86,12 @@ export const SplitViewDashboard = () => {
               </Button>
             </div>
 
+            {/* Tier 1: AI Intelligence Layer */}
+            <TabsContent value="intelligence" className="mt-0">
+              <AIIntelligencePanel />
+            </TabsContent>
+
+            {/* Tier 2: Market Evidence */}
             <TabsContent value="scanner" className="mt-0">
               <MarketScanner />
             </TabsContent>
@@ -101,14 +100,15 @@ export const SplitViewDashboard = () => {
               <SectorDashboard />
             </TabsContent>
 
+            {/* Tier 3: Performance Proof */}
             <TabsContent value="conviction" className="mt-0">
               <div className="space-y-6">
                 <div>
                   <h1 className="font-display text-2xl md:text-3xl font-bold text-gradient-neural">
-                    Market Condition Views
+                    Performance & Conviction
                   </h1>
                   <p className="text-muted-foreground mt-1">
-                    Analysis lenses for different market conditions
+                    Quantitative performance proof across market conditions
                   </p>
                 </div>
                 <ConvictionViews />
@@ -117,7 +117,7 @@ export const SplitViewDashboard = () => {
           </Tabs>
         </motion.div>
 
-        {/* Chat Panel */}
+        {/* Chat Panel — Desktop */}
         <motion.div
           initial={false}
           animate={{ 
@@ -131,7 +131,6 @@ export const SplitViewDashboard = () => {
           )}
         >
           <div className="w-[400px] h-full flex flex-col">
-            {/* Chat header with close button */}
             <div className="flex items-center justify-between px-4 py-2 border-b border-border/50">
               <span className="text-sm font-medium text-muted-foreground">AI Assistant</span>
               <Button

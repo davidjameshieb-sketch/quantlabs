@@ -117,7 +117,7 @@ export const DashboardLayout = ({ children }: DashboardLayoutProps) => {
               </p>
               <div className="flex items-center gap-1 mt-1">
                 <span className="text-xs px-2 py-0.5 rounded-full bg-primary/20 text-primary font-medium">
-                  Elite
+                  Edge
                 </span>
               </div>
             </div>
@@ -126,7 +126,7 @@ export const DashboardLayout = ({ children }: DashboardLayoutProps) => {
           <Link to="/auth">
             <Button variant="outline" size="sm" className="w-full gap-2">
               <LogIn className="w-4 h-4" />
-              Sign In for Elite
+              Sign In for Edge
             </Button>
           </Link>
         )}
@@ -217,7 +217,7 @@ export const DashboardLayout = ({ children }: DashboardLayoutProps) => {
                   <DropdownMenuContent align="end" className="w-56">
                     <div className="px-2 py-1.5">
                       <p className="text-sm font-medium">{userEmail}</p>
-                      <p className="text-xs text-muted-foreground">QuantLabs Elite Access</p>
+                      <p className="text-xs text-muted-foreground">QuantLabs Edge Access</p>
                     </div>
                     <DropdownMenuSeparator />
                     <DropdownMenuItem asChild>
