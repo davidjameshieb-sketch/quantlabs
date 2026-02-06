@@ -13,15 +13,11 @@ interface UpgradeBadgeProps {
 }
 
 export const UpgradeBadge = ({ feature, label, className, variant = 'inline' }: UpgradeBadgeProps) => {
-  const { user } = useAuth();
+  const { subscribed } = useAuth();
   const [modalOpen, setModalOpen] = useState(false);
 
-  // TODO: Replace with actual subscription check
-  // For now, logged-in users are considered "edge" tier
-  const isEdge = !!user;
-
-  // Don't show badge if user has access
-  if (isEdge) return null;
+  // Don't show badge if user has premium subscription
+  if (subscribed) return null;
 
   if (variant === 'button') {
     return (
