@@ -1,4 +1,4 @@
-import { NeuralBackground } from '@/components/landing/NeuralBackground';
+import { DashboardBackground } from '@/components/landing/DashboardBackground';
 import { Navbar } from '@/components/landing/Navbar';
 import { HeroSection } from '@/components/landing/HeroSection';
 import { DemonstrationSection } from '@/components/landing/DemonstrationSection';
@@ -12,7 +12,7 @@ import { Footer } from '@/components/landing/Footer';
 const Index = () => {
   return (
     <div className="min-h-screen bg-transparent text-foreground">
-      <NeuralBackground />
+      <DashboardBackground />
       <Navbar />
       <main>
         <HeroSection />
