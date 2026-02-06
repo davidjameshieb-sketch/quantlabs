@@ -1,4 +1,5 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { createClient } from "npm:@supabase/supabase-js@2.57.2";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -6,14 +7,14 @@ const corsHeaders = {
 };
 
 interface PolygonAggregateResult {
-  v: number;  // volume
-  vw: number; // volume weighted average price
-  o: number;  // open
-  c: number;  // close
-  h: number;  // high
-  l: number;  // low
-  t: number;  // timestamp
-  n: number;  // number of transactions
+  v: number;
+  vw: number;
+  o: number;
+  c: number;
+  h: number;
+  l: number;
+  t: number;
+  n: number;
 }
 
 interface PolygonResponse {
@@ -29,10 +30,10 @@ interface PolygonResponse {
   message?: string;
 }
 
-// Simple in-memory cache to reduce Polygon requests (best-effort per function instance)
+// Simple in-memory cache
 type CacheEntry = { payload: unknown; timestamp: number };
 const responseCache = new Map<string, CacheEntry>();
-const CACHE_TTL_MS = 60 * 1000; // 1 minute cache for faster refresh
+const CACHE_TTL_MS = 60 * 1000;
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), {
@@ -40,36 +41,27 @@ const json = (body: unknown, status = 200) =>
     headers: { ...corsHeaders, 'Content-Type': 'application/json' },
   });
 
-// Map our symbols to Polygon tickers
+// Symbol whitelist — only these are allowed
 const symbolMapping: Record<string, string> = {
-  // US Stocks / Indices (using ETFs as proxies for indices)
-  'SPX500': 'SPY',
-  'NASDAQ': 'QQQ',
-  'DJI': 'DIA',
-  // Crypto
-  'BTCUSD': 'X:BTCUSD',
-  'ETHUSD': 'X:ETHUSD',
-  'SOLUSD': 'X:SOLUSD',
-  'XRPUSD': 'X:XRPUSD',
-  'ADAUSD': 'X:ADAUSD',
-  // Forex
-  'EURUSD': 'C:EURUSD',
-  'GBPUSD': 'C:GBPUSD',
-  'USDJPY': 'C:USDJPY',
-  'AUDUSD': 'C:AUDUSD',
-  'USDCAD': 'C:USDCAD',
-  'USDCHF': 'C:USDCHF',
-  // Commodities (using ETFs)
-  'XAUUSD': 'GLD',
-  'XAGUSD': 'SLV',
-  'WTIUSD': 'USO',
-  'NATGAS': 'UNG',
-  // European indices (ETFs)
-  'DAX': 'EWG',
-  'FTSE': 'EWU',
+  'SPX500': 'SPY', 'NASDAQ': 'QQQ', 'DJI': 'DIA',
+  'BTCUSD': 'X:BTCUSD', 'ETHUSD': 'X:ETHUSD', 'SOLUSD': 'X:SOLUSD',
+  'XRPUSD': 'X:XRPUSD', 'ADAUSD': 'X:ADAUSD',
+  'EURUSD': 'C:EURUSD', 'GBPUSD': 'C:GBPUSD', 'USDJPY': 'C:USDJPY',
+  'AUDUSD': 'C:AUDUSD', 'USDCAD': 'C:USDCAD', 'USDCHF': 'C:USDCHF',
+  'XAUUSD': 'GLD', 'XAGUSD': 'SLV', 'WTIUSD': 'USO', 'NATGAS': 'UNG',
+  'DAX': 'EWG', 'FTSE': 'EWU',
+  // Direct tickers (stocks & ETFs)
+  'AAPL': 'AAPL', 'MSFT': 'MSFT', 'GOOGL': 'GOOGL', 'AMZN': 'AMZN',
+  'TSLA': 'TSLA', 'NVDA': 'NVDA', 'META': 'META', 'JPM': 'JPM',
+  'SPY': 'SPY', 'QQQ': 'QQQ', 'DIA': 'DIA', 'IWM': 'IWM',
+  'XLB': 'XLB', 'XLE': 'XLE', 'XLF': 'XLF', 'XLI': 'XLI',
+  'XLK': 'XLK', 'XLP': 'XLP', 'XLU': 'XLU', 'XLV': 'XLV',
+  'XLY': 'XLY', 'XLRE': 'XLRE', 'XLC': 'XLC',
+  'GLD': 'GLD', 'SLV': 'SLV', 'USO': 'USO', 'UNG': 'UNG',
 };
 
-// Map timeframe to Polygon multiplier and timespan
+const validTimeframes = new Set(['1m', '5m', '15m', '1h', '4h', '1d', '1w']);
+
 const timeframeMapping: Record<string, { multiplier: number; timespan: string }> = {
   '1m': { multiplier: 1, timespan: 'minute' },
   '5m': { multiplier: 5, timespan: 'minute' },
@@ -81,43 +73,68 @@ const timeframeMapping: Record<string, { multiplier: number; timespan: string }>
 };
 
 serve(async (req) => {
-  // Handle CORS preflight
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
   }
 
   try {
+    // ── Authentication ──
+    const authHeader = req.headers.get('Authorization');
+    if (!authHeader?.startsWith('Bearer ')) {
+      return json({ error: 'Unauthorized' }, 401);
+    }
+
+    const supabaseClient = createClient(
+      Deno.env.get('SUPABASE_URL') ?? '',
+      Deno.env.get('SUPABASE_ANON_KEY') ?? '',
+      { global: { headers: { Authorization: authHeader } } }
+    );
+
+    const { data: { user }, error: authError } = await supabaseClient.auth.getUser();
+    if (authError || !user) {
+      console.error('[MARKET-DATA] Auth failed:', authError?.message);
+      return json({ error: 'Unauthorized' }, 401);
+    }
+    console.log(`[MARKET-DATA] Authenticated user: ${user.id}`);
+
+    // ── API Key check ──
     const POLYGON_API_KEY = Deno.env.get('POLYGON_API_KEY');
     if (!POLYGON_API_KEY) {
-      throw new Error('POLYGON_API_KEY is not configured');
+      console.error('[MARKET-DATA] POLYGON_API_KEY not configured');
+      return json({ error: 'Service temporarily unavailable' }, 503);
     }
 
+    // ── Input validation ──
     const url = new URL(req.url);
     const symbol = url.searchParams.get('symbol');
-    let timeframe = url.searchParams.get('timeframe') || '1d';
-    const limit = parseInt(url.searchParams.get('limit') || '100');
+    const timeframe = url.searchParams.get('timeframe') || '1d';
+    const limitParam = parseInt(url.searchParams.get('limit') || '100');
 
-    if (!symbol) {
-      return json({ error: 'Symbol parameter is required' }, 400);
+    if (!symbol || symbol.length > 20) {
+      return json({ error: 'Invalid symbol' }, 400);
     }
 
-    const polygonTicker = symbolMapping[symbol] || symbol;
-    
-    // With 15-min delayed plan, intraday data is available
-    const originalTimeframe = timeframe;
-    
-    const tf = timeframeMapping[timeframe] || timeframeMapping['1d'];
+    // Whitelist check — reject unknown symbols
+    const polygonTicker = symbolMapping[symbol];
+    if (!polygonTicker) {
+      return json({ error: 'Symbol not supported' }, 400);
+    }
 
-    // Calculate date range - get more history for daily
+    if (!validTimeframes.has(timeframe)) {
+      return json({ error: 'Invalid timeframe' }, 400);
+    }
+
+    const limit = Math.max(1, Math.min(500, isNaN(limitParam) ? 100 : limitParam));
+    const tf = timeframeMapping[timeframe];
+
+    // Calculate date range
     const now = new Date();
     const daysBack = timeframe === '1w' ? limit * 7 : limit + 5;
-    
     const from = new Date(now.getTime() - daysBack * 24 * 60 * 60 * 1000);
-    
     const fromStr = from.toISOString().split('T')[0];
     const toStr = now.toISOString().split('T')[0];
 
-    console.log(`Fetching ${symbol} (${polygonTicker}) ${timeframe} from ${fromStr} to ${toStr}`);
+    console.log(`[MARKET-DATA] Fetching ${symbol} (${polygonTicker}) ${timeframe} from ${fromStr} to ${toStr}`);
 
     const polygonUrl = `https://api.polygon.io/v2/aggs/ticker/${polygonTicker}/range/${tf.multiplier}/${tf.timespan}/${fromStr}/${toStr}?adjusted=true&sort=asc&limit=${limit}&apiKey=${POLYGON_API_KEY}`;
 
@@ -132,32 +149,19 @@ serve(async (req) => {
     const data: PolygonResponse = await response.json();
 
     if (!response.ok || data.status === 'ERROR' || data.status === 'NOT_AUTHORIZED') {
-      console.error('Polygon API error:', data);
+      console.error('[MARKET-DATA] Upstream error:', data.status, data.message);
 
-      // If rate limited, prefer returning last cached payload (even if stale) rather than failing.
-      const errMsg = data.message || data.error || 'Failed to fetch market data';
-      const isRateLimit = /maximum requests per minute/i.test(errMsg);
+      const isRateLimit = /maximum requests per minute/i.test(data.message || '');
       if (isRateLimit && cached) {
-        return json({ ...(cached.payload as Record<string, unknown>), cache: 'stale', note: 'Cached data returned due to rate limit' });
+        return json({ ...(cached.payload as Record<string, unknown>), cache: 'stale' });
       }
 
-      return json(
-        {
-          error: errMsg,
-          symbol,
-          polygonTicker,
-          note:
-            data.status === 'NOT_AUTHORIZED'
-              ? 'Upgrade Polygon plan for intraday data'
-              : isRateLimit
-                ? 'Rate limited by data provider'
-                : undefined,
-        },
-        isRateLimit ? 429 : 500
-      );
+      if (isRateLimit) return json({ error: 'Too many requests' }, 429);
+      if (data.status === 'NOT_AUTHORIZED') return json({ error: 'Access denied' }, 403);
+      return json({ error: 'Market data unavailable' }, 503);
     }
 
-    // Transform to our OHLC format
+    // Transform to OHLC format
     const ohlcData = (data.results || []).map(bar => ({
       timestamp: bar.t,
       open: bar.o,
@@ -167,22 +171,21 @@ serve(async (req) => {
       volume: bar.v,
     }));
 
-    console.log(`Returning ${ohlcData.length} bars for ${symbol} (${originalTimeframe})`);
+    console.log(`[MARKET-DATA] Returning ${ohlcData.length} bars for ${symbol}`);
 
     const payload = {
       symbol,
-      timeframe: originalTimeframe,
+      timeframe,
       count: ohlcData.length,
       data: ohlcData,
       cache: 'miss',
     };
 
     responseCache.set(cacheKey, { payload, timestamp: Date.now() });
-
     return json(payload);
 
   } catch (error) {
-    console.error('Market data error:', error);
-    return json({ error: error instanceof Error ? error.message : 'Unknown error' }, 500);
+    console.error('[MARKET-DATA] Error:', error);
+    return json({ error: 'Service temporarily unavailable' }, 503);
   }
 });

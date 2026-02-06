@@ -1,5 +1,6 @@
 // Batch price service - fetches real prices from backend cache
 import { TickerInfo } from './types';
+import { supabase } from '@/integrations/supabase/client';
 
 export interface PriceData {
   price: number;
@@ -45,6 +46,10 @@ export const fetchBatchPrices = async (symbols?: string[]): Promise<Record<strin
       const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
       const supabaseKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
       
+      // Get current session token for authenticated requests
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token || supabaseKey;
+      
       let url = `${supabaseUrl}/functions/v1/batch-prices`;
       if (symbols && symbols.length > 0) {
         url += `?symbols=${symbols.join(',')}`;
@@ -53,7 +58,7 @@ export const fetchBatchPrices = async (symbols?: string[]): Promise<Record<strin
       const response = await fetch(url, {
         method: 'GET',
         headers: {
-          'Authorization': `Bearer ${supabaseKey}`,
+          'Authorization': `Bearer ${token}`,
           'apikey': supabaseKey,
         },
       });
