@@ -1,6 +1,6 @@
 import { useState, useMemo, useCallback } from 'react';
 import { motion } from 'framer-motion';
-import { Cpu, Eye, EyeOff, Dna, BarChart3, Zap } from 'lucide-react';
+import { Cpu, Eye, EyeOff, Dna, BarChart3, Zap, BookOpen } from 'lucide-react';
 import { DashboardLayout } from '@/components/dashboard/DashboardLayout';
 import { AgentCard } from '@/components/dashboard/agents/AgentCard';
 import { StrategyBlocksPanel } from '@/components/dashboard/agents/StrategyBlocksPanel';
@@ -14,6 +14,7 @@ import { IntelligenceModeBadge } from '@/components/dashboard/IntelligenceModeBa
 import { LiveSignalGate } from '@/components/dashboard/LiveSignalGate';
 import { MetaControllerSummary } from '@/components/dashboard/evolution/MetaControllerSummary';
 import { EvolutionContent } from '@/components/dashboard/evolution/EvolutionContent';
+import { LiveTradeBook } from '@/components/dashboard/agents/LiveTradeBook';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { createAgents, getCoordinationState } from '@/lib/agents/agentEngine';
 import { createEvolutionEcosystem } from '@/lib/agents/metaControllerEngine';
@@ -109,6 +110,13 @@ const AIAgentsPage = () => {
               <span className="font-medium">Live Agents</span>
             </TabsTrigger>
             <TabsTrigger
+              value="tradebook"
+              className="gap-2 data-[state=active]:bg-primary/20 data-[state=active]:text-primary data-[state=active]:border-primary/30 data-[state=active]:shadow-none border border-transparent px-4 py-2"
+            >
+              <BookOpen className="w-4 h-4" />
+              <span className="font-medium">Live Trade Book</span>
+            </TabsTrigger>
+            <TabsTrigger
               value="performance"
               className="gap-2 data-[state=active]:bg-primary/20 data-[state=active]:text-primary data-[state=active]:border-primary/30 data-[state=active]:shadow-none border border-transparent px-4 py-2"
             >
@@ -192,7 +200,12 @@ const AIAgentsPage = () => {
             </motion.div>
           </TabsContent>
 
-          {/* Tab 2: Strategy & Performance */}
+          {/* Tab 2: Live Trade Book */}
+          <TabsContent value="tradebook" className="mt-4">
+            <LiveTradeBook agents={agents} />
+          </TabsContent>
+
+          {/* Tab 3: Strategy & Performance */}
           <TabsContent value="performance" className="space-y-4 mt-4">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               {agentIds.map((id, i) => (
