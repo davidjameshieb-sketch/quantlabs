@@ -1,94 +1,100 @@
+import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
-import { Check, Star } from 'lucide-react';
+import { Check, Star, Zap, Clock } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { cn } from '@/lib/utils';
 
+const PROMO_DURATION_DAYS = 15;
+
+const useCountdown = () => {
+  const [timeLeft, setTimeLeft] = useState({ days: 0, hours: 0, minutes: 0, seconds: 0 });
+
+  useEffect(() => {
+    // Set end date to PROMO_DURATION_DAYS from first visit
+    const storedEnd = localStorage.getItem('quantlabs_promo_end');
+    const endDate = storedEnd
+      ? new Date(storedEnd)
+      : (() => {
+          const d = new Date();
+          d.setDate(d.getDate() + PROMO_DURATION_DAYS);
+          localStorage.setItem('quantlabs_promo_end', d.toISOString());
+          return d;
+        })();
+
+    const tick = () => {
+      const now = new Date().getTime();
+      const diff = endDate.getTime() - now;
+      if (diff <= 0) {
+        setTimeLeft({ days: 0, hours: 0, minutes: 0, seconds: 0 });
+        return;
+      }
+      setTimeLeft({
+        days: Math.floor(diff / (1000 * 60 * 60 * 24)),
+        hours: Math.floor((diff / (1000 * 60 * 60)) % 24),
+        minutes: Math.floor((diff / (1000 * 60)) % 60),
+        seconds: Math.floor((diff / 1000) % 60),
+      });
+    };
+
+    tick();
+    const interval = setInterval(tick, 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  return timeLeft;
+};
+
 const tiers = [
   {
-    name: 'Observer',
-    price: 20,
-    description: 'Traders who want clarity without noise',
+    name: 'Free',
+    price: 0,
+    description: 'Explore the full platform with previous-day data',
     features: [
-      'All markets, all tickers',
-      'Single-timeframe Neural Summary',
-      'Efficiency Score + Verdict',
-      'Bias (Bullish / Bearish)',
-      'Strategy label',
-      'Plain-English narrative output',
+      'All markets — Equities, Crypto, Forex',
+      'AI trading dashboards',
+      'Market scanner & analytics',
+      'Sector & conviction views',
+      'AI agent coordination view',
+      'Previous-day closing data',
     ],
-    cta: 'Start Free Trial',
+    cta: 'Explore Free',
+    ctaLink: '/dashboard',
     popular: false,
+    premium: false,
   },
   {
-    name: 'Analyst',
-    price: 40,
-    description: 'Traders who want confirmation, not just direction',
+    name: 'QuantLabs Elite Access',
+    originalPrice: 95,
+    price: 45,
+    description: 'Full power — 15-min intraday data, advanced AI & backtesting',
     features: [
-      'Everything in Observer',
-      'Multi-timeframe view (lower + mid TFs)',
-      'Confidence % and Conviction',
-      'Trend Cloud visualization',
-      'Expanded narrative explanations',
-      'Historical snapshot',
+      'Everything in Free',
+      '15-minute delayed intraday data',
+      'Full AI trading analytics',
+      'Advanced AI backtesting',
+      'Multi-timeframe signal tracking',
+      'Quantitative performance breakdowns',
+      'AI decision overlays & reasoning',
+      'Priority feature access',
+      'Price lock guarantee',
     ],
     cta: 'Start Free Trial',
-    popular: false,
-  },
-  {
-    name: 'Strategist',
-    price: 60,
-    description: 'Traders who think in alignment, not single charts',
-    features: [
-      'Everything in Analyst',
-      'Full multi-timeframe stack',
-      'Aggregated Ticker Bias Score',
-      'Timeframe alignment detection',
-      '"What would need to change?" insight',
-      'Cross-market scanner',
-    ],
-    cta: 'Start Free Trial',
+    ctaLink: '/auth',
     popular: true,
-  },
-  {
-    name: 'Architect',
-    price: 80,
-    description: 'System builders and serious discretionary traders',
-    features: [
-      'Everything in Strategist',
-      'Historical efficiency regimes',
-      'Confidence & efficiency curves',
-      'Market-to-market comparisons',
-      'Custom dashboard layouts',
-      'State-change alerts',
-    ],
-    cta: 'Start Free Trial',
-    popular: false,
-  },
-  {
-    name: 'Authority',
-    price: 99,
-    description: 'Professionals, educators, and power users',
-    features: [
-      'Everything in Architect',
-      'Full transparency view (all metrics)',
-      'Multi-market correlation context',
-      'Priority feature voting',
-      'Early access to new modules',
-      'Exportable summaries',
-    ],
-    cta: 'Start Free Trial',
-    popular: false,
+    premium: true,
   },
 ];
 
 export const PricingSection = () => {
+  const countdown = useCountdown();
+
   return (
     <section id="pricing" className="relative py-24 px-4">
       {/* Background */}
       <div className="absolute inset-0 bg-gradient-to-b from-background via-muted/10 to-background pointer-events-none" />
 
-      <div className="container relative z-10 max-w-7xl mx-auto">
+      <div className="container relative z-10 max-w-5xl mx-auto">
         {/* Section header */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
@@ -98,55 +104,95 @@ export const PricingSection = () => {
           className="text-center mb-16"
         >
           <h2 className="font-display text-3xl md:text-5xl font-bold mb-4">
-            <span className="text-gradient-neural">Choose Your Depth</span>
+            <span className="text-gradient-neural">Choose Your Edge</span>
           </h2>
           <p className="text-lg text-muted-foreground max-w-2xl mx-auto mb-6">
-            All tiers include access to every market. Higher tiers unlock deeper analysis, 
-            foresight, and authority — not basic access.
+            Start free with full platform access. Upgrade to Elite for real-time AI intelligence.
           </p>
-          <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full border border-neural-green/30 bg-neural-green/10">
-            <span className="text-neural-green font-medium">🎉 2-Week Free Trial on All Tiers</span>
+        </motion.div>
+
+        {/* Countdown timer */}
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          whileInView={{ opacity: 1, y: 0 }}
+          viewport={{ once: true }}
+          transition={{ duration: 0.5, delay: 0.1 }}
+          className="flex justify-center mb-10"
+        >
+          <div className="inline-flex items-center gap-3 px-6 py-3 rounded-xl border border-neural-orange/30 bg-neural-orange/10">
+            <Clock className="w-5 h-5 text-neural-orange shrink-0" />
+            <span className="text-sm font-medium text-neural-orange">Limited-time pricing expires in:</span>
+            <div className="flex items-center gap-1 font-mono text-sm font-bold text-foreground">
+              <span className="bg-background/50 px-2 py-1 rounded">{String(countdown.days).padStart(2, '0')}d</span>
+              <span>:</span>
+              <span className="bg-background/50 px-2 py-1 rounded">{String(countdown.hours).padStart(2, '0')}h</span>
+              <span>:</span>
+              <span className="bg-background/50 px-2 py-1 rounded">{String(countdown.minutes).padStart(2, '0')}m</span>
+              <span>:</span>
+              <span className="bg-background/50 px-2 py-1 rounded">{String(countdown.seconds).padStart(2, '0')}s</span>
+            </div>
           </div>
         </motion.div>
 
         {/* Pricing cards */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-8 max-w-4xl mx-auto">
           {tiers.map((tier, index) => (
             <motion.div
               key={tier.name}
               initial={{ opacity: 0, y: 20 }}
               whileInView={{ opacity: 1, y: 0 }}
               viewport={{ once: true }}
-              transition={{ duration: 0.5, delay: index * 0.1 }}
+              transition={{ duration: 0.5, delay: index * 0.15 }}
               className={cn(
-                "relative flex flex-col p-6 rounded-2xl border transition-all duration-300",
+                "relative flex flex-col p-8 rounded-2xl border transition-all duration-300",
                 tier.popular
-                  ? "border-primary bg-gradient-to-b from-primary/10 to-card glow-cyan"
+                  ? "border-primary bg-gradient-to-b from-primary/15 to-card glow-cyan scale-[1.02]"
                   : "border-border/50 bg-card/50 hover:border-primary/30"
               )}
             >
               {/* Popular badge */}
               {tier.popular && (
-                <div className="absolute -top-3 left-1/2 -translate-x-1/2 flex items-center gap-1 px-3 py-1 rounded-full bg-primary text-primary-foreground text-xs font-medium">
+                <div className="absolute -top-3 left-1/2 -translate-x-1/2 flex items-center gap-1 px-4 py-1.5 rounded-full bg-primary text-primary-foreground text-xs font-bold">
                   <Star className="w-3 h-3" />
-                  Most Popular
+                  RECOMMENDED
                 </div>
               )}
 
               {/* Tier name & price */}
-              <div className="mb-4">
-                <h3 className="font-display text-xl font-bold text-foreground mb-1">
+              <div className="mb-6">
+                <h3 className="font-display text-2xl font-bold text-foreground mb-1">
                   {tier.name}
                 </h3>
-                <p className="text-xs text-muted-foreground mb-4">{tier.description}</p>
-                <div className="flex items-baseline gap-1">
-                  <span className="text-4xl font-bold text-gradient-neural">${tier.price}</span>
-                  <span className="text-muted-foreground">/month</span>
+                <p className="text-sm text-muted-foreground mb-4">{tier.description}</p>
+                
+                <div className="flex items-baseline gap-2">
+                  {tier.premium && tier.originalPrice ? (
+                    <>
+                      <span className="text-5xl font-bold text-gradient-neural">${tier.price}</span>
+                      <span className="text-muted-foreground">/month</span>
+                      <span className="ml-2 text-lg line-through text-muted-foreground/50">${tier.originalPrice}</span>
+                      <span className="ml-1 px-2 py-0.5 rounded-full bg-neural-green/20 text-neural-green text-xs font-bold">
+                        {Math.round(((tier.originalPrice - tier.price) / tier.originalPrice) * 100)}% OFF
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="text-5xl font-bold text-foreground">$0</span>
+                      <span className="text-muted-foreground">/forever</span>
+                    </>
+                  )}
                 </div>
+
+                {tier.premium && (
+                  <p className="text-xs text-neural-green mt-2 flex items-center gap-1">
+                    <Zap className="w-3 h-3" />
+                    Price locked while you're subscribed
+                  </p>
+                )}
               </div>
 
               {/* Features */}
-              <ul className="flex-1 space-y-3 mb-6">
+              <ul className="flex-1 space-y-3 mb-8">
                 {tier.features.map((feature, i) => (
                   <li key={i} className="flex items-start gap-2 text-sm">
                     <Check className="w-4 h-4 text-primary mt-0.5 shrink-0" />
@@ -158,14 +204,15 @@ export const PricingSection = () => {
               {/* CTA */}
               <Button
                 asChild
+                size="lg"
                 className={cn(
-                  "w-full font-display",
+                  "w-full font-display text-base py-6",
                   tier.popular
-                    ? "bg-primary text-primary-foreground hover:bg-primary/90"
+                    ? "bg-primary text-primary-foreground hover:bg-primary/90 shadow-lg shadow-primary/20"
                     : "bg-muted hover:bg-muted/80"
                 )}
               >
-                <Link to="/auth">{tier.cta}</Link>
+                <Link to={tier.ctaLink}>{tier.cta}</Link>
               </Button>
             </motion.div>
           ))}
@@ -179,7 +226,7 @@ export const PricingSection = () => {
           transition={{ duration: 0.5, delay: 0.5 }}
           className="text-center text-sm text-muted-foreground mt-12"
         >
-          Cancel anytime. No questions asked. Your trial starts when you sign up.
+          Cancel anytime. No questions asked. 15-day free trial on Elite.
         </motion.p>
       </div>
     </section>

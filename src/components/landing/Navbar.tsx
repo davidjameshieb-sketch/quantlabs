@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
-import { Brain, Menu, X } from 'lucide-react';
+import { Activity, Menu, X } from 'lucide-react';
 
 export const Navbar = () => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -24,11 +24,11 @@ export const Navbar = () => {
           {/* Logo */}
           <Link to="/" className="flex items-center gap-2">
             <div className="relative">
-              <Brain className="w-8 h-8 text-primary" />
+              <Activity className="w-8 h-8 text-primary" />
               <div className="absolute inset-0 blur-lg bg-primary/30" />
             </div>
             <span className="font-display font-bold text-xl text-gradient-neural">
-              Neural Brain
+              QuantLabs
             </span>
           </Link>
 
@@ -51,7 +51,7 @@ export const Navbar = () => {
               <Link to="/auth">Sign In</Link>
             </Button>
             <Button asChild className="glow-cyan font-display">
-              <Link to="/auth">Start Free Trial</Link>
+              <Link to="/dashboard">Explore Free</Link>
             </Button>
           </div>
 
@@ -88,7 +88,7 @@ export const Navbar = () => {
                   <Link to="/auth">Sign In</Link>
                 </Button>
                 <Button asChild className="w-full glow-cyan font-display">
-                  <Link to="/auth">Start Free Trial</Link>
+                  <Link to="/dashboard">Explore Free</Link>
                 </Button>
               </div>
             </div>

@@ -25,30 +25,10 @@ const App = () => (
           <Routes>
             <Route path="/" element={<Index />} />
             <Route path="/auth" element={<Auth />} />
-            <Route
-              path="/dashboard"
-              element={
-                <ProtectedRoute>
-                  <Dashboard />
-                </ProtectedRoute>
-              }
-            />
-            <Route
-              path="/dashboard/ticker/:symbol"
-              element={
-                <ProtectedRoute>
-                  <Ticker />
-                </ProtectedRoute>
-              }
-            />
-            <Route
-              path="/dashboard/agents"
-              element={
-                <ProtectedRoute>
-                  <AIAgents />
-                </ProtectedRoute>
-              }
-            />
+            {/* Dashboard is now open to all users */}
+            <Route path="/dashboard" element={<Dashboard />} />
+            <Route path="/dashboard/ticker/:symbol" element={<Ticker />} />
+            <Route path="/dashboard/agents" element={<AIAgents />} />
             <Route path="/guide" element={<Guide />} />
             {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
             <Route path="*" element={<NotFound />} />

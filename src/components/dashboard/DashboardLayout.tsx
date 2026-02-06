@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Brain, Home, BarChart3, Settings, LogOut, Search, ChevronDown, Menu, BookOpen, Bot } from 'lucide-react';
+import { Activity, Home, BarChart3, Settings, LogOut, Search, ChevronDown, Menu, BookOpen, Bot, LogIn } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
@@ -26,14 +26,11 @@ export const DashboardLayout = ({ children }: DashboardLayoutProps) => {
   const [searchResults, setSearchResults] = useState<typeof TICKERS>([]);
   const [showSearch, setShowSearch] = useState(false);
 
-  // User display info
-  const userEmail = user?.email || 'user@example.com';
-  const userTier = 3; // This would come from a profiles table in a real app
-  const userTierName = 'Strategist';
+  const userEmail = user?.email || '';
+  const isLoggedIn = !!user;
 
   useEffect(() => {
     if (searchQuery.length > 0) {
-      // Sanitize search input
       const sanitizedQuery = searchQuery.trim().slice(0, 50);
       const results = TICKERS.filter(
         t =>
@@ -57,10 +54,10 @@ export const DashboardLayout = ({ children }: DashboardLayoutProps) => {
     <div className="flex flex-col h-full">
       {/* Logo */}
       <div className="p-4 border-b border-border/50">
-        <Link to="/dashboard" className="flex items-center gap-2">
-          <Brain className="w-8 h-8 text-primary" />
+        <Link to="/" className="flex items-center gap-2">
+          <Activity className="w-8 h-8 text-primary" />
           <span className="font-display font-bold text-lg text-gradient-neural">
-            Neural Brain
+            QuantLabs
           </span>
         </Link>
       </div>
@@ -87,18 +84,16 @@ export const DashboardLayout = ({ children }: DashboardLayoutProps) => {
           <p className="px-3 py-2 text-xs text-muted-foreground uppercase tracking-wider">
             Markets
           </p>
-          {Object.entries(MARKET_LABELS).map(([type, label]) => {
-            return (
-              <Link
-                key={type}
-                to={`/dashboard?market=${type}`}
-                className="flex items-center justify-between px-3 py-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
-              >
-                <span>{label}</span>
-                <span className="text-xs text-muted-foreground/60">5+</span>
-              </Link>
-            );
-          })}
+          {Object.entries(MARKET_LABELS).map(([type, label]) => (
+            <Link
+              key={type}
+              to={`/dashboard?market=${type}`}
+              className="flex items-center justify-between px-3 py-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+            >
+              <span>{label}</span>
+              <span className="text-xs text-muted-foreground/60">5+</span>
+            </Link>
+          ))}
         </div>
 
         <div className="pt-4 border-t border-border/30 mt-4">
@@ -114,19 +109,27 @@ export const DashboardLayout = ({ children }: DashboardLayoutProps) => {
 
       {/* User section */}
       <div className="p-4 border-t border-border/50">
-        <div className="flex items-center justify-between">
-          <div>
-            <p className="text-sm font-medium text-foreground truncate max-w-[120px]">
-              {userEmail}
-            </p>
-            <div className="flex items-center gap-1 mt-1">
-              <span className="text-xs px-2 py-0.5 rounded-full bg-primary/20 text-primary font-medium">
-                Tier {userTier}
-              </span>
-              <span className="text-xs text-muted-foreground">{userTierName}</span>
+        {isLoggedIn ? (
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium text-foreground truncate max-w-[120px]">
+                {userEmail}
+              </p>
+              <div className="flex items-center gap-1 mt-1">
+                <span className="text-xs px-2 py-0.5 rounded-full bg-primary/20 text-primary font-medium">
+                  Elite
+                </span>
+              </div>
             </div>
           </div>
-        </div>
+        ) : (
+          <Link to="/auth">
+            <Button variant="outline" size="sm" className="w-full gap-2">
+              <LogIn className="w-4 h-4" />
+              Sign In for Elite
+            </Button>
+          </Link>
+        )}
       </div>
     </div>
   );
@@ -201,36 +204,40 @@ export const DashboardLayout = ({ children }: DashboardLayoutProps) => {
                 </Link>
               </Button>
 
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="ghost" className="gap-2">
-                    <div className="w-8 h-8 rounded-full bg-gradient-to-br from-primary to-secondary flex items-center justify-center text-sm font-bold text-background">
-                      {userEmail[0].toUpperCase()}
+              {isLoggedIn ? (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="ghost" className="gap-2">
+                      <div className="w-8 h-8 rounded-full bg-gradient-to-br from-primary to-secondary flex items-center justify-center text-sm font-bold text-background">
+                        {userEmail[0]?.toUpperCase() || 'U'}
+                      </div>
+                      <ChevronDown className="w-4 h-4" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="w-56">
+                    <div className="px-2 py-1.5">
+                      <p className="text-sm font-medium">{userEmail}</p>
+                      <p className="text-xs text-muted-foreground">QuantLabs Elite Access</p>
                     </div>
-                    <ChevronDown className="w-4 h-4" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="w-56">
-                  <div className="px-2 py-1.5">
-                    <p className="text-sm font-medium">{userEmail}</p>
-                    <p className="text-xs text-muted-foreground">
-                      {userTierName} (Tier {userTier})
-                    </p>
-                  </div>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem asChild>
-                    <Link to="/dashboard/settings" className="cursor-pointer">
-                      <Settings className="w-4 h-4 mr-2" />
-                      Settings
-                    </Link>
-                  </DropdownMenuItem>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem onClick={handleLogout} className="text-destructive cursor-pointer">
-                    <LogOut className="w-4 h-4 mr-2" />
-                    Logout
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem asChild>
+                      <Link to="/dashboard/settings" className="cursor-pointer">
+                        <Settings className="w-4 h-4 mr-2" />
+                        Settings
+                      </Link>
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem onClick={handleLogout} className="text-destructive cursor-pointer">
+                      <LogOut className="w-4 h-4 mr-2" />
+                      Logout
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              ) : (
+                <Button asChild size="sm" className="font-display">
+                  <Link to="/auth">Sign In</Link>
+                </Button>
+              )}
             </div>
           </div>
         </header>

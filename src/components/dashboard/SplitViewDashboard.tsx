@@ -25,7 +25,7 @@ type DashboardView = 'scanner' | 'sectors' | 'conviction';
 export const SplitViewDashboard = () => {
   const { user } = useAuth();
   const navigate = useNavigate();
-  const [chatOpen, setChatOpen] = useState(true);
+  const [chatOpen, setChatOpen] = useState(false); // Chat hidden by default on mobile
   const [activeView, setActiveView] = useState<DashboardView>('scanner');
   
   const userTier = 3;

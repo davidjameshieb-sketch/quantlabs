@@ -2,7 +2,7 @@ import { motion } from 'framer-motion';
 import { 
   Activity, 
   BarChart3, 
-  Brain, 
+  Bot, 
   Eye, 
   Layers, 
   LineChart, 
@@ -19,21 +19,21 @@ const features = [
     gradient: 'from-neural-cyan to-neural-purple',
   },
   {
-    icon: Brain,
-    title: 'Neural Trend Cores',
-    description: 'Two adaptive trend proxies using Rational Quadratic Kernel smoothing form a dynamic trend cloud that adapts to market conditions.',
+    icon: Bot,
+    title: 'Multi-AI Collaboration',
+    description: 'Multiple specialized AI models analyze markets simultaneously — equities, forex, and crypto agents coordinate to find the best opportunities.',
     gradient: 'from-neural-purple to-neural-magenta',
   },
   {
     icon: TrendingUp,
-    title: 'Bias Detection',
-    description: 'Clear Bullish/Bearish identification based on core relationships with conviction tracking — is structure strengthening or weakening?',
+    title: 'Quantitative Analysis',
+    description: 'Data-driven decision intelligence with volatility analysis, trend detection, and regime classification — all measurable and transparent.',
     gradient: 'from-neural-magenta to-neural-cyan',
   },
   {
     icon: BarChart3,
-    title: 'Confidence Scoring',
-    description: 'ATR-normalized percentage showing how confident the system is in current structure. Higher confidence = clearer opportunity.',
+    title: 'AI Backtesting Engine',
+    description: 'Every AI strategy is fully backtested with win/loss ratios, drawdown metrics, Sharpe ratio, and performance by market regime.',
     gradient: 'from-neural-cyan to-neural-green',
   },
   {
@@ -44,26 +44,26 @@ const features = [
   },
   {
     icon: Eye,
-    title: 'Strategy Mapping',
-    description: 'Explainable decision tree maps conditions to actionable states: Watching, Avoiding, Tracking, Holding, or Pressing.',
+    title: 'AI Decision Overlays',
+    description: 'See which AI tools are actively influencing trade logic, real-time decision reasoning, and active strategy components.',
     gradient: 'from-neural-purple to-neural-cyan',
   },
   {
     icon: LineChart,
     title: 'Cross-Market Scanner',
-    description: 'Find the strongest and weakest structures across all markets. Compare efficiency and alignment at a glance.',
+    description: 'Find the strongest and weakest structures across equities, crypto, and forex in one unified view.',
     gradient: 'from-neural-cyan to-neural-orange',
   },
   {
     icon: Shield,
     title: 'Glass Box Transparency',
-    description: 'Every conclusion is explained in plain English. See what the system sees, how it thinks, and why it concludes.',
+    description: 'Every AI conclusion is explained in plain English. See what the system sees, how it thinks, and why it concludes.',
     gradient: 'from-neural-orange to-neural-purple',
   },
   {
     icon: Zap,
-    title: 'Real-Time Updates',
-    description: 'Analysis updates with each bar close. State changes, efficiency shifts, and bias flips — all tracked in real-time.',
+    title: 'Dynamic AI Coordination',
+    description: 'The best-performing AI automatically leads based on current market conditions — adaptive, measurable, and always evolving.',
     gradient: 'from-neural-purple to-neural-green',
   },
 ];
@@ -84,11 +84,11 @@ export const FeaturesSection = () => {
           className="text-center mb-16"
         >
           <h2 className="font-display text-3xl md:text-5xl font-bold mb-4">
-            <span className="text-gradient-neural">The Analysis Engine</span>
+            <span className="text-gradient-neural">AI Trading Intelligence</span>
           </h2>
           <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
-            Every piece of the puzzle, explained. No black boxes, no mystery signals — 
-            just transparent market intelligence you can understand.
+            Collaborative AI models working together. Transparent, quantitative, 
+            and designed for advanced traders who demand measurable performance.
           </p>
         </motion.div>
 

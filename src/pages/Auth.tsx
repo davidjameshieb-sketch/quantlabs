@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { Brain, Mail, Lock, Eye, EyeOff, ArrowRight, Chrome, Apple } from 'lucide-react';
+import { Activity, Mail, Lock, Eye, EyeOff, ArrowRight, Chrome, Apple } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -162,9 +162,9 @@ const Auth = () => {
       >
         {/* Logo */}
         <Link to="/" className="flex items-center justify-center gap-2 mb-8">
-          <Brain className="w-10 h-10 text-primary" />
+          <Activity className="w-10 h-10 text-primary" />
           <span className="font-display font-bold text-2xl text-gradient-neural">
-            Neural Brain
+            QuantLabs
           </span>
         </Link>
 
