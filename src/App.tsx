@@ -10,7 +10,7 @@ import Auth from "./pages/Auth";
 import Dashboard from "./pages/Dashboard";
 import Ticker from "./pages/Ticker";
 import AIAgents from "./pages/AIAgents";
-
+import Evolution from "./pages/Evolution";
 import Guide from "./pages/Guide";
 import Admin from "./pages/Admin";
 import BillingSuccess from "./pages/BillingSuccess";
@@ -31,7 +31,7 @@ const App = () => (
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/dashboard/ticker/:symbol" element={<Ticker />} />
             <Route path="/dashboard/agents" element={<AIAgents />} />
-            {/* Evolution is now the main /dashboard page */}
+            <Route path="/dashboard/evolution" element={<Evolution />} />
             <Route path="/guide" element={<Guide />} />
             <Route path="/billing/success" element={<BillingSuccess />} />
             <Route

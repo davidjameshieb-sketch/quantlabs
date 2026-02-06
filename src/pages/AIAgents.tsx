@@ -1,6 +1,6 @@
 import { useState, useMemo, useCallback } from 'react';
 import { motion } from 'framer-motion';
-import { Cpu, BarChart3, Eye, EyeOff } from 'lucide-react';
+import { Cpu, Eye, EyeOff, Dna, BarChart3, Zap } from 'lucide-react';
 import { DashboardLayout } from '@/components/dashboard/DashboardLayout';
 import { AgentCard } from '@/components/dashboard/agents/AgentCard';
 import { StrategyBlocksPanel } from '@/components/dashboard/agents/StrategyBlocksPanel';
@@ -13,6 +13,8 @@ import { AgentScorecardPanel } from '@/components/dashboard/agents/AgentScorecar
 import { IntelligenceModeBadge } from '@/components/dashboard/IntelligenceModeBadge';
 import { LiveSignalGate } from '@/components/dashboard/LiveSignalGate';
 import { MetaControllerSummary } from '@/components/dashboard/evolution/MetaControllerSummary';
+import { EvolutionContent } from '@/components/dashboard/evolution/EvolutionContent';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { createAgents, getCoordinationState } from '@/lib/agents/agentEngine';
 import { createEvolutionEcosystem } from '@/lib/agents/metaControllerEngine';
 import { generateExpandedDetail, generateAgentScorecard, filterDecisions } from '@/lib/agents/tradeIntelligenceEngine';
@@ -42,7 +44,6 @@ const AIAgentsPage = () => {
   const agent = agents[selectedAgent];
   const agentIds: AgentId[] = ['equities-alpha', 'forex-macro', 'crypto-momentum'];
 
-  // Aggregate all decisions for filtering (or use selected agent's)
   const allDecisions = useMemo(() => {
     if (filters.agent !== 'all') {
       return agents[filters.agent as AgentId]?.recentDecisions || [];
@@ -52,7 +53,6 @@ const AIAgentsPage = () => {
 
   const filteredDecisions = useMemo(() => filterDecisions(allDecisions, filters), [allDecisions, filters]);
 
-  // Apply tier-based visibility filtering
   const visibleDecisions = useMemo(
     () => filterDecisionsByTier(filteredDecisions, subscribed),
     [filteredDecisions, subscribed]
@@ -62,7 +62,6 @@ const AIAgentsPage = () => {
     [filteredDecisions]
   );
 
-  // Expand decision into full trade detail
   const expandedTrade = useMemo(() => {
     if (!selectedDecision) return null;
     return generateExpandedDetail(selectedDecision, agents, selectedAgent);
@@ -93,111 +92,169 @@ const AIAgentsPage = () => {
                 Multi-model coordination — transparent, measurable, auditable AI trade intelligence.
               </p>
             </div>
-            {/* Summary / Advanced toggle */}
-            <button
-              onClick={() => setShowAdvanced(prev => !prev)}
-              className={cn(
-                'flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors',
-                showAdvanced
-                  ? 'bg-primary/20 text-primary border-primary/30'
-                  : 'bg-muted/20 text-muted-foreground border-border/30 hover:bg-muted/40'
-              )}
-            >
-              {showAdvanced ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-              {showAdvanced ? 'Summary View' : 'Full Analytics'}
-            </button>
           </div>
         </motion.div>
 
         {/* Coordination Bar */}
         <CoordinationBar coordination={coordination} />
 
-        {/* Adaptive Evolution Summary */}
-        <MetaControllerSummary
-          state={ecosystem.metaController}
-          totalMutations={ecosystem.totalMutations}
-          survivalRate={ecosystem.survivalRate}
-        />
-
-        {/* Agent Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {agentIds.map((id, i) => (
-            <motion.div
-              key={id}
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: i * 0.1 }}
+        {/* Tabbed Navigation */}
+        <Tabs defaultValue="agents" className="w-full">
+          <TabsList className="w-full justify-start bg-card/50 border border-border/50 p-1 h-auto flex-wrap gap-1">
+            <TabsTrigger
+              value="agents"
+              className="gap-2 data-[state=active]:bg-primary/20 data-[state=active]:text-primary data-[state=active]:border-primary/30 data-[state=active]:shadow-none border border-transparent px-4 py-2"
             >
-              <AgentCard
-                agent={agents[id]}
-                isSelected={selectedAgent === id}
-                onClick={() => {
-                  setSelectedAgent(id);
-                  setFilters(f => ({ ...f, agent: id }));
-                }}
-              />
-            </motion.div>
-          ))}
-        </div>
+              <Cpu className="w-4 h-4" />
+              <span className="font-medium">Live Agents</span>
+            </TabsTrigger>
+            <TabsTrigger
+              value="performance"
+              className="gap-2 data-[state=active]:bg-primary/20 data-[state=active]:text-primary data-[state=active]:border-primary/30 data-[state=active]:shadow-none border border-transparent px-4 py-2"
+            >
+              <BarChart3 className="w-4 h-4" />
+              <span className="font-medium">Strategy & Performance</span>
+            </TabsTrigger>
+            <TabsTrigger
+              value="evolution"
+              className="gap-2 data-[state=active]:bg-primary/20 data-[state=active]:text-primary data-[state=active]:border-primary/30 data-[state=active]:shadow-none border border-transparent px-4 py-2"
+            >
+              <Dna className="w-4 h-4" />
+              <span className="font-medium">Market Evolution</span>
+            </TabsTrigger>
+          </TabsList>
 
-        {/* Selected Agent Detail */}
-        <motion.div
-          key={selectedAgent}
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="space-y-4"
-        >
-          {/* Agent description */}
-          <div className="p-4 rounded-xl bg-gradient-to-br from-primary/5 to-primary/10 border border-primary/20">
-            <div className="flex items-center gap-2 mb-2">
-              <span className="text-2xl">{agent.icon}</span>
-              <h2 className="font-display text-xl font-bold">{agent.name}</h2>
-              <span className="text-sm text-muted-foreground">— {agent.model}</span>
-            </div>
-            <p className="text-sm text-muted-foreground">{agent.coreStrategy}</p>
-          </div>
-
-          {/* Performance + Strategy Blocks */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <PerformancePanel performance={agent.performance} agentName={agent.name} />
-            <StrategyBlocksPanel blocks={agent.strategyBlocks} agentName={agent.name} />
-          </div>
-
-          {/* Trade History Filters */}
-          <div className="p-4 rounded-xl bg-card/50 border border-border/50">
-            <TradeHistoryFilters
-              filters={filters}
-              onFiltersChange={setFilters}
-              totalCount={allDecisions.length}
-              filteredCount={visibleDecisions.length}
+          {/* Tab 1: Live Agents */}
+          <TabsContent value="agents" className="space-y-4 mt-4">
+            {/* Meta-Controller Summary */}
+            <MetaControllerSummary
+              state={ecosystem.metaController}
+              totalMutations={ecosystem.totalMutations}
+              survivalRate={ecosystem.survivalRate}
             />
-          </div>
 
-          {/* Live signal gate for free users */}
-          {!subscribed && hiddenCount > 0 && (
-            <LiveSignalGate hiddenCount={hiddenCount} />
-          )}
+            {/* Agent Cards */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {agentIds.map((id, i) => (
+                <motion.div
+                  key={id}
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: i * 0.1 }}
+                >
+                  <AgentCard
+                    agent={agents[id]}
+                    isSelected={selectedAgent === id}
+                    onClick={() => {
+                      setSelectedAgent(id);
+                      setFilters(f => ({ ...f, agent: id }));
+                    }}
+                  />
+                </motion.div>
+              ))}
+            </div>
 
-          {/* Decisions Feed — click opens intelligence drawer */}
-          <DecisionsFeed
-            decisions={visibleDecisions}
-            agentName={agent.name}
-            onSelectDecision={handleSelectDecision}
-          />
-
-          {/* Advanced Analytics Section */}
-          {showAdvanced && (
+            {/* Selected Agent Detail */}
             <motion.div
-              initial={{ opacity: 0, height: 0 }}
-              animate={{ opacity: 1, height: 'auto' }}
-              exit={{ opacity: 0, height: 0 }}
+              key={selectedAgent}
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
               className="space-y-4"
             >
-              {/* Agent Scorecard Comparison */}
-              <AgentScorecardPanel scorecards={scorecards} />
+              <div className="p-4 rounded-xl bg-gradient-to-br from-primary/5 to-primary/10 border border-primary/20">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-2xl">{agent.icon}</span>
+                  <h2 className="font-display text-xl font-bold">{agent.name}</h2>
+                  <span className="text-sm text-muted-foreground">— {agent.model}</span>
+                </div>
+                <p className="text-sm text-muted-foreground">{agent.coreStrategy}</p>
+              </div>
+
+              {/* Trade History Filters */}
+              <div className="p-4 rounded-xl bg-card/50 border border-border/50">
+                <TradeHistoryFilters
+                  filters={filters}
+                  onFiltersChange={setFilters}
+                  totalCount={allDecisions.length}
+                  filteredCount={visibleDecisions.length}
+                />
+              </div>
+
+              {!subscribed && hiddenCount > 0 && (
+                <LiveSignalGate hiddenCount={hiddenCount} />
+              )}
+
+              <DecisionsFeed
+                decisions={visibleDecisions}
+                agentName={agent.name}
+                onSelectDecision={handleSelectDecision}
+              />
             </motion.div>
-          )}
-        </motion.div>
+          </TabsContent>
+
+          {/* Tab 2: Strategy & Performance */}
+          <TabsContent value="performance" className="space-y-4 mt-4">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {agentIds.map((id, i) => (
+                <motion.div
+                  key={id}
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: i * 0.1 }}
+                >
+                  <AgentCard
+                    agent={agents[id]}
+                    isSelected={selectedAgent === id}
+                    onClick={() => setSelectedAgent(id)}
+                  />
+                </motion.div>
+              ))}
+            </div>
+
+            <motion.div
+              key={`perf-${selectedAgent}`}
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="space-y-4"
+            >
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <PerformancePanel performance={agent.performance} agentName={agent.name} />
+                <StrategyBlocksPanel blocks={agent.strategyBlocks} agentName={agent.name} />
+              </div>
+
+              {/* Advanced toggle */}
+              <div className="flex justify-end">
+                <button
+                  onClick={() => setShowAdvanced(prev => !prev)}
+                  className={cn(
+                    'flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors',
+                    showAdvanced
+                      ? 'bg-primary/20 text-primary border-primary/30'
+                      : 'bg-muted/20 text-muted-foreground border-border/30 hover:bg-muted/40'
+                  )}
+                >
+                  {showAdvanced ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  {showAdvanced ? 'Hide Scorecards' : 'Show Scorecards'}
+                </button>
+              </div>
+
+              {showAdvanced && (
+                <motion.div
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: 'auto' }}
+                  exit={{ opacity: 0, height: 0 }}
+                >
+                  <AgentScorecardPanel scorecards={scorecards} />
+                </motion.div>
+              )}
+            </motion.div>
+          </TabsContent>
+
+          {/* Tab 3: Market Evolution */}
+          <TabsContent value="evolution" className="mt-4">
+            <EvolutionContent />
+          </TabsContent>
+        </Tabs>
       </div>
 
       {/* Trade Intelligence Drawer */}
