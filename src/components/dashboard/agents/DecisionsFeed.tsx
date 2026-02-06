@@ -1,7 +1,7 @@
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { TrendingUp, TrendingDown, MessageSquare, Clock } from 'lucide-react';
+import { TrendingUp, TrendingDown, MessageSquare, Clock, ChevronRight, Ban } from 'lucide-react';
 import { AgentDecision } from '@/lib/agents/types';
 import { cn } from '@/lib/utils';
 import { Link } from 'react-router-dom';
@@ -9,6 +9,7 @@ import { Link } from 'react-router-dom';
 interface DecisionsFeedProps {
   decisions: AgentDecision[];
   agentName: string;
+  onSelectDecision?: (decision: AgentDecision) => void;
 }
 
 const strategyColors: Record<string, string> = {
@@ -19,7 +20,7 @@ const strategyColors: Record<string, string> = {
   avoiding: 'bg-neural-red/20 text-neural-red border-neural-red/30',
 };
 
-export const DecisionsFeed = ({ decisions, agentName }: DecisionsFeedProps) => {
+export const DecisionsFeed = ({ decisions, agentName, onSelectDecision }: DecisionsFeedProps) => {
   const formatTime = (ts: number) => {
     const mins = Math.floor((Date.now() - ts) / 60000);
     if (mins < 60) return `${mins}m ago`;
@@ -42,16 +43,21 @@ export const DecisionsFeed = ({ decisions, agentName }: DecisionsFeedProps) => {
       <CardContent>
         <ScrollArea className="h-[300px]">
           <div className="space-y-3 pr-2">
-            {decisions.map((d, i) => (
+            {decisions.map((d) => (
               <div
                 key={`${d.ticker}-${d.timestamp}`}
-                className="p-3 rounded-lg bg-muted/20 border border-border/30 hover:bg-muted/40 transition-colors"
+                className={cn(
+                  'p-3 rounded-lg bg-muted/20 border border-border/30 transition-colors',
+                  onSelectDecision ? 'hover:bg-muted/40 cursor-pointer group' : 'hover:bg-muted/40'
+                )}
+                onClick={() => onSelectDecision?.(d)}
               >
                 <div className="flex items-center justify-between mb-2">
                   <div className="flex items-center gap-2">
                     <Link 
                       to={`/dashboard/ticker/${d.ticker}`}
                       className="font-display font-bold text-sm hover:text-primary transition-colors"
+                      onClick={e => e.stopPropagation()}
                     >
                       {d.ticker}
                     </Link>
@@ -68,12 +74,18 @@ export const DecisionsFeed = ({ decisions, agentName }: DecisionsFeedProps) => {
                       </span>
                     </div>
                     <Badge variant="outline" className={cn('text-xs', strategyColors[d.strategy])}>
+                      {d.strategy === 'avoiding' && <Ban className="w-2.5 h-2.5 mr-1" />}
                       {d.strategy.toUpperCase()}
                     </Badge>
                   </div>
-                  <div className="flex items-center gap-1 text-xs text-muted-foreground">
-                    <Clock className="w-3 h-3" />
-                    {formatTime(d.timestamp)}
+                  <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                      <Clock className="w-3 h-3" />
+                      {formatTime(d.timestamp)}
+                    </div>
+                    {onSelectDecision && (
+                      <ChevronRight className="w-4 h-4 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
+                    )}
                   </div>
                 </div>
                 
