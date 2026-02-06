@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Activity, Home, BarChart3, Settings, LogOut, Search, ChevronDown, Menu, BookOpen, Bot, LogIn } from 'lucide-react';
+import { Activity, Home, BarChart3, Settings, LogOut, Search, ChevronDown, Menu, BookOpen, Bot, LogIn, Shield } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
@@ -21,7 +21,7 @@ interface DashboardLayoutProps {
 
 export const DashboardLayout = ({ children }: DashboardLayoutProps) => {
   const navigate = useNavigate();
-  const { user, signOut } = useAuth();
+  const { user, signOut, isAdmin } = useAuth();
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<typeof TICKERS>([]);
   const [showSearch, setShowSearch] = useState(false);
@@ -96,7 +96,16 @@ export const DashboardLayout = ({ children }: DashboardLayoutProps) => {
           ))}
         </div>
 
-        <div className="pt-4 border-t border-border/30 mt-4">
+        <div className="pt-4 border-t border-border/30 mt-4 space-y-1">
+          {isAdmin && (
+            <Link
+              to="/admin"
+              className="flex items-center gap-3 px-3 py-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+            >
+              <Shield className="w-5 h-5" />
+              <span>Admin Panel</span>
+            </Link>
+          )}
           <Link
             to="/guide"
             className="flex items-center gap-3 px-3 py-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
@@ -226,7 +235,14 @@ export const DashboardLayout = ({ children }: DashboardLayoutProps) => {
                         Settings
                       </Link>
                     </DropdownMenuItem>
-                    <DropdownMenuSeparator />
+                    {isAdmin && (
+                      <DropdownMenuItem asChild>
+                        <Link to="/admin" className="cursor-pointer">
+                          <Shield className="w-4 h-4 mr-2" />
+                          Admin Panel
+                        </Link>
+                      </DropdownMenuItem>
+                    )}
                     <DropdownMenuItem onClick={handleLogout} className="text-destructive cursor-pointer">
                       <LogOut className="w-4 h-4 mr-2" />
                       Logout
