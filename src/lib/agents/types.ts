@@ -3,7 +3,17 @@
 
 import { MarketType, BiasDirection, StrategyState, EfficiencyVerdict } from '@/lib/market/types';
 
-export type AgentId = 'equities-alpha' | 'forex-macro' | 'crypto-momentum';
+export type AgentId = 
+  | 'equities-alpha' 
+  | 'forex-macro' 
+  | 'crypto-momentum'
+  | 'liquidity-radar'
+  | 'range-navigator'
+  | 'volatility-architect'
+  | 'adaptive-learner'
+  | 'sentiment-reactor'
+  | 'fractal-intelligence'
+  | 'risk-sentinel';
 
 export type AgentStatus = 'active' | 'idle' | 'analyzing' | 'leading';
 

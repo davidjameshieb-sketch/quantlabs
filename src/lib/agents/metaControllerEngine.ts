@@ -2,6 +2,7 @@
 // Simulates the adaptive evolution ecosystem with hybrid governance
 
 import { AgentId, AIAgent } from './types';
+import { ALL_AGENT_IDS } from './agentConfig';
 import {
   AdaptiveRange,
   AdaptiveParameters,
@@ -58,13 +59,36 @@ const createAdaptiveRange = (
   };
 };
 
+// Default adaptive parameter configs per agent
+const ADAPTIVE_CONFIGS: Record<AgentId, { timing: number; freq: number; hold: number }> = {
+  'equities-alpha': { timing: 0.65, freq: 0.5, hold: 0.6 },
+  'forex-macro': { timing: 0.55, freq: 0.4, hold: 0.7 },
+  'crypto-momentum': { timing: 0.75, freq: 0.7, hold: 0.4 },
+  'liquidity-radar': { timing: 0.6, freq: 0.45, hold: 0.55 },
+  'range-navigator': { timing: 0.5, freq: 0.35, hold: 0.75 },
+  'volatility-architect': { timing: 0.7, freq: 0.6, hold: 0.45 },
+  'adaptive-learner': { timing: 0.6, freq: 0.55, hold: 0.5 },
+  'sentiment-reactor': { timing: 0.55, freq: 0.5, hold: 0.6 },
+  'fractal-intelligence': { timing: 0.6, freq: 0.4, hold: 0.65 },
+  'risk-sentinel': { timing: 0.5, freq: 0.3, hold: 0.8 },
+};
+
+// Capital weight distribution across all agents
+const CAPITAL_WEIGHTS: Record<AgentId, number> = {
+  'equities-alpha': 0.18,
+  'forex-macro': 0.12,
+  'crypto-momentum': 0.10,
+  'liquidity-radar': 0.10,
+  'range-navigator': 0.08,
+  'volatility-architect': 0.09,
+  'adaptive-learner': 0.06,
+  'sentiment-reactor': 0.07,
+  'fractal-intelligence': 0.10,
+  'risk-sentinel': 0.10,
+};
+
 const createAdaptiveParameters = (agentId: AgentId, rng: EvolutionRNG): AdaptiveParameters => {
-  const configs: Record<AgentId, { timing: number; freq: number; hold: number }> = {
-    'equities-alpha': { timing: 0.65, freq: 0.5, hold: 0.6 },
-    'forex-macro': { timing: 0.55, freq: 0.4, hold: 0.7 },
-    'crypto-momentum': { timing: 0.75, freq: 0.7, hold: 0.4 },
-  };
-  const c = configs[agentId];
+  const c = ADAPTIVE_CONFIGS[agentId];
 
   return {
     entryTiming: createAdaptiveRange(rng, c.timing, 0.2, 0.95, 0.6),
@@ -205,7 +229,7 @@ const createBehavioralRisk = (rng: EvolutionRNG): BehavioralRiskProfile => ({
 
 // ─── Confidence Elasticity ───
 
-const createConfidenceElasticity = (agentId: AgentId, rng: EvolutionRNG): ConfidenceElasticity => {
+const createConfidenceElasticity = (_agentId: AgentId, rng: EvolutionRNG): ConfidenceElasticity => {
   const confidence = rng.range(45, 82);
   return {
     currentConfidence: confidence,
@@ -269,12 +293,11 @@ const createModelFreedom = (
     freedomScore: freedom,
     restrictionReasons: restrictions,
     lastAdjustment: Date.now() - Math.floor(rng.range(0, 3600000)),
-    capitalWeight: agentId === 'equities-alpha' ? 0.45 : agentId === 'forex-macro' ? 0.3 : 0.25,
+    capitalWeight: CAPITAL_WEIGHTS[agentId],
   };
 };
 
 const createReversionHistory = (rng: EvolutionRNG): ReversionCheckpoint[] => {
-  const agentIds: AgentId[] = ['equities-alpha', 'forex-macro', 'crypto-momentum'];
   const reasons = [
     'Performance drift exceeding 2σ from baseline',
     'Regime misclassification rate above threshold',
@@ -282,9 +305,9 @@ const createReversionHistory = (rng: EvolutionRNG): ReversionCheckpoint[] => {
     'Drawdown acceleration triggered safety reversion',
   ];
 
-  return Array.from({ length: 3 }, (_, i) => ({
+  return Array.from({ length: 5 }, (_, i) => ({
     timestamp: Date.now() - 86400000 * (i + 2),
-    agentId: rng.pick(agentIds),
+    agentId: rng.pick(ALL_AGENT_IDS),
     reason: rng.pick(reasons),
     parametersBefore: {},
     parametersAfter: {},
@@ -298,11 +321,10 @@ export const createEvolutionEcosystem = (
   agents: Record<AgentId, AIAgent>
 ): EvolutionEcosystem => {
   const rng = new EvolutionRNG(137);
-  const agentIds: AgentId[] = ['equities-alpha', 'forex-macro', 'crypto-momentum'];
 
   // Create per-agent evolution states
   const agentEvolution: Record<AgentId, AgentEvolutionState> = {} as any;
-  for (const id of agentIds) {
+  for (const id of ALL_AGENT_IDS) {
     agentEvolution[id] = {
       agentId: id,
       adaptiveParams: createAdaptiveParameters(id, rng),
@@ -318,12 +340,12 @@ export const createEvolutionEcosystem = (
 
   // Create agent freedom levels
   const agentFreedom: Record<AgentId, ModelFreedomLevel> = {} as any;
-  for (const id of agentIds) {
+  for (const id of ALL_AGENT_IDS) {
     agentFreedom[id] = createModelFreedom(id, agents[id].performance, rng);
   }
 
   // Determine meta-controller mode
-  const avgFitness = agentIds.reduce((s, id) => s + agentEvolution[id].fitnessScore, 0) / 3;
+  const avgFitness = ALL_AGENT_IDS.reduce((s, id) => s + agentEvolution[id].fitnessScore, 0) / ALL_AGENT_IDS.length;
   let mode: MetaControllerMode = 'observing';
   if (avgFitness < 60) mode = 'intervening';
   else if (avgFitness < 70) mode = 'adjusting';
@@ -356,7 +378,7 @@ export const createEvolutionEcosystem = (
     metaController,
     agentEvolution,
     ecosystemAge: metaController.evolutionCycle,
-    totalMutations: agentIds.reduce((s, id) => s + agentEvolution[id].mutationCount, 0),
+    totalMutations: ALL_AGENT_IDS.reduce((s, id) => s + agentEvolution[id].mutationCount, 0),
     survivalRate: rng.range(0.35, 0.65),
   };
 };

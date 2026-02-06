@@ -18,6 +18,8 @@ import { Separator } from '@/components/ui/separator';
 import { UpgradeModal } from '@/components/dashboard/UpgradeModal';
 import { useAuth } from '@/contexts/AuthContext';
 import { AgentDecision, AIAgent, AgentId } from '@/lib/agents/types';
+import { ALL_AGENT_IDS } from '@/lib/agents/agentConfig';
+import { AGENT_TRADE_META } from '@/lib/agents/agentMeta';
 import { cn } from '@/lib/utils';
 import { Link } from 'react-router-dom';
 
@@ -26,12 +28,6 @@ interface LiveTradeBookProps {
 }
 
 const LIVE_HIDDEN_COUNT = 5;
-
-const agentMeta: Record<AgentId, { icon: string; color: string; short: string }> = {
-  'equities-alpha': { icon: '📈', color: 'text-neural-green', short: 'AE' },
-  'forex-macro': { icon: '🌐', color: 'text-primary', short: 'MP' },
-  'crypto-momentum': { icon: '⚡', color: 'text-neural-orange', short: 'MG' },
-};
 
 const strategyColors: Record<string, string> = {
   pressing: 'bg-neural-green/20 text-neural-green border-neural-green/30',
@@ -76,8 +72,7 @@ export const LiveTradeBook = ({ agents }: LiveTradeBookProps) => {
 
   // Merge all agent decisions and sort by recency
   const allTrades: TradeRowData[] = useMemo(() => {
-    const agentIds: AgentId[] = ['equities-alpha', 'forex-macro', 'crypto-momentum'];
-    return agentIds
+    return ALL_AGENT_IDS
       .flatMap(id =>
         agents[id].recentDecisions.map(d => ({ ...d, agentId: id }))
       )
@@ -279,7 +274,7 @@ const TradeRow = ({
   pulse: boolean;
   index: number;
 }) => {
-  const meta = agentMeta[trade.agentId];
+  const meta = AGENT_TRADE_META[trade.agentId];
   const isBullish = trade.bias === 'bullish';
 
   return (

@@ -5,10 +5,7 @@ import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 import { MetaControllerState, MetaControllerMode, ModelFreedomLevel } from '@/lib/agents/evolutionTypes';
 import { AgentId } from '@/lib/agents/types';
-
-interface MetaControllerPanelProps {
-  state: MetaControllerState;
-}
+import { AGENT_META_MAP } from '@/lib/agents/agentMeta';
 
 const MODE_CONFIG: Record<MetaControllerMode, { label: string; color: string; bg: string; icon: typeof Eye; description: string }> = {
   observing: {
@@ -41,14 +38,8 @@ const MODE_CONFIG: Record<MetaControllerMode, { label: string; color: string; bg
   },
 };
 
-const AGENT_LABELS: Record<AgentId, { name: string; icon: string }> = {
-  'equities-alpha': { name: 'Alpha Engine', icon: '📈' },
-  'forex-macro': { name: 'Macro Pulse', icon: '🌐' },
-  'crypto-momentum': { name: 'Momentum Grid', icon: '⚡' },
-};
-
 const FreedomGauge = ({ freedom }: { freedom: ModelFreedomLevel }) => {
-  const agent = AGENT_LABELS[freedom.agentId];
+  const agent = AGENT_META_MAP[freedom.agentId];
   const fillColor = freedom.freedomScore > 65
     ? 'bg-[hsl(var(--neural-green))]'
     : freedom.freedomScore > 40
@@ -88,10 +79,14 @@ const FreedomGauge = ({ freedom }: { freedom: ModelFreedomLevel }) => {
   );
 };
 
+interface MetaControllerPanelProps {
+  state: MetaControllerState;
+}
+
 export const MetaControllerPanel = ({ state }: MetaControllerPanelProps) => {
   const modeConfig = MODE_CONFIG[state.mode];
   const ModeIcon = modeConfig.icon;
-  const agentIds: AgentId[] = ['equities-alpha', 'forex-macro', 'crypto-momentum'];
+  const agentIds = Object.keys(state.agentFreedom) as AgentId[];
 
   return (
     <Card className="bg-card/50 border-border/50">
