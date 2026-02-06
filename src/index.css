@@ -148,8 +148,13 @@
   }
 
   body {
-    @apply bg-background text-foreground font-sans antialiased;
+    @apply text-foreground font-sans antialiased;
     font-family: 'Inter', sans-serif;
+    background: transparent;
+  }
+
+  html {
+    background: hsl(230 30% 3%);
   }
 
   h1, h2, h3, h4, h5, h6 {

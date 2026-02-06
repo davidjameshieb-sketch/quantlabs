@@ -121,13 +121,13 @@ export const PricingSection = () => {
             <Clock className="w-5 h-5 text-neural-orange shrink-0" />
             <span className="text-sm font-medium text-neural-orange">Limited-time pricing expires in:</span>
             <div className="flex items-center gap-1 font-mono text-sm font-bold text-foreground">
-              <span className="bg-background/50 px-2 py-1 rounded">{String(countdown.days).padStart(2, '0')}d</span>
+              <span className="bg-background/20 px-2 py-1 rounded">{String(countdown.days).padStart(2, '0')}d</span>
               <span>:</span>
-              <span className="bg-background/50 px-2 py-1 rounded">{String(countdown.hours).padStart(2, '0')}h</span>
+              <span className="bg-background/20 px-2 py-1 rounded">{String(countdown.hours).padStart(2, '0')}h</span>
               <span>:</span>
-              <span className="bg-background/50 px-2 py-1 rounded">{String(countdown.minutes).padStart(2, '0')}m</span>
+              <span className="bg-background/20 px-2 py-1 rounded">{String(countdown.minutes).padStart(2, '0')}m</span>
               <span>:</span>
-              <span className="bg-background/50 px-2 py-1 rounded">{String(countdown.seconds).padStart(2, '0')}s</span>
+              <span className="bg-background/20 px-2 py-1 rounded">{String(countdown.seconds).padStart(2, '0')}s</span>
             </div>
           </div>
         </motion.div>

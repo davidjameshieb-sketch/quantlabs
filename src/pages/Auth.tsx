@@ -146,13 +146,11 @@ const Auth = () => {
   }
 
   return (
-    <div className="min-h-screen bg-background flex items-center justify-center p-4">
+    <div className="min-h-screen bg-transparent flex items-center justify-center p-4">
       <NeuralBackground />
       
-      {/* Gradient overlays */}
-      <div className="fixed inset-0 bg-gradient-to-b from-transparent via-background/50 to-background pointer-events-none" />
-      <div className="fixed top-1/4 left-1/4 w-96 h-96 bg-primary/10 rounded-full blur-3xl pointer-events-none" />
-      <div className="fixed bottom-1/4 right-1/4 w-96 h-96 bg-secondary/10 rounded-full blur-3xl pointer-events-none" />
+      {/* Subtle gradient overlays — transparent base */}
+      <div className="fixed inset-0 bg-gradient-to-b from-transparent via-background/10 to-transparent pointer-events-none" />
 
       <motion.div
         initial={{ opacity: 0, y: 20 }}
