@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { Filter, Grid3X3, List, RefreshCw, Layers, Search, X, Globe, ArrowUpDown, Zap } from 'lucide-react';
+import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -23,6 +24,7 @@ import {
 } from '@/components/ui/select';
 import { TickerCard } from './TickerCard';
 import { DataFreshnessBadge } from './DataFreshnessBadge';
+import { IntelligenceModeBadge } from './IntelligenceModeBadge';
 import { BrowseMarketModal } from './BrowseMarketModal';
 import { ScannerDetailDrawer } from './ScannerDetailDrawer';
 import { 
@@ -82,6 +84,7 @@ const getMarketMode = (analysis: AnalysisResult): string => {
 export const MarketScanner = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
+  const { subscribed } = useAuth();
   const selectedMarket = (searchParams.get('market') as MarketType | 'all') || 'all';
   
   const userTier = 1;
@@ -288,11 +291,12 @@ export const MarketScanner = () => {
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 flex-wrap">
             <h1 className="font-display text-2xl md:text-3xl font-bold text-gradient-neural">
               Market Snapshot
             </h1>
-            <DataFreshnessBadge level="live" />
+            <DataFreshnessBadge level={subscribed ? 'live' : 'delayed'} />
+            <IntelligenceModeBadge compact />
           </div>
           <p className="text-muted-foreground mt-1 text-sm">{getSubtitle()}</p>
         </div>

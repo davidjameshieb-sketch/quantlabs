@@ -38,6 +38,10 @@ const FEATURE_HEADLINES: Record<string, { headline: string; description: string 
     headline: 'Full Signal Tracking',
     description: 'Track AI signals across all timeframes with full intraday resolution.',
   },
+  liveTradeSignals: {
+    headline: 'Live Edge Signals Available',
+    description: 'Upgrade to see AI trades when they happen — near real-time intelligence instead of 24-hour delay.',
+  },
   default: {
     headline: 'Upgrade Your Trading Edge',
     description: 'Unlock the full power of QuantLabs AI intelligence with Edge Access.',

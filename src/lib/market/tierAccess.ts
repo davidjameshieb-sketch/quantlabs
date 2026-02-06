@@ -4,6 +4,7 @@ import type { MarketType, Timeframe } from './types';
 export interface TierFeatures {
   // Data access
   intradayData: boolean;
+  liveTradeSignals: boolean;
   
   // Analysis features
   advancedBacktesting: boolean;
@@ -25,6 +26,7 @@ export interface TierFeatures {
 const TIER_FEATURES: Record<string, TierFeatures> = {
   free: {
     intradayData: false,
+    liveTradeSignals: false,
     advancedBacktesting: false,
     aiDecisionOverlays: false,
     performanceBreakdowns: false,
@@ -37,6 +39,7 @@ const TIER_FEATURES: Record<string, TierFeatures> = {
   },
   edge: {
     intradayData: true,
+    liveTradeSignals: true,
     advancedBacktesting: true,
     aiDecisionOverlays: true,
     performanceBreakdowns: true,
@@ -78,6 +81,7 @@ export const getUpgradePrompt = (currentTier: TierName, feature: string): string
   
   const prompts: Record<string, string> = {
     intradayData: 'Upgrade to Edge Access for 15-minute delayed intraday data',
+    liveTradeSignals: 'Upgrade to Edge Access for near real-time AI trade signals',
     advancedBacktesting: 'Upgrade to Edge Access for advanced AI backtesting analytics',
     aiDecisionOverlays: 'Upgrade to Edge Access for AI decision overlays',
     performanceBreakdowns: 'Upgrade to Edge Access for quantitative performance breakdowns',

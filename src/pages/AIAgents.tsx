@@ -10,13 +10,18 @@ import { CoordinationBar } from '@/components/dashboard/agents/CoordinationBar';
 import { TradeIntelligenceDrawer } from '@/components/dashboard/agents/TradeIntelligenceDrawer';
 import { TradeHistoryFilters } from '@/components/dashboard/agents/TradeHistoryFilters';
 import { AgentScorecardPanel } from '@/components/dashboard/agents/AgentScorecardPanel';
+import { IntelligenceModeBadge } from '@/components/dashboard/IntelligenceModeBadge';
+import { LiveSignalGate } from '@/components/dashboard/LiveSignalGate';
 import { createAgents, getCoordinationState } from '@/lib/agents/agentEngine';
 import { generateExpandedDetail, generateAgentScorecard, filterDecisions } from '@/lib/agents/tradeIntelligenceEngine';
+import { filterDecisionsByTier, getHiddenTradeCount } from '@/lib/agents/tradeVisibility';
 import { AgentId, AgentDecision } from '@/lib/agents/types';
 import { TradeFilters } from '@/lib/agents/tradeTypes';
+import { useAuth } from '@/contexts/AuthContext';
 import { cn } from '@/lib/utils';
 
 const AIAgentsPage = () => {
+  const { subscribed } = useAuth();
   const [selectedAgent, setSelectedAgent] = useState<AgentId>('equities-alpha');
   const [selectedDecision, setSelectedDecision] = useState<AgentDecision | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -44,6 +49,16 @@ const AIAgentsPage = () => {
 
   const filteredDecisions = useMemo(() => filterDecisions(allDecisions, filters), [allDecisions, filters]);
 
+  // Apply tier-based visibility filtering
+  const visibleDecisions = useMemo(
+    () => filterDecisionsByTier(filteredDecisions, subscribed),
+    [filteredDecisions, subscribed]
+  );
+  const hiddenCount = useMemo(
+    () => getHiddenTradeCount(filteredDecisions),
+    [filteredDecisions]
+  );
+
   // Expand decision into full trade detail
   const expandedTrade = useMemo(() => {
     if (!selectedDecision) return null;
@@ -69,6 +84,7 @@ const AIAgentsPage = () => {
                 <h1 className="font-display text-2xl md:text-3xl font-bold text-gradient-neural">
                   AI Strategy Agents
                 </h1>
+                <IntelligenceModeBadge />
               </div>
               <p className="text-muted-foreground text-sm">
                 Multi-model coordination — transparent, measurable, auditable AI trade intelligence.
@@ -143,13 +159,18 @@ const AIAgentsPage = () => {
               filters={filters}
               onFiltersChange={setFilters}
               totalCount={allDecisions.length}
-              filteredCount={filteredDecisions.length}
+              filteredCount={visibleDecisions.length}
             />
           </div>
 
+          {/* Live signal gate for free users */}
+          {!subscribed && hiddenCount > 0 && (
+            <LiveSignalGate hiddenCount={hiddenCount} />
+          )}
+
           {/* Decisions Feed — click opens intelligence drawer */}
           <DecisionsFeed
-            decisions={filteredDecisions}
+            decisions={visibleDecisions}
             agentName={agent.name}
             onSelectDecision={handleSelectDecision}
           />
