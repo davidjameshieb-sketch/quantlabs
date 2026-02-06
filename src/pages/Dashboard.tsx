@@ -1,7 +1,7 @@
-import { SplitViewDashboard } from '@/components/dashboard/SplitViewDashboard';
+import Evolution from './Evolution';
 
 const Dashboard = () => {
-  return <SplitViewDashboard />;
+  return <Evolution />;
 };
 
 export default Dashboard;
