@@ -28,27 +28,29 @@ class AgentRNG {
 
 // Generate realistic performance metrics
 const generatePerformance = (agentId: AgentId, rng: AgentRNG): AgentPerformance => {
-  const baseWinRate = agentId === 'equities-alpha' ? 0.58 : agentId === 'forex-macro' ? 0.52 : 0.48;
-  const baseSharpe = agentId === 'equities-alpha' ? 1.4 : agentId === 'forex-macro' ? 1.1 : 0.9;
+  // All models use Alpha Engine-calibrated profitable baselines
+  const baseWinRate = agentId === 'equities-alpha' ? 0.61 : agentId === 'forex-macro' ? 0.57 : 0.55;
+  const baseSharpe = agentId === 'equities-alpha' ? 1.6 : agentId === 'forex-macro' ? 1.4 : 1.3;
   
-  const winRate = baseWinRate + rng.range(-0.05, 0.05);
-  const totalTrades = Math.floor(rng.range(80, 250));
-  const avgReturn = rng.range(0.005, 0.025) * (winRate > 0.5 ? 1 : -0.5);
-  const totalPnl = totalTrades * avgReturn * 10000 * rng.range(0.5, 1.5); // scaled to $10k account
+  const winRate = baseWinRate + rng.range(-0.03, 0.04);
+  const totalTrades = Math.floor(rng.range(100, 250));
+  // Positive average return for all models — Alpha Engine-focused conviction
+  const avgReturn = rng.range(0.008, 0.025);
+  const totalPnl = totalTrades * avgReturn * 10000 * rng.range(0.6, 1.4); // scaled to $10k account
   
   return {
     totalTrades,
     winRate,
     avgReturn,
     totalPnl,
-    sharpeRatio: baseSharpe + rng.range(-0.3, 0.3),
-    maxDrawdown: rng.range(500, 2000),
-    profitFactor: 1 + rng.range(0.1, 0.8),
-    currentStreak: Math.floor(rng.range(-5, 8)),
-    last30DayPnl: totalPnl * rng.range(0.05, 0.2),
-    bestTrade: rng.range(150, 800),
-    worstTrade: rng.range(-600, -100),
-    avgHoldingPeriod: rng.range(3, 15),
+    sharpeRatio: baseSharpe + rng.range(-0.2, 0.3),
+    maxDrawdown: rng.range(400, 1200),
+    profitFactor: 1.3 + rng.range(0.2, 0.8),
+    currentStreak: Math.floor(rng.range(0, 8)),
+    last30DayPnl: totalPnl * rng.range(0.08, 0.25),
+    bestTrade: rng.range(200, 900),
+    worstTrade: rng.range(-400, -80),
+    avgHoldingPeriod: rng.range(3, 12),
   };
 };
 
@@ -91,10 +93,11 @@ const generateDecisions = (market: MarketType, rng: AgentRNG): AgentDecision[] =
 const createStrategyBlocks = (agentId: AgentId): StrategyBlock[] => {
   const now = Date.now();
   
+  // All agents now share Alpha Engine-focused strategy blocks: trend-follow + momentum primary
   const blockConfigs: Record<AgentId, StrategyBlockType[]> = {
     'equities-alpha': ['trend-follow', 'momentum', 'breakout', 'volatility-compression', 'macro-overlay'],
-    'forex-macro': ['trend-follow', 'range-trading', 'mean-reversion', 'macro-overlay', 'breakout'],
-    'crypto-momentum': ['momentum', 'breakout', 'trend-follow', 'volatility-compression', 'mean-reversion'],
+    'forex-macro': ['trend-follow', 'momentum', 'breakout', 'volatility-compression', 'macro-overlay'],
+    'crypto-momentum': ['trend-follow', 'momentum', 'breakout', 'volatility-compression', 'macro-overlay'],
   };
   
   const types = blockConfigs[agentId];
@@ -132,34 +135,34 @@ export const createAgents = (): Record<AgentId, AIAgent> => {
     'forex-macro': {
       id: 'forex-macro',
       name: 'Macro Pulse',
-      description: 'Forex-focused AI for 24/5 currency markets. Combines macro-economic insights with core volatility and range analysis. Adapts to session-based liquidity patterns.',
+      description: 'Forex-focused AI using Alpha Engine methodology — trend-following with momentum overlay adapted for 24/5 currency markets. ATR-normalized confidence and volatility compression entry timing.',
       market: 'forex',
       status: 'active',
       model: 'GPT-5',
       icon: '🌐',
       color: 'text-primary',
       strategyBlocks: createStrategyBlocks('forex-macro'),
-      coreStrategy: 'Range and macro overlay approach. Identifies session-based volatility patterns, measures trend efficiency across pairs, and uses correlation analysis for hedging. Strong in ranging and mean-reversion conditions.',
+      coreStrategy: 'Alpha Engine-calibrated trend-following with momentum overlay. Measures volatility compression for entry timing across forex pairs, tracks efficiency for clean vs noisy conditions, and uses ATR-normalized confidence for position sizing. Session-based liquidity adaptation layered on top.',
       performance: generatePerformance('forex-macro', rng),
       recentDecisions: generateDecisions('forex', rng),
-      coordinationScore: 62,
+      coordinationScore: 72,
       isLeading: false,
       lastAnalysis: Date.now() - 300000,
     },
     'crypto-momentum': {
       id: 'crypto-momentum',
       name: 'Momentum Grid',
-      description: 'Crypto-focused AI for 24/7 digital asset markets. Aggressive momentum and breakout strategies adapted for high-volatility environments.',
+      description: 'Crypto-focused AI using Alpha Engine methodology — trend-following with momentum overlay adapted for 24/7 digital asset markets. Volatility compression detection and ATR-based conviction scaling.',
       market: 'crypto',
       status: 'active',
       model: 'Gemini Flash',
       icon: '⚡',
       color: 'text-neural-orange',
       strategyBlocks: createStrategyBlocks('crypto-momentum'),
-      coreStrategy: 'Momentum-first with breakout confirmation. Exploits high volatility environments with aggressive position scaling on clean trends. Uses volatility compression detection for early entry in squeeze setups.',
+      coreStrategy: 'Alpha Engine-calibrated trend-following with momentum confirmation. Uses volatility compression detection for early entry in squeeze setups, tracks trend efficiency for clean directional moves, and scales positions via ATR-normalized confidence. Optimized for high-volatility digital asset environments.',
       performance: generatePerformance('crypto-momentum', rng),
       recentDecisions: generateDecisions('crypto', rng),
-      coordinationScore: 55,
+      coordinationScore: 68,
       isLeading: false,
       lastAnalysis: Date.now() - 180000,
     },
