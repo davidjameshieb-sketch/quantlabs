@@ -75,7 +75,7 @@ export const HeroSection = () => {
             </Link>
           </Button>
           <Button asChild variant="outline" size="lg" className="text-base px-8 py-6 border-border/50 hover:bg-muted/30 text-muted-foreground hover:text-foreground">
-            <a href="#pricing">Upgrade to Elite</a>
+            <a href="#pricing">Upgrade to Edge Access</a>
           </Button>
         </motion.div>
 
@@ -86,7 +86,7 @@ export const HeroSection = () => {
           transition={{ duration: 0.5, delay: 0.35 }}
           className="text-xs text-muted-foreground/60 mb-14"
         >
-          Free forever with previous-day data. Elite unlocks 15-minute delayed intraday.
+          Free forever with previous-day data. Edge Access unlocks 15-minute delayed intraday.
         </motion.p>
 
         {/* Feature highlights */}

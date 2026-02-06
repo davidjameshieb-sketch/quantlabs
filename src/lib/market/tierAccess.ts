@@ -1,4 +1,4 @@
-// Tier-based feature access control - Simplified Free + Elite model
+// Tier-based feature access control - Simplified Free + Edge model
 import type { MarketType, Timeframe } from './types';
 
 export interface TierFeatures {
@@ -21,7 +21,7 @@ export interface TierFeatures {
   priorityAccess: boolean;
 }
 
-// "free" = 0, "elite" = 1
+// "free" = 0, "edge" = 1
 const TIER_FEATURES: Record<string, TierFeatures> = {
   free: {
     intradayData: false,
@@ -35,7 +35,7 @@ const TIER_FEATURES: Record<string, TierFeatures> = {
     exportSummaries: false,
     priorityAccess: false,
   },
-  elite: {
+  edge: {
     intradayData: true,
     advancedBacktesting: true,
     aiDecisionOverlays: true,
@@ -49,16 +49,16 @@ const TIER_FEATURES: Record<string, TierFeatures> = {
   },
 };
 
-export type TierName = 'free' | 'elite';
+export type TierName = 'free' | 'edge';
 
 export const TIER_DISPLAY_NAMES: Record<TierName, string> = {
   free: 'Free',
-  elite: 'QuantLabs Elite Access',
+  edge: 'QuantLabs Edge Access',
 };
 
 export const TIER_PRICES: Record<TierName, { current: number; original: number }> = {
   free: { current: 0, original: 0 },
-  elite: { current: 45, original: 95 },
+  edge: { current: 45, original: 95 },
 };
 
 export const getTierFeatures = (tier: TierName): TierFeatures => {
@@ -70,21 +70,21 @@ export const canAccessFeature = (tier: TierName, feature: keyof TierFeatures): b
   return features[feature] === true;
 };
 
-export const isElite = (tier: TierName): boolean => tier === 'elite';
+export const isEdge = (tier: TierName): boolean => tier === 'edge';
 
 // Get upgrade prompt based on what feature the user is trying to access
 export const getUpgradePrompt = (currentTier: TierName, feature: string): string | null => {
-  if (currentTier === 'elite') return null;
+  if (currentTier === 'edge') return null;
   
   const prompts: Record<string, string> = {
-    intradayData: 'Upgrade to Elite for 15-minute delayed intraday data',
-    advancedBacktesting: 'Upgrade to Elite for advanced AI backtesting analytics',
-    aiDecisionOverlays: 'Upgrade to Elite for AI decision overlays',
-    performanceBreakdowns: 'Upgrade to Elite for quantitative performance breakdowns',
-    signalTracking: 'Upgrade to Elite for full intraday signal tracking',
-    advancedChat: 'Upgrade to Elite for advanced AI chat capabilities',
-    historicalContext: 'Upgrade to Elite for historical regime analysis',
-    exportSummaries: 'Upgrade to Elite to export analysis summaries',
+    intradayData: 'Upgrade to Edge Access for 15-minute delayed intraday data',
+    advancedBacktesting: 'Upgrade to Edge Access for advanced AI backtesting analytics',
+    aiDecisionOverlays: 'Upgrade to Edge Access for AI decision overlays',
+    performanceBreakdowns: 'Upgrade to Edge Access for quantitative performance breakdowns',
+    signalTracking: 'Upgrade to Edge Access for full intraday signal tracking',
+    advancedChat: 'Upgrade to Edge Access for advanced AI chat capabilities',
+    historicalContext: 'Upgrade to Edge Access for historical regime analysis',
+    exportSummaries: 'Upgrade to Edge Access to export analysis summaries',
   };
   
   return prompts[feature] || null;
@@ -93,5 +93,5 @@ export const getUpgradePrompt = (currentTier: TierName, feature: string): string
 // Legacy compatibility helpers
 export const TIER_NAMES: Record<number, string> = {
   0: 'Free',
-  1: 'QuantLabs Elite Access',
+  1: 'QuantLabs Edge Access',
 };

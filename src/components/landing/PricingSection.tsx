@@ -64,7 +64,7 @@ const tiers = [
     premium: false,
   },
   {
-    name: 'QuantLabs Elite Access',
+    name: 'QuantLabs Edge Access',
     originalPrice: 95,
     price: 45,
     description: 'Full power — 15-min intraday data, advanced AI & backtesting',
@@ -107,7 +107,7 @@ export const PricingSection = () => {
             <span className="text-gradient-neural">Choose Your Edge</span>
           </h2>
           <p className="text-lg text-muted-foreground max-w-2xl mx-auto mb-6">
-            Start free with full platform access. Upgrade to Elite for real-time AI intelligence.
+            Start free with full platform access. Upgrade to Edge Access for real-time AI intelligence.
           </p>
         </motion.div>
 
@@ -226,7 +226,7 @@ export const PricingSection = () => {
           transition={{ duration: 0.5, delay: 0.5 }}
           className="text-center text-sm text-muted-foreground mt-12"
         >
-          Cancel anytime. No questions asked. 15-day free trial on Elite.
+          Cancel anytime. No questions asked. 15-day free trial on Edge Access.
         </motion.p>
       </div>
     </section>
