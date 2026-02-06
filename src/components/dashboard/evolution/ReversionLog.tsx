@@ -5,16 +5,11 @@ import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 import { ReversionCheckpoint } from '@/lib/agents/evolutionTypes';
 import { AgentId } from '@/lib/agents/types';
+import { AGENT_META_MAP } from '@/lib/agents/agentMeta';
 
 interface ReversionLogProps {
   checkpoints: ReversionCheckpoint[];
 }
-
-const AGENT_META: Record<AgentId, { name: string; icon: string }> = {
-  'equities-alpha': { name: 'Alpha Engine', icon: '📈' },
-  'forex-macro': { name: 'Macro Pulse', icon: '🌐' },
-  'crypto-momentum': { name: 'Momentum Grid', icon: '⚡' },
-};
 
 export const ReversionLog = ({ checkpoints }: ReversionLogProps) => {
   return (
@@ -31,7 +26,7 @@ export const ReversionLog = ({ checkpoints }: ReversionLogProps) => {
       <CardContent>
         <div className="space-y-2">
           {checkpoints.map((cp, i) => {
-            const agent = AGENT_META[cp.agentId];
+            const agent = AGENT_META_MAP[cp.agentId];
             return (
               <motion.div
                 key={i}

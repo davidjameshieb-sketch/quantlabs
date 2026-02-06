@@ -21,6 +21,7 @@ import { createEvolutionEcosystem } from '@/lib/agents/metaControllerEngine';
 import { generateExpandedDetail, generateAgentScorecard, filterDecisions } from '@/lib/agents/tradeIntelligenceEngine';
 import { filterDecisionsByTier, getHiddenTradeCount } from '@/lib/agents/tradeVisibility';
 import { AgentId, AgentDecision } from '@/lib/agents/types';
+import { ALL_AGENT_IDS } from '@/lib/agents/agentConfig';
 import { TradeFilters } from '@/lib/agents/tradeTypes';
 import { useAuth } from '@/contexts/AuthContext';
 import { cn } from '@/lib/utils';
@@ -43,7 +44,7 @@ const AIAgentsPage = () => {
   const scorecards = useMemo(() => Object.values(agents).map(generateAgentScorecard), [agents]);
   
   const agent = agents[selectedAgent];
-  const agentIds: AgentId[] = ['equities-alpha', 'forex-macro', 'crypto-momentum'];
+  const agentIds = ALL_AGENT_IDS;
 
   const allDecisions = useMemo(() => {
     if (filters.agent !== 'all') {
@@ -142,13 +143,13 @@ const AIAgentsPage = () => {
             />
 
             {/* Agent Cards */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
               {agentIds.map((id, i) => (
                 <motion.div
                   key={id}
                   initial={{ opacity: 0, y: 20 }}
                   animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: i * 0.1 }}
+                  transition={{ delay: i * 0.05 }}
                 >
                   <AgentCard
                     agent={agents[id]}
@@ -207,13 +208,13 @@ const AIAgentsPage = () => {
 
           {/* Tab 3: Strategy & Performance */}
           <TabsContent value="performance" className="space-y-4 mt-4">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
               {agentIds.map((id, i) => (
                 <motion.div
                   key={id}
                   initial={{ opacity: 0, y: 20 }}
                   animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: i * 0.1 }}
+                  transition={{ delay: i * 0.05 }}
                 >
                   <AgentCard
                     agent={agents[id]}

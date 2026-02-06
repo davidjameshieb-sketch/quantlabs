@@ -5,16 +5,12 @@ import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 import { AgentEvolutionState } from '@/lib/agents/evolutionTypes';
 import { AgentId } from '@/lib/agents/types';
+import { AGENT_META_MAP } from '@/lib/agents/agentMeta';
+import { ALL_AGENT_IDS } from '@/lib/agents/agentConfig';
 
 interface EvolutionConfidenceIndicatorProps {
   evolution: Record<AgentId, AgentEvolutionState>;
 }
-
-const AGENT_META: Record<AgentId, { name: string; icon: string }> = {
-  'equities-alpha': { name: 'Alpha Engine', icon: '📈' },
-  'forex-macro': { name: 'Macro Pulse', icon: '🌐' },
-  'crypto-momentum': { name: 'Momentum Grid', icon: '⚡' },
-};
 
 const TrendIcon = ({ trend }: { trend: 'improving' | 'stable' | 'degrading' }) => {
   if (trend === 'improving') return <TrendingUp className="w-3 h-3 text-[hsl(var(--neural-green))]" />;
@@ -23,7 +19,7 @@ const TrendIcon = ({ trend }: { trend: 'improving' | 'stable' | 'degrading' }) =
 };
 
 export const EvolutionConfidenceIndicator = ({ evolution }: EvolutionConfidenceIndicatorProps) => {
-  const agentIds: AgentId[] = ['equities-alpha', 'forex-macro', 'crypto-momentum'];
+  const agentIds = ALL_AGENT_IDS;
 
   return (
     <Card className="bg-card/50 border-border/50">
@@ -39,7 +35,7 @@ export const EvolutionConfidenceIndicator = ({ evolution }: EvolutionConfidenceI
       <CardContent className="space-y-3">
         {agentIds.map((id, i) => {
           const evo = evolution[id];
-          const meta = AGENT_META[id];
+          const meta = AGENT_META_MAP[id];
           const memory = evo.performanceMemory;
           const ce = evo.confidenceElasticity;
 
