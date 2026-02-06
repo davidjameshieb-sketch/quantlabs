@@ -46,8 +46,8 @@ const Guide = () => {
         <div className="container mx-auto px-4 h-16 flex items-center justify-between">
           <Link to="/dashboard" className="flex items-center gap-2">
             <ChevronLeft className="w-5 h-5" />
-            <Brain className="w-6 h-6 text-primary" />
-            <span className="font-display font-bold text-lg">Neural Brain</span>
+            <Activity className="w-6 h-6 text-primary" />
+            <span className="font-display font-bold text-lg">QuantLabs</span>
           </Link>
           
           {/* Mode Toggle */}
@@ -80,7 +80,7 @@ const Guide = () => {
             <span className="text-sm font-medium">Complete Platform Guide</span>
           </div>
           <h1 className="font-display text-4xl md:text-5xl font-bold mb-4">
-            <span className="text-gradient-neural">Understanding Neural Brain</span>
+            <span className="text-gradient-neural">Understanding QuantLabs</span>
           </h1>
           <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
             {mode === 'beginner' 

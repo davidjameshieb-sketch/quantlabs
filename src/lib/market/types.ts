@@ -1,4 +1,4 @@
-// Market data types for The Neural Brain
+// Market data types for QuantLabs
 
 export type MarketType = 'forex' | 'indices' | 'commodities' | 'crypto' | 'stocks';
 

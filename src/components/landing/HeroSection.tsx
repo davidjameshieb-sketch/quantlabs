@@ -1,6 +1,6 @@
 import { motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
-import { ArrowRight, Brain, Check } from 'lucide-react';
+import { ArrowRight, Activity, Check } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
 export const HeroSection = () => {
@@ -12,14 +12,14 @@ export const HeroSection = () => {
       <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-secondary/10 rounded-full blur-3xl pointer-events-none" />
 
       <div className="container relative z-10 max-w-6xl mx-auto text-center">
-        {/* Badge - more prominent */}
+        {/* Badge */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5 }}
           className="inline-flex items-center gap-2 px-4 py-2 rounded-full border border-primary/40 bg-primary/10 mb-8"
         >
-          <span className="text-sm font-medium text-primary">14-Day Free Trial · No Credit Card</span>
+          <span className="text-sm font-medium text-primary">🚀 Free Access · No Credit Card Required</span>
         </motion.div>
 
         {/* Main heading */}
@@ -29,21 +29,21 @@ export const HeroSection = () => {
           transition={{ duration: 0.5, delay: 0.1 }}
           className="font-display text-4xl md:text-6xl lg:text-7xl font-bold mb-6 leading-tight"
         >
-          <span className="text-foreground">Understand Markets,</span>
+          <span className="text-foreground">AI-Powered</span>
           <br />
-          <span className="text-gradient-neural">Don't Just Follow Signals</span>
+          <span className="text-gradient-neural">Quantitative Trading Intelligence</span>
         </motion.h1>
 
-        {/* Subtitle - clearer value */}
+        {/* Subtitle */}
         <motion.p
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5, delay: 0.2 }}
           className="text-lg md:text-xl text-muted-foreground max-w-2xl mx-auto mb-6"
         >
-          See <span className="text-foreground">why</span> markets move—not just that they did.
+          Multiple AI models collaborate to analyze markets in real-time.
           <br className="hidden sm:block" />
-          Transparent AI analysis with plain-English explanations.
+          Transparent, data-driven, and performance measurable.
         </motion.p>
 
         {/* Trust bullets */}
@@ -53,7 +53,7 @@ export const HeroSection = () => {
           transition={{ duration: 0.5, delay: 0.25 }}
           className="flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-sm text-muted-foreground mb-10"
         >
-          {['Stocks, Crypto, Forex, Commodities', 'Multi-timeframe context', 'No black boxes'].map((item, i) => (
+          {['Equities, Crypto & Forex', 'Multi-AI Collaboration', 'Quantitative Research Engine'].map((item, i) => (
             <span key={i} className="flex items-center gap-1.5">
               <Check className="w-3.5 h-3.5 text-primary" />
               {item}
@@ -61,7 +61,7 @@ export const HeroSection = () => {
           ))}
         </motion.div>
 
-        {/* CTA buttons - primary more prominent */}
+        {/* CTA buttons */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -69,13 +69,13 @@ export const HeroSection = () => {
           className="flex flex-col sm:flex-row items-center justify-center gap-4 mb-6"
         >
           <Button asChild size="lg" className="text-base px-8 py-6 font-display bg-primary hover:bg-primary/90 text-primary-foreground shadow-lg shadow-primary/20">
-            <Link to="/auth">
-              Start Your Free Trial
+            <Link to="/dashboard">
+              Explore Free Dashboard
               <ArrowRight className="ml-2 w-4 h-4" />
             </Link>
           </Button>
           <Button asChild variant="outline" size="lg" className="text-base px-8 py-6 border-border/50 hover:bg-muted/30 text-muted-foreground hover:text-foreground">
-            <a href="#pricing">View Plans</a>
+            <a href="#pricing">Upgrade to Elite</a>
           </Button>
         </motion.div>
 
@@ -86,22 +86,22 @@ export const HeroSection = () => {
           transition={{ duration: 0.5, delay: 0.35 }}
           className="text-xs text-muted-foreground/60 mb-14"
         >
-          Free for 14 days. Cancel anytime. Plans from $20/mo.
+          Free forever with previous-day data. Elite unlocks 15-minute delayed intraday.
         </motion.p>
 
-        {/* Feature highlights - what you'll see */}
+        {/* Feature highlights */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5, delay: 0.4 }}
           className="space-y-4"
         >
-          <p className="text-xs uppercase tracking-widest text-muted-foreground/50">What you'll understand</p>
+          <p className="text-xs uppercase tracking-widest text-muted-foreground/50">Platform Highlights</p>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 max-w-3xl mx-auto">
             {[
-              { label: 'Market Efficiency', desc: 'Is price moving cleanly or chopping?' },
-              { label: 'Structure & Bias', desc: 'The dominant regime right now' },
-              { label: 'Condition Outcomes', desc: 'What happened historically when this occurred?' },
+              { label: 'AI Trading Dashboards', desc: 'Multi-agent AI analyzing every market condition' },
+              { label: 'Quantitative Analytics', desc: 'Efficiency scoring, backtesting & performance tracking' },
+              { label: 'Collaborative AI', desc: 'Dynamic coordination — the best AI leads in real-time' },
             ].map((feature, i) => (
               <div
                 key={i}
@@ -115,7 +115,7 @@ export const HeroSection = () => {
         </motion.div>
       </div>
 
-      {/* Floating brain icon */}
+      {/* Floating icon */}
       <motion.div
         initial={{ opacity: 0, scale: 0.8 }}
         animate={{ opacity: 1, scale: 1 }}
@@ -126,7 +126,7 @@ export const HeroSection = () => {
           animate={{ y: [0, -10, 0] }}
           transition={{ duration: 4, repeat: Infinity, ease: "easeInOut" }}
         >
-          <Brain className="w-16 h-16 text-primary/30" />
+          <Activity className="w-16 h-16 text-primary/30" />
         </motion.div>
       </motion.div>
     </section>
