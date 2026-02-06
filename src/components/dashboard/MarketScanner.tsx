@@ -1,9 +1,11 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
-import { Filter, Grid3X3, List, RefreshCw, Layers, Search, X, Globe } from 'lucide-react';
+import { Filter, Grid3X3, List, RefreshCw, Layers, Search, X, Globe, ArrowUpDown, Zap } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Switch } from '@/components/ui/switch';
+import { Label } from '@/components/ui/label';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -22,6 +24,7 @@ import {
 import { TickerCard } from './TickerCard';
 import { DataFreshnessBadge } from './DataFreshnessBadge';
 import { BrowseMarketModal } from './BrowseMarketModal';
+import { ScannerDetailDrawer } from './ScannerDetailDrawer';
 import { 
   MARKET_LABELS, 
   getTickersByType,
@@ -29,23 +32,22 @@ import {
   getFullMarketCount,
   searchTickers,
 } from '@/lib/market';
-import { MarketType, BiasDirection, EfficiencyVerdict, TickerInfo } from '@/lib/market/types';
+import { MarketType, BiasDirection, EfficiencyVerdict, StrategyState, TickerInfo, AnalysisResult } from '@/lib/market/types';
 import { analyzeMarket } from '@/lib/market/analysisEngine';
 import { clearMarketDataCache } from '@/lib/market/dataGenerator';
 import { fetchBatchPrices, clearBatchPriceCache, PriceData } from '@/lib/market/batchPriceService';
 
 // Tier-based default ticker counts (only applies to stocks)
 const TIER_DENSITY_DEFAULTS: Record<number, number> = {
-  1: 10,  // Observer
-  2: 20,  // Analyst
-  3: 40,  // Strategist
-  4: 60,  // Architect
-  5: 100, // Mastermind
+  1: 10,
+  2: 20,
+  3: 40,
+  4: 60,
+  5: 100,
 };
 
 const DENSITY_OPTIONS = [10, 20, 40, 60, 100] as const;
 
-// Get from session storage or use tier default
 const getInitialDensity = (tier: number = 1): number => {
   const stored = sessionStorage.getItem('tickerDensity');
   if (stored) {
@@ -57,12 +59,24 @@ const getInitialDensity = (tier: number = 1): number => {
   return TIER_DENSITY_DEFAULTS[tier] || 20;
 };
 
-// Markets that show full list by default (small universes)
 const FULL_VISIBILITY_MARKETS: MarketType[] = ['crypto', 'forex', 'commodities', 'indices'];
+const isFullVisibilityMarket = (market: MarketType): boolean => FULL_VISIBILITY_MARKETS.includes(market);
 
-// Check if a market should show full visibility
-const isFullVisibilityMarket = (market: MarketType): boolean => {
-  return FULL_VISIBILITY_MARKETS.includes(market);
+type SortOption = 'default' | 'confidence-desc' | 'efficiency-desc' | 'noise-asc' | 'updated';
+
+const SORT_LABELS: Record<SortOption, string> = {
+  'default': 'Default',
+  'confidence-desc': 'Highest Confidence',
+  'efficiency-desc': 'Best Efficiency',
+  'noise-asc': 'Lowest Noise',
+  'updated': 'Most Recent',
+};
+
+const getMarketMode = (analysis: AnalysisResult): string => {
+  if (analysis.strategyState === 'avoiding') return 'Avoiding';
+  if (analysis.efficiency.verdict === 'clean' && analysis.macroStrength === 'strong') return 'Trending';
+  if (analysis.efficiency.verdict === 'noisy') return 'Volatile';
+  return 'Ranging';
 };
 
 export const MarketScanner = () => {
@@ -70,12 +84,15 @@ export const MarketScanner = () => {
   const navigate = useNavigate();
   const selectedMarket = (searchParams.get('market') as MarketType | 'all') || 'all';
   
-  // TODO: Replace with actual user tier from auth context
   const userTier = 1;
   
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [biasFilter, setBiasFilter] = useState<BiasDirection | 'all'>('all');
   const [efficiencyFilter, setEfficiencyFilter] = useState<EfficiencyVerdict | 'all'>('all');
+  const [strategyFilter, setStrategyFilter] = useState<StrategyState | 'all'>('all');
+  const [confidenceThreshold, setConfidenceThreshold] = useState<number>(0);
+  const [onlyActionable, setOnlyActionable] = useState(false);
+  const [sortBy, setSortBy] = useState<SortOption>('default');
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [realPrices, setRealPrices] = useState<Record<string, PriceData>>({});
   const [tickerDensity, setTickerDensity] = useState(() => getInitialDensity(userTier));
@@ -87,21 +104,23 @@ export const MarketScanner = () => {
   const [searchResults, setSearchResults] = useState<TickerInfo[]>([]);
   const [showSearchResults, setShowSearchResults] = useState(false);
   
-  // Persist density preference
+  // Detail drawer state
+  const [drawerTicker, setDrawerTicker] = useState<TickerInfo | null>(null);
+  const [drawerAnalysis, setDrawerAnalysis] = useState<AnalysisResult | null>(null);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  
   const handleDensityChange = useCallback((value: string) => {
     const num = parseInt(value, 10);
     setTickerDensity(num);
     sessionStorage.setItem('tickerDensity', value);
   }, []);
 
-  // Fetch real prices on mount
   useEffect(() => {
     fetchBatchPrices().then(prices => {
       setRealPrices(prices);
     });
   }, []);
 
-  // Search handler - searches across ALL tickers, independent of loaded universe
   useEffect(() => {
     if (searchQuery.length >= 1) {
       const results = searchTickers(searchQuery, 8);
@@ -124,74 +143,100 @@ export const MarketScanner = () => {
     setShowSearchResults(false);
   }, []);
 
-  // Get tickers for a market based on visibility rules
   const getTickersForMarket = useCallback((type: MarketType): TickerInfo[] => {
-    // Full visibility markets always show all tickers
-    if (isFullVisibilityMarket(type)) {
-      return getTickersByType(type);
-    }
-    
-    // Stocks: show snapshot unless expanded
+    if (isFullVisibilityMarket(type)) return getTickersByType(type);
     return stocksExpanded ? getTickersByType(type) : getSnapshotTickers(type);
   }, [stocksExpanded]);
 
-  // Get all visible tickers based on selection
   const visibleTickers = useMemo(() => {
     if (selectedMarket === 'all') {
-      // Show snapshots from stocks, full from other markets
       const allMarkets: MarketType[] = ['stocks', 'crypto', 'forex', 'commodities', 'indices'];
       return allMarkets.flatMap(type => getTickersForMarket(type));
     }
     return getTickersForMarket(selectedMarket);
   }, [selectedMarket, stocksExpanded, getTickersForMarket]);
 
-  // Pre-compute analysis for visible tickers only
+  // Pre-compute analysis for visible tickers
   const tickerAnalysisMap = useMemo(() => {
-    const map = new Map<string, ReturnType<typeof analyzeMarket>>();
+    const map = new Map<string, AnalysisResult>();
     for (const t of visibleTickers) {
       map.set(t.symbol, analyzeMarket(t, '1h'));
     }
     return map;
   }, [visibleTickers]);
 
-  const filteredTickers = useMemo(() => {
+  const filteredAndSortedTickers = useMemo(() => {
     let tickers = visibleTickers;
 
-    // Apply bias filter using cached analysis
+    // Apply bias filter
     if (biasFilter !== 'all') {
+      tickers = tickers.filter(t => tickerAnalysisMap.get(t.symbol)?.bias === biasFilter);
+    }
+
+    // Apply efficiency filter
+    if (efficiencyFilter !== 'all') {
+      tickers = tickers.filter(t => tickerAnalysisMap.get(t.symbol)?.efficiency.verdict === efficiencyFilter);
+    }
+
+    // Apply strategy/trade state filter
+    if (strategyFilter !== 'all') {
+      tickers = tickers.filter(t => tickerAnalysisMap.get(t.symbol)?.strategyState === strategyFilter);
+    }
+
+    // Apply confidence threshold
+    if (confidenceThreshold > 0) {
       tickers = tickers.filter(t => {
         const analysis = tickerAnalysisMap.get(t.symbol);
-        return analysis?.bias === biasFilter;
+        return analysis && analysis.confidencePercent >= confidenceThreshold;
       });
     }
 
-    // Apply efficiency filter using cached analysis
-    if (efficiencyFilter !== 'all') {
+    // Only actionable toggle: exclude avoiding and watching with low confidence
+    if (onlyActionable) {
       tickers = tickers.filter(t => {
         const analysis = tickerAnalysisMap.get(t.symbol);
-        return analysis?.efficiency.verdict === efficiencyFilter;
+        return analysis && analysis.strategyState !== 'avoiding' && analysis.confidencePercent >= 30;
+      });
+    }
+
+    // Apply sorting
+    if (sortBy !== 'default') {
+      tickers = [...tickers].sort((a, b) => {
+        const aA = tickerAnalysisMap.get(a.symbol);
+        const bA = tickerAnalysisMap.get(b.symbol);
+        if (!aA || !bA) return 0;
+
+        switch (sortBy) {
+          case 'confidence-desc':
+            return bA.confidencePercent - aA.confidencePercent;
+          case 'efficiency-desc':
+            return bA.efficiency.score - aA.efficiency.score;
+          case 'noise-asc':
+            return aA.efficiency.score - bA.efficiency.score; // lower efficiency = more noise
+          case 'updated':
+            return bA.timestamp - aA.timestamp;
+          default:
+            return 0;
+        }
       });
     }
 
     return tickers;
-  }, [visibleTickers, biasFilter, efficiencyFilter, tickerAnalysisMap]);
+  }, [visibleTickers, biasFilter, efficiencyFilter, strategyFilter, confidenceThreshold, onlyActionable, sortBy, tickerAnalysisMap]);
 
-  // Apply density limit ONLY for stocks view
+  // Apply density limit for stocks
   const displayedTickers = useMemo(() => {
-    // If viewing stocks (or all markets), apply density limit
     if (selectedMarket === 'stocks' || selectedMarket === 'all') {
-      // For 'all', we need to apply density across stock portion only
       if (selectedMarket === 'all') {
-        const stockTickers = filteredTickers.filter(t => t.type === 'stocks');
-        const otherTickers = filteredTickers.filter(t => t.type !== 'stocks');
+        const stockTickers = filteredAndSortedTickers.filter(t => t.type === 'stocks');
+        const otherTickers = filteredAndSortedTickers.filter(t => t.type !== 'stocks');
         const limitedStocks = stockTickers.slice(0, tickerDensity);
         return [...limitedStocks, ...otherTickers];
       }
-      return filteredTickers.slice(0, tickerDensity);
+      return filteredAndSortedTickers.slice(0, tickerDensity);
     }
-    // Other markets: show all
-    return filteredTickers;
-  }, [filteredTickers, tickerDensity, selectedMarket]);
+    return filteredAndSortedTickers;
+  }, [filteredAndSortedTickers, tickerDensity, selectedMarket]);
 
   const handleRefresh = async () => {
     setIsRefreshing(true);
@@ -213,31 +258,28 @@ export const MarketScanner = () => {
 
   const handleExpandStocks = useCallback(() => {
     setStocksExpanded(true);
-    // Navigate to stocks tab when expanding
     handleMarketChange('stocks');
     setBrowseModalOpen(false);
   }, []);
 
-  // Check if any filters are active
-  const hasActiveFilters = biasFilter !== 'all' || efficiencyFilter !== 'all';
-  
-  // Whether to show density control (only for stocks-related views)
+  const handleTickerClick = useCallback((ticker: TickerInfo) => {
+    const analysis = tickerAnalysisMap.get(ticker.symbol) || null;
+    setDrawerTicker(ticker);
+    setDrawerAnalysis(analysis);
+    setDrawerOpen(true);
+  }, [tickerAnalysisMap]);
+
+  const hasActiveFilters = biasFilter !== 'all' || efficiencyFilter !== 'all' || strategyFilter !== 'all' || confidenceThreshold > 0 || onlyActionable;
   const showDensityControl = selectedMarket === 'stocks' || selectedMarket === 'all';
-  
-  // Whether to show browse button (only when stocks are in view and not expanded)
   const showBrowseButton = (selectedMarket === 'stocks' || selectedMarket === 'all') && !stocksExpanded;
 
-  // Dynamic subtitle based on current view
   const getSubtitle = () => {
-    if (selectedMarket === 'all') {
-      return 'Showing a curated stock snapshot with full visibility across other markets.';
-    }
+    if (selectedMarket === 'all') return 'Showing a curated stock snapshot with full visibility across other markets.';
     if (selectedMarket === 'stocks') {
       return stocksExpanded 
         ? `Viewing full stock universe (${getFullMarketCount('stocks')} tickers). Use density control to manage view.`
         : 'Showing curated stock snapshot. Browse full market for complete coverage.';
     }
-    // Full visibility markets
     return `Viewing all ${MARKET_LABELS[selectedMarket]} (${getFullMarketCount(selectedMarket)} instruments).`;
   };
 
@@ -252,12 +294,9 @@ export const MarketScanner = () => {
             </h1>
             <DataFreshnessBadge level="live" />
           </div>
-          <p className="text-muted-foreground mt-1 text-sm">
-            {getSubtitle()}
-          </p>
+          <p className="text-muted-foreground mt-1 text-sm">{getSubtitle()}</p>
         </div>
 
-        {/* Controls row */}
         <div className="flex items-center gap-2 flex-wrap">
           {/* Search bar */}
           <div className="relative">
@@ -281,7 +320,6 @@ export const MarketScanner = () => {
               )}
             </div>
             
-            {/* Search results dropdown */}
             {showSearchResults && searchResults.length > 0 && (
               <div className="absolute top-full left-0 right-0 mt-1 bg-popover border border-border rounded-lg shadow-lg z-50 max-h-[300px] overflow-auto">
                 {searchResults.map((ticker) => (
@@ -307,7 +345,19 @@ export const MarketScanner = () => {
             )}
           </div>
 
-          {/* Tickers per view - ONLY for stocks views */}
+          {/* Sort */}
+          <Select value={sortBy} onValueChange={(v) => setSortBy(v as SortOption)}>
+            <SelectTrigger className="w-[160px] border-border/50">
+              <ArrowUpDown className="w-4 h-4 mr-2 text-muted-foreground" />
+              <SelectValue placeholder="Sort by" />
+            </SelectTrigger>
+            <SelectContent>
+              {Object.entries(SORT_LABELS).map(([value, label]) => (
+                <SelectItem key={value} value={value}>{label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
           {showDensityControl && (
             <Select value={tickerDensity.toString()} onValueChange={handleDensityChange}>
               <SelectTrigger className="w-[130px] border-border/50">
@@ -316,9 +366,7 @@ export const MarketScanner = () => {
               </SelectTrigger>
               <SelectContent>
                 {DENSITY_OPTIONS.map((count) => (
-                  <SelectItem key={count} value={count.toString()}>
-                    {count} tickers
-                  </SelectItem>
+                  <SelectItem key={count} value={count.toString()}>{count} tickers</SelectItem>
                 ))}
               </SelectContent>
             </Select>
@@ -333,58 +381,54 @@ export const MarketScanner = () => {
               >
                 <Filter className="w-4 h-4 mr-2" />
                 Filters
-                {hasActiveFilters && (
-                  <span className="ml-1.5 w-2 h-2 rounded-full bg-primary" />
-                )}
+                {hasActiveFilters && <span className="ml-1.5 w-2 h-2 rounded-full bg-primary" />}
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-48 bg-popover border-border">
+            <DropdownMenuContent align="end" className="w-56 bg-popover border-border">
               <DropdownMenuLabel>Bias</DropdownMenuLabel>
-              <DropdownMenuCheckboxItem
-                checked={biasFilter === 'all'}
-                onCheckedChange={() => setBiasFilter('all')}
-              >
-                All
-              </DropdownMenuCheckboxItem>
-              <DropdownMenuCheckboxItem
-                checked={biasFilter === 'bullish'}
-                onCheckedChange={() => setBiasFilter('bullish')}
-              >
-                Bullish
-              </DropdownMenuCheckboxItem>
-              <DropdownMenuCheckboxItem
-                checked={biasFilter === 'bearish'}
-                onCheckedChange={() => setBiasFilter('bearish')}
-              >
-                Bearish
-              </DropdownMenuCheckboxItem>
+              {(['all', 'bullish', 'bearish'] as const).map(v => (
+                <DropdownMenuCheckboxItem key={v} checked={biasFilter === v} onCheckedChange={() => setBiasFilter(v)}>
+                  {v === 'all' ? 'All' : v.charAt(0).toUpperCase() + v.slice(1)}
+                </DropdownMenuCheckboxItem>
+              ))}
 
               <DropdownMenuSeparator />
               <DropdownMenuLabel>Efficiency</DropdownMenuLabel>
-              <DropdownMenuCheckboxItem
-                checked={efficiencyFilter === 'all'}
-                onCheckedChange={() => setEfficiencyFilter('all')}
-              >
-                All
-              </DropdownMenuCheckboxItem>
-              <DropdownMenuCheckboxItem
-                checked={efficiencyFilter === 'clean'}
-                onCheckedChange={() => setEfficiencyFilter('clean')}
-              >
-                Clean
-              </DropdownMenuCheckboxItem>
-              <DropdownMenuCheckboxItem
-                checked={efficiencyFilter === 'mixed'}
-                onCheckedChange={() => setEfficiencyFilter('mixed')}
-              >
-                Mixed
-              </DropdownMenuCheckboxItem>
-              <DropdownMenuCheckboxItem
-                checked={efficiencyFilter === 'noisy'}
-                onCheckedChange={() => setEfficiencyFilter('noisy')}
-              >
-                Noisy
-              </DropdownMenuCheckboxItem>
+              {(['all', 'clean', 'mixed', 'noisy'] as const).map(v => (
+                <DropdownMenuCheckboxItem key={v} checked={efficiencyFilter === v} onCheckedChange={() => setEfficiencyFilter(v)}>
+                  {v === 'all' ? 'All' : v.charAt(0).toUpperCase() + v.slice(1)}
+                </DropdownMenuCheckboxItem>
+              ))}
+
+              <DropdownMenuSeparator />
+              <DropdownMenuLabel>Trade State</DropdownMenuLabel>
+              {(['all', 'pressing', 'tracking', 'holding', 'watching', 'avoiding'] as const).map(v => (
+                <DropdownMenuCheckboxItem key={v} checked={strategyFilter === v} onCheckedChange={() => setStrategyFilter(v)}>
+                  {v === 'all' ? 'All' : v.charAt(0).toUpperCase() + v.slice(1)}
+                </DropdownMenuCheckboxItem>
+              ))}
+
+              <DropdownMenuSeparator />
+              <DropdownMenuLabel>Confidence Min</DropdownMenuLabel>
+              {[0, 30, 50, 70].map(v => (
+                <DropdownMenuCheckboxItem key={v} checked={confidenceThreshold === v} onCheckedChange={() => setConfidenceThreshold(v)}>
+                  {v === 0 ? 'No minimum' : `≥ ${v}%`}
+                </DropdownMenuCheckboxItem>
+              ))}
+
+              <DropdownMenuSeparator />
+              <div className="flex items-center justify-between px-2 py-1.5">
+                <Label htmlFor="actionable-toggle" className="text-xs font-normal cursor-pointer flex items-center gap-1.5">
+                  <Zap className="w-3.5 h-3.5 text-primary" />
+                  Only Actionable
+                </Label>
+                <Switch
+                  id="actionable-toggle"
+                  checked={onlyActionable}
+                  onCheckedChange={setOnlyActionable}
+                  className="scale-75"
+                />
+              </div>
             </DropdownMenuContent>
           </DropdownMenu>
 
@@ -398,22 +442,11 @@ export const MarketScanner = () => {
             <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} />
           </Button>
 
-          {/* View toggle */}
           <div className="flex items-center border border-border/50 rounded-lg p-1">
-            <Button
-              variant={viewMode === 'grid' ? 'secondary' : 'ghost'}
-              size="icon"
-              className="h-8 w-8"
-              onClick={() => setViewMode('grid')}
-            >
+            <Button variant={viewMode === 'grid' ? 'secondary' : 'ghost'} size="icon" className="h-8 w-8" onClick={() => setViewMode('grid')}>
               <Grid3X3 className="w-4 h-4" />
             </Button>
-            <Button
-              variant={viewMode === 'list' ? 'secondary' : 'ghost'}
-              size="icon"
-              className="h-8 w-8"
-              onClick={() => setViewMode('list')}
-            >
+            <Button variant={viewMode === 'list' ? 'secondary' : 'ghost'} size="icon" className="h-8 w-8" onClick={() => setViewMode('list')}>
               <List className="w-4 h-4" />
             </Button>
           </div>
@@ -429,11 +462,7 @@ export const MarketScanner = () => {
                 All Markets
               </TabsTrigger>
               {Object.entries(MARKET_LABELS).map(([type, label]) => (
-                <TabsTrigger
-                  key={type}
-                  value={type}
-                  className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground whitespace-nowrap"
-                >
+                <TabsTrigger key={type} value={type} className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground whitespace-nowrap">
                   {label}
                 </TabsTrigger>
               ))}
@@ -441,26 +470,16 @@ export const MarketScanner = () => {
           </div>
         </Tabs>
 
-        {/* Browse Full Market - only for stocks */}
         {showBrowseButton && (
-          <Button
-            variant="outline"
-            onClick={() => setBrowseModalOpen(true)}
-            className="border-border/50 shrink-0 hidden sm:flex"
-          >
+          <Button variant="outline" onClick={() => setBrowseModalOpen(true)} className="border-border/50 shrink-0 hidden sm:flex">
             <Globe className="w-4 h-4 mr-2" />
             Browse Full Stocks
           </Button>
         )}
       </div>
 
-      {/* Mobile browse button - only for stocks */}
       {showBrowseButton && (
-        <Button
-          variant="outline"
-          onClick={() => setBrowseModalOpen(true)}
-          className="w-full border-border/50 sm:hidden"
-        >
+        <Button variant="outline" onClick={() => setBrowseModalOpen(true)} className="w-full border-border/50 sm:hidden">
           <Globe className="w-4 h-4 mr-2" />
           Browse Full Stock Universe
         </Button>
@@ -475,11 +494,21 @@ export const MarketScanner = () => {
         }
       >
         {displayedTickers.map((ticker) => (
-          <TickerCard 
+          <div 
             key={ticker.symbol} 
-            ticker={ticker} 
-            realPriceData={realPrices[ticker.symbol]}
-          />
+            onClick={(e) => {
+              e.preventDefault();
+              handleTickerClick(ticker);
+            }}
+            className="cursor-pointer"
+          >
+            <TickerCard 
+              ticker={ticker} 
+              realPriceData={realPrices[ticker.symbol]}
+              analysis={tickerAnalysisMap.get(ticker.symbol)}
+              showIntelligenceStrip
+            />
+          </div>
         ))}
       </div>
 
@@ -489,12 +518,20 @@ export const MarketScanner = () => {
         </div>
       )}
 
-      {/* Browse Market Modal - focused on stocks */}
+      {/* Browse Market Modal */}
       <BrowseMarketModal
         open={browseModalOpen}
         onOpenChange={setBrowseModalOpen}
         onSelectMarket={handleExpandStocks}
         stocksExpanded={stocksExpanded}
+      />
+
+      {/* Scanner Detail Drawer */}
+      <ScannerDetailDrawer
+        ticker={drawerTicker}
+        analysis={drawerAnalysis}
+        open={drawerOpen}
+        onOpenChange={setDrawerOpen}
       />
     </div>
   );

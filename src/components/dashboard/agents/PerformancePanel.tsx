@@ -2,10 +2,10 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { 
   TrendingUp, TrendingDown, BarChart3, Target, 
-  AlertTriangle, Trophy, Clock
+  AlertTriangle, Trophy, Clock, DollarSign
 } from 'lucide-react';
 import { AgentPerformance } from '@/lib/agents/types';
-import { formatDollar } from '@/lib/market/backtestEngine';
+import { formatDollar, DEFAULT_ACCOUNT_SIZE } from '@/lib/market/backtestEngine';
 import { cn } from '@/lib/utils';
 
 interface PerformancePanelProps {
@@ -24,6 +24,10 @@ export const PerformancePanel = ({ performance: perf, agentName }: PerformancePa
           </div>
           <Badge variant="outline" className="text-xs">
             {perf.totalTrades} trades
+          </Badge>
+          <Badge variant="outline" className="text-xs bg-primary/10 border-primary/30">
+            <DollarSign className="w-3 h-3 mr-1" />
+            Backtest Capital: ${DEFAULT_ACCOUNT_SIZE.toLocaleString()}
           </Badge>
         </div>
       </CardHeader>
