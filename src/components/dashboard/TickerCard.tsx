@@ -1,13 +1,14 @@
 import { memo, useMemo } from 'react';
 import { Link } from 'react-router-dom';
-import { TrendingUp, TrendingDown, Activity, Zap, Clock } from 'lucide-react';
+import { TrendingUp, TrendingDown, Activity, Zap, Clock, Brain, Target } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { 
   BiasDirection, 
   EfficiencyVerdict, 
   StrategyState,
-  TickerInfo 
+  TickerInfo,
+  AnalysisResult,
 } from '@/lib/market/types';
 import { analyzeMarket } from '@/lib/market/analysisEngine';
 import { MiniSparkline } from './MiniSparkline';
@@ -18,7 +19,9 @@ interface TickerCardProps {
   ticker: TickerInfo;
   index?: number;
   realPriceData?: PriceData | null;
-  realPrice?: number | null; // Backwards compat
+  realPrice?: number | null;
+  analysis?: AnalysisResult;
+  showIntelligenceStrip?: boolean;
 }
 
 const biasColors: Record<BiasDirection, string> = {
@@ -45,16 +48,29 @@ const strategyColors: Record<StrategyState, string> = {
   avoiding: 'bg-neural-red/20 text-neural-red border-neural-red/30',
 };
 
-export const TickerCard = memo(({ ticker, realPriceData, realPrice }: TickerCardProps) => {
-  const analysis = useMemo(() => analyzeMarket(ticker, '1h'), [ticker]);
+const getMarketMode = (a: AnalysisResult): string => {
+  if (a.strategyState === 'avoiding') return 'Avoiding';
+  if (a.efficiency.verdict === 'clean' && a.macroStrength === 'strong') return 'Trending';
+  if (a.efficiency.verdict === 'noisy') return 'Volatile';
+  return 'Ranging';
+};
+
+const getNoiseLabel = (score: number): { label: string; color: string } => {
+  if (score > 0.6) return { label: 'Low', color: 'text-neural-green' };
+  if (score > 0.3) return { label: 'Med', color: 'text-neural-orange' };
+  return { label: 'High', color: 'text-neural-red' };
+};
+
+export const TickerCard = memo(({ ticker, realPriceData, realPrice, analysis: providedAnalysis, showIntelligenceStrip }: TickerCardProps) => {
+  const analysis = useMemo(() => providedAnalysis || analyzeMarket(ticker, '1h'), [ticker, providedAnalysis]);
   
-  // Use real price if available, otherwise fall back to analysis price
   const priceData = realPriceData;
   const displayPrice = priceData?.price ?? realPrice ?? analysis.currentPrice;
   const priceSource = priceData?.source;
   const hasRealPrice = !!(priceData?.price || realPrice);
   
   const BiasIcon = biasIcons[analysis.bias];
+  const noise = getNoiseLabel(analysis.efficiency.score);
 
   return (
     <Link to={`/dashboard/ticker/${ticker.symbol}`}>
@@ -138,6 +154,41 @@ export const TickerCard = memo(({ ticker, realPriceData, realPrice }: TickerCard
               />
             </div>
           </div>
+
+          {/* Intelligence Strip */}
+          {showIntelligenceStrip && (
+            <div className="mt-3 pt-3 border-t border-border/30 space-y-2">
+              <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Mode</span>
+                  <span className="font-medium">{getMarketMode(analysis)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Noise</span>
+                  <span className={cn('font-medium', noise.color)}>{noise.label}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Efficiency</span>
+                  <span className="font-medium">{(analysis.efficiency.score * 100).toFixed(0)}%</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">AI</span>
+                  <span className={cn('font-medium', biasColors[analysis.bias])}>
+                    {analysis.bias.charAt(0).toUpperCase() + analysis.bias.slice(1)} {analysis.confidencePercent.toFixed(0)}%
+                  </span>
+                </div>
+              </div>
+              <div className="flex items-center justify-between text-xs">
+                <Badge variant="outline" className={cn('text-[10px] px-1.5 py-0', strategyColors[analysis.strategyState])}>
+                  {analysis.strategyState.toUpperCase()}
+                </Badge>
+                <span className="text-muted-foreground/70 flex items-center gap-1">
+                  <Brain className="w-3 h-3" />
+                  Click for details
+                </span>
+              </div>
+            </div>
+          )}
         </CardContent>
       </Card>
     </Link>

@@ -67,7 +67,7 @@ export interface AggregateOutcomes {
 export const DEFAULT_HORIZONS = [1, 3, 5, 10, 20];
 
 // Default account parameters
-export const DEFAULT_ACCOUNT_SIZE = 1000;
+export const DEFAULT_ACCOUNT_SIZE = 10000;
 export const DEFAULT_RISK_PERCENT = 5;
 
 // Map analysis result to condition label

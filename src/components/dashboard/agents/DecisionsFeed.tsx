@@ -1,7 +1,16 @@
+import { useState, useMemo } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { TrendingUp, TrendingDown, MessageSquare, Clock, ChevronRight, Ban } from 'lucide-react';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { TrendingUp, TrendingDown, MessageSquare, Clock, ChevronRight, Ban, ChevronLeft, ChevronsLeft, ChevronsRight } from 'lucide-react';
 import { AgentDecision } from '@/lib/agents/types';
 import { cn } from '@/lib/utils';
 import { Link } from 'react-router-dom';
@@ -12,6 +21,8 @@ interface DecisionsFeedProps {
   onSelectDecision?: (decision: AgentDecision) => void;
 }
 
+const PAGE_SIZE_OPTIONS = [15, 25, 50, 100] as const;
+
 const strategyColors: Record<string, string> = {
   pressing: 'bg-neural-green/20 text-neural-green border-neural-green/30',
   tracking: 'bg-primary/20 text-primary border-primary/30',
@@ -21,31 +32,61 @@ const strategyColors: Record<string, string> = {
 };
 
 export const DecisionsFeed = ({ decisions, agentName, onSelectDecision }: DecisionsFeedProps) => {
+  const [currentPage, setCurrentPage] = useState(0);
+  const [pageSize, setPageSize] = useState<number>(25);
+
+  const totalPages = Math.max(1, Math.ceil(decisions.length / pageSize));
+  
+  // Reset page when decisions or pageSize change
+  const safePage = Math.min(currentPage, totalPages - 1);
+  if (safePage !== currentPage) setCurrentPage(safePage);
+
+  const paginatedDecisions = useMemo(() => {
+    const start = currentPage * pageSize;
+    return decisions.slice(start, start + pageSize);
+  }, [decisions, currentPage, pageSize]);
+
   const formatTime = (ts: number) => {
     const mins = Math.floor((Date.now() - ts) / 60000);
     if (mins < 60) return `${mins}m ago`;
     const hrs = Math.floor(mins / 60);
-    return `${hrs}h ago`;
+    if (hrs < 24) return `${hrs}h ago`;
+    const days = Math.floor(hrs / 24);
+    return `${days}d ago`;
   };
 
   return (
     <Card className="border-border/50 bg-card/50">
       <CardHeader className="pb-3">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between flex-wrap gap-2">
           <div className="flex items-center gap-2">
             <MessageSquare className="w-5 h-5 text-primary" />
             <CardTitle className="font-display text-lg">Recent Decisions</CardTitle>
           </div>
-          <Badge variant="outline" className="text-xs">{decisions.length} signals</Badge>
+          <div className="flex items-center gap-2">
+            <Badge variant="outline" className="text-xs">{decisions.length} total signals</Badge>
+            <Select value={pageSize.toString()} onValueChange={(v) => { setPageSize(parseInt(v)); setCurrentPage(0); }}>
+              <SelectTrigger className="w-[100px] h-7 text-xs border-border/50">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {PAGE_SIZE_OPTIONS.map((size) => (
+                  <SelectItem key={size} value={size.toString()}>
+                    {size} per page
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
         </div>
       </CardHeader>
       
       <CardContent>
-        <ScrollArea className="h-[300px]">
+        <ScrollArea className="h-[400px]">
           <div className="space-y-3 pr-2">
-            {decisions.map((d) => (
+            {paginatedDecisions.map((d, idx) => (
               <div
-                key={`${d.ticker}-${d.timestamp}`}
+                key={`${d.ticker}-${d.timestamp}-${idx}`}
                 className={cn(
                   'p-3 rounded-lg bg-muted/20 border border-border/30 transition-colors',
                   onSelectDecision ? 'hover:bg-muted/40 cursor-pointer group' : 'hover:bg-muted/40'
@@ -110,6 +151,56 @@ export const DecisionsFeed = ({ decisions, agentName, onSelectDecision }: Decisi
             ))}
           </div>
         </ScrollArea>
+
+        {/* Pagination controls */}
+        {totalPages > 1 && (
+          <div className="flex items-center justify-between mt-4 pt-3 border-t border-border/30">
+            <p className="text-xs text-muted-foreground">
+              Showing {currentPage * pageSize + 1}–{Math.min((currentPage + 1) * pageSize, decisions.length)} of {decisions.length}
+            </p>
+            <div className="flex items-center gap-1">
+              <Button
+                variant="outline"
+                size="icon"
+                className="h-7 w-7"
+                onClick={() => setCurrentPage(0)}
+                disabled={currentPage === 0}
+              >
+                <ChevronsLeft className="w-3.5 h-3.5" />
+              </Button>
+              <Button
+                variant="outline"
+                size="icon"
+                className="h-7 w-7"
+                onClick={() => setCurrentPage(p => Math.max(0, p - 1))}
+                disabled={currentPage === 0}
+              >
+                <ChevronLeft className="w-3.5 h-3.5" />
+              </Button>
+              <span className="text-xs text-muted-foreground px-2">
+                Page {currentPage + 1} of {totalPages}
+              </span>
+              <Button
+                variant="outline"
+                size="icon"
+                className="h-7 w-7"
+                onClick={() => setCurrentPage(p => Math.min(totalPages - 1, p + 1))}
+                disabled={currentPage >= totalPages - 1}
+              >
+                <ChevronRight className="w-3.5 h-3.5" />
+              </Button>
+              <Button
+                variant="outline"
+                size="icon"
+                className="h-7 w-7"
+                onClick={() => setCurrentPage(totalPages - 1)}
+                disabled={currentPage >= totalPages - 1}
+              >
+                <ChevronsRight className="w-3.5 h-3.5" />
+              </Button>
+            </div>
+          </div>
+        )}
       </CardContent>
     </Card>
   );

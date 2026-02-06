@@ -34,7 +34,7 @@ const generatePerformance = (agentId: AgentId, rng: AgentRNG): AgentPerformance 
   const winRate = baseWinRate + rng.range(-0.05, 0.05);
   const totalTrades = Math.floor(rng.range(80, 250));
   const avgReturn = rng.range(0.005, 0.025) * (winRate > 0.5 ? 1 : -0.5);
-  const totalPnl = totalTrades * avgReturn * 1000 * rng.range(0.5, 1.5); // scaled to $1k account
+  const totalPnl = totalTrades * avgReturn * 10000 * rng.range(0.5, 1.5); // scaled to $10k account
   
   return {
     totalTrades,
@@ -42,39 +42,46 @@ const generatePerformance = (agentId: AgentId, rng: AgentRNG): AgentPerformance 
     avgReturn,
     totalPnl,
     sharpeRatio: baseSharpe + rng.range(-0.3, 0.3),
-    maxDrawdown: rng.range(50, 200),
+    maxDrawdown: rng.range(500, 2000),
     profitFactor: 1 + rng.range(0.1, 0.8),
     currentStreak: Math.floor(rng.range(-5, 8)),
     last30DayPnl: totalPnl * rng.range(0.05, 0.2),
-    bestTrade: rng.range(15, 80),
-    worstTrade: rng.range(-60, -10),
+    bestTrade: rng.range(150, 800),
+    worstTrade: rng.range(-600, -100),
     avgHoldingPeriod: rng.range(3, 15),
   };
 };
 
 // Generate recent decisions from analysis
 const generateDecisions = (market: MarketType, rng: AgentRNG): AgentDecision[] => {
-  const marketTickers = TICKERS.filter(t => t.type === market).slice(0, 10);
+  const marketTickers = TICKERS.filter(t => t.type === market).slice(0, 20);
   const decisions: AgentDecision[] = [];
   
-  for (const ticker of marketTickers.slice(0, 5)) {
-    const analysis = analyzeMarket(ticker, '1h');
+  // Generate multiple rounds of decisions to create a realistic trade history
+  const rounds = Math.floor(rng.range(8, 15));
+  
+  for (let round = 0; round < rounds; round++) {
+    const tickersThisRound = marketTickers.slice(0, Math.floor(rng.range(3, 10)));
     
-    const blockTypes: StrategyBlockType[] = ['trend-follow', 'momentum', 'breakout'];
-    const usedBlocks = blockTypes.filter(() => rng.next() > 0.4);
-    
-    decisions.push({
-      timestamp: Date.now() - Math.floor(rng.range(0, 3600000 * 12)),
-      ticker: ticker.symbol,
-      bias: analysis.bias,
-      confidence: analysis.confidencePercent,
-      strategy: analysis.strategyState,
-      efficiency: analysis.efficiency.verdict,
-      reasoning: analysis.narrative,
-      strategyBlocks: usedBlocks,
-      expectedReturn: rng.range(-0.02, 0.04),
-      riskReward: rng.range(1.2, 3.5),
-    });
+    for (const ticker of tickersThisRound) {
+      const analysis = analyzeMarket(ticker, '1h');
+      
+      const blockTypes: StrategyBlockType[] = ['trend-follow', 'momentum', 'breakout'];
+      const usedBlocks = blockTypes.filter(() => rng.next() > 0.4);
+      
+      decisions.push({
+        timestamp: Date.now() - Math.floor(rng.range(round * 86400000, (round + 1) * 86400000)),
+        ticker: ticker.symbol,
+        bias: analysis.bias,
+        confidence: analysis.confidencePercent + rng.range(-15, 15),
+        strategy: analysis.strategyState,
+        efficiency: analysis.efficiency.verdict,
+        reasoning: analysis.narrative,
+        strategyBlocks: usedBlocks,
+        expectedReturn: rng.range(-0.02, 0.04),
+        riskReward: rng.range(1.2, 3.5),
+      });
+    }
   }
   
   return decisions.sort((a, b) => b.timestamp - a.timestamp);
