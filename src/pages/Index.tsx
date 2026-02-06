@@ -1,6 +1,7 @@
 import { DashboardBackground } from '@/components/landing/DashboardBackground';
 import { Navbar } from '@/components/landing/Navbar';
 import { HeroSection } from '@/components/landing/HeroSection';
+import { AIFleetShowcase } from '@/components/landing/AIFleetShowcase';
 import { DemonstrationSection } from '@/components/landing/DemonstrationSection';
 import { TrustFlowSection } from '@/components/landing/TrustFlowSection';
 import { EdgeDiscoverySection } from '@/components/landing/EdgeDiscoverySection';
@@ -16,6 +17,7 @@ const Index = () => {
       <Navbar />
       <main>
         <HeroSection />
+        <AIFleetShowcase />
         <DemonstrationSection />
         <TrustFlowSection />
         <EdgeDiscoverySection />
