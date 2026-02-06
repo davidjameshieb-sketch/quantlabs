@@ -7,6 +7,8 @@ import {
   Zap, Clock, Target, BarChart3
 } from 'lucide-react';
 import { AIAgent, AgentStatus } from '@/lib/agents/types';
+import { filterDecisionsByTier } from '@/lib/agents/tradeVisibility';
+import { useAuth } from '@/contexts/AuthContext';
 import { cn } from '@/lib/utils';
 import { formatDollar } from '@/lib/market/backtestEngine';
 
@@ -31,8 +33,10 @@ const statusLabels: Record<AgentStatus, string> = {
 };
 
 export const AgentCard = ({ agent, isSelected, onClick }: AgentCardProps) => {
+  const { subscribed } = useAuth();
   const perf = agent.performance;
-  const latestDecision = agent.recentDecisions[0];
+  const visibleDecisions = filterDecisionsByTier(agent.recentDecisions, subscribed);
+  const latestDecision = visibleDecisions[0];
   const timeSinceAnalysis = Math.floor((Date.now() - agent.lastAnalysis) / 60000);
 
   return (
