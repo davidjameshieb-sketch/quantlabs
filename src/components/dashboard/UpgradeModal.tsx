@@ -1,9 +1,12 @@
+import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Zap, Check, ArrowRight } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { X, Zap, Check, ArrowRight, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useIsMobile } from '@/hooks/use-mobile';
-import { TIER_PRICES } from '@/lib/market/tierAccess';
+import { useAuth } from '@/contexts/AuthContext';
+import { supabase } from '@/integrations/supabase/client';
+import { STRIPE_CONFIG } from '@/lib/stripe/config';
 import { cn } from '@/lib/utils';
 
 interface UpgradeModalProps {
@@ -60,14 +63,13 @@ export const UpgradeModal = ({
   const featureConfig = FEATURE_HEADLINES[feature || 'default'] || FEATURE_HEADLINES.default;
   const displayHeadline = headline || featureConfig.headline;
   const displayDescription = description || featureConfig.description;
-  const price = TIER_PRICES.edge;
+  const price = { current: STRIPE_CONFIG.edge.price, original: STRIPE_CONFIG.edge.originalPrice };
   const discount = Math.round(((price.original - price.current) / price.original) * 100);
 
   return (
     <AnimatePresence>
       {open && (
         <>
-          {/* Backdrop */}
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -77,9 +79,7 @@ export const UpgradeModal = ({
             onClick={onClose}
           />
 
-          {/* Modal */}
           {isMobile ? (
-            // Mobile: Bottom sheet
             <motion.div
               initial={{ y: '100%' }}
               animate={{ y: 0 }}
@@ -87,11 +87,9 @@ export const UpgradeModal = ({
               transition={{ type: 'spring', damping: 30, stiffness: 300 }}
               className="fixed bottom-0 left-0 right-0 z-50 max-h-[70vh] rounded-t-2xl border-t border-border bg-card shadow-2xl"
             >
-              {/* Drag handle */}
               <div className="flex justify-center pt-3 pb-2">
                 <div className="w-10 h-1 rounded-full bg-muted-foreground/30" />
               </div>
-
               <div className="px-6 pb-8 overflow-auto">
                 <ModalContent
                   headline={displayHeadline}
@@ -103,7 +101,6 @@ export const UpgradeModal = ({
               </div>
             </motion.div>
           ) : (
-            // Desktop: Centered overlay card
             <motion.div
               initial={{ opacity: 0, scale: 0.95, y: 10 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
@@ -111,14 +108,12 @@ export const UpgradeModal = ({
               transition={{ duration: 0.2, ease: 'easeOut' }}
               className="fixed left-1/2 top-1/2 z-50 -translate-x-1/2 -translate-y-1/2 w-full max-w-[480px] rounded-2xl border border-border bg-card shadow-2xl"
             >
-              {/* Close */}
               <button
                 onClick={onClose}
                 className="absolute right-4 top-4 p-1.5 rounded-lg hover:bg-muted/50 transition-colors text-muted-foreground hover:text-foreground"
               >
                 <X className="w-4 h-4" />
               </button>
-
               <div className="p-8">
                 <ModalContent
                   headline={displayHeadline}
@@ -149,9 +144,36 @@ function ModalContent({
   discount: number;
   onClose: () => void;
 }) {
+  const { user } = useAuth();
+  const navigate = useNavigate();
+  const [checkoutLoading, setCheckoutLoading] = useState(false);
+
+  const handleUpgrade = async () => {
+    if (!user) {
+      onClose();
+      navigate('/auth');
+      return;
+    }
+
+    setCheckoutLoading(true);
+    try {
+      const { data, error } = await supabase.functions.invoke('create-checkout', {
+        body: { priceId: STRIPE_CONFIG.edge.price_id },
+      });
+      if (error) throw error;
+      if (data?.url) {
+        window.open(data.url, '_blank');
+        onClose();
+      }
+    } catch (err) {
+      console.error('Checkout error:', err);
+    } finally {
+      setCheckoutLoading(false);
+    }
+  };
+
   return (
     <div className="space-y-5">
-      {/* Icon + headline */}
       <div className="flex items-start gap-3">
         <div className="p-2.5 rounded-xl bg-primary/10 border border-primary/20 shrink-0">
           <Zap className="w-5 h-5 text-primary" />
@@ -162,7 +184,6 @@ function ModalContent({
         </div>
       </div>
 
-      {/* Price */}
       <div className="flex items-baseline gap-2 pt-1">
         <span className="text-3xl font-bold text-gradient-neural">${price.current}</span>
         <span className="text-sm text-muted-foreground">/month</span>
@@ -172,7 +193,6 @@ function ModalContent({
         </span>
       </div>
 
-      {/* Feature list */}
       <ul className="space-y-2">
         {UPGRADE_FEATURES.map((feat, i) => (
           <li key={i} className="flex items-center gap-2 text-sm">
@@ -182,13 +202,24 @@ function ModalContent({
         ))}
       </ul>
 
-      {/* CTAs */}
       <div className="flex flex-col gap-2 pt-2">
-        <Button asChild size="lg" className="w-full font-display gap-2 py-5 bg-primary hover:bg-primary/90 shadow-lg shadow-primary/20">
-          <Link to="/auth" onClick={onClose}>
-            Upgrade to Edge Access
-            <ArrowRight className="w-4 h-4" />
-          </Link>
+        <Button
+          size="lg"
+          onClick={handleUpgrade}
+          disabled={checkoutLoading}
+          className="w-full font-display gap-2 py-5 bg-primary hover:bg-primary/90 shadow-lg shadow-primary/20"
+        >
+          {checkoutLoading ? (
+            <>
+              <Loader2 className="w-4 h-4 animate-spin" />
+              Opening Checkout...
+            </>
+          ) : (
+            <>
+              Upgrade to Edge Access
+              <ArrowRight className="w-4 h-4" />
+            </>
+          )}
         </Button>
         <Button
           variant="ghost"
@@ -200,7 +231,6 @@ function ModalContent({
         </Button>
       </div>
 
-      {/* Trust note */}
       <p className="text-xs text-muted-foreground/60 text-center">
         Cancel anytime · Price locked while subscribed · No credit card to explore
       </p>

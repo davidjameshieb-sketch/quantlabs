@@ -8,6 +8,7 @@ import {
   Target,
   MessageSquare,
   Brain,
+  CreditCard,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -18,16 +19,27 @@ import { SectorDashboard } from './SectorDashboard';
 import { ConvictionViews } from './ConvictionViews';
 import { ChatInterface } from '@/components/chat/ChatInterface';
 import { useAuth } from '@/contexts/AuthContext';
+import { supabase } from '@/integrations/supabase/client';
 import { cn } from '@/lib/utils';
 
 type DashboardView = 'intelligence' | 'scanner' | 'sectors' | 'conviction';
 
 export const SplitViewDashboard = () => {
-  const { user } = useAuth();
+  const { user, subscribed } = useAuth();
   const [chatOpen, setChatOpen] = useState(false);
   const [activeView, setActiveView] = useState<DashboardView>('intelligence');
   
-  const userTier = 3;
+  const userTier = subscribed ? 3 : 0;
+
+  const handleManageBilling = async () => {
+    try {
+      const { data, error } = await supabase.functions.invoke('customer-portal');
+      if (error) throw error;
+      if (data?.url) window.open(data.url, '_blank');
+    } catch (err) {
+      console.error('Portal error:', err);
+    }
+  };
 
   return (
     <DashboardLayout>

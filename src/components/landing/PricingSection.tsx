@@ -1,9 +1,13 @@
 import { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
-import { Check, Star, Zap, Clock } from 'lucide-react';
+import { Check, Star, Zap, Clock, Loader2 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { cn } from '@/lib/utils';
+import { useAuth } from '@/contexts/AuthContext';
+import { supabase } from '@/integrations/supabase/client';
+import { STRIPE_CONFIG } from '@/lib/stripe/config';
 
 const PROMO_DURATION_DAYS = 15;
 
@@ -64,8 +68,8 @@ const tiers = [
   },
   {
     name: 'QuantLabs Edge Access',
-    originalPrice: 95,
-    price: 45,
+    originalPrice: STRIPE_CONFIG.edge.originalPrice,
+    price: STRIPE_CONFIG.edge.price,
     description: '15-minute delayed intraday intelligence with full AI analytics',
     features: [
       'Everything in Free',
@@ -87,6 +91,31 @@ const tiers = [
 
 export const PricingSection = () => {
   const countdown = useCountdown();
+  const { user, subscribed } = useAuth();
+  const navigate = useNavigate();
+  const [checkoutLoading, setCheckoutLoading] = useState(false);
+
+  const handleEdgeCheckout = async () => {
+    if (!user) {
+      navigate('/auth');
+      return;
+    }
+
+    setCheckoutLoading(true);
+    try {
+      const { data, error } = await supabase.functions.invoke('create-checkout', {
+        body: { priceId: STRIPE_CONFIG.edge.price_id },
+      });
+      if (error) throw error;
+      if (data?.url) {
+        window.open(data.url, '_blank');
+      }
+    } catch (err) {
+      console.error('Checkout error:', err);
+    } finally {
+      setCheckoutLoading(false);
+    }
+  };
 
   return (
     <section id="pricing" className="relative py-24 px-4">
@@ -194,18 +223,36 @@ export const PricingSection = () => {
                 ))}
               </ul>
 
-              <Button
-                asChild
-                size="lg"
-                className={cn(
-                  "w-full font-display text-base py-6",
-                  tier.popular
-                    ? "bg-primary text-primary-foreground hover:bg-primary/90 shadow-lg shadow-primary/20"
-                    : "bg-muted hover:bg-muted/80"
-                )}
-              >
-                <Link to={tier.ctaLink}>{tier.cta}</Link>
-              </Button>
+              {tier.premium ? (
+                <Button
+                  size="lg"
+                  onClick={handleEdgeCheckout}
+                  disabled={checkoutLoading || subscribed}
+                  className={cn(
+                    "w-full font-display text-base py-6",
+                    "bg-primary text-primary-foreground hover:bg-primary/90 shadow-lg shadow-primary/20"
+                  )}
+                >
+                  {subscribed ? (
+                    'Active — Edge Access'
+                  ) : checkoutLoading ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                      Opening Checkout...
+                    </>
+                  ) : (
+                    tier.cta
+                  )}
+                </Button>
+              ) : (
+                <Button
+                  asChild
+                  size="lg"
+                  className="w-full font-display text-base py-6 bg-muted hover:bg-muted/80"
+                >
+                  <Link to={tier.ctaLink}>{tier.cta}</Link>
+                </Button>
+              )}
             </motion.div>
           ))}
         </div>
