@@ -14,8 +14,9 @@ type UseTickerQuoteResult = {
 };
 
 const getRefreshMs = (market: MarketType): number => {
-  if (market === "crypto") return 30_000;
-  if (market === "forex") return 60_000;
+  // All markets now have 15-min delayed data; poll every 2 minutes
+  if (market === "crypto") return 60_000;
+  if (market === "forex") return 90_000;
   return 120_000;
 };
 

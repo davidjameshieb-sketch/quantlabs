@@ -17,9 +17,8 @@ interface PriceData {
 
 const priceCache = new Map<string, PriceData>();
 let lastBatchFetch = 0;
-let lastCryptoFetch = 0;
-const BATCH_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes for stocks
-const CRYPTO_CACHE_TTL_MS = 30 * 1000; // 30 seconds for crypto (real-time)
+// With 15-min delayed data, refresh every 2 minutes for near-real-time feel
+const CACHE_TTL_MS = 2 * 60 * 1000;
 
 // Canonical symbol mapping: frontend symbol -> { polygonTicker, source, priceRange }
 interface SymbolConfig {
@@ -45,7 +44,6 @@ const symbolConfig: Record<string, SymbolConfig> = {
   'UNH': { polygon: 'UNH', source: 'NYSE', minPrice: 200, maxPrice: 800 },
   
   // ========== INDICES & SECTOR ETFs ==========
-  // Market Indices (direct ETFs)
   'SPY': { polygon: 'SPY', source: 'S&P 500 ETF', minPrice: 200, maxPrice: 800 },
   'QQQ': { polygon: 'QQQ', source: 'NASDAQ-100 ETF', minPrice: 200, maxPrice: 700 },
   'DIA': { polygon: 'DIA', source: 'Dow Jones ETF', minPrice: 200, maxPrice: 600 },
@@ -55,7 +53,7 @@ const symbolConfig: Record<string, SymbolConfig> = {
   'EEM': { polygon: 'EEM', source: 'Emerging Markets ETF', minPrice: 20, maxPrice: 80 },
   'VEA': { polygon: 'VEA', source: 'Developed Markets ETF', minPrice: 30, maxPrice: 80 },
   
-  // S&P 500 Sector ETFs (SPDR Select Sector series)
+  // S&P 500 Sector ETFs
   'XLB': { polygon: 'XLB', source: 'Materials Sector ETF', minPrice: 40, maxPrice: 150 },
   'XLE': { polygon: 'XLE', source: 'Energy Sector ETF', minPrice: 40, maxPrice: 150 },
   'XLF': { polygon: 'XLF', source: 'Financials Sector ETF', minPrice: 20, maxPrice: 80 },
@@ -68,7 +66,7 @@ const symbolConfig: Record<string, SymbolConfig> = {
   'XLRE': { polygon: 'XLRE', source: 'Real Estate ETF', minPrice: 25, maxPrice: 70 },
   'XLC': { polygon: 'XLC', source: 'Comm. Services ETF', minPrice: 40, maxPrice: 150 },
   
-  // Legacy index mappings (for backward compatibility)
+  // Legacy index mappings
   'SPX500': { polygon: 'SPY', source: 'SPY ETF Proxy', minPrice: 200, maxPrice: 800 },
   'SPX': { polygon: 'SPY', source: 'SPY ETF Proxy', minPrice: 200, maxPrice: 800 },
   'NASDAQ': { polygon: 'QQQ', source: 'QQQ ETF Proxy', minPrice: 200, maxPrice: 700 },
@@ -79,8 +77,7 @@ const symbolConfig: Record<string, SymbolConfig> = {
   'RUT': { polygon: 'IWM', source: 'IWM ETF Proxy', minPrice: 100, maxPrice: 400 },
   'RUSSELL': { polygon: 'IWM', source: 'IWM ETF Proxy', minPrice: 100, maxPrice: 400 },
   
-  // ========== CRYPTO (Polygon X: prefix, 24/7 trading) ==========
-  // Only include cryptos with confirmed Polygon data feeds
+  // ========== CRYPTO (Polygon X: prefix) ==========
   'BTCUSD': { polygon: 'X:BTCUSD', source: 'Polygon Crypto', minPrice: 10000, maxPrice: 500000 },
   'ETHUSD': { polygon: 'X:ETHUSD', source: 'Polygon Crypto', minPrice: 500, maxPrice: 20000 },
   'SOLUSD': { polygon: 'X:SOLUSD', source: 'Polygon Crypto', minPrice: 10, maxPrice: 1000 },
@@ -102,7 +99,7 @@ const symbolConfig: Record<string, SymbolConfig> = {
   'ALGOUSD': { polygon: 'X:ALGOUSD', source: 'Polygon Crypto', minPrice: 0.05, maxPrice: 5 },
   'ZECUSD': { polygon: 'X:ZECUSD', source: 'Polygon Crypto', minPrice: 10, maxPrice: 500 },
   
-  // ========== FOREX (Polygon C: prefix, 24/5 trading) ==========
+  // ========== FOREX (Polygon C: prefix) ==========
   'EURUSD': { polygon: 'C:EURUSD', source: 'Polygon FX', minPrice: 0.8, maxPrice: 1.5 },
   'GBPUSD': { polygon: 'C:GBPUSD', source: 'Polygon FX', minPrice: 1.0, maxPrice: 2.0 },
   'USDJPY': { polygon: 'C:USDJPY', source: 'Polygon FX', minPrice: 80, maxPrice: 200 },
@@ -114,7 +111,7 @@ const symbolConfig: Record<string, SymbolConfig> = {
   'EURJPY': { polygon: 'C:EURJPY', source: 'Polygon FX', minPrice: 100, maxPrice: 200 },
   'GBPJPY': { polygon: 'C:GBPJPY', source: 'Polygon FX', minPrice: 120, maxPrice: 250 },
   
-  // ========== COMMODITIES (ETFs - direct mapping) ==========
+  // ========== COMMODITIES (ETFs) ==========
   'GLD': { polygon: 'GLD', source: 'SPDR Gold ETF', minPrice: 100, maxPrice: 600 },
   'SLV': { polygon: 'SLV', source: 'iShares Silver ETF', minPrice: 15, maxPrice: 100 },
   'USO': { polygon: 'USO', source: 'US Oil Fund', minPrice: 30, maxPrice: 150 },
@@ -137,24 +134,7 @@ const json = (body: unknown, status = 200) =>
     headers: { ...corsHeaders, 'Content-Type': 'application/json' },
   });
 
-// Get previous trading day for stocks
-function getPreviousTradingDay(): string {
-  const today = new Date();
-  let daysBack = 1;
-  if (today.getDay() === 0) daysBack = 2; // Sunday -> Friday
-  if (today.getDay() === 1) daysBack = 3; // Monday -> Friday
-  const date = new Date(today.getTime() - daysBack * 24 * 60 * 60 * 1000);
-  return date.toISOString().split('T')[0];
-}
-
-// Get previous day for crypto (Polygon free tier only provides grouped daily)
-function getCryptoPreviousDay(): string {
-  const today = new Date();
-  const yesterday = new Date(today.getTime() - 24 * 60 * 60 * 1000);
-  return yesterday.toISOString().split('T')[0];
-}
-
-// Validate price is within expected range (catches x100/x0.01 errors)
+// Validate price is within expected range
 function validatePrice(symbol: string, price: number): boolean {
   const config = symbolConfig[symbol];
   if (!config) return true;
@@ -166,10 +146,16 @@ function validatePrice(symbol: string, price: number): boolean {
   return true;
 }
 
+// ========== DATA FETCHING (Paid plan: intraday aggs available, no snapshot endpoints) ==========
+
 // Fetch grouped daily bars for US stocks (one API call for all)
-async function fetchStocksGrouped(apiKey: string): Promise<Map<string, PriceData>> {
+async function fetchStocksPrices(apiKey: string): Promise<Map<string, PriceData>> {
   const prices = new Map<string, PriceData>();
-  const dateStr = getPreviousTradingDay();
+  const today = new Date();
+  let daysBack = 1;
+  if (today.getDay() === 0) daysBack = 2; // Sunday -> Friday
+  if (today.getDay() === 1) daysBack = 3; // Monday -> Friday
+  const dateStr = new Date(today.getTime() - daysBack * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
   
   try {
     const url = `https://api.polygon.io/v2/aggs/grouped/locale/us/market/stocks/${dateStr}?adjusted=true&apiKey=${apiKey}`;
@@ -201,78 +187,108 @@ async function fetchStocksGrouped(apiKey: string): Promise<Map<string, PriceData
   return prices;
 }
 
-// Fetch crypto prices using grouped daily endpoint (reliable for free tier)
+// Fetch crypto prices - try today first (24/7 market), then yesterday
 async function fetchCryptoPrices(apiKey: string): Promise<Map<string, PriceData>> {
   const prices = new Map<string, PriceData>();
-  const dateStr = getCryptoPreviousDay();
+  const today = new Date();
+  const todayStr = today.toISOString().split('T')[0];
+  const yesterdayStr = new Date(today.getTime() - 24 * 60 * 60 * 1000).toISOString().split('T')[0];
   
-  try {
-    const url = `https://api.polygon.io/v2/aggs/grouped/locale/global/market/crypto/${dateStr}?adjusted=true&apiKey=${apiKey}`;
-    console.log(`Fetching crypto grouped daily for ${dateStr}`);
-    const response = await fetch(url);
-    const data = await response.json();
-    
-    if (data.status === 'OK' && data.results) {
-      const timestamp = Date.now();
-      for (const bar of data.results) {
-        const change = bar.c - bar.o;
-        const changePercent = bar.o > 0 ? (change / bar.o) * 100 : 0;
-        prices.set(bar.T, {
-          price: bar.c,
-          change,
-          changePercent,
-          timestamp,
-          source: 'Polygon Crypto (Prev Close)',
-          isDelayed: true,
-        });
+  // Try today first (crypto trades 24/7, paid plan may have today's data)
+  for (const dateStr of [todayStr, yesterdayStr]) {
+    try {
+      const url = `https://api.polygon.io/v2/aggs/grouped/locale/global/market/crypto/${dateStr}?adjusted=true&apiKey=${apiKey}`;
+      console.log(`Fetching crypto grouped daily for ${dateStr}`);
+      const response = await fetch(url);
+      const data = await response.json();
+      
+      if (data.status === 'OK' && data.results && data.results.length > 0) {
+        const timestamp = Date.now();
+        for (const bar of data.results) {
+          const change = bar.c - bar.o;
+          const changePercent = bar.o > 0 ? (change / bar.o) * 100 : 0;
+          prices.set(bar.T, {
+            price: bar.c,
+            change,
+            changePercent,
+            timestamp,
+            source: dateStr === todayStr ? 'Polygon Crypto (Today)' : 'Polygon Crypto (Prev Close)',
+            isDelayed: true,
+          });
+        }
+        console.log(`Got ${prices.size} crypto prices from ${dateStr}`);
+        return prices; // Use first successful result
+      } else {
+        console.log(`No crypto data for ${dateStr}, trying next...`);
       }
-      console.log(`Got ${prices.size} crypto prices`);
-    } else {
-      console.warn('Crypto grouped response:', data.status, data.message);
+    } catch (e) {
+      console.error(`Failed to fetch crypto for ${dateStr}:`, e);
     }
-  } catch (e) {
-    console.error('Failed to fetch crypto grouped:', e);
   }
   
   return prices;
 }
 
-// Fetch previous close for individual symbol (forex, commodities)
-async function fetchPrevClose(polygonTicker: string, apiKey: string): Promise<{ price: number; prevClose: number } | null> {
-  try {
-    const url = `https://api.polygon.io/v2/aggs/ticker/${polygonTicker}/prev?adjusted=true&apiKey=${apiKey}`;
-    const response = await fetch(url);
-    const data = await response.json();
-    
-    if (data.results && data.results.length > 0) {
-      return {
-        price: data.results[0].c,
-        prevClose: data.results[0].o,
-      };
-    }
-    return null;
-  } catch (e) {
-    console.error(`Failed to fetch ${polygonTicker}:`, e);
-    return null;
-  }
-}
-
-// Refresh all prices from all markets
-async function refreshPrices(apiKey: string): Promise<void> {
-  console.log('=== Refreshing batch prices ===');
+// Fetch forex prices using prev-close (all pairs, higher limit for paid plan)
+async function fetchForexPrices(apiKey: string): Promise<Map<string, PriceData>> {
+  const prices = new Map<string, PriceData>();
+  const forexSymbols = Object.entries(symbolConfig).filter(([_, c]) => c.polygon.startsWith('C:'));
   const timestamp = Date.now();
   
-  // Fetch stocks (grouped) and crypto (real-time last trade) in parallel
+  // Paid plan has much higher rate limits - fetch all forex pairs
+  for (const [ourSymbol, config] of forexSymbols) {
+    // Skip if we have very recent data
+    const existing = priceCache.get(ourSymbol);
+    if (existing && timestamp - existing.timestamp < CACHE_TTL_MS) {
+      prices.set(config.polygon, existing);
+      continue;
+    }
+    
+    try {
+      const url = `https://api.polygon.io/v2/aggs/ticker/${config.polygon}/prev?adjusted=true&apiKey=${apiKey}`;
+      const response = await fetch(url);
+      const data = await response.json();
+      
+      if (data.results && data.results.length > 0) {
+        const bar = data.results[0];
+        const change = bar.c - bar.o;
+        const changePercent = bar.o > 0 ? (change / bar.o) * 100 : 0;
+        prices.set(config.polygon, {
+          price: bar.c,
+          change,
+          changePercent,
+          timestamp,
+          source: config.source,
+        });
+        console.log(`Fetched FX: ${ourSymbol} = ${bar.c}`);
+      }
+      
+      // Small delay between requests
+      await new Promise(r => setTimeout(r, 150));
+    } catch (e) {
+      console.error(`Failed to fetch ${config.polygon}:`, e);
+    }
+  }
+  
+  return prices;
+}
+
+// ========== MAIN REFRESH ==========
+
+async function refreshPrices(apiKey: string): Promise<void> {
+  console.log('=== Refreshing batch prices (paid plan) ===');
+  
+  // Fetch stocks and crypto in parallel (both use grouped endpoints = 1 call each)
+  // Forex fetched separately as it uses individual prev-close calls
   const [stockPrices, cryptoPrices] = await Promise.all([
-    fetchStocksGrouped(apiKey),
+    fetchStocksPrices(apiKey),
     fetchCryptoPrices(apiKey),
   ]);
   
-  // Map our symbols to fetched prices
+  // Map stock & ETF symbols
   for (const [ourSymbol, config] of Object.entries(symbolConfig)) {
     const polygonTicker = config.polygon;
     
-    // Check stock prices (includes ETFs like GLD, SLV, USO, UNG)
     if (!polygonTicker.startsWith('X:') && !polygonTicker.startsWith('C:')) {
       const priceData = stockPrices.get(polygonTicker);
       if (priceData) {
@@ -287,48 +303,28 @@ async function refreshPrices(apiKey: string): Promise<void> {
       }
     }
     
-    // Check crypto prices
+    // Map crypto symbols
     if (polygonTicker.startsWith('X:')) {
       const priceData = cryptoPrices.get(polygonTicker);
       if (priceData && validatePrice(ourSymbol, priceData.price)) {
         priceCache.set(ourSymbol, { ...priceData, source: config.source });
+        console.log(`Mapped crypto ${ourSymbol} -> ${polygonTicker} = $${priceData.price}`);
       }
     }
   }
   
-  // Fetch forex/commodities individually (rate-limited)
-  const forexSymbols = Object.entries(symbolConfig).filter(([_, c]) => c.polygon.startsWith('C:'));
-  let fetchCount = 0;
-  const maxFetches = 5; // Respect free tier limits
+  // Fetch forex (sequential prev-close calls)
+  const forexPrices = await fetchForexPrices(apiKey);
   
-  for (const [ourSymbol, config] of forexSymbols) {
-    if (fetchCount >= maxFetches) {
-      console.log(`Rate limit: stopping at ${maxFetches} forex fetches`);
-      break;
+  // Map forex symbols
+  for (const [ourSymbol, config] of Object.entries(symbolConfig)) {
+    if (config.polygon.startsWith('C:')) {
+      const priceData = forexPrices.get(config.polygon);
+      if (priceData && validatePrice(ourSymbol, priceData.price)) {
+        priceCache.set(ourSymbol, { ...priceData, source: config.source });
+        console.log(`Mapped forex ${ourSymbol} -> ${config.polygon} = $${priceData.price}`);
+      }
     }
-    
-    // Skip if we have recent data
-    const existing = priceCache.get(ourSymbol);
-    if (existing && timestamp - existing.timestamp < BATCH_CACHE_TTL_MS * 2) {
-      continue;
-    }
-    
-    const result = await fetchPrevClose(config.polygon, apiKey);
-    if (result && validatePrice(ourSymbol, result.price)) {
-      const change = result.price - result.prevClose;
-      const changePercent = result.prevClose > 0 ? (change / result.prevClose) * 100 : 0;
-      priceCache.set(ourSymbol, {
-        price: result.price,
-        change,
-        changePercent,
-        timestamp,
-        source: config.source,
-      });
-      fetchCount++;
-      console.log(`Fetched FX: ${ourSymbol} = ${result.price}`);
-    }
-    
-    await new Promise(r => setTimeout(r, 250)); // Rate limit delay
   }
   
   lastBatchFetch = Date.now();
@@ -357,9 +353,9 @@ serve(async (req) => {
     const url = new URL(req.url);
     const symbols = url.searchParams.get('symbols')?.split(',') || [];
     
-    // Check if we need to refresh
+    // Refresh if cache is stale
     const now = Date.now();
-    if (now - lastBatchFetch > BATCH_CACHE_TTL_MS || priceCache.size === 0) {
+    if (now - lastBatchFetch > CACHE_TTL_MS || priceCache.size === 0) {
       await refreshPrices(POLYGON_API_KEY);
     }
 

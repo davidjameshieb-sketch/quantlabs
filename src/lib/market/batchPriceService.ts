@@ -22,7 +22,7 @@ interface BatchPriceResponse {
 let cachedPrices: Record<string, PriceData> = {};
 let lastFetch = 0;
 let lastUpdatedISO = '';
-const LOCAL_CACHE_TTL = 60 * 1000; // 1 minute local cache
+const LOCAL_CACHE_TTL = 90 * 1000; // 90 second local cache (backend refreshes every 2 min)
 
 // In-flight request deduplication
 let inFlightRequest: Promise<Record<string, PriceData>> | null = null;

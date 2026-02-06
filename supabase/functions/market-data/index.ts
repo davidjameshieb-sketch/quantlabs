@@ -103,11 +103,8 @@ serve(async (req) => {
 
     const polygonTicker = symbolMapping[symbol] || symbol;
     
-    // Free tier only supports daily data - force daily for intraday requests
+    // With 15-min delayed plan, intraday data is available
     const originalTimeframe = timeframe;
-    if (['1m', '5m', '15m', '1h', '4h'].includes(timeframe)) {
-      timeframe = '1d';
-    }
     
     const tf = timeframeMapping[timeframe] || timeframeMapping['1d'];
 
@@ -170,15 +167,13 @@ serve(async (req) => {
       volume: bar.v,
     }));
 
-    console.log(`Returning ${ohlcData.length} bars for ${symbol} (requested ${originalTimeframe}, served ${timeframe})`);
+    console.log(`Returning ${ohlcData.length} bars for ${symbol} (${originalTimeframe})`);
 
     const payload = {
       symbol,
       timeframe: originalTimeframe,
-      actualTimeframe: timeframe,
       count: ohlcData.length,
       data: ohlcData,
-      note: originalTimeframe !== timeframe ? 'Daily data returned (intraday requires paid Polygon plan)' : undefined,
       cache: 'miss',
     };
 
