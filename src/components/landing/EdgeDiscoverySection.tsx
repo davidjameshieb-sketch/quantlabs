@@ -41,7 +41,7 @@ export const EdgeDiscoverySection = () => {
 
   return (
     <section id="edge-features" className="relative py-24 px-4">
-      <div className="absolute inset-0 bg-gradient-to-b from-background via-muted/5 to-background pointer-events-none" />
+      <div className="absolute inset-0 bg-gradient-to-b from-transparent via-background/10 to-transparent pointer-events-none" />
 
       <div className="container relative z-10 max-w-5xl mx-auto">
         {/* Header */}
@@ -70,7 +70,7 @@ export const EdgeDiscoverySection = () => {
               viewport={{ once: true }}
               transition={{ duration: 0.4, delay: i * 0.1 }}
               onClick={() => handlePreview(feat.feature)}
-              className="group relative text-left p-6 rounded-2xl border border-border/50 bg-card/30 backdrop-blur-sm hover:border-primary/40 hover:bg-card/60 transition-all duration-300"
+              className="group relative text-left p-6 rounded-2xl border border-border/30 bg-card/10 backdrop-blur-sm hover:border-primary/40 hover:bg-card/20 transition-all duration-300"
             >
               {/* Lock icon */}
               <div className="absolute top-4 right-4">

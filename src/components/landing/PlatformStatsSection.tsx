@@ -31,7 +31,7 @@ const stats = [
 export const PlatformStatsSection = () => {
   return (
     <section className="relative py-20 px-4">
-      <div className="absolute inset-0 bg-gradient-to-b from-background via-muted/10 to-background pointer-events-none" />
+      <div className="absolute inset-0 bg-gradient-to-b from-transparent via-background/10 to-transparent pointer-events-none" />
 
       <div className="container relative z-10 max-w-5xl mx-auto">
         <motion.div
@@ -57,7 +57,7 @@ export const PlatformStatsSection = () => {
               whileInView={{ opacity: 1, y: 0 }}
               viewport={{ once: true }}
               transition={{ duration: 0.4, delay: i * 0.1 }}
-              className="text-center p-6 rounded-2xl border border-border/30 bg-card/20 backdrop-blur-sm"
+              className="text-center p-6 rounded-2xl border border-border/20 bg-card/10 backdrop-blur-sm"
             >
               <div className="inline-flex p-2.5 rounded-lg bg-primary/10 border border-primary/20 mb-4">
                 <stat.icon className="w-5 h-5 text-primary" />
