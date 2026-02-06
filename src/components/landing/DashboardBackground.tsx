@@ -8,14 +8,14 @@ export const DashboardBackground = () => {
       aria-hidden="true"
     >
       {/* Render the real dashboard, non-interactive */}
-      <div className="w-full h-full opacity-40">
+      <div className="w-full h-full opacity-60">
         <DashboardLayout>
           <AIIntelligencePanel />
         </DashboardLayout>
       </div>
 
       {/* Subtle darkening overlay so text remains readable */}
-      <div className="absolute inset-0 bg-background/60" />
+      <div className="absolute inset-0 bg-background/30" />
     </div>
   );
 };
