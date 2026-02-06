@@ -1,7 +1,7 @@
-import Evolution from './Evolution';
+import AIAgents from './AIAgents';
 
 const Dashboard = () => {
-  return <Evolution />;
+  return <AIAgents />;
 };
 
 export default Dashboard;
