@@ -6,7 +6,8 @@ import {
   BarChart3, 
   Layers, 
   Target,
-  MessageSquare 
+  MessageSquare,
+  Bot,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -17,15 +18,16 @@ import { ConvictionViews } from './ConvictionViews';
 import { ChatInterface } from '@/components/chat/ChatInterface';
 import { useAuth } from '@/contexts/AuthContext';
 import { cn } from '@/lib/utils';
+import { useNavigate } from 'react-router-dom';
 
 type DashboardView = 'scanner' | 'sectors' | 'conviction';
 
 export const SplitViewDashboard = () => {
   const { user } = useAuth();
+  const navigate = useNavigate();
   const [chatOpen, setChatOpen] = useState(true);
   const [activeView, setActiveView] = useState<DashboardView>('scanner');
   
-  // Mock user tier - in production this would come from a profiles table
   const userTier = 3;
 
   return (
@@ -62,6 +64,17 @@ export const SplitViewDashboard = () => {
                 >
                   <Target className="w-4 h-4" />
                   <span className="hidden sm:inline">Views</span>
+                </TabsTrigger>
+                <TabsTrigger 
+                  value="agents" 
+                  className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground gap-2"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    navigate('/dashboard/agents');
+                  }}
+                >
+                  <Bot className="w-4 h-4" />
+                  <span className="hidden sm:inline">AI Agents</span>
                 </TabsTrigger>
               </TabsList>
 
