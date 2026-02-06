@@ -141,6 +141,7 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
       if (session?.user) {
         ensureProfile(session.user);
         checkAdminRole(session.user.id);
+        checkSubscription();
       }
     });
 
