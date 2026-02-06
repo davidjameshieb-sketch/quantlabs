@@ -65,8 +65,8 @@ const getBasePrice = (ticker: TickerInfo): number => {
   return 50 + unit * 150; // 50..200
 };
 
-// Get volatility multiplier for ticker
-const getVolatility = (symbol: string): number => {
+// Get volatility multiplier for ticker — returns an absolute price move per bar
+const getVolatility = (ticker: TickerInfo): number => {
   const volatilities: Record<string, number> = {
     // Forex (low volatility)
     EURUSD: 0.0008,
@@ -93,7 +93,20 @@ const getVolatility = (symbol: string): number => {
     XRPUSD: 0.05,
     ADAUSD: 0.03,
   };
-  return volatilities[symbol] || 0.01;
+
+  const mapped = volatilities[ticker.symbol];
+  if (typeof mapped === 'number') return mapped;
+
+  // Dynamic fallback: ~1.2% of base price per bar (realistic daily volatility)
+  const basePrice = getBasePrice(ticker);
+  
+  if (ticker.type === 'stocks') return basePrice * 0.012;
+  if (ticker.type === 'crypto') return basePrice * 0.025;
+  if (ticker.type === 'forex') return basePrice * 0.003;
+  if (ticker.type === 'commodities') return basePrice * 0.015;
+  if (ticker.type === 'indices') return basePrice * 0.008;
+  
+  return basePrice * 0.01;
 };
 
 // Get timeframe duration in milliseconds
@@ -120,7 +133,7 @@ export const generateOHLCData = (
   const rng = new SeededRandom(seed + timeframe.charCodeAt(0));
   
   const basePrice = getBasePrice(ticker);
-  const volatility = getVolatility(ticker.symbol);
+  const volatility = getVolatility(ticker);
   const tfDuration = getTimeframeDuration(timeframe);
   
   const now = Date.now();

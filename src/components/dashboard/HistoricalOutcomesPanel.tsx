@@ -2,18 +2,19 @@ import { useState, useMemo } from 'react';
 import { motion } from 'framer-motion';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { HelpCircle, Clock, TrendingUp, TrendingDown, AlertTriangle, Zap, History } from 'lucide-react';
+import { HelpCircle, Clock, TrendingUp, TrendingDown, AlertTriangle, Zap, History, DollarSign } from 'lucide-react';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { TickerInfo } from '@/lib/market/types';
 import { 
   computeTickerOutcomes, 
   ConditionLabel, 
-  OutcomeMetrics,
   getConditionDisplayText,
   getConditionColor,
-  formatOutcomeSummary 
+  formatDollar,
+  DEFAULT_ACCOUNT_SIZE,
+  DEFAULT_RISK_PERCENT,
 } from '@/lib/market/backtestEngine';
 import { DataFreshnessBadge } from './DataFreshnessBadge';
 import { cn } from '@/lib/utils';
@@ -35,9 +36,8 @@ export const HistoricalOutcomesPanel = ({ ticker, className }: HistoricalOutcome
   const [selectedCondition, setSelectedCondition] = useState<ConditionLabel>('high-conviction-bullish');
   const [selectedHorizon, setSelectedHorizon] = useState<number>(10);
   
-  // Compute outcomes for ticker
   const outcomes = useMemo(() => {
-    return computeTickerOutcomes(ticker, '1h', 500);
+    return computeTickerOutcomes(ticker, '1h', 500, undefined, DEFAULT_ACCOUNT_SIZE, DEFAULT_RISK_PERCENT);
   }, [ticker]);
   
   const selectedOutcome = outcomes.outcomes[selectedCondition];
@@ -60,6 +60,8 @@ export const HistoricalOutcomesPanel = ({ ticker, className }: HistoricalOutcome
       case 'compression-breakout-imminent': return <Zap className="w-4 h-4" />;
     }
   };
+
+  const ps = selectedOutcome?.positionSizing;
   
   return (
     <Card className={cn('border-border/50 bg-card/50', className)}>
@@ -73,14 +75,18 @@ export const HistoricalOutcomesPanel = ({ ticker, className }: HistoricalOutcome
                 <HelpCircle className="w-4 h-4 text-muted-foreground" />
               </TooltipTrigger>
               <TooltipContent className="max-w-xs">
-                <p>Shows what historically happened after each market condition was detected. This is pattern analysis, not prediction.</p>
+                <p>Shows what historically happened after each market condition was detected. Simulates a ${DEFAULT_ACCOUNT_SIZE} account risking {DEFAULT_RISK_PERCENT}% per trade.</p>
               </TooltipContent>
             </Tooltip>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            <Badge variant="outline" className="text-xs bg-primary/10 border-primary/30">
+              <DollarSign className="w-3 h-3 mr-1" />
+              ${DEFAULT_ACCOUNT_SIZE} / {DEFAULT_RISK_PERCENT}% Risk
+            </Badge>
             <DataFreshnessBadge level="historical" showTooltip={true} />
             <Badge variant="outline" className="text-xs">
-              {outcomes.sampleDepth} bars analyzed
+              {outcomes.sampleDepth} bars
             </Badge>
           </div>
         </div>
@@ -109,16 +115,18 @@ export const HistoricalOutcomesPanel = ({ ticker, className }: HistoricalOutcome
           </div>
         </ScrollArea>
         
-        {/* Horizon selector */}
-        <Tabs value={selectedHorizon.toString()} onValueChange={(v) => setSelectedHorizon(parseInt(v))}>
-          <TabsList className="w-full bg-muted/50">
-            {[1, 3, 5, 10, 20].map(h => (
-              <TabsTrigger key={h} value={h.toString()} className="flex-1 text-xs">
-                {HORIZON_LABELS[h]}
-              </TabsTrigger>
-            ))}
-          </TabsList>
-        </Tabs>
+        {/* Horizon selector - scrollable on mobile */}
+        <div className="overflow-x-auto scrollbar-hide -mx-1 px-1">
+          <Tabs value={selectedHorizon.toString()} onValueChange={(v) => setSelectedHorizon(parseInt(v))}>
+            <TabsList className="bg-muted/50 inline-flex w-auto min-w-full sm:w-full">
+              {[1, 3, 5, 10, 20].map(h => (
+                <TabsTrigger key={h} value={h.toString()} className="flex-1 text-xs px-2 sm:px-4 whitespace-nowrap">
+                  {HORIZON_LABELS[h]}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+          </Tabs>
+        </div>
         
         {/* Metrics display */}
         {selectedOutcome && selectedForwardReturn && (
@@ -129,14 +137,14 @@ export const HistoricalOutcomesPanel = ({ ticker, className }: HistoricalOutcome
             className="space-y-4"
           >
             {/* Main metrics */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div className="grid grid-cols-2 gap-3">
               <div className="p-3 rounded-lg bg-muted/30 border border-border/50">
                 <p className="text-xs text-muted-foreground mb-1">Avg Return</p>
                 <p className={cn(
                   'text-xl font-bold font-display',
                   selectedForwardReturn.avgReturn > 0 ? 'text-neural-green' : 'text-neural-red'
                 )}>
-                  {(selectedForwardReturn.avgReturn * 100).toFixed(2)}%
+                  {selectedForwardReturn.avgReturn > 0 ? '+' : ''}{(selectedForwardReturn.avgReturn * 100).toFixed(2)}%
                 </p>
               </div>
               
@@ -164,6 +172,56 @@ export const HistoricalOutcomesPanel = ({ ticker, className }: HistoricalOutcome
                 </p>
               </div>
             </div>
+
+            {/* Position Sizing P&L */}
+            {ps && ps.totalTrades > 0 && (
+              <div className="p-4 rounded-lg bg-gradient-to-br from-primary/5 to-primary/10 border border-primary/20">
+                <div className="flex items-center gap-2 mb-3">
+                  <DollarSign className="w-4 h-4 text-primary" />
+                  <h4 className="text-sm font-medium">Position Sizing Simulation</h4>
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  <div>
+                    <p className="text-xs text-muted-foreground">Total P&L</p>
+                    <p className={cn(
+                      'text-lg font-bold font-display',
+                      ps.totalPnl >= 0 ? 'text-neural-green' : 'text-neural-red'
+                    )}>
+                      {formatDollar(ps.totalPnl)}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted-foreground">Avg P&L/Trade</p>
+                    <p className={cn(
+                      'text-lg font-bold font-display',
+                      ps.avgPnlPerTrade >= 0 ? 'text-neural-green' : 'text-neural-red'
+                    )}>
+                      {formatDollar(ps.avgPnlPerTrade)}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted-foreground">Max Drawdown</p>
+                    <p className="text-lg font-bold font-display text-neural-red">
+                      -${ps.maxDrawdown.toFixed(2)}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted-foreground">Sharpe Ratio</p>
+                    <p className={cn(
+                      'text-lg font-bold font-display',
+                      ps.sharpeRatio > 1 ? 'text-neural-green' : ps.sharpeRatio > 0 ? 'text-neural-orange' : 'text-neural-red'
+                    )}>
+                      {ps.sharpeRatio.toFixed(2)}
+                    </p>
+                  </div>
+                </div>
+                <div className="flex gap-4 mt-2 text-xs text-muted-foreground">
+                  <span>{ps.totalTrades} trades</span>
+                  <span>Risk: ${ps.riskPerTrade.toFixed(0)}/trade</span>
+                  <span>Avg Size: ${ps.avgPositionSize.toFixed(0)}</span>
+                </div>
+              </div>
+            )}
             
             {/* Distribution info */}
             <div className="p-4 rounded-lg bg-muted/20 border border-border/30">
@@ -171,9 +229,9 @@ export const HistoricalOutcomesPanel = ({ ticker, className }: HistoricalOutcome
               <div className="flex items-center gap-4">
                 <div className="flex-1">
                   <div className="flex justify-between text-xs text-muted-foreground mb-1">
-                    <span>25th Percentile</span>
+                    <span>25th Pctl</span>
                     <span>Median</span>
-                    <span>75th Percentile</span>
+                    <span>75th Pctl</span>
                   </div>
                   <div className="h-3 bg-gradient-to-r from-neural-red via-muted to-neural-green rounded-full relative">
                     <div 
@@ -191,7 +249,7 @@ export const HistoricalOutcomesPanel = ({ ticker, className }: HistoricalOutcome
             </div>
             
             {/* Regime stability */}
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-2 gap-3">
               <div className="p-3 rounded-lg bg-muted/30 border border-border/50">
                 <div className="flex items-center gap-2 mb-1">
                   <Clock className="w-4 h-4 text-muted-foreground" />
@@ -219,11 +277,11 @@ export const HistoricalOutcomesPanel = ({ ticker, className }: HistoricalOutcome
             </div>
             
             {/* Sample size and confidence */}
-            <div className="flex items-center justify-between p-3 rounded-lg bg-primary/5 border border-primary/20">
+            <div className="flex items-center justify-between p-3 rounded-lg bg-primary/5 border border-primary/20 flex-wrap gap-2">
               <div>
                 <p className="text-sm font-medium">Sample Size: {selectedForwardReturn.sampleSize}</p>
                 <p className="text-xs text-muted-foreground">
-                  Based on {outcomes.sampleDepth} bars of historical data
+                  {outcomes.sampleDepth} bars analyzed
                 </p>
               </div>
               <Badge 
