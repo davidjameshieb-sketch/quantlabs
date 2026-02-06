@@ -12,7 +12,9 @@ import { TradeHistoryFilters } from '@/components/dashboard/agents/TradeHistoryF
 import { AgentScorecardPanel } from '@/components/dashboard/agents/AgentScorecardPanel';
 import { IntelligenceModeBadge } from '@/components/dashboard/IntelligenceModeBadge';
 import { LiveSignalGate } from '@/components/dashboard/LiveSignalGate';
+import { MetaControllerSummary } from '@/components/dashboard/evolution/MetaControllerSummary';
 import { createAgents, getCoordinationState } from '@/lib/agents/agentEngine';
+import { createEvolutionEcosystem } from '@/lib/agents/metaControllerEngine';
 import { generateExpandedDetail, generateAgentScorecard, filterDecisions } from '@/lib/agents/tradeIntelligenceEngine';
 import { filterDecisionsByTier, getHiddenTradeCount } from '@/lib/agents/tradeVisibility';
 import { AgentId, AgentDecision } from '@/lib/agents/types';
@@ -34,6 +36,7 @@ const AIAgentsPage = () => {
   
   const agents = useMemo(() => createAgents(), []);
   const coordination = useMemo(() => getCoordinationState(agents), [agents]);
+  const ecosystem = useMemo(() => createEvolutionEcosystem(agents), [agents]);
   const scorecards = useMemo(() => Object.values(agents).map(generateAgentScorecard), [agents]);
   
   const agent = agents[selectedAgent];
@@ -108,6 +111,13 @@ const AIAgentsPage = () => {
 
         {/* Coordination Bar */}
         <CoordinationBar coordination={coordination} />
+
+        {/* Adaptive Evolution Summary */}
+        <MetaControllerSummary
+          state={ecosystem.metaController}
+          totalMutations={ecosystem.totalMutations}
+          survivalRate={ecosystem.survivalRate}
+        />
 
         {/* Agent Cards */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
