@@ -18,8 +18,8 @@ const freshnessConfig: Record<FreshnessLevel, {
   colorClass: string;
 }> = {
   live: {
-    label: 'Live data',
-    description: 'Real market prices updated every 5 minutes from Polygon.io.',
+    label: 'Updated daily',
+    description: 'Stock & ETF prices from previous close. Crypto refreshes daily. Intraday charts available with 15-min delay.',
     colorClass: 'bg-neural-green/10 text-neural-green border-neural-green/30',
   },
   nightly: {
