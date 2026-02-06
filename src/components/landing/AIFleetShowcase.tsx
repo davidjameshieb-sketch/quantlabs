@@ -104,7 +104,7 @@ export const AIFleetShowcase = () => {
           className="text-center mb-10"
         >
           <span className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full border border-primary/30 bg-primary/10 text-xs font-medium text-primary mb-4">
-            10 AI Models · Unified Intelligence
+            10 Trading Models · 4 Optimizers · 6 Governors
           </span>
           <h2 className="font-display text-3xl md:text-5xl font-bold mb-3">
             <span className="text-foreground">Meet the </span>

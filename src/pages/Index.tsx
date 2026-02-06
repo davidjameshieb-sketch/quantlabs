@@ -3,6 +3,8 @@ import { Navbar } from '@/components/landing/Navbar';
 import { HeroSection } from '@/components/landing/HeroSection';
 import { FleetStatusBar } from '@/components/landing/FleetStatusBar';
 import { AIFleetShowcase } from '@/components/landing/AIFleetShowcase';
+import { GovernanceShowcase } from '@/components/landing/GovernanceShowcase';
+import { OptimizationShowcase } from '@/components/landing/OptimizationShowcase';
 import { EcosystemFlowSection } from '@/components/landing/EcosystemFlowSection';
 import { FleetTruthWall } from '@/components/landing/FleetTruthWall';
 import { TransparencyPhilosophySection } from '@/components/landing/TransparencyPhilosophySection';
@@ -19,6 +21,8 @@ const Index = () => {
         <HeroSection />
         <FleetStatusBar />
         <AIFleetShowcase />
+        <OptimizationShowcase />
+        <GovernanceShowcase />
         <EcosystemFlowSection />
         <FleetTruthWall />
         <TransparencyPhilosophySection />

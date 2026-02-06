@@ -2,9 +2,9 @@ import { motion } from 'framer-motion';
 import { Activity, RefreshCw, Shield } from 'lucide-react';
 
 const statusItems = [
-  { icon: Activity, label: 'Active Trading Agents', value: '10 / 10', color: 'text-neural-green' },
-  { icon: RefreshCw, label: 'Adapting Parameters', value: '3', color: 'text-neural-cyan' },
-  { icon: Shield, label: 'Governance Reviews Active', value: '2', color: 'text-neural-purple' },
+  { icon: Activity, label: 'Trading Agents', value: '10 / 10', color: 'text-neural-green' },
+  { icon: RefreshCw, label: 'Optimization Engines', value: '4 / 4', color: 'text-neural-cyan' },
+  { icon: Shield, label: 'Governance Council', value: '6 / 6', color: 'text-neural-purple' },
 ];
 
 export const FleetStatusBar = () => {
