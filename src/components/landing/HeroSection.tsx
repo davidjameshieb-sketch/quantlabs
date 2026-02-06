@@ -10,10 +10,8 @@ export const HeroSection = () => {
 
   return (
     <section className="relative min-h-screen flex items-center justify-center px-4 py-20">
-      {/* Gradient overlays */}
-      <div className="absolute inset-0 bg-gradient-to-b from-transparent via-background/50 to-background pointer-events-none" />
-      <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-primary/10 rounded-full blur-3xl pointer-events-none" />
-      <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-secondary/10 rounded-full blur-3xl pointer-events-none" />
+      {/* Subtle bottom fade only — keep top transparent to show neural background */}
+      <div className="absolute inset-0 bg-gradient-to-b from-transparent via-transparent to-background/80 pointer-events-none" />
 
       <div className="container relative z-10 max-w-6xl mx-auto text-center">
         {/* Badge */}
