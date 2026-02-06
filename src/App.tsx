@@ -9,6 +9,7 @@ import Index from "./pages/Index";
 import Auth from "./pages/Auth";
 import Dashboard from "./pages/Dashboard";
 import Ticker from "./pages/Ticker";
+import AIAgents from "./pages/AIAgents";
 import Guide from "./pages/Guide";
 import NotFound from "./pages/NotFound";
 
@@ -37,6 +38,14 @@ const App = () => (
               element={
                 <ProtectedRoute>
                   <Ticker />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/dashboard/agents"
+              element={
+                <ProtectedRoute>
+                  <AIAgents />
                 </ProtectedRoute>
               }
             />

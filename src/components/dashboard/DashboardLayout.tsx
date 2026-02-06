@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Brain, Home, BarChart3, Settings, LogOut, Search, ChevronDown, Menu, BookOpen } from 'lucide-react';
+import { Brain, Home, BarChart3, Settings, LogOut, Search, ChevronDown, Menu, BookOpen, Bot } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
@@ -73,6 +73,14 @@ export const DashboardLayout = ({ children }: DashboardLayoutProps) => {
         >
           <BarChart3 className="w-5 h-5 text-primary" />
           <span className="font-medium">Market Scanner</span>
+        </Link>
+
+        <Link
+          to="/dashboard/agents"
+          className="flex items-center gap-3 px-3 py-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+        >
+          <Bot className="w-5 h-5" />
+          <span className="font-medium">AI Agents</span>
         </Link>
 
         <div className="pt-4">
