@@ -42,7 +42,7 @@ export const EdgePreviewModal = ({ open, onClose }: EdgePreviewModalProps) => {
               animate={{ y: 0 }}
               exit={{ y: '100%' }}
               transition={{ type: 'spring', damping: 30, stiffness: 300 }}
-              className="fixed bottom-0 left-0 right-0 z-50 max-h-[65vh] rounded-t-2xl border-t border-border bg-card shadow-2xl"
+              className="fixed bottom-0 left-0 right-0 z-50 max-h-[65vh] rounded-t-2xl border-t border-border/30 bg-card/90 backdrop-blur-md shadow-2xl"
             >
               <div className="flex justify-center pt-3 pb-2">
                 <div className="w-10 h-1 rounded-full bg-muted-foreground/30" />
@@ -57,7 +57,7 @@ export const EdgePreviewModal = ({ open, onClose }: EdgePreviewModalProps) => {
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: 10 }}
               transition={{ duration: 0.2, ease: 'easeOut' }}
-              className="fixed left-1/2 top-1/2 z-50 -translate-x-1/2 -translate-y-1/2 w-full max-w-[480px] rounded-2xl border border-border bg-card shadow-2xl"
+              className="fixed left-1/2 top-1/2 z-50 -translate-x-1/2 -translate-y-1/2 w-full max-w-[480px] rounded-2xl border border-border/30 bg-card/90 backdrop-blur-md shadow-2xl"
             >
               <button
                 onClick={onClose}
