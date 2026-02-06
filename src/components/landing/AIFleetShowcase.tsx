@@ -1,8 +1,11 @@
+import { useState } from 'react';
 import { motion } from 'framer-motion';
 import { Link } from 'react-router-dom';
-import { ArrowRight, TrendingUp, BarChart3 } from 'lucide-react';
+import { ArrowRight, BarChart3, Eye } from 'lucide-react';
 import { AGENT_DEFINITIONS, ALL_AGENT_IDS } from '@/lib/agents/agentConfig';
 import { cn } from '@/lib/utils';
+import { Button } from '@/components/ui/button';
+import { EdgePreviewModal } from './EdgePreviewModal';
 
 // Deterministic "since inception" stats per agent
 const agentShowcaseData: Record<string, {
@@ -121,10 +124,11 @@ const MiniSparkline = ({ data, positive }: { data: number[]; positive: boolean }
 };
 
 export const AIFleetShowcase = () => {
-  return (
-    <section className="relative py-24 px-4" id="ai-fleet">
-      <div className="absolute inset-0 bg-gradient-to-b from-transparent via-background/10 to-transparent pointer-events-none" />
+  const [previewOpen, setPreviewOpen] = useState(false);
 
+  return (
+    <section className="relative py-8 px-4" id="ai-fleet">
+      <div className="absolute inset-0 bg-gradient-to-b from-transparent via-background/10 to-transparent pointer-events-none" />
       <div className="container relative z-10 max-w-7xl mx-auto">
         {/* Section header */}
         <motion.div
@@ -250,19 +254,39 @@ export const AIFleetShowcase = () => {
           })}
         </div>
 
-        {/* Bottom CTA */}
+        {/* CTA Block */}
         <motion.div
-          initial={{ opacity: 0 }}
-          whileInView={{ opacity: 1 }}
+          initial={{ opacity: 0, y: 20 }}
+          whileInView={{ opacity: 1, y: 0 }}
           viewport={{ once: true }}
-          transition={{ duration: 0.5, delay: 0.6 }}
+          transition={{ duration: 0.5, delay: 0.5 }}
           className="text-center mt-10"
         >
-          <p className="text-sm text-muted-foreground/60 font-mono">
-            All performance data reflects historical AI analysis outcomes · Updated daily · Delayed data for free users
+          <div className="flex flex-col sm:flex-row items-center justify-center gap-4 mb-4">
+            <Button asChild size="lg" className="text-base px-8 py-6 font-display bg-primary hover:bg-primary/90 text-primary-foreground shadow-lg shadow-primary/20">
+              <Link to="/dashboard">
+                Explore Free Dashboard
+                <ArrowRight className="ml-2 w-4 h-4" />
+              </Link>
+            </Button>
+            <Button
+              variant="outline"
+              size="lg"
+              className="text-base px-8 py-6 border-border/50 hover:bg-muted/30 text-muted-foreground hover:text-foreground gap-2"
+              onClick={() => setPreviewOpen(true)}
+            >
+              <Eye className="w-4 h-4" />
+              Preview Edge Access
+            </Button>
+          </div>
+          <p className="text-xs text-muted-foreground/60 font-mono">
+            Full platform visibility · Free version uses previous-day data · Edge Access unlocks intraday intelligence
           </p>
         </motion.div>
       </div>
+
+      {/* Edge Access Preview Modal */}
+      <EdgePreviewModal open={previewOpen} onClose={() => setPreviewOpen(false)} />
     </section>
   );
 };
