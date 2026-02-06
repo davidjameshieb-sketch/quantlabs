@@ -1,78 +1,74 @@
-# Enhanced Dashboard - COMPLETED ✅
 
-## Summary
 
-All planned features have been implemented successfully.
+# Landing Page Restructure: Fleet-First Layout
 
----
+## What Changes
 
-## ✅ Completed Features
+The landing page will be reorganized so visitors immediately see the **AI Trading Fleet** grid the moment they arrive -- no scrolling required. The current full-screen hero section will be condensed into a compact intro header that sits just below the navbar, followed immediately by the fleet grid and a prominent "Explore Free Dashboard" call-to-action underneath.
 
-### 1. Expanded Market Coverage (700+ Tickers)
-- **S&P 500**: All 500 stocks
-- **NASDAQ-100**: Complete index coverage  
-- **Top 100 Crypto**: Full market cap coverage
-- **Forex**: 20 major pairs
-- **Indices**: 12 global indices
-- **Commodities**: 14 instruments
+## New Visual Flow
 
-### 2. AI Reasoning ("Glass Box" Philosophy)
-- **Efficiency Reasoning**: Dynamic explanations based on `net_move / path_noise`
-- **Confidence Reasoning**: ATR-normalized spread analysis explanations
-- **Strategy Reasoning**: Decision tree explanations for each state
-
-### 3. Neural Signal Matrix
-- Animated toggle switches with glow effects
-- Categories: Structure, Quality, Conviction, Alignment
-- Real-time signal state updates
-
-### 4. Help System (Beginner/Technical Modes)
-- **Guide page** (`/guide`) with mode toggle
-- Metrics, signals, charts, strategy documentation
-- FAQ section
-- **Inline tooltips** on key metrics
-- Help icons linking to guide sections
-
-### 5. New Components
-- `HelpTooltip.tsx` - Reusable tooltip components
-- `EfficiencyInsight.tsx` - Expandable card with reasoning
-- `ConfidenceInsight.tsx` - ATR context + visualization
-- `StrategyInsight.tsx` - Decision tree display
-- `NeuralSignalMatrix.tsx` - Signal toggle grid
-- `TrendCoreVisual.tsx` - Trend core chart
-- `Guide.tsx` - Full documentation page
-
-### 6. Extended Types & Logic
-- `MarketType` now includes `'stocks'`
-- `SignalStates` interface added
-- Reasoning generators in `analysisEngine.ts`
-- `ExplanationModeContext` for beginner/technical toggle
-
----
-
-## Architecture
-
-```
-src/
-├── components/dashboard/
-│   ├── HelpTooltip.tsx          # Inline help tooltips
-│   ├── EfficiencyInsight.tsx    # Efficiency card + reasoning
-│   ├── ConfidenceInsight.tsx    # Confidence card + reasoning
-│   ├── StrategyInsight.tsx      # Strategy decision tree
-│   ├── NeuralSignalMatrix.tsx   # Signal toggle grid
-│   ├── SignalToggle.tsx         # Individual toggle
-│   └── TrendCoreVisual.tsx      # Trend core chart
-├── contexts/
-│   └── ExplanationModeContext.tsx  # Mode context
-├── pages/
-│   └── Guide.tsx                # Documentation page
-└── lib/market/
-    ├── tickers.ts               # 700+ tickers
-    ├── types.ts                 # Extended types
-    └── analysisEngine.ts        # Reasoning generators
+```text
++--------------------------------------------------+
+|  Navbar (fixed, 64px)                            |
++--------------------------------------------------+
+|  Compact Hero Header                             |
+|  - "AI-Powered Quantitative Trading Intelligence"|
+|  - One-line subtitle                             |
+|  - Trust badges (inline)                         |
++--------------------------------------------------+
+|  AI Fleet Showcase Grid (10 agent cards)         |
+|  - Immediately visible, no scroll needed         |
++--------------------------------------------------+
+|  "Explore Free Dashboard" CTA Banner             |
+|  - Large, highlighted button                     |
+|  - "Preview Edge Access" secondary button        |
+|  - Trust micro-copy below                        |
++--------------------------------------------------+
+|  Demonstration Section                           |
+|  Trust Flow Section                              |
+|  ... (rest of page unchanged)                    |
++--------------------------------------------------+
 ```
 
-## Routes
-- `/dashboard` - Market scanner (all markets including Stocks)
-- `/dashboard/ticker/:symbol` - Ticker detail with AI insights
-- `/guide` - Platform documentation with mode toggle
+## Technical Details
+
+### 1. Restructure `HeroSection.tsx`
+
+Transform from a full-screen (`min-h-screen`) centered hero into a compact header:
+- Remove `min-h-screen` and vertical centering
+- Add top padding to account for the fixed navbar (pt-24)
+- Keep the headline, subtitle, and trust badges but reduce spacing significantly
+- Remove the CTA buttons from the hero (they move below the fleet)
+- Reduce heading sizes slightly for a tighter layout (e.g., `text-3xl md:text-5xl` instead of `text-4xl md:text-6xl lg:text-7xl`)
+- Keep the EdgePreviewModal state and rendering
+
+### 2. Update `AIFleetShowcase.tsx`
+
+- Reduce top padding from `py-24` to `py-8` so the grid appears immediately below the compact hero
+- Keep all existing card content, sparklines, and animations unchanged
+- Add a prominent CTA block at the bottom of the section with:
+  - "Explore Free Dashboard" primary button (large, glowing)
+  - "Preview Edge Access" secondary outline button
+  - Trust micro-copy underneath
+- The EdgePreviewModal trigger will need to be handled -- either pass the `setPreviewOpen` callback as a prop or manage modal state within the showcase component
+
+### 3. Update `Index.tsx`
+
+- Section order stays the same: `HeroSection` then `AIFleetShowcase`
+- No reordering needed since the hero is now compact and the fleet is immediately visible
+
+### 4. CTA Relocation Strategy
+
+Since the "Explore Free Dashboard" and "Preview Edge Access" buttons are moving from the hero into the bottom of the fleet showcase:
+- The `EdgePreviewModal` state and component will move into `AIFleetShowcase.tsx`
+- The hero section becomes a pure heading/intro without interactive buttons
+- The fleet section gains a visually prominent CTA block after the card grid
+
+### Files Modified
+
+| File | Change |
+|------|--------|
+| `src/components/landing/HeroSection.tsx` | Compact layout: remove `min-h-screen`, tighten spacing, remove CTA buttons |
+| `src/components/landing/AIFleetShowcase.tsx` | Reduce top padding, add CTA buttons + EdgePreviewModal below the grid |
+
