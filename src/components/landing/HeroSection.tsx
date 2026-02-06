@@ -1,9 +1,13 @@
+import { useState } from 'react';
 import { motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
-import { ArrowRight, Activity, Check } from 'lucide-react';
+import { ArrowRight, Check, Eye } from 'lucide-react';
 import { Link } from 'react-router-dom';
+import { EdgePreviewModal } from './EdgePreviewModal';
 
 export const HeroSection = () => {
+  const [previewOpen, setPreviewOpen] = useState(false);
+
   return (
     <section className="relative min-h-screen flex items-center justify-center px-4 py-20">
       {/* Gradient overlays */}
@@ -41,19 +45,23 @@ export const HeroSection = () => {
           transition={{ duration: 0.5, delay: 0.2 }}
           className="text-lg md:text-xl text-muted-foreground max-w-2xl mx-auto mb-6"
         >
-          Multiple AI models collaborate to analyze markets in real-time.
+          Multiple AI models collaborate to analyze market behavior in real time —
           <br className="hidden sm:block" />
-          Transparent, data-driven, and performance measurable.
+          transparent, data-driven, and performance measurable.
         </motion.p>
 
-        {/* Trust bullets */}
+        {/* Trust micro badges */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5, delay: 0.25 }}
           className="flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-sm text-muted-foreground mb-10"
         >
-          {['Equities, Crypto & Forex', 'Multi-AI Collaboration', 'Quantitative Research Engine'].map((item, i) => (
+          {[
+            'Multi-AI Collaboration Engine',
+            'Market Mode Detection & Risk Filtering',
+            'Quantitative Backtesting Transparency',
+          ].map((item, i) => (
             <span key={i} className="flex items-center gap-1.5">
               <Check className="w-3.5 h-3.5 text-primary" />
               {item}
@@ -74,61 +82,30 @@ export const HeroSection = () => {
               <ArrowRight className="ml-2 w-4 h-4" />
             </Link>
           </Button>
-          <Button asChild variant="outline" size="lg" className="text-base px-8 py-6 border-border/50 hover:bg-muted/30 text-muted-foreground hover:text-foreground">
-            <a href="#pricing">Upgrade to Edge Access</a>
+          <Button
+            variant="outline"
+            size="lg"
+            className="text-base px-8 py-6 border-border/50 hover:bg-muted/30 text-muted-foreground hover:text-foreground gap-2"
+            onClick={() => setPreviewOpen(true)}
+          >
+            <Eye className="w-4 h-4" />
+            Preview Edge Access
           </Button>
         </motion.div>
 
-        {/* Low friction reminder */}
+        {/* Micro trust copy */}
         <motion.p
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           transition={{ duration: 0.5, delay: 0.35 }}
-          className="text-xs text-muted-foreground/60 mb-14"
+          className="text-xs text-muted-foreground/60 mb-0"
         >
-          Free forever with previous-day data. Edge Access unlocks 15-minute delayed intraday.
+          Full platform visibility. Free version uses previous-day market data. Edge Access unlocks intraday intelligence.
         </motion.p>
-
-        {/* Feature highlights */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.5, delay: 0.4 }}
-          className="space-y-4"
-        >
-          <p className="text-xs uppercase tracking-widest text-muted-foreground/50">Platform Highlights</p>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 max-w-3xl mx-auto">
-            {[
-              { label: 'AI Trading Dashboards', desc: 'Multi-agent AI analyzing every market condition' },
-              { label: 'Quantitative Analytics', desc: 'Efficiency scoring, backtesting & performance tracking' },
-              { label: 'Collaborative AI', desc: 'Dynamic coordination — the best AI leads in real-time' },
-            ].map((feature, i) => (
-              <div
-                key={i}
-                className="p-4 rounded-lg border border-border/30 bg-card/30 backdrop-blur-sm text-center hover:border-primary/20 transition-colors"
-              >
-                <p className="text-sm font-medium text-foreground">{feature.label}</p>
-                <p className="text-xs text-muted-foreground mt-1">{feature.desc}</p>
-              </div>
-            ))}
-          </div>
-        </motion.div>
       </div>
 
-      {/* Floating icon */}
-      <motion.div
-        initial={{ opacity: 0, scale: 0.8 }}
-        animate={{ opacity: 1, scale: 1 }}
-        transition={{ duration: 1, delay: 0.5 }}
-        className="absolute top-20 right-10 hidden lg:block"
-      >
-        <motion.div
-          animate={{ y: [0, -10, 0] }}
-          transition={{ duration: 4, repeat: Infinity, ease: "easeInOut" }}
-        >
-          <Activity className="w-16 h-16 text-primary/30" />
-        </motion.div>
-      </motion.div>
+      {/* Edge Access Preview Modal */}
+      <EdgePreviewModal open={previewOpen} onClose={() => setPreviewOpen(false)} />
     </section>
   );
 };

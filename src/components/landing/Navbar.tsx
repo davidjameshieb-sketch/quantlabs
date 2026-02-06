@@ -8,7 +8,8 @@ export const Navbar = () => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const navLinks = [
-    { href: '#features', label: 'Features' },
+    { href: '#intelligence', label: 'How It Works' },
+    { href: '#edge-features', label: 'Edge Access' },
     { href: '#pricing', label: 'Pricing' },
   ];
 

@@ -11,7 +11,6 @@ const useCountdown = () => {
   const [timeLeft, setTimeLeft] = useState({ days: 0, hours: 0, minutes: 0, seconds: 0 });
 
   useEffect(() => {
-    // Set end date to PROMO_DURATION_DAYS from first visit
     const storedEnd = localStorage.getItem('quantlabs_promo_end');
     const endDate = storedEnd
       ? new Date(storedEnd)
@@ -47,15 +46,15 @@ const useCountdown = () => {
 
 const tiers = [
   {
-    name: 'Free',
+    name: 'Free Access',
     price: 0,
-    description: 'Explore the full platform with previous-day data',
+    description: 'Full dashboard visibility with previous-day market data',
     features: [
       'All markets — Equities, Crypto, Forex',
       'AI trading dashboards',
       'Market scanner & analytics',
-      'Sector & conviction views',
       'AI agent coordination view',
+      'AI intelligence previews',
       'Previous-day closing data',
     ],
     cta: 'Explore Free',
@@ -67,19 +66,19 @@ const tiers = [
     name: 'QuantLabs Edge Access',
     originalPrice: 95,
     price: 45,
-    description: 'Full power — 15-min intraday data, advanced AI & backtesting',
+    description: '15-minute delayed intraday intelligence with full AI analytics',
     features: [
       'Everything in Free',
       '15-minute delayed intraday data',
-      'Full AI trading analytics',
-      'Advanced AI backtesting',
-      'Multi-timeframe signal tracking',
-      'Quantitative performance breakdowns',
+      'Advanced AI collaboration dashboards',
+      'Full backtesting analytics',
+      'Strategy performance tracking',
       'AI decision overlays & reasoning',
+      'Multi-timeframe signal tracking',
       'Priority feature access',
-      'Price lock guarantee',
+      'Permanent price lock guarantee',
     ],
-    cta: 'Start Free Trial',
+    cta: 'Unlock Edge Access',
     ctaLink: '/auth',
     popular: true,
     premium: true,
@@ -91,27 +90,26 @@ export const PricingSection = () => {
 
   return (
     <section id="pricing" className="relative py-24 px-4">
-      {/* Background */}
       <div className="absolute inset-0 bg-gradient-to-b from-background via-muted/10 to-background pointer-events-none" />
 
       <div className="container relative z-10 max-w-5xl mx-auto">
-        {/* Section header */}
+        {/* Header */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           whileInView={{ opacity: 1, y: 0 }}
           viewport={{ once: true }}
           transition={{ duration: 0.5 }}
-          className="text-center mb-16"
+          className="text-center mb-12"
         >
           <h2 className="font-display text-3xl md:text-5xl font-bold mb-4">
             <span className="text-gradient-neural">Choose Your Edge</span>
           </h2>
-          <p className="text-lg text-muted-foreground max-w-2xl mx-auto mb-6">
-            Start free with full platform access. Upgrade to Edge Access for real-time AI intelligence.
+          <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
+            Start free with full platform access. Upgrade for real-time AI intelligence.
           </p>
         </motion.div>
 
-        {/* Countdown timer */}
+        {/* Countdown */}
         <motion.div
           initial={{ opacity: 0, y: 10 }}
           whileInView={{ opacity: 1, y: 0 }}
@@ -134,7 +132,7 @@ export const PricingSection = () => {
           </div>
         </motion.div>
 
-        {/* Pricing cards */}
+        {/* Cards */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-8 max-w-4xl mx-auto">
           {tiers.map((tier, index) => (
             <motion.div
@@ -150,7 +148,6 @@ export const PricingSection = () => {
                   : "border-border/50 bg-card/50 hover:border-primary/30"
               )}
             >
-              {/* Popular badge */}
               {tier.popular && (
                 <div className="absolute -top-3 left-1/2 -translate-x-1/2 flex items-center gap-1 px-4 py-1.5 rounded-full bg-primary text-primary-foreground text-xs font-bold">
                   <Star className="w-3 h-3" />
@@ -158,13 +155,10 @@ export const PricingSection = () => {
                 </div>
               )}
 
-              {/* Tier name & price */}
               <div className="mb-6">
-                <h3 className="font-display text-2xl font-bold text-foreground mb-1">
-                  {tier.name}
-                </h3>
+                <h3 className="font-display text-2xl font-bold text-foreground mb-1">{tier.name}</h3>
                 <p className="text-sm text-muted-foreground mb-4">{tier.description}</p>
-                
+
                 <div className="flex items-baseline gap-2">
                   {tier.premium && tier.originalPrice ? (
                     <>
@@ -191,7 +185,6 @@ export const PricingSection = () => {
                 )}
               </div>
 
-              {/* Features */}
               <ul className="flex-1 space-y-3 mb-8">
                 {tier.features.map((feature, i) => (
                   <li key={i} className="flex items-start gap-2 text-sm">
@@ -201,7 +194,6 @@ export const PricingSection = () => {
                 ))}
               </ul>
 
-              {/* CTA */}
               <Button
                 asChild
                 size="lg"
@@ -218,7 +210,6 @@ export const PricingSection = () => {
           ))}
         </div>
 
-        {/* Bottom note */}
         <motion.p
           initial={{ opacity: 0 }}
           whileInView={{ opacity: 1 }}
