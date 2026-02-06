@@ -25,7 +25,7 @@ const columns = [
 export const TrustFlowSection = () => {
   return (
     <section id="intelligence" className="relative py-24 px-4">
-      <div className="absolute inset-0 bg-gradient-to-b from-background via-muted/10 to-background pointer-events-none" />
+      <div className="absolute inset-0 bg-gradient-to-b from-transparent via-background/10 to-transparent pointer-events-none" />
 
       <div className="container relative z-10 max-w-6xl mx-auto">
         {/* Header */}
@@ -56,9 +56,9 @@ export const TrustFlowSection = () => {
               transition={{ duration: 0.5, delay: i * 0.15 }}
               className="group relative"
             >
-              <div className="relative h-full p-8 rounded-2xl border border-border/50 bg-card/50 backdrop-blur-sm transition-all duration-300 hover:border-primary/30 text-center">
+              <div className="relative h-full p-8 rounded-2xl border border-border/30 bg-card/10 backdrop-blur-sm transition-all duration-300 hover:border-primary/30 text-center">
                 {/* Step number */}
-                <div className="absolute -top-3 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full bg-background border border-border text-xs font-mono text-muted-foreground">
+                <div className="absolute -top-3 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full bg-background/20 border border-border/30 text-xs font-mono text-muted-foreground backdrop-blur-sm">
                   Step {i + 1}
                 </div>
 

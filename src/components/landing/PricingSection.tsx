@@ -90,7 +90,7 @@ export const PricingSection = () => {
 
   return (
     <section id="pricing" className="relative py-24 px-4">
-      <div className="absolute inset-0 bg-gradient-to-b from-background via-muted/10 to-background pointer-events-none" />
+      <div className="absolute inset-0 bg-gradient-to-b from-transparent via-background/10 to-transparent pointer-events-none" />
 
       <div className="container relative z-10 max-w-5xl mx-auto">
         {/* Header */}
@@ -144,8 +144,8 @@ export const PricingSection = () => {
               className={cn(
                 "relative flex flex-col p-8 rounded-2xl border transition-all duration-300",
                 tier.popular
-                  ? "border-primary bg-gradient-to-b from-primary/15 to-card glow-cyan scale-[1.02]"
-                  : "border-border/50 bg-card/50 hover:border-primary/30"
+                  ? "border-primary bg-gradient-to-b from-primary/10 to-card/10 backdrop-blur-sm glow-cyan scale-[1.02]"
+                  : "border-border/30 bg-card/10 backdrop-blur-sm hover:border-primary/30"
               )}
             >
               {tier.popular && (

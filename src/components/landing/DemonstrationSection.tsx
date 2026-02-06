@@ -42,7 +42,7 @@ const dashboardPanels = [
 export const DemonstrationSection = () => {
   return (
     <section className="relative py-20 px-4">
-      <div className="absolute inset-0 bg-gradient-to-b from-background via-muted/5 to-background pointer-events-none" />
+      <div className="absolute inset-0 bg-gradient-to-b from-transparent via-background/10 to-transparent pointer-events-none" />
 
       <div className="container relative z-10 max-w-6xl mx-auto">
         <motion.div
@@ -50,7 +50,7 @@ export const DemonstrationSection = () => {
           whileInView={{ opacity: 1, y: 0 }}
           viewport={{ once: true }}
           transition={{ duration: 0.6 }}
-          className="relative rounded-2xl border border-border/50 bg-card/30 backdrop-blur-sm p-6 md:p-10 overflow-hidden"
+          className="relative rounded-2xl border border-border/30 bg-card/10 backdrop-blur-sm p-6 md:p-10 overflow-hidden"
         >
           {/* Animated background glow */}
           <div className="absolute top-0 left-1/4 w-64 h-64 bg-primary/5 rounded-full blur-3xl pointer-events-none" />
@@ -65,7 +65,7 @@ export const DemonstrationSection = () => {
                 whileInView={{ opacity: 1, y: 0 }}
                 viewport={{ once: true }}
                 transition={{ duration: 0.4, delay: i * 0.1 }}
-                className="relative p-4 rounded-xl border border-border/30 bg-background/50 backdrop-blur-sm group hover:border-primary/30 transition-colors"
+                className="relative p-4 rounded-xl border border-border/20 bg-background/10 backdrop-blur-sm group hover:border-primary/30 transition-colors"
               >
                 <div className={`inline-flex p-2 rounded-lg bg-gradient-to-br ${panel.gradient} mb-3`}>
                   <panel.icon className="w-4 h-4 text-background" />
