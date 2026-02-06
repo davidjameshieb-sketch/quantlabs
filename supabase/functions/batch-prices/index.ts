@@ -1,4 +1,5 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { createClient } from "npm:@supabase/supabase-js@2.57.2";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -17,10 +18,12 @@ interface PriceData {
 
 const priceCache = new Map<string, PriceData>();
 let lastBatchFetch = 0;
-// With 15-min delayed data, refresh every 2 minutes for near-real-time feel
 const CACHE_TTL_MS = 2 * 60 * 1000;
 
-// Canonical symbol mapping: frontend symbol -> { polygonTicker, source, priceRange }
+// Max symbols per request
+const MAX_SYMBOLS = 100;
+
+// Canonical symbol mapping
 interface SymbolConfig {
   polygon: string;
   source: string;
@@ -42,7 +45,7 @@ const symbolConfig: Record<string, SymbolConfig> = {
   'JPM': { polygon: 'JPM', source: 'NYSE', minPrice: 50, maxPrice: 400 },
   'V': { polygon: 'V', source: 'NYSE', minPrice: 100, maxPrice: 500 },
   'UNH': { polygon: 'UNH', source: 'NYSE', minPrice: 200, maxPrice: 800 },
-  
+
   // ========== INDICES & SECTOR ETFs ==========
   'SPY': { polygon: 'SPY', source: 'S&P 500 ETF', minPrice: 200, maxPrice: 800 },
   'QQQ': { polygon: 'QQQ', source: 'NASDAQ-100 ETF', minPrice: 200, maxPrice: 700 },
@@ -52,8 +55,6 @@ const symbolConfig: Record<string, SymbolConfig> = {
   'EFA': { polygon: 'EFA', source: 'MSCI EAFE ETF', minPrice: 50, maxPrice: 150 },
   'EEM': { polygon: 'EEM', source: 'Emerging Markets ETF', minPrice: 20, maxPrice: 80 },
   'VEA': { polygon: 'VEA', source: 'Developed Markets ETF', minPrice: 30, maxPrice: 80 },
-  
-  // S&P 500 Sector ETFs
   'XLB': { polygon: 'XLB', source: 'Materials Sector ETF', minPrice: 40, maxPrice: 150 },
   'XLE': { polygon: 'XLE', source: 'Energy Sector ETF', minPrice: 40, maxPrice: 150 },
   'XLF': { polygon: 'XLF', source: 'Financials Sector ETF', minPrice: 20, maxPrice: 80 },
@@ -65,8 +66,6 @@ const symbolConfig: Record<string, SymbolConfig> = {
   'XLY': { polygon: 'XLY', source: 'Consumer Disc. ETF', minPrice: 100, maxPrice: 300 },
   'XLRE': { polygon: 'XLRE', source: 'Real Estate ETF', minPrice: 25, maxPrice: 70 },
   'XLC': { polygon: 'XLC', source: 'Comm. Services ETF', minPrice: 40, maxPrice: 150 },
-  
-  // Legacy index mappings
   'SPX500': { polygon: 'SPY', source: 'SPY ETF Proxy', minPrice: 200, maxPrice: 800 },
   'SPX': { polygon: 'SPY', source: 'SPY ETF Proxy', minPrice: 200, maxPrice: 800 },
   'NASDAQ': { polygon: 'QQQ', source: 'QQQ ETF Proxy', minPrice: 200, maxPrice: 700 },
@@ -76,8 +75,8 @@ const symbolConfig: Record<string, SymbolConfig> = {
   'FTSE': { polygon: 'EWU', source: 'EWU ETF Proxy', minPrice: 10, maxPrice: 100 },
   'RUT': { polygon: 'IWM', source: 'IWM ETF Proxy', minPrice: 100, maxPrice: 400 },
   'RUSSELL': { polygon: 'IWM', source: 'IWM ETF Proxy', minPrice: 100, maxPrice: 400 },
-  
-  // ========== CRYPTO (Polygon X: prefix) ==========
+
+  // ========== CRYPTO ==========
   'BTCUSD': { polygon: 'X:BTCUSD', source: 'Polygon Crypto', minPrice: 10000, maxPrice: 500000 },
   'ETHUSD': { polygon: 'X:ETHUSD', source: 'Polygon Crypto', minPrice: 500, maxPrice: 20000 },
   'SOLUSD': { polygon: 'X:SOLUSD', source: 'Polygon Crypto', minPrice: 10, maxPrice: 1000 },
@@ -98,8 +97,8 @@ const symbolConfig: Record<string, SymbolConfig> = {
   'AAVEUSD': { polygon: 'X:AAVEUSD', source: 'Polygon Crypto', minPrice: 30, maxPrice: 800 },
   'ALGOUSD': { polygon: 'X:ALGOUSD', source: 'Polygon Crypto', minPrice: 0.05, maxPrice: 5 },
   'ZECUSD': { polygon: 'X:ZECUSD', source: 'Polygon Crypto', minPrice: 10, maxPrice: 500 },
-  
-  // ========== FOREX (Polygon C: prefix) ==========
+
+  // ========== FOREX ==========
   'EURUSD': { polygon: 'C:EURUSD', source: 'Polygon FX', minPrice: 0.8, maxPrice: 1.5 },
   'GBPUSD': { polygon: 'C:GBPUSD', source: 'Polygon FX', minPrice: 1.0, maxPrice: 2.0 },
   'USDJPY': { polygon: 'C:USDJPY', source: 'Polygon FX', minPrice: 80, maxPrice: 200 },
@@ -110,8 +109,8 @@ const symbolConfig: Record<string, SymbolConfig> = {
   'EURGBP': { polygon: 'C:EURGBP', source: 'Polygon FX', minPrice: 0.7, maxPrice: 1.1 },
   'EURJPY': { polygon: 'C:EURJPY', source: 'Polygon FX', minPrice: 100, maxPrice: 200 },
   'GBPJPY': { polygon: 'C:GBPJPY', source: 'Polygon FX', minPrice: 120, maxPrice: 250 },
-  
-  // ========== COMMODITIES (ETFs) ==========
+
+  // ========== COMMODITIES ==========
   'GLD': { polygon: 'GLD', source: 'SPDR Gold ETF', minPrice: 100, maxPrice: 600 },
   'SLV': { polygon: 'SLV', source: 'iShares Silver ETF', minPrice: 15, maxPrice: 100 },
   'USO': { polygon: 'USO', source: 'US Oil Fund', minPrice: 30, maxPrice: 150 },
@@ -134,209 +133,157 @@ const json = (body: unknown, status = 200) =>
     headers: { ...corsHeaders, 'Content-Type': 'application/json' },
   });
 
-// Validate price is within expected range
 function validatePrice(symbol: string, price: number): boolean {
   const config = symbolConfig[symbol];
   if (!config) return true;
-  
   if (price < config.minPrice || price > config.maxPrice) {
-    console.warn(`VALIDATION FAILED: ${symbol} = ${price} (expected ${config.minPrice}-${config.maxPrice})`);
+    console.warn(`[BATCH-PRICES] Validation FAILED: ${symbol} = ${price} (expected ${config.minPrice}-${config.maxPrice})`);
     return false;
   }
   return true;
 }
 
-// ========== DATA FETCHING (Paid plan: intraday aggs available, no snapshot endpoints) ==========
+// ========== DATA FETCHING ==========
 
-// Fetch grouped daily bars for US stocks (one API call for all)
 async function fetchStocksPrices(apiKey: string): Promise<Map<string, PriceData>> {
   const prices = new Map<string, PriceData>();
   const today = new Date();
   let daysBack = 1;
-  if (today.getDay() === 0) daysBack = 2; // Sunday -> Friday
-  if (today.getDay() === 1) daysBack = 3; // Monday -> Friday
+  if (today.getDay() === 0) daysBack = 2;
+  if (today.getDay() === 1) daysBack = 3;
   const dateStr = new Date(today.getTime() - daysBack * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-  
+
   try {
     const url = `https://api.polygon.io/v2/aggs/grouped/locale/us/market/stocks/${dateStr}?adjusted=true&apiKey=${apiKey}`;
-    console.log(`Fetching stocks grouped daily for ${dateStr}`);
+    console.log(`[BATCH-PRICES] Fetching stocks grouped daily for ${dateStr}`);
     const response = await fetch(url);
     const data = await response.json();
-    
+
     if (data.status === 'OK' && data.results) {
       const timestamp = Date.now();
       for (const bar of data.results) {
         const change = bar.c - bar.o;
         const changePercent = bar.o > 0 ? (change / bar.o) * 100 : 0;
-        prices.set(bar.T, {
-          price: bar.c,
-          change,
-          changePercent,
-          timestamp,
-          source: 'Polygon Stocks',
-        });
+        prices.set(bar.T, { price: bar.c, change, changePercent, timestamp, source: 'Polygon Stocks' });
       }
-      console.log(`Got ${prices.size} stock prices`);
+      console.log(`[BATCH-PRICES] Got ${prices.size} stock prices`);
     } else {
-      console.warn('Stocks grouped response:', data.status, data.message);
+      console.warn('[BATCH-PRICES] Stocks grouped response:', data.status);
     }
   } catch (e) {
-    console.error('Failed to fetch stocks grouped:', e);
+    console.error('[BATCH-PRICES] Failed to fetch stocks grouped:', e);
   }
-  
+
   return prices;
 }
 
-// Fetch crypto prices - try today first (24/7 market), then yesterday
 async function fetchCryptoPrices(apiKey: string): Promise<Map<string, PriceData>> {
   const prices = new Map<string, PriceData>();
   const today = new Date();
   const todayStr = today.toISOString().split('T')[0];
   const yesterdayStr = new Date(today.getTime() - 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-  
-  // Try today first (crypto trades 24/7, paid plan may have today's data)
+
   for (const dateStr of [todayStr, yesterdayStr]) {
     try {
       const url = `https://api.polygon.io/v2/aggs/grouped/locale/global/market/crypto/${dateStr}?adjusted=true&apiKey=${apiKey}`;
-      console.log(`Fetching crypto grouped daily for ${dateStr}`);
+      console.log(`[BATCH-PRICES] Fetching crypto grouped daily for ${dateStr}`);
       const response = await fetch(url);
       const data = await response.json();
-      
+
       if (data.status === 'OK' && data.results && data.results.length > 0) {
         const timestamp = Date.now();
         for (const bar of data.results) {
           const change = bar.c - bar.o;
           const changePercent = bar.o > 0 ? (change / bar.o) * 100 : 0;
           prices.set(bar.T, {
-            price: bar.c,
-            change,
-            changePercent,
-            timestamp,
+            price: bar.c, change, changePercent, timestamp,
             source: dateStr === todayStr ? 'Polygon Crypto (Today)' : 'Polygon Crypto (Prev Close)',
             isDelayed: true,
           });
         }
-        console.log(`Got ${prices.size} crypto prices from ${dateStr}`);
-        return prices; // Use first successful result
-      } else {
-        console.log(`No crypto data for ${dateStr}, trying next...`);
+        console.log(`[BATCH-PRICES] Got ${prices.size} crypto prices from ${dateStr}`);
+        return prices;
       }
     } catch (e) {
-      console.error(`Failed to fetch crypto for ${dateStr}:`, e);
+      console.error(`[BATCH-PRICES] Failed to fetch crypto for ${dateStr}:`, e);
     }
   }
-  
+
   return prices;
 }
 
-// Fetch forex prices using prev-close (all pairs, higher limit for paid plan)
 async function fetchForexPrices(apiKey: string): Promise<Map<string, PriceData>> {
   const prices = new Map<string, PriceData>();
   const forexSymbols = Object.entries(symbolConfig).filter(([_, c]) => c.polygon.startsWith('C:'));
   const timestamp = Date.now();
-  
-  // Paid plan has much higher rate limits - fetch all forex pairs
+
   for (const [ourSymbol, config] of forexSymbols) {
-    // Skip if we have very recent data
     const existing = priceCache.get(ourSymbol);
     if (existing && timestamp - existing.timestamp < CACHE_TTL_MS) {
       prices.set(config.polygon, existing);
       continue;
     }
-    
+
     try {
       const url = `https://api.polygon.io/v2/aggs/ticker/${config.polygon}/prev?adjusted=true&apiKey=${apiKey}`;
       const response = await fetch(url);
       const data = await response.json();
-      
+
       if (data.results && data.results.length > 0) {
         const bar = data.results[0];
         const change = bar.c - bar.o;
         const changePercent = bar.o > 0 ? (change / bar.o) * 100 : 0;
-        prices.set(config.polygon, {
-          price: bar.c,
-          change,
-          changePercent,
-          timestamp,
-          source: config.source,
-        });
-        console.log(`Fetched FX: ${ourSymbol} = ${bar.c}`);
+        prices.set(config.polygon, { price: bar.c, change, changePercent, timestamp, source: config.source });
       }
-      
-      // Small delay between requests
+
       await new Promise(r => setTimeout(r, 150));
     } catch (e) {
-      console.error(`Failed to fetch ${config.polygon}:`, e);
+      console.error(`[BATCH-PRICES] Failed to fetch ${config.polygon}:`, e);
     }
   }
-  
+
   return prices;
 }
 
-// ========== MAIN REFRESH ==========
-
 async function refreshPrices(apiKey: string): Promise<void> {
-  console.log('=== Refreshing batch prices (paid plan) ===');
-  
-  // Fetch stocks and crypto in parallel (both use grouped endpoints = 1 call each)
-  // Forex fetched separately as it uses individual prev-close calls
+  console.log('[BATCH-PRICES] === Refreshing batch prices ===');
+
   const [stockPrices, cryptoPrices] = await Promise.all([
     fetchStocksPrices(apiKey),
     fetchCryptoPrices(apiKey),
   ]);
-  
-  // Map stock & ETF symbols
+
   for (const [ourSymbol, config] of Object.entries(symbolConfig)) {
     const polygonTicker = config.polygon;
-    
+
     if (!polygonTicker.startsWith('X:') && !polygonTicker.startsWith('C:')) {
       const priceData = stockPrices.get(polygonTicker);
-      if (priceData) {
-        if (validatePrice(ourSymbol, priceData.price)) {
-          priceCache.set(ourSymbol, { ...priceData, source: config.source });
-          console.log(`Mapped ${ourSymbol} -> ${polygonTicker} = $${priceData.price}`);
-        } else {
-          console.warn(`Validation FAILED for ${ourSymbol}: ${priceData.price}`);
-        }
-      } else {
-        console.warn(`No stock data for ${polygonTicker} (wanted by ${ourSymbol})`);
+      if (priceData && validatePrice(ourSymbol, priceData.price)) {
+        priceCache.set(ourSymbol, { ...priceData, source: config.source });
       }
     }
-    
-    // Map crypto symbols
+
     if (polygonTicker.startsWith('X:')) {
       const priceData = cryptoPrices.get(polygonTicker);
       if (priceData && validatePrice(ourSymbol, priceData.price)) {
         priceCache.set(ourSymbol, { ...priceData, source: config.source });
-        console.log(`Mapped crypto ${ourSymbol} -> ${polygonTicker} = $${priceData.price}`);
       }
     }
   }
-  
-  // Fetch forex (sequential prev-close calls)
+
   const forexPrices = await fetchForexPrices(apiKey);
-  
-  // Map forex symbols
+
   for (const [ourSymbol, config] of Object.entries(symbolConfig)) {
     if (config.polygon.startsWith('C:')) {
       const priceData = forexPrices.get(config.polygon);
       if (priceData && validatePrice(ourSymbol, priceData.price)) {
         priceCache.set(ourSymbol, { ...priceData, source: config.source });
-        console.log(`Mapped forex ${ourSymbol} -> ${config.polygon} = $${priceData.price}`);
       }
     }
   }
-  
+
   lastBatchFetch = Date.now();
-  console.log(`=== Cache now has ${priceCache.size} entries ===`);
-  
-  // QA: Log sample prices
-  const samples = ['BTCUSD', 'ETHUSD', 'EURUSD', 'XAUUSD', 'AAPL', 'MSFT'];
-  for (const s of samples) {
-    const p = priceCache.get(s);
-    if (p) console.log(`QA: ${s} = $${p.price.toFixed(p.price < 10 ? 4 : 2)} (${p.source})`);
-    else console.log(`QA: ${s} = NOT FOUND`);
-  }
+  console.log(`[BATCH-PRICES] === Cache now has ${priceCache.size} entries ===`);
 }
 
 serve(async (req) => {
@@ -345,14 +292,40 @@ serve(async (req) => {
   }
 
   try {
-    const POLYGON_API_KEY = Deno.env.get('POLYGON_API_KEY');
-    if (!POLYGON_API_KEY) {
-      return json({ error: 'POLYGON_API_KEY not configured' }, 500);
+    // ── Authentication ──
+    const authHeader = req.headers.get('Authorization');
+    if (!authHeader?.startsWith('Bearer ')) {
+      return json({ error: 'Unauthorized' }, 401);
     }
 
+    const supabaseClient = createClient(
+      Deno.env.get('SUPABASE_URL') ?? '',
+      Deno.env.get('SUPABASE_ANON_KEY') ?? '',
+      { global: { headers: { Authorization: authHeader } } }
+    );
+
+    const { data: { user }, error: authError } = await supabaseClient.auth.getUser();
+    if (authError || !user) {
+      console.error('[BATCH-PRICES] Auth failed:', authError?.message);
+      return json({ error: 'Unauthorized' }, 401);
+    }
+    console.log(`[BATCH-PRICES] Authenticated user: ${user.id}`);
+
+    // ── API Key check ──
+    const POLYGON_API_KEY = Deno.env.get('POLYGON_API_KEY');
+    if (!POLYGON_API_KEY) {
+      console.error('[BATCH-PRICES] POLYGON_API_KEY not configured');
+      return json({ error: 'Service temporarily unavailable' }, 503);
+    }
+
+    // ── Input validation ──
     const url = new URL(req.url);
-    const symbols = url.searchParams.get('symbols')?.split(',') || [];
-    
+    const rawSymbols = url.searchParams.get('symbols')?.split(',') || [];
+    // Limit and whitelist symbols
+    const symbols = rawSymbols
+      .slice(0, MAX_SYMBOLS)
+      .filter(s => s in symbolConfig);
+
     // Refresh if cache is stale
     const now = Date.now();
     if (now - lastBatchFetch > CACHE_TTL_MS || priceCache.size === 0) {
@@ -360,23 +333,19 @@ serve(async (req) => {
     }
 
     const responseNow = Date.now();
-    
-    // Return requested symbols or all cached
     const result: Record<string, PriceData> = {};
-    
+
     if (symbols.length > 0) {
       for (const symbol of symbols) {
         const cached = priceCache.get(symbol);
-        if (cached) {
-          result[symbol] = cached;
-        }
+        if (cached) result[symbol] = cached;
       }
     } else {
       priceCache.forEach((data, symbol) => {
         result[symbol] = data;
       });
     }
-    
+
     return json({
       prices: result,
       count: Object.keys(result).length,
@@ -386,7 +355,7 @@ serve(async (req) => {
     });
 
   } catch (error) {
-    console.error('Batch prices error:', error);
-    return json({ error: error instanceof Error ? error.message : 'Unknown error' }, 500);
+    console.error('[BATCH-PRICES] Error:', error);
+    return json({ error: 'Service temporarily unavailable' }, 503);
   }
 });

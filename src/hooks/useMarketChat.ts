@@ -1,4 +1,5 @@
 import { useState, useCallback } from 'react';
+import { supabase } from '@/integrations/supabase/client';
 
 export interface ChatMessage {
   id: string;
@@ -9,7 +10,7 @@ export interface ChatMessage {
 
 const CHAT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/market-chat`;
 
-export const useMarketChat = (userTier: number = 1) => {
+export const useMarketChat = () => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -31,11 +32,15 @@ export const useMarketChat = (userTier: number = 1) => {
     let assistantContent = '';
 
     try {
+      // Get current session token for authenticated requests
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token;
+
       const response = await fetch(CHAT_URL, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+          Authorization: `Bearer ${token || import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
         },
         body: JSON.stringify({
           messages: [...messages, userMessage].map(m => ({
@@ -43,7 +48,7 @@ export const useMarketChat = (userTier: number = 1) => {
             content: m.content,
           })),
           marketData: marketContext,
-          userTier,
+          // userTier removed — tier is now determined server-side
         }),
       });
 
@@ -76,7 +81,6 @@ export const useMarketChat = (userTier: number = 1) => {
 
         buffer += decoder.decode(value, { stream: true });
 
-        // Process line by line
         let newlineIndex: number;
         while ((newlineIndex = buffer.indexOf('\n')) !== -1) {
           let line = buffer.slice(0, newlineIndex);
@@ -110,7 +114,6 @@ export const useMarketChat = (userTier: number = 1) => {
               });
             }
           } catch {
-            // Incomplete JSON, put back and wait for more
             buffer = line + '\n' + buffer;
             break;
           }
@@ -134,8 +137,7 @@ export const useMarketChat = (userTier: number = 1) => {
             }
           } catch { /* ignore */ }
         }
-        
-        // Final update
+
         setMessages(prev => {
           const updated = [...prev];
           const lastIndex = updated.length - 1;
@@ -152,7 +154,6 @@ export const useMarketChat = (userTier: number = 1) => {
     } catch (err) {
       console.error('Chat error:', err);
       setError(err instanceof Error ? err.message : 'Failed to send message');
-      // Remove the empty assistant message on error
       setMessages(prev => {
         const filtered = prev.filter(m => m.content !== '' || m.role !== 'assistant');
         return filtered;
@@ -160,7 +161,7 @@ export const useMarketChat = (userTier: number = 1) => {
     } finally {
       setIsLoading(false);
     }
-  }, [messages, isLoading, userTier]);
+  }, [messages, isLoading]);
 
   const clearMessages = useCallback(() => {
     setMessages([]);

@@ -1,5 +1,6 @@
 import { OHLC, TickerInfo, Timeframe } from './types';
 import { generateOHLCData } from './dataGenerator';
+import { supabase } from '@/integrations/supabase/client';
 
 interface MarketDataResponse {
   symbol: string;
@@ -58,12 +59,17 @@ export const fetchRealMarketData = async (
       // Build URL with query params and use fetch directly for GET requests
       const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
       const supabaseKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+      
+      // Get current session token for authenticated requests
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token || supabaseKey;
+      
       const url = `${supabaseUrl}/functions/v1/market-data?symbol=${encodeURIComponent(ticker.symbol)}&timeframe=${encodeURIComponent(timeframe)}&limit=${barCount}`;
       
       const response = await fetch(url, {
         method: 'GET',
         headers: {
-          'Authorization': `Bearer ${supabaseKey}`,
+          'Authorization': `Bearer ${token}`,
           'apikey': supabaseKey,
         },
       });

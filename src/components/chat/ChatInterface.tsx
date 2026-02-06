@@ -23,7 +23,7 @@ export const ChatInterface = ({
   const [input, setInput] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const { messages, isLoading, error, sendMessage, clearMessages } = useMarketChat(userTier);
+  const { messages, isLoading, error, sendMessage, clearMessages } = useMarketChat();
 
   // Auto-scroll to bottom on new messages
   useEffect(() => {
