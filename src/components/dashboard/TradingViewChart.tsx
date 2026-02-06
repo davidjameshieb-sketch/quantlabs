@@ -338,33 +338,17 @@ export const TradingViewChart = ({
   
   return (
     <Card className={cn('border-border/50 bg-card/50', className)}>
-      <CardHeader className="pb-2">
-        <div className="flex items-center justify-between flex-wrap gap-4">
-          <div className="flex items-center gap-3">
-            <CardTitle className="font-display text-lg">
+      <CardHeader className="pb-2 space-y-3">
+        {/* Row 1: Title + Price + Change */}
+        <div className="flex items-start justify-between gap-2">
+          <div className="flex items-center gap-2 flex-wrap min-w-0">
+            <CardTitle className="font-display text-lg shrink-0">
               Price Chart
             </CardTitle>
-            {/* Display price (canonical raw quote, not HA close) */}
-            <div className="flex flex-col leading-tight">
-              <span className="font-mono text-lg font-bold">
-                {displayPrice.toLocaleString(undefined, {
-                  minimumFractionDigits: ticker.type === 'forex' ? 4 : 2,
-                  maximumFractionDigits: ticker.type === 'forex' ? 5 : ticker.type === 'crypto' ? 6 : 2,
-                })}
-              </span>
-              <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
-                <span>Source: {displaySource || 'Simulated'}</span>
-                {lastUpdatedISO ? (
-                  <span className="whitespace-nowrap">
-                    Last refresh: {new Date(lastUpdatedISO).toISOString().replace('.000Z', 'Z')}
-                  </span>
-                ) : null}
-              </div>
-            </div>
             <Badge
               variant="outline"
               className={cn(
-                'text-xs',
+                'text-xs shrink-0',
                 isPositive 
                   ? 'bg-neural-green/20 text-neural-green border-neural-green/30' 
                   : 'bg-neural-red/20 text-neural-red border-neural-red/30'
@@ -372,8 +356,9 @@ export const TradingViewChart = ({
             >
               {isPositive ? '+' : ''}{percentChange.toFixed(2)}%
             </Badge>
-            
-            {/* Refresh button */}
+          </div>
+          
+          <div className="flex items-center gap-1 shrink-0">
             <Button
               variant="ghost"
               size="icon"
@@ -383,77 +368,78 @@ export const TradingViewChart = ({
             >
               <RefreshCw className={cn('w-4 h-4', isRefreshing && 'animate-spin')} />
             </Button>
-            
-            {/* Chart type toggle */}
-            <div className="flex items-center gap-1 ml-2">
-              <Button
-                variant={chartType === 'candlestick' ? 'default' : 'ghost'}
-                size="sm"
-                className="h-7 px-2"
-                onClick={() => setChartType('candlestick')}
-              >
-                <CandlestickChart className="w-4 h-4" />
-              </Button>
-              <Button
-                variant={chartType === 'heikin-ashi' ? 'default' : 'ghost'}
-                size="sm"
-                className="h-7 px-2"
-                onClick={() => setChartType('heikin-ashi')}
-                title="Heikin Ashi"
-              >
-                <LineChart className="w-4 h-4" />
-              </Button>
-            </div>
-          </div>
-          
-          <div className="flex items-center gap-4">
-            {/* Condition Replay toggle */}
-            {showConditionReplay && (
-              <div className="flex items-center gap-2">
-                <Switch
-                  id="condition-replay"
-                  checked={showOverlay}
-                  onCheckedChange={setShowOverlay}
-                />
-                <Label htmlFor="condition-replay" className="text-xs cursor-pointer">
-                  Condition Replay
-                </Label>
-              </div>
-            )}
-            
-            {showOverlay && (
-              <div className="flex items-center gap-2">
-                <Switch
-                  id="outcomes"
-                  checked={showOutcomes}
-                  onCheckedChange={setShowOutcomes}
-                />
-                <Label htmlFor="outcomes" className="text-xs cursor-pointer">
-                  Show Outcomes
-                </Label>
-              </div>
-            )}
-            
-            {showTimeframes && (
-              <Tabs value={timeframe} onValueChange={(v) => setTimeframe(v as Timeframe)}>
-                <TabsList className="bg-muted/50 h-8">
-                  {(['15m', '1h', '4h', '1d'] as Timeframe[]).map(tf => (
-                    <TabsTrigger
-                      key={tf}
-                      value={tf}
-                      className="text-xs px-3 h-6 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground"
-                    >
-                      {TIMEFRAME_LABELS[tf]}
-                    </TabsTrigger>
-                  ))}
-                </TabsList>
-              </Tabs>
-            )}
+            <Button
+              variant={chartType === 'candlestick' ? 'default' : 'ghost'}
+              size="sm"
+              className="h-7 px-2"
+              onClick={() => setChartType('candlestick')}
+            >
+              <CandlestickChart className="w-4 h-4" />
+            </Button>
+            <Button
+              variant={chartType === 'heikin-ashi' ? 'default' : 'ghost'}
+              size="sm"
+              className="h-7 px-2"
+              onClick={() => setChartType('heikin-ashi')}
+              title="Heikin Ashi"
+            >
+              <LineChart className="w-4 h-4" />
+            </Button>
           </div>
         </div>
         
+        {/* Row 2: Price display */}
+        <div className="flex flex-col leading-tight">
+          <span className="font-mono text-lg font-bold">
+            {displayPrice.toLocaleString(undefined, {
+              minimumFractionDigits: ticker.type === 'forex' ? 4 : 2,
+              maximumFractionDigits: ticker.type === 'forex' ? 5 : ticker.type === 'crypto' ? 6 : 2,
+            })}
+          </span>
+          <div className="flex items-center gap-2 text-[11px] text-muted-foreground flex-wrap">
+            <span>Source: {displaySource || 'Simulated'}</span>
+            {lastUpdatedISO ? (
+              <span className="whitespace-nowrap">
+                Refresh: {new Date(lastUpdatedISO).toISOString().replace('.000Z', 'Z')}
+              </span>
+            ) : null}
+          </div>
+        </div>
+
+        {/* Row 3: Controls - scrollable on mobile */}
+        <div className="flex items-center gap-3 overflow-x-auto pb-1 -mx-1 px-1 scrollbar-hide">
+          {showConditionReplay && (
+            <div className="flex items-center gap-2 shrink-0">
+              <Switch
+                id="condition-replay"
+                checked={showOverlay}
+                onCheckedChange={setShowOverlay}
+              />
+              <Label htmlFor="condition-replay" className="text-xs cursor-pointer whitespace-nowrap">
+                Show Outcomes
+              </Label>
+            </div>
+          )}
+          
+          {showTimeframes && (
+            <Tabs value={timeframe} onValueChange={(v) => setTimeframe(v as Timeframe)} className="shrink-0">
+              <TabsList className="bg-muted/50 h-8">
+                {(['15m', '1h', '4h', '1d'] as Timeframe[]).map(tf => (
+                  <TabsTrigger
+                    key={tf}
+                    value={tf}
+                    className="text-xs px-2 sm:px-3 h-6 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground"
+                  >
+                    {TIMEFRAME_LABELS[tf]}
+                  </TabsTrigger>
+                ))}
+              </TabsList>
+            </Tabs>
+          )}
+        </div>
+        
         {/* Chart type indicator */}
-        <p className="text-xs text-muted-foreground mt-1">
+        <p className="text-xs text-muted-foreground">
           {chartType === 'heikin-ashi' ? 'Heikin Ashi' : 'Candlestick'} Chart
           {showOverlay && ' • Condition zones highlighted'}
         </p>

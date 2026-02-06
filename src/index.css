@@ -242,4 +242,13 @@
   .scrollbar-neural::-webkit-scrollbar-thumb:hover {
     background: linear-gradient(180deg, hsl(185 100% 50% / 0.7), hsl(270 60% 50% / 0.7));
   }
+
+  /* Hide scrollbar for horizontal scroll areas on mobile */
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
 }

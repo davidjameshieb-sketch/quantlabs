@@ -1,9 +1,9 @@
 // Historical Condition Outcomes Engine
 // Computes forward returns, win rates, MFE/MAE for condition labels
+// Includes position sizing with configurable account size and risk %
 
 import { OHLC, TickerInfo, Timeframe, StrategyState, EfficiencyVerdict } from './types';
 import { getMarketData } from './dataGenerator';
-import { analyzeMarket } from './analysisEngine';
 
 export type ConditionLabel = 
   | 'high-conviction-bullish'
@@ -13,7 +13,7 @@ export type ConditionLabel =
   | 'compression-breakout-imminent';
 
 export interface ForwardReturn {
-  horizon: number; // bars forward
+  horizon: number;
   avgReturn: number;
   medianReturn: number;
   winRate: number;
@@ -22,21 +22,36 @@ export interface ForwardReturn {
   percentile75: number;
 }
 
+export interface PositionSizing {
+  accountSize: number;
+  riskPercent: number;
+  riskPerTrade: number;
+  avgPositionSize: number;
+  avgPnlPerTrade: number;
+  totalPnl: number;
+  totalTrades: number;
+  maxDrawdown: number;
+  sharpeRatio: number;
+}
+
 export interface OutcomeMetrics {
   conditionLabel: ConditionLabel;
   forwardReturns: ForwardReturn[];
-  avgMFE: number; // Max Favorable Excursion
-  avgMAE: number; // Max Adverse Excursion
-  conditionFlipRate: number; // How often the condition changes
-  avgDuration: number; // Average bars the condition persists
-  confidenceWeight: number; // 0-1 based on sample size
+  avgMFE: number;
+  avgMAE: number;
+  conditionFlipRate: number;
+  avgDuration: number;
+  confidenceWeight: number;
+  positionSizing: PositionSizing;
 }
 
 export interface TickerOutcomes {
   symbol: string;
   outcomes: Record<ConditionLabel, OutcomeMetrics>;
   lastUpdated: number;
-  sampleDepth: number; // Total bars analyzed
+  sampleDepth: number;
+  accountSize: number;
+  riskPercent: number;
 }
 
 export interface AggregateOutcomes {
@@ -51,6 +66,10 @@ export interface AggregateOutcomes {
 // Default horizons for forward return calculation
 export const DEFAULT_HORIZONS = [1, 3, 5, 10, 20];
 
+// Default account parameters
+export const DEFAULT_ACCOUNT_SIZE = 1000;
+export const DEFAULT_RISK_PERCENT = 5;
+
 // Map analysis result to condition label
 export const getConditionLabel = (
   confidence: number,
@@ -58,22 +77,15 @@ export const getConditionLabel = (
   bias: 'bullish' | 'bearish',
   strategyState: StrategyState
 ): ConditionLabel => {
-  // High conviction (confidence > 70% with clean/mixed efficiency)
   if (confidence > 70 && efficiency !== 'noisy') {
     return bias === 'bullish' ? 'high-conviction-bullish' : 'high-conviction-bearish';
   }
-  
-  // Noisy / avoid zone
   if (efficiency === 'noisy' || strategyState === 'avoiding') {
     return 'noisy-avoid';
   }
-  
-  // Compression / waiting
   if (strategyState === 'watching' && confidence < 40) {
     return 'compression-breakout-imminent';
   }
-  
-  // Mixed conditions
   return 'mixed';
 };
 
@@ -94,6 +106,8 @@ const calculateForwardReturn = (
   if (entryIndex + horizon >= data.length) return null;
   
   const entryPrice = data[entryIndex].close;
+  if (entryPrice === 0) return null;
+  
   let mfe = 0;
   let mae = 0;
   
@@ -115,14 +129,74 @@ const calculateForwardReturn = (
   return { return: returnPct, mfe, mae: Math.abs(mae) };
 };
 
+// Calculate position sizing metrics
+const calculatePositionSizing = (
+  returns: number[],
+  atrPercent: number,
+  accountSize: number,
+  riskPercent: number
+): PositionSizing => {
+  const riskPerTrade = accountSize * (riskPercent / 100);
+  
+  // Position size based on ATR-based stop (2x ATR stop)
+  const stopDistancePct = Math.max(atrPercent * 2, 0.005); // min 0.5% stop
+  const avgPositionSize = riskPerTrade / stopDistancePct;
+  
+  // Calculate P&L for each trade
+  const pnls = returns.map(r => avgPositionSize * r);
+  const totalPnl = pnls.reduce((sum, p) => sum + p, 0);
+  const avgPnlPerTrade = pnls.length > 0 ? totalPnl / pnls.length : 0;
+  
+  // Calculate max drawdown
+  let peak = 0;
+  let maxDrawdown = 0;
+  let runningPnl = 0;
+  for (const pnl of pnls) {
+    runningPnl += pnl;
+    peak = Math.max(peak, runningPnl);
+    maxDrawdown = Math.max(maxDrawdown, peak - runningPnl);
+  }
+  
+  // Sharpe ratio (annualized, assume 252 trading days)
+  const avgReturn = pnls.length > 0 ? pnls.reduce((s, p) => s + p, 0) / pnls.length : 0;
+  const stdDev = pnls.length > 1 
+    ? Math.sqrt(pnls.reduce((s, p) => s + (p - avgReturn) ** 2, 0) / (pnls.length - 1))
+    : 0;
+  const sharpeRatio = stdDev > 0 ? (avgReturn / stdDev) * Math.sqrt(252) : 0;
+  
+  return {
+    accountSize,
+    riskPercent,
+    riskPerTrade,
+    avgPositionSize,
+    avgPnlPerTrade,
+    totalPnl,
+    totalTrades: returns.length,
+    maxDrawdown,
+    sharpeRatio,
+  };
+};
+
 // Compute outcomes for a single ticker
 export const computeTickerOutcomes = (
   ticker: TickerInfo,
   timeframe: Timeframe = '1h',
   barCount: number = 500,
-  horizons: number[] = DEFAULT_HORIZONS
+  horizons: number[] = DEFAULT_HORIZONS,
+  accountSize: number = DEFAULT_ACCOUNT_SIZE,
+  riskPercent: number = DEFAULT_RISK_PERCENT
 ): TickerOutcomes => {
   const data = getMarketData(ticker, timeframe, barCount);
+  
+  // Calculate ATR for position sizing
+  const atrWindow = Math.min(14, data.length - 1);
+  let atrSum = 0;
+  for (let i = data.length - atrWindow; i < data.length; i++) {
+    atrSum += (data[i].high - data[i].low);
+  }
+  const avgATR = atrSum / atrWindow;
+  const avgPrice = data[data.length - 1]?.close || 1;
+  const atrPercent = avgATR / avgPrice;
   
   // Track condition occurrences
   const conditionOccurrences: Record<ConditionLabel, {
@@ -151,21 +225,32 @@ export const computeTickerOutcomes = (
   let conditionStartIdx = 0;
   let conditionFlips = 0;
   
-  for (let i = 50; i < data.length - Math.max(...horizons); i++) {
-    // Simulate getting analysis at this point
-    const slicedData = data.slice(0, i + 1);
-    const mockTicker = { ...ticker };
+  const maxHorizon = Math.max(...horizons);
+  const analysisStart = Math.min(50, Math.floor(data.length * 0.1));
+  
+  for (let i = analysisStart; i < data.length - maxHorizon; i++) {
+    // Calculate volatility as % of price for this window
+    const windowSize = Math.min(20, i);
+    const windowSlice = data.slice(i - windowSize, i + 1);
     
-    // Get analysis for this bar (simplified - using random based on bar data)
-    const barVolatility = (data[i].high - data[i].low) / data[i].close;
-    const trendStrength = Math.abs(data[i].close - data[Math.max(0, i - 20)]?.close || data[i].close) / data[i].close;
+    const barVolatility = windowSlice.reduce((sum, b) => sum + (b.high - b.low), 0) / windowSlice.length;
+    const barVolPct = barVolatility / data[i].close;
     
-    // Determine condition based on simulated metrics
-    const confidence = Math.min(100, trendStrength * 1000 + Math.random() * 30);
-    const efficiency: EfficiencyVerdict = barVolatility > 0.03 ? 'noisy' : barVolatility < 0.01 ? 'clean' : 'mixed';
-    const bias = data[i].close > (data[i - 10]?.close || data[i].close) ? 'bullish' : 'bearish';
+    // Trend strength: how much price moved directionally over the window
+    const priceAtStart = data[Math.max(0, i - windowSize)]?.close || data[i].close;
+    const trendStrength = Math.abs(data[i].close - priceAtStart) / priceAtStart;
+    
+    // Efficiency: directional move vs total path
+    const netMove = Math.abs(data[i].close - priceAtStart);
+    const pathLength = windowSlice.reduce((sum, b) => sum + (b.high - b.low), 0);
+    const efficiencyRatio = pathLength > 0 ? netMove / pathLength : 0;
+    
+    // Determine condition based on computed metrics
+    const confidence = Math.min(100, trendStrength * 800 + efficiencyRatio * 40);
+    const efficiency: EfficiencyVerdict = efficiencyRatio > 0.4 ? 'clean' : efficiencyRatio < 0.15 ? 'noisy' : 'mixed';
+    const bias = data[i].close > priceAtStart ? 'bullish' : 'bearish';
     const strategyState: StrategyState = confidence > 70 && efficiency === 'clean' ? 'pressing' : 
-                                          confidence < 40 ? 'watching' : 
+                                          confidence < 30 ? 'watching' : 
                                           efficiency === 'noisy' ? 'avoiding' : 'tracking';
     
     const label = getConditionLabel(confidence, efficiency, bias, strategyState);
@@ -221,16 +306,21 @@ export const computeTickerOutcomes = (
     
     // Calculate confidence weight based on sample size
     const totalSamples = forwardReturns.reduce((sum, fr) => sum + fr.sampleSize, 0);
-    const confidenceWeight = Math.min(1, totalSamples / 100); // Full confidence at 100+ samples
+    const confidenceWeight = Math.min(1, totalSamples / 100);
+    
+    // Position sizing for the 10-bar horizon (primary benchmark)
+    const primaryReturns = occ.returns[10] || occ.returns[horizons[0]] || [];
+    const positionSizing = calculatePositionSizing(primaryReturns, atrPercent, accountSize, riskPercent);
     
     outcomes[label] = {
       conditionLabel: label,
       forwardReturns,
       avgMFE,
       avgMAE,
-      conditionFlipRate: conditionFlips / (data.length - 50),
+      conditionFlipRate: conditionFlips / Math.max(1, data.length - analysisStart),
       avgDuration,
       confidenceWeight,
+      positionSizing,
     };
   });
   
@@ -239,6 +329,8 @@ export const computeTickerOutcomes = (
     outcomes,
     lastUpdated: Date.now(),
     sampleDepth: barCount,
+    accountSize,
+    riskPercent,
   };
 };
 
@@ -257,8 +349,6 @@ export const aggregateOutcomes = (
   ];
   
   const aggregated: Record<ConditionLabel, OutcomeMetrics> = {} as Record<ConditionLabel, OutcomeMetrics>;
-  
-  // Track performance for ranking
   const performanceScores: { symbol: string; score: number }[] = [];
   
   conditionLabels.forEach(label => {
@@ -286,7 +376,6 @@ export const aggregateOutcomes = (
       totalDuration += outcome.avgDuration;
       count++;
       
-      // Track performance scores (using 10-day returns as benchmark)
       if (label === 'high-conviction-bullish') {
         const fr10 = outcome.forwardReturns.find(fr => fr.horizon === 10);
         if (fr10) {
@@ -295,14 +384,11 @@ export const aggregateOutcomes = (
       }
     });
     
-    // Aggregate forward returns by horizon
     const forwardReturns: ForwardReturn[] = Object.entries(allForwardReturns).map(([horizon, frs]) => {
       const h = parseInt(horizon);
-      const avgReturn = frs.reduce((sum, fr) => sum + fr.avgReturn * fr.sampleSize, 0) / 
-                        Math.max(1, frs.reduce((sum, fr) => sum + fr.sampleSize, 0));
-      const avgWinRate = frs.reduce((sum, fr) => sum + fr.winRate * fr.sampleSize, 0) / 
-                         Math.max(1, frs.reduce((sum, fr) => sum + fr.sampleSize, 0));
       const totalSamples = frs.reduce((sum, fr) => sum + fr.sampleSize, 0);
+      const avgReturn = frs.reduce((sum, fr) => sum + fr.avgReturn * fr.sampleSize, 0) / Math.max(1, totalSamples);
+      const avgWinRate = frs.reduce((sum, fr) => sum + fr.winRate * fr.sampleSize, 0) / Math.max(1, totalSamples);
       
       return {
         horizon: h,
@@ -323,10 +409,20 @@ export const aggregateOutcomes = (
       conditionFlipRate: count > 0 ? totalFlipRate / count : 0,
       avgDuration: count > 0 ? totalDuration / count : 0,
       confidenceWeight: Math.min(1, tickerOutcomes.length / 10),
+      positionSizing: {
+        accountSize: DEFAULT_ACCOUNT_SIZE,
+        riskPercent: DEFAULT_RISK_PERCENT,
+        riskPerTrade: DEFAULT_ACCOUNT_SIZE * DEFAULT_RISK_PERCENT / 100,
+        avgPositionSize: 0,
+        avgPnlPerTrade: 0,
+        totalPnl: 0,
+        totalTrades: 0,
+        maxDrawdown: 0,
+        sharpeRatio: 0,
+      },
     };
   });
   
-  // Sort performance scores
   performanceScores.sort((a, b) => b.score - a.score);
   
   return {
@@ -372,4 +468,10 @@ export const getConditionColor = (label: ConditionLabel): string => {
     'compression-breakout-imminent': 'hsl(var(--primary))',
   };
   return colorMap[label];
+};
+
+// Format dollar amount
+export const formatDollar = (amount: number): string => {
+  const prefix = amount >= 0 ? '+' : '';
+  return `${prefix}$${Math.abs(amount).toFixed(2)}`;
 };
