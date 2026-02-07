@@ -131,10 +131,10 @@ export const PricingSection = () => {
           className="text-center mb-12"
         >
           <h2 className="font-display text-3xl md:text-5xl font-bold mb-4">
-            <span className="text-gradient-neural">Choose Your Edge</span>
+            <span className="text-gradient-neural">Founding Member Pricing</span>
           </h2>
           <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
-            Start free with full platform access. Upgrade for real-time AI intelligence.
+            Lock in exclusive founding member rates before public launch pricing takes effect.
           </p>
         </motion.div>
 
@@ -148,7 +148,7 @@ export const PricingSection = () => {
         >
           <div className="inline-flex items-center gap-3 px-6 py-3 rounded-xl border border-neural-orange/30 bg-neural-orange/10">
             <Clock className="w-5 h-5 text-neural-orange shrink-0" />
-            <span className="text-sm font-medium text-neural-orange">Limited-time pricing expires in:</span>
+            <span className="text-sm font-medium text-neural-orange">Founding member pricing closes in:</span>
             <div className="flex items-center gap-1 font-mono text-sm font-bold text-foreground">
               <span className="bg-background/20 px-2 py-1 rounded">{String(countdown.days).padStart(2, '0')}d</span>
               <span>:</span>
@@ -180,7 +180,7 @@ export const PricingSection = () => {
               {tier.popular && (
                 <div className="absolute -top-3 left-1/2 -translate-x-1/2 flex items-center gap-1 px-4 py-1.5 rounded-full bg-primary text-primary-foreground text-xs font-bold">
                   <Star className="w-3 h-3" />
-                  RECOMMENDED
+                  FOUNDING MEMBER DEAL
                 </div>
               )}
 
@@ -209,7 +209,7 @@ export const PricingSection = () => {
                 {tier.premium && (
                   <p className="text-xs text-neural-green mt-2 flex items-center gap-1">
                     <Zap className="w-3 h-3" />
-                    Price locked while you're subscribed
+                    Founding member price — locked permanently while subscribed
                   </p>
                 )}
               </div>
@@ -264,7 +264,7 @@ export const PricingSection = () => {
           transition={{ duration: 0.5, delay: 0.5 }}
           className="text-center text-sm text-muted-foreground mt-12"
         >
-          Cancel anytime. No questions asked. 15-day free trial on Edge Access.
+          Founding members get permanently locked pricing. Cancel anytime. No questions asked.
         </motion.p>
       </div>
     </section>
