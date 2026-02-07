@@ -70,7 +70,7 @@ const tiers = [
     name: 'QuantLabs Edge Access',
     originalPrice: STRIPE_CONFIG.edge.originalPrice,
     price: STRIPE_CONFIG.edge.price,
-    description: '15-minute delayed intraday intelligence with full AI analytics',
+    description: 'Founding member rate — normally $225/mo',
     features: [
       'Everything in Free',
       '15-minute delayed intraday data',
