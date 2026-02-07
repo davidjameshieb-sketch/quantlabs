@@ -39,9 +39,17 @@ serve(async (req) => {
 
     const stripe = new Stripe(stripeKey, { apiVersion: "2025-08-27.basil" });
 
+    // Whitelist of allowed price IDs to prevent arbitrary price manipulation
+    const ALLOWED_PRICE_IDS = [
+      "price_1SxrXzEs4tTFGskp7uqVmJyq", // Edge Access $45/month (Founding Member)
+    ];
+
     const { priceId } = await req.json();
-    if (!priceId) throw new Error("priceId is required");
-    logStep("Price ID received", { priceId });
+    if (!priceId || !ALLOWED_PRICE_IDS.includes(priceId)) {
+      logStep("Invalid price ID rejected", { priceId });
+      throw new Error("Invalid price ID");
+    }
+    logStep("Price ID validated", { priceId });
 
     // Check if customer already exists in Stripe
     const customers = await stripe.customers.list({ email: user.email, limit: 1 });
