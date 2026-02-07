@@ -6,7 +6,7 @@ const fleetMetrics = [
   { icon: BarChart3, value: '9,008+', label: 'Total Trades Executed', color: 'text-neural-cyan' },
   { icon: TrendingUp, value: '+23.7%', label: 'Fleet Profitability (Avg)', color: 'text-neural-green' },
   { icon: Shield, value: '1.41', label: 'Risk-Adjusted Return (Sharpe)', color: 'text-neural-purple' },
-  { icon: Brain, value: '20', label: 'Total AI Agents', color: 'text-primary' },
+  { icon: Brain, value: '10', label: 'Trading AI Agents', color: 'text-primary' },
   { icon: Globe, value: '4', label: 'Markets Covered', color: 'text-neural-orange' },
 ];
 
