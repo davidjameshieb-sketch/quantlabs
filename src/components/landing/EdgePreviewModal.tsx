@@ -131,7 +131,7 @@ function PreviewContent({
       </div>
 
       <p className="text-xs text-muted-foreground/60 text-center">
-        15-day free trial · Cancel anytime · Price locked while subscribed
+        Founding member deal · Cancel anytime · Price locked permanently while subscribed
       </p>
     </div>
   );

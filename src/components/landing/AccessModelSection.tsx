@@ -40,7 +40,7 @@ export const AccessModelSection = () => {
             <span className="text-gradient-neural">Access Clarity</span>
           </h2>
           <p className="text-muted-foreground text-sm max-w-lg mx-auto">
-            Full platform visibility at every level. Upgrade when you need real-time intelligence.
+            Full platform visibility at every level. Founding members lock in discounted rates permanently.
           </p>
         </motion.div>
 
@@ -119,7 +119,7 @@ export const AccessModelSection = () => {
 
             <p className="text-[11px] text-muted-foreground/70 mb-4 leading-relaxed flex items-center gap-1.5">
               <Clock className="w-3 h-3 text-primary shrink-0" />
-              Founder intelligence access available for early ecosystem participants.
+              Exclusive founding member discount — this rate is only available to early participants.
             </p>
 
             <ul className="space-y-2.5 mb-6">
