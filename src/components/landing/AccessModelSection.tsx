@@ -1,25 +1,26 @@
 import { motion } from 'framer-motion';
 import { Link } from 'react-router-dom';
-import { Check, ArrowRight, Lock, Unlock } from 'lucide-react';
+import { Check, ArrowRight, Lock, Unlock, Crown, Clock } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
+import { STRIPE_CONFIG } from '@/lib/stripe/config';
 
 const freeFeatures = [
   'Full platform navigation',
   'Historical AI performance visibility',
-  'Delayed trade execution data',
+  '24-hour delayed market data',
+  'Delayed trade entry timestamps',
   'Full AI dashboard exploration',
   'All 10 agent profiles & analytics',
-  'Market scanner access',
 ];
 
 const edgeFeatures = [
-  'Live trade execution feeds',
-  'Intraday governance intelligence',
-  'Real-time AI evolution monitoring',
+  'Real-time AI trade signals',
+  'Governance Meta-Controller visibility',
+  'Optimization evolution tracking',
   'Immediate trade signal visibility',
   'Multi-agent consensus scoring',
-  'Priority feature access',
+  'Founder identity platform badge',
 ];
 
 export const AccessModelSection = () => {
@@ -59,6 +60,9 @@ export const AccessModelSection = () => {
               <Unlock className="w-4 h-4 text-neural-green" />
               <h3 className="font-display text-base font-bold text-foreground">Free Dashboard Access</h3>
             </div>
+            <p className="text-[11px] text-muted-foreground/70 mb-4 leading-relaxed">
+              Free dashboard displays verified intelligence performance using delayed market conditions.
+            </p>
             <ul className="space-y-2.5 mb-6">
               {freeFeatures.map((f) => (
                 <li key={f} className="flex items-start gap-2 text-xs">
@@ -80,7 +84,7 @@ export const AccessModelSection = () => {
             </Button>
           </motion.div>
 
-          {/* Edge */}
+          {/* Edge / Founder */}
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             whileInView={{ opacity: 1, y: 0 }}
@@ -92,12 +96,32 @@ export const AccessModelSection = () => {
             )}
           >
             <div className="absolute -top-2.5 right-4 px-3 py-0.5 rounded-full bg-primary text-primary-foreground text-[10px] font-display font-bold">
-              EDGE ACCESS
+              FOUNDER ACCESS
             </div>
             <div className="flex items-center gap-2 mb-4">
-              <Lock className="w-4 h-4 text-primary" />
+              <Crown className="w-4 h-4 text-primary" />
               <h3 className="font-display text-base font-bold text-foreground">Edge Intelligence</h3>
             </div>
+
+            {/* Pricing with strikethrough */}
+            <div className="flex items-baseline gap-3 mb-4">
+              <span className="text-sm text-muted-foreground/50 line-through font-mono">
+                ${STRIPE_CONFIG.edge.originalPrice}/mo
+              </span>
+              <span className="font-display text-2xl font-bold text-primary">
+                ${STRIPE_CONFIG.edge.price}/mo
+              </span>
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-neural-green/10 border border-neural-green/20">
+                <Lock className="w-2.5 h-2.5 text-neural-green" />
+                <span className="text-[9px] font-mono text-neural-green">Price locked</span>
+              </span>
+            </div>
+
+            <p className="text-[11px] text-muted-foreground/70 mb-4 leading-relaxed flex items-center gap-1.5">
+              <Clock className="w-3 h-3 text-primary shrink-0" />
+              Founder intelligence access available for early ecosystem participants.
+            </p>
+
             <ul className="space-y-2.5 mb-6">
               {edgeFeatures.map((f) => (
                 <li key={f} className="flex items-start gap-2 text-xs">
@@ -112,7 +136,7 @@ export const AccessModelSection = () => {
               className="w-full font-display text-xs bg-primary hover:bg-primary/90 text-primary-foreground shadow-lg shadow-primary/20"
             >
               <Link to="/auth">
-                Unlock Edge Access
+                Lock Founder Intelligence Access
                 <ArrowRight className="ml-1.5 w-3 h-3" />
               </Link>
             </Button>

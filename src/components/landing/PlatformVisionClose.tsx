@@ -1,6 +1,6 @@
 import { motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
-import { ArrowRight } from 'lucide-react';
+import { ArrowRight, Lock } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
 export const PlatformVisionClose = () => {
@@ -18,7 +18,7 @@ export const PlatformVisionClose = () => {
           className="space-y-6"
         >
           <p className="text-xs font-display uppercase tracking-[0.2em] text-muted-foreground/60">
-            Platform Philosophy
+            A Transparent Coordinated Artificial Intelligence Trading Institution
           </p>
 
           <h2 className="font-display text-2xl md:text-3xl font-bold text-foreground leading-tight">
@@ -27,7 +27,7 @@ export const PlatformVisionClose = () => {
             while maintaining transparency, accountability, and performance discipline.
           </h2>
 
-          <div className="pt-2">
+          <div className="flex flex-col sm:flex-row items-center justify-center gap-3 pt-2">
             <Button
               asChild
               size="lg"
@@ -36,6 +36,17 @@ export const PlatformVisionClose = () => {
               <Link to="/dashboard">
                 Enter Free Dashboard
                 <ArrowRight className="ml-2 w-4 h-4" />
+              </Link>
+            </Button>
+            <Button
+              asChild
+              variant="outline"
+              size="lg"
+              className="text-base px-10 py-6 font-display border-primary/30 hover:bg-primary/10 text-primary hover:text-primary gap-2"
+            >
+              <Link to="/auth">
+                <Lock className="w-4 h-4" />
+                Lock Founder Intelligence Access
               </Link>
             </Button>
           </div>

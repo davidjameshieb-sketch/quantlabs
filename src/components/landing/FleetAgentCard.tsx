@@ -1,6 +1,6 @@
 import { motion } from 'framer-motion';
 import { Link } from 'react-router-dom';
-import { ArrowRight, BarChart3, Shield, Activity } from 'lucide-react';
+import { ArrowRight, BarChart3, Shield, Activity, Target } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { AgentDefinition } from '@/lib/agents/agentConfig';
 
@@ -11,6 +11,7 @@ interface FleetAgentCardProps {
     profitPct: number;
     lastTrade: { symbol: string; pct: number; time: string };
     totalTrades: number;
+    winRate: number;
     sparkline: number[];
   };
   index: number;
@@ -98,7 +99,7 @@ export const FleetAgentCard = ({ def, data, index }: FleetAgentCardProps) => {
             {def.coreStrategy.split('.')[0]}.
           </p>
 
-          {/* Since inception P&L */}
+          {/* Since inception P&L + Win Rate */}
           <div className="flex items-end justify-between mb-3">
             <div>
               <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-0.5">
@@ -112,6 +113,22 @@ export const FleetAgentCard = ({ def, data, index }: FleetAgentCardProps) => {
               </p>
             </div>
             <MiniSparkline data={data.sparkline} positive={isPositive} />
+          </div>
+
+          {/* Win Rate + Trade Count Row */}
+          <div className="flex items-center gap-3 mb-3">
+            <div className="flex items-center gap-1">
+              <Target className="w-3 h-3 text-primary" />
+              <span className="text-[10px] font-mono text-muted-foreground">
+                {data.winRate}% win
+              </span>
+            </div>
+            <div className="flex items-center gap-1">
+              <BarChart3 className="w-3 h-3 text-muted-foreground" />
+              <span className="text-[10px] font-mono text-muted-foreground">
+                {data.totalTrades.toLocaleString()} trades
+              </span>
+            </div>
           </div>
 
           {/* Last closed trade */}
@@ -143,12 +160,8 @@ export const FleetAgentCard = ({ def, data, index }: FleetAgentCardProps) => {
             </span>
           </div>
 
-          {/* Footer: Trade count + CTA */}
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-1 text-muted-foreground">
-              <BarChart3 className="w-3 h-3" />
-              <span className="text-[10px] font-mono">{data.totalTrades.toLocaleString()} trades</span>
-            </div>
+          {/* Footer CTA */}
+          <div className="flex items-center justify-end">
             <span className="flex items-center gap-1 text-[10px] font-medium text-primary opacity-0 group-hover:opacity-100 transition-opacity">
               Enter AI Dashboard
               <ArrowRight className="w-3 h-3" />
