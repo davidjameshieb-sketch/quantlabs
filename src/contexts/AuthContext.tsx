@@ -64,13 +64,31 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
       const { data, error } = await supabase.functions.invoke('check-subscription');
       if (error) {
         console.error('Error checking subscription:', error);
+        setSubscribed(false);
+        setProductId(null);
+        setSubscriptionEnd(null);
         return;
       }
+      
+      // If the edge function reports an auth error, refresh the session
+      if (data?.auth_error) {
+        console.warn('Session expired, attempting refresh...');
+        const { error: refreshError } = await supabase.auth.refreshSession();
+        if (refreshError) {
+          console.error('Session refresh failed, signing out:', refreshError);
+          await supabase.auth.signOut();
+        }
+        return;
+      }
+      
       setSubscribed(data?.subscribed || false);
       setProductId(data?.product_id || null);
       setSubscriptionEnd(data?.subscription_end || null);
     } catch (err) {
       console.error('Failed to check subscription:', err);
+      setSubscribed(false);
+      setProductId(null);
+      setSubscriptionEnd(null);
     } finally {
       setSubscriptionLoading(false);
     }
