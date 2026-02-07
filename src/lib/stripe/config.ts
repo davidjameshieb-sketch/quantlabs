@@ -7,7 +7,7 @@ export const STRIPE_CONFIG = {
     price_id: "price_1SxrXzEs4tTFGskp7uqVmJyq",
     name: "QuantLabs Edge Access",
     price: 45,
-    originalPrice: 95,
+    originalPrice: 225,
     interval: "month" as const,
   },
 } as const;
