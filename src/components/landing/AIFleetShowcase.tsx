@@ -1,9 +1,8 @@
 import { useState } from 'react';
 import { motion } from 'framer-motion';
 import { Link } from 'react-router-dom';
-import { ArrowRight, BarChart3, Eye, Shield, Activity } from 'lucide-react';
+import { ArrowRight, Eye } from 'lucide-react';
 import { AGENT_DEFINITIONS, ALL_AGENT_IDS } from '@/lib/agents/agentConfig';
-import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { EdgePreviewModal } from './EdgePreviewModal';
 import { FleetAgentCard } from './FleetAgentCard';
@@ -14,6 +13,7 @@ export const agentShowcaseData: Record<string, {
   profitPct: number;
   lastTrade: { symbol: string; pct: number; time: string };
   totalTrades: number;
+  winRate: number;
   sparkline: number[];
 }> = {
   'equities-alpha': {
@@ -21,6 +21,7 @@ export const agentShowcaseData: Record<string, {
     profitPct: 34.7,
     lastTrade: { symbol: 'AAPL', pct: 2.1, time: '3:15 PM' },
     totalTrades: 1_284,
+    winRate: 64,
     sparkline: [30, 35, 28, 42, 38, 50, 47, 55, 60, 58, 65, 62, 70, 68, 75],
   },
   'forex-macro': {
@@ -28,6 +29,7 @@ export const agentShowcaseData: Record<string, {
     profitPct: 21.3,
     lastTrade: { symbol: 'EUR/USD', pct: 1.4, time: '11:42 AM' },
     totalTrades: 987,
+    winRate: 58,
     sparkline: [20, 22, 18, 25, 30, 28, 35, 32, 38, 40, 36, 42, 45, 43, 48],
   },
   'crypto-momentum': {
@@ -35,6 +37,7 @@ export const agentShowcaseData: Record<string, {
     profitPct: 48.2,
     lastTrade: { symbol: 'BTC', pct: -0.8, time: '9:30 PM' },
     totalTrades: 2_156,
+    winRate: 61,
     sparkline: [10, 18, 15, 30, 25, 40, 35, 50, 42, 55, 60, 52, 68, 65, 72],
   },
   'liquidity-radar': {
@@ -42,6 +45,7 @@ export const agentShowcaseData: Record<string, {
     profitPct: 18.6,
     lastTrade: { symbol: 'MSFT', pct: 0.9, time: '2:58 PM' },
     totalTrades: 643,
+    winRate: 66,
     sparkline: [15, 18, 16, 22, 20, 25, 28, 26, 32, 30, 35, 33, 38, 36, 40],
   },
   'range-navigator': {
@@ -49,6 +53,7 @@ export const agentShowcaseData: Record<string, {
     profitPct: 12.4,
     lastTrade: { symbol: 'GBP/JPY', pct: 0.6, time: '4:00 PM' },
     totalTrades: 512,
+    winRate: 71,
     sparkline: [20, 22, 21, 24, 23, 26, 25, 28, 27, 30, 29, 31, 30, 33, 32],
   },
   'volatility-architect': {
@@ -56,6 +61,7 @@ export const agentShowcaseData: Record<string, {
     profitPct: 27.9,
     lastTrade: { symbol: 'ETH', pct: 3.4, time: '1:20 PM' },
     totalTrades: 876,
+    winRate: 59,
     sparkline: [8, 12, 10, 20, 15, 28, 22, 35, 30, 40, 38, 45, 42, 50, 48],
   },
   'adaptive-learner': {
@@ -63,6 +69,7 @@ export const agentShowcaseData: Record<string, {
     profitPct: 9.1,
     lastTrade: { symbol: 'NVDA', pct: 0.3, time: '10:45 AM' },
     totalTrades: 341,
+    winRate: 55,
     sparkline: [10, 11, 10, 13, 12, 15, 14, 17, 16, 19, 18, 20, 19, 22, 21],
   },
   'sentiment-reactor': {
@@ -70,6 +77,7 @@ export const agentShowcaseData: Record<string, {
     profitPct: 15.8,
     lastTrade: { symbol: 'SOL', pct: -1.2, time: '8:15 PM' },
     totalTrades: 723,
+    winRate: 57,
     sparkline: [12, 15, 10, 20, 18, 25, 20, 28, 24, 30, 28, 35, 30, 32, 34],
   },
   'fractal-intelligence': {
@@ -77,6 +85,7 @@ export const agentShowcaseData: Record<string, {
     profitPct: 22.1,
     lastTrade: { symbol: 'SPY', pct: 1.7, time: '3:45 PM' },
     totalTrades: 594,
+    winRate: 63,
     sparkline: [15, 18, 20, 22, 25, 24, 28, 30, 32, 35, 33, 38, 40, 42, 45],
   },
   'risk-sentinel': {
@@ -84,6 +93,7 @@ export const agentShowcaseData: Record<string, {
     profitPct: 19.4,
     lastTrade: { symbol: 'TSLA', pct: 0.5, time: '3:59 PM' },
     totalTrades: 892,
+    winRate: 68,
     sparkline: [20, 22, 21, 24, 23, 26, 28, 27, 30, 32, 31, 34, 33, 36, 38],
   },
 };
@@ -107,8 +117,8 @@ export const AIFleetShowcase = () => {
             10 Trading Models · 4 Optimizers · 6 Governors
           </span>
           <h2 className="font-display text-3xl md:text-5xl font-bold mb-3">
-            <span className="text-foreground">Meet the </span>
-            <span className="text-gradient-neural">AI Trading Fleet</span>
+            <span className="text-foreground">AI Fleet </span>
+            <span className="text-gradient-neural">Performance Truth Wall</span>
           </h2>
           <p className="text-muted-foreground max-w-2xl mx-auto text-sm md:text-base">
             Each AI model brings a unique analytical personality. Explore their verified track records,
@@ -140,7 +150,7 @@ export const AIFleetShowcase = () => {
           <div className="flex flex-col sm:flex-row items-center justify-center gap-4 mb-4">
             <Button asChild size="lg" className="text-base px-8 py-6 font-display bg-primary hover:bg-primary/90 text-primary-foreground shadow-lg shadow-primary/20">
               <Link to="/dashboard">
-                Explore Free Dashboard
+                Enter Free Dashboard
                 <ArrowRight className="ml-2 w-4 h-4" />
               </Link>
             </Button>
