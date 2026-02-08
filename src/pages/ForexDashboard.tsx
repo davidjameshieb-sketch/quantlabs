@@ -13,6 +13,7 @@ import { CrossAssetInfluencePanel, ForexRegimeTimeline } from '@/components/fore
 import { ForexExecutionStatus } from '@/components/forex/ForexExecutionStatus';
 import { ForexFilterBar } from '@/components/forex/ForexFilterBar';
 import { LiveForexTradesPanel } from '@/components/forex/LiveForexTradesPanel';
+import { LiveExecutionHero } from '@/components/forex/LiveExecutionHero';
 import { ForexScalpingIntelligence } from '@/components/forex/ForexScalpingIntelligence';
 import { ScalpingTradesDashboard } from '@/components/forex/ScalpingTradesDashboard';
 import { PerformanceReanalysisDashboard } from '@/components/forex/PerformanceReanalysisDashboard';
@@ -35,6 +36,8 @@ import {
 } from '@/lib/forex';
 import { ForexDashboardFilters } from '@/lib/forex/forexTypes';
 import { createAgents } from '@/lib/agents/agentEngine';
+import { useOandaExecution } from '@/hooks/useOandaExecution';
+import { useOandaPerformance } from '@/hooks/useOandaPerformance';
 
 const ForexDashboard = () => {
   const [filters, setFilters] = useState<ForexDashboardFilters>({
@@ -47,11 +50,16 @@ const ForexDashboard = () => {
 
   const [livePricesReady, setLivePricesReady] = useState(hasLivePrices());
 
+  // Real OANDA data hooks
+  const { connected, account, openTrades, fetchAccountSummary } = useOandaExecution();
+  const { metrics: executionMetrics } = useOandaPerformance();
+
   useEffect(() => {
     fetchOandaLivePrices().then(() => {
       setLivePricesReady(true);
     });
-  }, []);
+    fetchAccountSummary('practice');
+  }, [fetchAccountSummary]);
 
   const agents = useMemo(() => createAgents(), []);
   const allTrades = useMemo(() => generateForexTrades(agents), [agents, livePricesReady]);
@@ -118,6 +126,16 @@ const ForexDashboard = () => {
           </TabsList>
 
           <TabsContent value="performance" className="space-y-6">
+            {/* Live Execution Hero — Real OANDA Data */}
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.03 }}>
+              <LiveExecutionHero
+                account={account}
+                connected={connected}
+                openTradeCount={openTrades.length}
+                executionMetrics={executionMetrics}
+              />
+            </motion.div>
+
             {/* Filters */}
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 }}>
               <ForexFilterBar

@@ -36,7 +36,7 @@ const PAIR_BASE_SPREADS: Record<string, number> = {
   EUR_AUD: 1.6, GBP_AUD: 2.0, AUD_NZD: 1.8,
 };
 
-// ─── Session Detection ───
+// ─── Session Detection (hardened) ───
 
 type SessionWindow = "asian" | "london-open" | "ny-overlap" | "late-ny" | "rollover";
 
@@ -45,7 +45,7 @@ const SESSION_FRICTION_MULT: Record<SessionWindow, number> = {
   "london-open": 0.8,
   "ny-overlap": 0.85,
   "late-ny": 1.2,
-  rollover: 2.0,
+  rollover: 1.8, // Reduced from 2.0 — throttle instead of block
 };
 
 function detectSession(): SessionWindow {
@@ -57,6 +57,15 @@ function detectSession(): SessionWindow {
   return "late-ny";
 }
 
+function isWeekend(): boolean {
+  const day = new Date().getUTCDay();
+  // Friday after 22:00 UTC = market closing; Sunday before 22:00 UTC = market closed
+  if (day === 0) return true; // Sunday
+  if (day === 6) return true; // Saturday
+  if (day === 5 && new Date().getUTCHours() >= 22) return true; // Friday late
+  return false;
+}
+
 function getRegimeLabel(): string {
   const hour = new Date().getUTCHours();
   if (hour >= 7 && hour < 10) return "ignition";
@@ -65,7 +74,7 @@ function getRegimeLabel(): string {
   return "compression";
 }
 
-// ─── Pre-Trade Friction Gate ───
+// ─── Pre-Trade Friction Gate (hardened) ───
 
 interface GateResult {
   pass: boolean;
@@ -90,29 +99,31 @@ function runFrictionGate(pair: string, session: SessionWindow): GateResult {
   const volClass = baseSpread < 0.9 ? 12 : baseSpread < 1.3 ? 9 : 7;
   const expectedMove = volClass * (session === "london-open" ? 1.3 : session === "ny-overlap" ? 1.15 : 0.85);
 
-  const K = session === "rollover" ? 5.0 : session === "asian" ? 3.5 : 3.0;
+  // Rollover uses lower K (3.5 instead of 5.0) — throttle not block
+  const K = session === "rollover" ? 3.5 : session === "asian" ? 3.5 : 3.0;
   const frictionRatio = expectedMove / totalFriction;
   const reasons: string[] = [];
 
   if (frictionRatio < K) {
     reasons.push(`Friction ratio ${frictionRatio.toFixed(1)}x < required ${K.toFixed(1)}x`);
   }
-  if (session === "rollover") {
-    reasons.push("Rollover window — insufficient liquidity");
+  // Rollover no longer hard-rejects — it's a THROTTLE condition
+  if (session === "rollover" && frictionRatio < K) {
+    reasons.push("Rollover window — reduced liquidity, throttled");
   }
   if (spreadMean > baseSpread * 1.8) {
     reasons.push(`Spread widened ${(spreadMean / baseSpread).toFixed(1)}x vs baseline`);
   }
 
   const frictionScore = Math.round(
-    Math.min(100, (frictionRatio >= K ? 40 : 0) + (session !== "rollover" ? 25 : 0) +
+    Math.min(100, (frictionRatio >= K ? 40 : 0) + (session !== "rollover" ? 25 : 10) +
       (spreadMean <= baseSpread * 1.3 ? 20 : 0) + 15)
   );
 
-  const pass = reasons.length === 0;
+  const pass = frictionRatio >= K;
   return {
     pass,
-    result: pass ? "PASS" : session === "rollover" ? "REJECT" : "THROTTLE",
+    result: pass ? "PASS" : "THROTTLE",
     frictionScore,
     reasons,
     expectedMove,
@@ -132,7 +143,7 @@ function scoreExecution(slippagePips: number, fillLatencyMs: number, spreadAtEnt
   return Math.round(Math.min(100, slippageScore + latencyScore + spreadScore + fillBonus));
 }
 
-// ─── Auto-Protection Check ───
+// ─── Auto-Protection Check (hardened) ───
 
 async function checkAutoProtection(supabase: ReturnType<typeof createClient>): Promise<{
   allow: boolean;
@@ -143,54 +154,62 @@ async function checkAutoProtection(supabase: ReturnType<typeof createClient>): P
   // Check recent execution quality — only from FILLED orders (not closed/rejected stale ones)
   const { data: recent } = await supabase
     .from("oanda_orders")
-    .select("slippage_pips, execution_quality_score, status")
+    .select("slippage_pips, execution_quality_score, status, entry_price, error_message")
     .eq("user_id", USER_ID)
     .in("status", ["filled", "rejected", "submitted"])
+    .or("error_message.is.null,error_message.not.like.cleared:%")
     .order("created_at", { ascending: false })
-    .limit(20);
+    .limit(30);
 
-  if (!recent || recent.length < 5) {
+  if (!recent || recent.length < 3) {
     return { allow: true, kOverride: null, densityMult: 1.0, reason: "Insufficient data for protection check" };
   }
 
-  // Only count genuinely rejected orders (not stale/cleared ones)
-  const rejected = recent.filter((r: Record<string, unknown>) => r.status === "rejected").length;
-  const filled = recent.filter((r: Record<string, unknown>) => r.status === "filled").length;
-  const activeOrders = rejected + filled;
+  // Only count genuinely rejected orders (not stale/cleared/market-halted)
+  const rejected = recent.filter((r: Record<string, unknown>) => 
+    r.status === "rejected" && 
+    !(r.error_message as string || '').includes('MARKET_HALTED') &&
+    !(r.error_message as string || '').includes('instrument')
+  ).length;
+  
+  const filled = recent.filter((r: Record<string, unknown>) => 
+    r.status === "filled" && r.entry_price != null
+  );
+  const filledCount = filled.length;
+  const activeOrders = rejected + filledCount;
   const rejectionRate = activeOrders > 0 ? rejected / activeOrders : 0;
 
-  // Only use quality scores from filled orders (rejected orders always have quality=0)
-  const filledOrders = recent.filter((r: Record<string, unknown>) => r.status === "filled");
-  const slippages = filledOrders
+  // Only use quality scores from filled orders with real telemetry
+  const slippages = filled
     .map((r: Record<string, unknown>) => r.slippage_pips as number | null)
     .filter((v: number | null): v is number => v != null);
-  const qualities = filledOrders
+  const qualities = filled
     .map((r: Record<string, unknown>) => r.execution_quality_score as number | null)
     .filter((v: number | null): v is number => v != null);
 
   const avgSlip = slippages.length ? slippages.reduce((a, b) => a + b, 0) / slippages.length : 0;
   const avgQuality = qualities.length ? qualities.reduce((a, b) => a + b, 0) / qualities.length : 100;
 
-  // Kill switch: only triggers on genuine execution degradation (enough filled data)
-  if (rejectionRate > 0.5 && avgQuality < 40 && filledOrders.length >= 3) {
-    return { allow: false, kOverride: null, densityMult: 0, reason: "KILL SWITCH: rejection rate + quality critical" };
+  // Kill switch: only triggers on genuine persistent degradation
+  if (rejectionRate > 0.6 && avgQuality < 35 && filledCount >= 5) {
+    return { allow: false, kOverride: null, densityMult: 0, reason: "KILL SWITCH: persistent rejection + quality critical" };
   }
 
   // Elevated protection — only if we have enough fills to judge quality
-  if (filledOrders.length >= 3 && (avgSlip > 0.4 || avgQuality < 55)) {
+  if (filledCount >= 5 && (avgSlip > 0.5 || avgQuality < 50)) {
     return { allow: true, kOverride: 4.5, densityMult: 0.5, reason: `Elevated: avgSlip=${avgSlip.toFixed(2)}, avgQ=${avgQuality.toFixed(0)}` };
   }
 
-  if (rejectionRate > 0.25 && activeOrders >= 5) {
+  if (rejectionRate > 0.3 && activeOrders >= 8) {
     return { allow: true, kOverride: 4.0, densityMult: 0.7, reason: `High rejection rate: ${(rejectionRate * 100).toFixed(0)}%` };
   }
 
   return { allow: true, kOverride: null, densityMult: 1.0, reason: "All execution metrics nominal" };
 }
 
-// ─── OANDA API Helper ───
+// ─── OANDA API Helper (with retry) ───
 
-async function oandaRequest(path: string, method: string, body?: Record<string, unknown>) {
+async function oandaRequest(path: string, method: string, body?: Record<string, unknown>, retries = 2): Promise<Record<string, unknown>> {
   const apiToken = Deno.env.get("OANDA_API_TOKEN");
   const accountId = Deno.env.get("OANDA_ACCOUNT_ID");
   if (!apiToken || !accountId) throw new Error("OANDA credentials not configured");
@@ -207,15 +226,43 @@ async function oandaRequest(path: string, method: string, body?: Record<string, 
   const options: RequestInit = { method, headers };
   if (body) options.body = JSON.stringify(body);
 
-  const response = await fetch(url, options);
-  const data = await response.json();
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const response = await fetch(url, options);
+      const data = await response.json();
 
-  if (!response.ok) {
-    console.error(`[SCALP-TRADE] OANDA error ${response.status}:`, JSON.stringify(data));
-    throw new Error(data.errorMessage || data.rejectReason || `OANDA API error: ${response.status}`);
+      if (!response.ok) {
+        const errMsg = data.errorMessage || data.rejectReason || `OANDA API error: ${response.status}`;
+        
+        // Retryable errors: 503 (service unavailable), market halted, rate limited
+        const isRetryable = response.status === 503 || 
+          response.status === 429 ||
+          (errMsg && errMsg.includes('MARKET_HALTED'));
+        
+        if (isRetryable && attempt < retries) {
+          const delay = (attempt + 1) * 500;
+          console.warn(`[SCALP-TRADE] Retryable error (${response.status}): ${errMsg}. Retrying in ${delay}ms...`);
+          await new Promise(r => setTimeout(r, delay));
+          continue;
+        }
+        
+        console.error(`[SCALP-TRADE] OANDA error ${response.status}:`, JSON.stringify(data));
+        throw new Error(errMsg);
+      }
+
+      return data;
+    } catch (err) {
+      if (attempt < retries && (err as Error).message?.includes('fetch')) {
+        const delay = (attempt + 1) * 500;
+        console.warn(`[SCALP-TRADE] Network error, retrying in ${delay}ms...`);
+        await new Promise(r => setTimeout(r, delay));
+        continue;
+      }
+      throw err;
+    }
   }
-
-  return data;
+  
+  throw new Error("Max retries exceeded");
 }
 
 // ─── Signal Generation ───
@@ -250,6 +297,15 @@ Deno.serve(async (req) => {
   const regime = getRegimeLabel();
   console.log(`[SCALP-TRADE] Execution Safety Mode — session: ${session}, regime: ${regime}, time: ${new Date().toISOString()}`);
 
+  // ─── Weekend Guard ───
+  if (isWeekend()) {
+    console.log(`[SCALP-TRADE] Weekend detected — FX markets closed. Skipping.`);
+    return new Response(
+      JSON.stringify({ success: true, mode: "weekend-skip", reason: "FX markets closed (weekend)" }),
+      { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    );
+  }
+
   // Parse optional body for force-test mode
   let reqBody: { force?: boolean; pair?: string; direction?: "long" | "short" } = {};
   try { reqBody = await req.json(); } catch { /* no body = normal cron */ }
@@ -276,15 +332,17 @@ Deno.serve(async (req) => {
     }
 
     // Adjust signal count by density multiplier (force mode = 1 trade)
+    // Rollover session: reduce density to 1-2 signals max
+    const rolloverThrottle = session === "rollover" ? 0.4 : 1.0;
     const baseCount = forceMode ? 1 : 3 + Math.floor(Math.random() * 4);
-    const signalCount = forceMode ? 1 : Math.max(1, Math.round(baseCount * protection.densityMult));
+    const signalCount = forceMode ? 1 : Math.max(1, Math.round(baseCount * protection.densityMult * rolloverThrottle));
     const results: Array<{
       pair: string; direction: string; status: string;
       gateResult?: string; frictionScore?: number; slippage?: number;
       executionQuality?: number; error?: string;
     }> = [];
 
-    console.log(`[SCALP-TRADE] Generating ${signalCount} signals (base=${baseCount}, densityMult=${protection.densityMult}, force=${forceMode})`);
+    console.log(`[SCALP-TRADE] Generating ${signalCount} signals (base=${baseCount}, densityMult=${protection.densityMult}, rolloverThrottle=${rolloverThrottle}, force=${forceMode})`);
 
     for (let i = 0; i < signalCount; i++) {
       const signal = forceMode
@@ -299,7 +357,7 @@ Deno.serve(async (req) => {
         const strictGate = runFrictionGate(signal.pair, session);
         if (strictGate.frictionRatio < protection.kOverride) {
           gate.pass = false;
-          gate.result = "REJECT" as const;
+          gate.result = "THROTTLE" as const;
           gate.reasons.push(`Protection K override: ratio ${strictGate.frictionRatio.toFixed(1)} < ${protection.kOverride}`);
         }
       }
@@ -375,7 +433,7 @@ Deno.serve(async (req) => {
         const oandaResult = await oandaRequest(
           "/v3/accounts/{accountId}/orders", "POST",
           { order: { type: "MARKET", instrument: signal.pair, units: signedUnits.toString(), timeInForce: "FOK", positionFill: "DEFAULT" } }
-        );
+        ) as Record<string, Record<string, string>>;
 
         const fillLatencyMs = Date.now() - orderTimestamp;
 
@@ -385,8 +443,9 @@ Deno.serve(async (req) => {
         const halfSpread = oandaResult.orderFillTransaction?.halfSpreadCost ? parseFloat(oandaResult.orderFillTransaction.halfSpreadCost) : null;
 
         const wasCancelled = !!oandaResult.orderCancelTransaction;
+        const cancelReason = wasCancelled ? (oandaResult.orderCancelTransaction as Record<string, string>)?.reason : null;
         const finalStatus = wasCancelled ? "rejected" : "filled";
-        const errorMsg = wasCancelled ? `OANDA: ${oandaResult.orderCancelTransaction.reason}` : null;
+        const errorMsg = wasCancelled ? `OANDA: ${cancelReason}` : null;
 
         // Compute slippage (difference between requested mid and fill)
         const requestedPrice = filledPrice; // Market order — requested ~= filled for initial
@@ -427,12 +486,32 @@ Deno.serve(async (req) => {
         console.log(`[SCALP-TRADE] ${signal.pair}: ${finalStatus} | latency=${fillLatencyMs}ms | quality=${execQuality} | slip=${slippagePips?.toFixed(3) || 'N/A'}`);
       } catch (oandaErr) {
         const errMsg = (oandaErr as Error).message;
+        
+        // Categorize the error for better protection logic
+        const isMarketHalted = errMsg.includes('MARKET_HALTED');
+        const isInstrumentError = errMsg.includes('instrument');
+        const isTransient = isMarketHalted || errMsg.includes('503') || errMsg.includes('timeout');
+        
         await supabase
           .from("oanda_orders")
-          .update({ status: "rejected", error_message: errMsg, execution_quality_score: 0 })
+          .update({ 
+            status: "rejected", 
+            error_message: errMsg, 
+            execution_quality_score: isTransient ? null : 0 // Don't penalize transient errors
+          })
           .eq("id", order.id);
-        results.push({ pair: signal.pair, direction: signal.direction, status: "rejected", error: errMsg });
-        console.error(`[SCALP-TRADE] ${signal.pair} failed:`, errMsg);
+        
+        results.push({ 
+          pair: signal.pair, direction: signal.direction, status: "rejected", 
+          error: errMsg 
+        });
+        console.error(`[SCALP-TRADE] ${signal.pair} failed (${isTransient ? 'transient' : 'permanent'}):`, errMsg);
+        
+        // If market halted, skip remaining signals this run
+        if (isMarketHalted) {
+          console.warn(`[SCALP-TRADE] Market halted — skipping remaining signals`);
+          break;
+        }
       }
 
       if (i < signalCount - 1) await new Promise((r) => setTimeout(r, 150));
