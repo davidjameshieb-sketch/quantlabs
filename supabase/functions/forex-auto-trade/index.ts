@@ -24,8 +24,36 @@ const SECONDARY_PAIRS = [
   "GBP_AUD", "AUD_NZD",
 ];
 
-const UNITS = 1000;
+const BASE_UNITS = 1000;
 const USER_ID = "11edc350-4c81-4d9f-82ae-cd2209b7581d";
+
+// ─── Pair ATR Multipliers (relative volatility) ───
+// Higher ATR = smaller position; lower ATR = larger position (risk-normalized)
+const PAIR_ATR_MULT: Record<string, number> = {
+  EUR_USD: 1.0, GBP_USD: 1.35, USD_JPY: 1.1, AUD_USD: 0.95,
+  USD_CAD: 0.9, EUR_JPY: 1.4, GBP_JPY: 1.8, EUR_GBP: 0.7,
+  NZD_USD: 0.85, AUD_JPY: 1.2, USD_CHF: 0.8, EUR_CHF: 0.65,
+  EUR_AUD: 1.3, GBP_AUD: 1.7, AUD_NZD: 0.75,
+};
+
+function computePositionSize(pair: string, accountBalance: number, confidence: number): number {
+  // Risk per trade: 0.5% of account balance, adjusted by confidence
+  const riskPct = 0.005 * (confidence / 80); // Scale: 60 conf = 0.375%, 95 conf = 0.594%
+  const riskAmount = accountBalance * riskPct;
+  
+  // ATR-adjusted: higher vol pairs get smaller positions
+  const atrMult = PAIR_ATR_MULT[pair] || 1.0;
+  
+  // Base pip value ~$0.10 per unit for majors; rough estimate
+  const pipValuePerUnit = pair.includes("JPY") ? 0.0067 : 0.0001;
+  const stopPips = 8 * atrMult; // Dynamic SL based on pair vol
+  const riskPerUnit = stopPips * pipValuePerUnit;
+  
+  const rawUnits = riskPerUnit > 0 ? Math.floor(riskAmount / riskPerUnit) : BASE_UNITS;
+  
+  // Clamp between 500 and 5000 units
+  return Math.max(500, Math.min(5000, rawUnits));
+}
 
 // ─── Friction Budgets (pips) ───
 
@@ -331,13 +359,33 @@ Deno.serve(async (req) => {
       );
     }
 
+    // ─── Fetch Account Balance for Dynamic Sizing ───
+    let accountBalance = 100000; // Default fallback
+    try {
+      const apiToken = Deno.env.get("OANDA_API_TOKEN");
+      const accountId = Deno.env.get("OANDA_ACCOUNT_ID");
+      if (apiToken && accountId) {
+        const accRes = await fetch(
+          `${OANDA_PRACTICE_HOST}/v3/accounts/${accountId}/summary`,
+          { headers: { Authorization: `Bearer ${apiToken}`, Accept: "application/json" } }
+        );
+        if (accRes.ok) {
+          const accData = await accRes.json();
+          accountBalance = parseFloat(accData.account?.balance || "100000");
+          console.log(`[SCALP-TRADE] Account balance: ${accountBalance}`);
+        }
+      }
+    } catch (e) {
+      console.warn(`[SCALP-TRADE] Could not fetch balance, using default: ${(e as Error).message}`);
+    }
+
     // Adjust signal count by density multiplier (force mode = 1 trade)
     // Rollover session: reduce density to 1-2 signals max
     const rolloverThrottle = session === "rollover" ? 0.4 : 1.0;
     const baseCount = forceMode ? 1 : 3 + Math.floor(Math.random() * 4);
     const signalCount = forceMode ? 1 : Math.max(1, Math.round(baseCount * protection.densityMult * rolloverThrottle));
     const results: Array<{
-      pair: string; direction: string; status: string;
+      pair: string; direction: string; status: string; units?: number;
       gateResult?: string; frictionScore?: number; slippage?: number;
       executionQuality?: number; error?: string;
     }> = [];
@@ -393,6 +441,10 @@ Deno.serve(async (req) => {
       const signalId = `scalp-${Date.now()}-${i}-${signal.pair}`;
       const orderTimestamp = Date.now();
 
+      // ─── Dynamic Position Sizing ───
+      const tradeUnits = computePositionSize(signal.pair, accountBalance, signal.confidence);
+      console.log(`[SCALP-TRADE] ${signal.pair}: sized at ${tradeUnits} units (balance=${accountBalance.toFixed(0)}, conf=${signal.confidence})`);
+
       // ─── Insert with telemetry fields ───
       const { data: order, error: insertErr } = await supabase
         .from("oanda_orders")
@@ -401,7 +453,7 @@ Deno.serve(async (req) => {
           signal_id: signalId,
           currency_pair: signal.pair,
           direction: signal.direction,
-          units: UNITS,
+          units: tradeUnits,
           confidence_score: signal.confidence,
           agent_id: signal.agentId,
           environment: "practice",
@@ -429,7 +481,7 @@ Deno.serve(async (req) => {
       }
 
       try {
-        const signedUnits = signal.direction === "short" ? -UNITS : UNITS;
+        const signedUnits = signal.direction === "short" ? -tradeUnits : tradeUnits;
         const oandaResult = await oandaRequest(
           "/v3/accounts/{accountId}/orders", "POST",
           { order: { type: "MARKET", instrument: signal.pair, units: signedUnits.toString(), timeInForce: "FOK", positionFill: "DEFAULT" } }
