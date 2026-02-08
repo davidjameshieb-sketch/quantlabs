@@ -63,13 +63,19 @@ export const ScalpingTradesDashboard = ({ trades, performance, governanceStats, 
     const durationEdge = avgLossDuration > 0 ? avgWinDuration / avgLossDuration : 0;
 
     // Per-pair performance
-    const pairMap: Record<string, { wins: number; losses: number; pnl: number; trades: number }> = {};
+    const pairMap: Record<string, { wins: number; losses: number; pnl: number; trades: number; captureSum: number; giveBackSum: number; winGiveBackCount: number }> = {};
     for (const t of executed) {
-      if (!pairMap[t.currencyPair]) pairMap[t.currencyPair] = { wins: 0, losses: 0, pnl: 0, trades: 0 };
+      if (!pairMap[t.currencyPair]) pairMap[t.currencyPair] = { wins: 0, losses: 0, pnl: 0, trades: 0, captureSum: 0, giveBackSum: 0, winGiveBackCount: 0 };
       pairMap[t.currencyPair].trades++;
       pairMap[t.currencyPair].pnl += t.pnlPercent;
-      if (t.pnlPercent > 0) pairMap[t.currencyPair].wins++;
-      else pairMap[t.currencyPair].losses++;
+      pairMap[t.currencyPair].captureSum += t.captureRatio;
+      if (t.pnlPercent > 0) {
+        pairMap[t.currencyPair].wins++;
+        pairMap[t.currencyPair].giveBackSum += t.giveBackPct;
+        pairMap[t.currencyPair].winGiveBackCount++;
+      } else {
+        pairMap[t.currencyPair].losses++;
+      }
     }
     const pairPerformance = Object.entries(pairMap)
       .map(([pair, data]) => ({
@@ -77,6 +83,8 @@ export const ScalpingTradesDashboard = ({ trades, performance, governanceStats, 
         ...data,
         winRate: data.trades > 0 ? data.wins / data.trades : 0,
         avgPnl: data.trades > 0 ? data.pnl / data.trades : 0,
+        avgCapture: data.trades > 0 ? data.captureSum / data.trades : 0,
+        avgGiveBack: data.winGiveBackCount > 0 ? data.giveBackSum / data.winGiveBackCount : 0,
       }))
       .sort((a, b) => b.pnl - a.pnl);
 
@@ -118,13 +126,15 @@ export const ScalpingTradesDashboard = ({ trades, performance, governanceStats, 
     <div className="space-y-4">
       {/* Master KPI Strip */}
       <motion.div initial={{ opacity: 0, y: 5 }} animate={{ opacity: 1, y: 0 }}>
-        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-2">
+      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2">
           <MetricCard label="Executed" value={scalpMetrics.executed.length.toString()} icon={Activity} />
           <MetricCard label="Win Rate" value={`${(performance.winRate * 100).toFixed(1)}`} suffix="%" icon={Target} positive={performance.winRate > 0.55} />
           <MetricCard label="Net P&L" value={`${performance.netPnlPercent >= 0 ? '+' : ''}${performance.netPnlPercent.toFixed(2)}`} suffix="%" icon={performance.netPnlPercent >= 0 ? TrendingUp : TrendingDown} positive={performance.netPnlPercent > 0} />
           <MetricCard label="Profit Factor" value={performance.profitFactor.toFixed(2)} icon={Zap} positive={performance.profitFactor > 1.2} />
           <MetricCard label="Sharpe" value={performance.sharpeScore.toFixed(2)} icon={BarChart3} positive={performance.sharpeScore > 0.5} />
           <MetricCard label="Avoided" value={scalpMetrics.avoided.length.toString()} icon={ShieldX} positive={scalpMetrics.avoided.length > 20} />
+          <MetricCard label="Gross Profit" value={`+${scalpMetrics.executed.filter(t => t.pnlPercent > 0).reduce((s, t) => s + t.pnlPercent, 0).toFixed(2)}`} suffix="%" icon={TrendingUp} positive={true} />
+          <MetricCard label="Gross Loss" value={`${scalpMetrics.executed.filter(t => t.pnlPercent <= 0).reduce((s, t) => s + t.pnlPercent, 0).toFixed(2)}`} suffix="%" icon={TrendingDown} positive={false} />
         </div>
       </motion.div>
 
@@ -240,8 +250,10 @@ export const ScalpingTradesDashboard = ({ trades, performance, governanceStats, 
                     <th className="text-left py-2 px-2 text-muted-foreground font-medium">Pair</th>
                     <th className="text-right py-2 px-2 text-muted-foreground font-medium">Trades</th>
                     <th className="text-right py-2 px-2 text-muted-foreground font-medium">Win Rate</th>
-                    <th className="text-right py-2 px-2 text-muted-foreground font-medium">Net P&L</th>
+      <th className="text-right py-2 px-2 text-muted-foreground font-medium">Net P&L</th>
                     <th className="text-right py-2 px-2 text-muted-foreground font-medium">Avg P&L</th>
+                    <th className="text-right py-2 px-2 text-muted-foreground font-medium">Capture</th>
+                    <th className="text-right py-2 px-2 text-muted-foreground font-medium">Give-Back</th>
                     <th className="text-right py-2 px-2 text-muted-foreground font-medium">Status</th>
                   </tr>
                 </thead>
@@ -263,6 +275,16 @@ export const ScalpingTradesDashboard = ({ trades, performance, governanceStats, 
                       <td className="text-right py-2 px-2">
                         <span className={cn('font-mono', p.avgPnl > 0 ? 'text-neural-green' : 'text-neural-red')}>
                           {p.avgPnl > 0 ? '+' : ''}{p.avgPnl.toFixed(3)}%
+                        </span>
+                      </td>
+                      <td className="text-right py-2 px-2">
+                        <span className={cn('font-mono', p.avgCapture > 0.6 ? 'text-neural-green' : p.avgCapture > 0.4 ? 'text-neural-orange' : 'text-neural-red')}>
+                          {(p.avgCapture * 100).toFixed(0)}%
+                        </span>
+                      </td>
+                      <td className="text-right py-2 px-2">
+                        <span className={cn('font-mono', p.avgGiveBack < 25 ? 'text-neural-green' : p.avgGiveBack < 40 ? 'text-neural-orange' : 'text-neural-red')}>
+                          {p.avgGiveBack.toFixed(1)}%
                         </span>
                       </td>
                       <td className="text-right py-2 px-2">

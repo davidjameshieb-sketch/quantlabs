@@ -1,14 +1,15 @@
 // Forex Performance Overview Panel
-// Core metrics + governance intelligence stats
+// Core metrics + scalping P&L forensics + governance intelligence stats
 
-import { TrendingUp, TrendingDown, Clock, Shield, BarChart3, Zap, Target, Activity, ShieldCheck, ShieldX, ShieldAlert, Gauge } from 'lucide-react';
-import { ForexPerformanceMetrics } from '@/lib/forex/forexTypes';
+import { TrendingUp, TrendingDown, Clock, Shield, BarChart3, Zap, Target, Activity, ShieldCheck, ShieldX, ShieldAlert, Gauge, Crosshair, Percent } from 'lucide-react';
+import { ForexPerformanceMetrics, ForexTradeEntry } from '@/lib/forex/forexTypes';
 import { GovernanceStats } from '@/lib/forex/tradeGovernanceEngine';
 import { cn } from '@/lib/utils';
 
 interface ForexPerformanceOverviewProps {
   metrics: ForexPerformanceMetrics;
   governanceStats?: GovernanceStats | null;
+  trades?: ForexTradeEntry[];
 }
 
 const MetricCard = ({
@@ -43,7 +44,40 @@ const MetricCard = ({
   </div>
 );
 
-export const ForexPerformanceOverview = ({ metrics, governanceStats }: ForexPerformanceOverviewProps) => {
+export const ForexPerformanceOverview = ({ metrics, governanceStats, trades = [] }: ForexPerformanceOverviewProps) => {
+  // Compute scalping P&L forensics from trade-level data
+  const scalpForensics = (() => {
+    const executed = trades.filter(t => t.outcome !== 'avoided');
+    if (executed.length === 0) return null;
+
+    const wins = executed.filter(t => t.pnlPercent > 0);
+    const losses = executed.filter(t => t.pnlPercent <= 0);
+
+    const grossProfit = wins.reduce((s, t) => s + t.pnlPercent, 0);
+    const grossLoss = Math.abs(losses.reduce((s, t) => s + t.pnlPercent, 0));
+    const avgWinPnl = wins.length > 0 ? grossProfit / wins.length : 0;
+    const avgLossPnl = losses.length > 0 ? grossLoss / losses.length : 0;
+    const payoffRatio = avgLossPnl > 0 ? avgWinPnl / avgLossPnl : 0;
+
+    const avgMfe = executed.reduce((s, t) => s + t.mfe, 0) / executed.length;
+    const avgMae = executed.reduce((s, t) => s + t.mae, 0) / executed.length;
+    const avgCapture = executed.reduce((s, t) => s + t.captureRatio, 0) / executed.length;
+    const avgGiveBack = wins.length > 0 ? wins.reduce((s, t) => s + t.giveBackPct, 0) / wins.length : 0;
+    const avgFriction = executed.reduce((s, t) => s + t.frictionCost, 0) / executed.length;
+    const avgNetExpectancy = executed.reduce((s, t) => s + t.netExpectancy, 0) / executed.length;
+
+    // Cumulative P&L
+    const cumulativePnl = executed.reduce((s, t) => s + t.pnlPercent, 0);
+    const cumulativeNetPnl = executed.reduce((s, t) => s + t.netExpectancy, 0);
+
+    return {
+      grossProfit, grossLoss, avgWinPnl, avgLossPnl, payoffRatio,
+      avgMfe, avgMae, avgCapture, avgGiveBack, avgFriction, avgNetExpectancy,
+      cumulativePnl, cumulativeNetPnl,
+      winCount: wins.length, lossCount: losses.length, executedCount: executed.length,
+    };
+  })();
+
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-2">
@@ -51,6 +85,7 @@ export const ForexPerformanceOverview = ({ metrics, governanceStats }: ForexPerf
         <h3 className="text-sm font-display font-bold">Forex Performance Overview</h3>
       </div>
 
+      {/* Core Performance Metrics */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
         <MetricCard
           label="Total Trades"
@@ -104,6 +139,108 @@ export const ForexPerformanceOverview = ({ metrics, governanceStats }: ForexPerf
           positive={metrics.sharpeScore > 0.5}
         />
       </div>
+
+      {/* Scalping P&L Forensics */}
+      {scalpForensics && (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2 pt-1">
+            <Crosshair className="w-3.5 h-3.5 text-primary" />
+            <span className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider">
+              Scalping P&L Forensics
+            </span>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            <MetricCard
+              label="Gross Profit"
+              value={`+${scalpForensics.grossProfit.toFixed(2)}`}
+              suffix="%"
+              icon={TrendingUp}
+              positive={true}
+            />
+            <MetricCard
+              label="Gross Loss"
+              value={`-${scalpForensics.grossLoss.toFixed(2)}`}
+              suffix="%"
+              icon={TrendingDown}
+              positive={false}
+            />
+            <MetricCard
+              label="Avg Win"
+              value={`+${scalpForensics.avgWinPnl.toFixed(3)}`}
+              suffix="%"
+              icon={TrendingUp}
+              positive={true}
+            />
+            <MetricCard
+              label="Avg Loss"
+              value={`-${scalpForensics.avgLossPnl.toFixed(3)}`}
+              suffix="%"
+              icon={TrendingDown}
+              positive={false}
+            />
+            <MetricCard
+              label="Payoff Ratio"
+              value={scalpForensics.payoffRatio.toFixed(2)}
+              suffix="×"
+              icon={Target}
+              positive={scalpForensics.payoffRatio > 2}
+            />
+            <MetricCard
+              label="Capture Ratio"
+              value={`${(scalpForensics.avgCapture * 100).toFixed(0)}`}
+              suffix="%"
+              icon={Crosshair}
+              positive={scalpForensics.avgCapture > 0.6}
+            />
+            <MetricCard
+              label="Avg Give-Back"
+              value={scalpForensics.avgGiveBack.toFixed(1)}
+              suffix="%"
+              icon={Percent}
+              positive={scalpForensics.avgGiveBack < 30}
+            />
+            <MetricCard
+              label="Net Expectancy"
+              value={`${scalpForensics.avgNetExpectancy >= 0 ? '+' : ''}${scalpForensics.avgNetExpectancy.toFixed(3)}`}
+              suffix="%"
+              icon={Gauge}
+              positive={scalpForensics.avgNetExpectancy > 0}
+            />
+          </div>
+
+          {/* MFE/MAE & Friction Strip */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            <MetricCard
+              label="Avg MFE"
+              value={scalpForensics.avgMfe.toFixed(3)}
+              suffix="%"
+              icon={TrendingUp}
+              positive={true}
+            />
+            <MetricCard
+              label="Avg MAE"
+              value={scalpForensics.avgMae.toFixed(3)}
+              suffix="%"
+              icon={TrendingDown}
+              positive={scalpForensics.avgMae < 0.1}
+            />
+            <MetricCard
+              label="Avg Friction"
+              value={scalpForensics.avgFriction.toFixed(4)}
+              suffix="%"
+              icon={Activity}
+              positive={scalpForensics.avgFriction < 0.015}
+            />
+            <MetricCard
+              label="Net P&L (Fric-Adj)"
+              value={`${scalpForensics.cumulativeNetPnl >= 0 ? '+' : ''}${scalpForensics.cumulativeNetPnl.toFixed(2)}`}
+              suffix="%"
+              icon={scalpForensics.cumulativeNetPnl >= 0 ? TrendingUp : TrendingDown}
+              positive={scalpForensics.cumulativeNetPnl > 0}
+            />
+          </div>
+        </div>
+      )}
 
       {/* Governance Intelligence Strip */}
       {governanceStats && (
