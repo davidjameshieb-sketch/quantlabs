@@ -152,7 +152,7 @@ export const DashboardLayout = ({ children }: DashboardLayoutProps) => {
           {Object.entries(MARKET_LABELS).map(([type, label]) => (
             <Link
               key={type}
-              to={`/dashboard?market=${type}`}
+              to={type === 'forex' ? '/dashboard/forex' : `/dashboard?market=${type}`}
               className="flex items-center justify-between px-3 py-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
             >
               <span>{label}</span>
