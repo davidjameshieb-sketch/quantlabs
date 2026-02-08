@@ -11,6 +11,7 @@ import { ForexQualityPanel, ForexRiskGovernancePanel } from '@/components/forex/
 import { CrossAssetInfluencePanel, ForexRegimeTimeline } from '@/components/forex/ForexCrossAssetAndRegime';
 import { ForexExecutionStatus } from '@/components/forex/ForexExecutionStatus';
 import { ForexFilterBar } from '@/components/forex/ForexFilterBar';
+import { LiveForexTradesPanel } from '@/components/forex/LiveForexTradesPanel';
 import { IntelligenceModeBadge } from '@/components/dashboard/IntelligenceModeBadge';
 import {
   generateForexTrades,
@@ -82,6 +83,11 @@ const ForexDashboard = () => {
         {/* Performance Overview */}
         <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}>
           <ForexPerformanceOverview metrics={performance} />
+        </motion.div>
+
+        {/* Live OANDA Trades */}
+        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.13 }}>
+          <LiveForexTradesPanel />
         </motion.div>
 
         {/* Execution Status */}
