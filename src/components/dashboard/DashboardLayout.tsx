@@ -82,6 +82,14 @@ export const DashboardLayout = ({ children }: DashboardLayoutProps) => {
           <span className="font-medium">Market Evolution</span>
         </Link>
 
+        <Link
+          to="/dashboard/forex"
+          className="flex items-center gap-3 px-3 py-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+        >
+          <BarChart3 className="w-5 h-5 text-primary" />
+          <span className="font-medium">Forex Intelligence</span>
+        </Link>
+
         <div className="pt-4">
           <p className="px-3 py-2 text-xs text-muted-foreground uppercase tracking-wider">
             Markets
