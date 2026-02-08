@@ -1,18 +1,18 @@
 import { createContext, useContext, useState, useCallback, ReactNode } from 'react';
+import { supabase } from '@/integrations/supabase/client';
 
 type LockStep = 'pin' | 'password' | 'unlocked';
 
 interface SiteLockContextType {
   step: LockStep;
-  submitPin: (pin: string) => boolean;
-  submitPassword: (password: string) => boolean;
+  submitPin: (pin: string) => Promise<{ valid: boolean; error?: string }>;
+  submitPassword: (password: string) => Promise<{ valid: boolean; error?: string; expired?: boolean }>;
 }
 
 const SiteLockContext = createContext<SiteLockContextType | undefined>(undefined);
 
-const SITE_PIN = '5225';
-const SITE_PASSWORD = 'Atlas2024!';
 const STORAGE_KEY = 'ql_site_unlocked';
+const PIN_TOKEN_KEY = 'ql_pin_token';
 
 export const useSiteLock = () => {
   const ctx = useContext(SiteLockContext);
@@ -25,21 +25,64 @@ export const SiteLockProvider = ({ children }: { children: ReactNode }) => {
     return sessionStorage.getItem(STORAGE_KEY) === '1' ? 'unlocked' : 'pin';
   });
 
-  const submitPin = useCallback((pin: string) => {
-    if (pin === SITE_PIN) {
-      setStep('password');
-      return true;
+  const submitPin = useCallback(async (pin: string): Promise<{ valid: boolean; error?: string }> => {
+    try {
+      const { data, error } = await supabase.functions.invoke('site-lock', {
+        body: { step: 'pin', value: pin },
+      });
+
+      if (error) {
+        console.error('[SiteLock] PIN validation error:', error.message);
+        return { valid: false, error: 'Server error. Try again.' };
+      }
+
+      if (data?.valid && data?.pinToken) {
+        // Store the signed PIN token for step 2
+        sessionStorage.setItem(PIN_TOKEN_KEY, data.pinToken);
+        setStep('password');
+        return { valid: true };
+      }
+
+      return { valid: false };
+    } catch {
+      return { valid: false, error: 'Connection error. Try again.' };
     }
-    return false;
   }, []);
 
-  const submitPassword = useCallback((password: string) => {
-    if (password === SITE_PASSWORD) {
-      sessionStorage.setItem(STORAGE_KEY, '1');
-      setStep('unlocked');
-      return true;
+  const submitPassword = useCallback(async (password: string): Promise<{ valid: boolean; error?: string; expired?: boolean }> => {
+    try {
+      const pinToken = sessionStorage.getItem(PIN_TOKEN_KEY);
+      if (!pinToken) {
+        setStep('pin');
+        return { valid: false, error: 'PIN verification expired. Start over.' };
+      }
+
+      const { data, error } = await supabase.functions.invoke('site-lock', {
+        body: { step: 'password', value: password, pinToken },
+      });
+
+      if (error) {
+        console.error('[SiteLock] Password validation error:', error.message);
+        return { valid: false, error: 'Server error. Try again.' };
+      }
+
+      if (data?.expired) {
+        sessionStorage.removeItem(PIN_TOKEN_KEY);
+        setStep('pin');
+        return { valid: false, expired: true, error: 'PIN token expired. Start over.' };
+      }
+
+      if (data?.valid && data?.sessionToken) {
+        sessionStorage.setItem(STORAGE_KEY, '1');
+        sessionStorage.removeItem(PIN_TOKEN_KEY);
+        setStep('unlocked');
+        return { valid: true };
+      }
+
+      return { valid: false };
+    } catch {
+      return { valid: false, error: 'Connection error. Try again.' };
     }
-    return false;
   }, []);
 
   return (
