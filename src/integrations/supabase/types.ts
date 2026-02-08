@@ -14,6 +14,69 @@ export type Database = {
   }
   public: {
     Tables: {
+      oanda_orders: {
+        Row: {
+          agent_id: string | null
+          closed_at: string | null
+          confidence_score: number | null
+          created_at: string
+          currency_pair: string
+          direction: string
+          entry_price: number | null
+          environment: string
+          error_message: string | null
+          exit_price: number | null
+          id: string
+          oanda_order_id: string | null
+          oanda_trade_id: string | null
+          signal_id: string
+          status: string
+          units: number
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          agent_id?: string | null
+          closed_at?: string | null
+          confidence_score?: number | null
+          created_at?: string
+          currency_pair: string
+          direction: string
+          entry_price?: number | null
+          environment?: string
+          error_message?: string | null
+          exit_price?: number | null
+          id?: string
+          oanda_order_id?: string | null
+          oanda_trade_id?: string | null
+          signal_id: string
+          status?: string
+          units: number
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          agent_id?: string | null
+          closed_at?: string | null
+          confidence_score?: number | null
+          created_at?: string
+          currency_pair?: string
+          direction?: string
+          entry_price?: number | null
+          environment?: string
+          error_message?: string | null
+          exit_price?: number | null
+          id?: string
+          oanda_order_id?: string | null
+          oanda_trade_id?: string | null
+          signal_id?: string
+          status?: string
+          units?: number
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
       profiles: {
         Row: {
           created_at: string

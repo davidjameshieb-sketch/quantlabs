@@ -1,0 +1,348 @@
+// OANDA v20 REST API Trade Execution Edge Function
+// Forwards AI trade signals to OANDA practice/live accounts
+
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers":
+    "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
+};
+
+// OANDA API endpoints
+const OANDA_HOSTS = {
+  practice: "https://api-fxpractice.oanda.com",
+  live: "https://api-fxtrade.oanda.com",
+} as const;
+
+interface ExecuteRequest {
+  action: "execute" | "close" | "status" | "account-summary";
+  signalId?: string;
+  currencyPair?: string;
+  direction?: "long" | "short";
+  units?: number;
+  confidenceScore?: number;
+  agentId?: string;
+  oandaTradeId?: string;
+  environment?: "practice" | "live";
+}
+
+// Convert QuantLabs pair format (EUR/USD) to OANDA format (EUR_USD)
+function toOandaInstrument(pair: string): string {
+  return pair.replace("/", "_");
+}
+
+// Make authenticated request to OANDA v20 API
+async function oandaRequest(
+  path: string,
+  method: string,
+  body?: Record<string, unknown>,
+  environment: "practice" | "live" = "practice"
+) {
+  const apiToken = Deno.env.get("OANDA_API_TOKEN");
+  const accountId = Deno.env.get("OANDA_ACCOUNT_ID");
+
+  if (!apiToken || !accountId) {
+    throw new Error("OANDA credentials not configured");
+  }
+
+  const host = OANDA_HOSTS[environment];
+  const url = `${host}${path.replace("{accountId}", accountId)}`;
+
+  console.log(`[OANDA] ${method} ${url}`);
+
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${apiToken}`,
+    "Content-Type": "application/json",
+    Accept: "application/json",
+  };
+
+  const options: RequestInit = { method, headers };
+  if (body) {
+    options.body = JSON.stringify(body);
+  }
+
+  const response = await fetch(url, options);
+  const data = await response.json();
+
+  if (!response.ok) {
+    console.error(`[OANDA] Error ${response.status}:`, JSON.stringify(data));
+    throw new Error(
+      data.errorMessage || data.rejectReason || `OANDA API error: ${response.status}`
+    );
+  }
+
+  return data;
+}
+
+// Execute a market order on OANDA
+async function executeMarketOrder(
+  instrument: string,
+  units: number,
+  direction: "long" | "short",
+  environment: "practice" | "live"
+) {
+  const signedUnits = direction === "short" ? -Math.abs(units) : Math.abs(units);
+
+  const orderBody = {
+    order: {
+      type: "MARKET",
+      instrument: toOandaInstrument(instrument),
+      units: signedUnits.toString(),
+      timeInForce: "FOK",
+      positionFill: "DEFAULT",
+    },
+  };
+
+  console.log(`[OANDA] Executing market order:`, JSON.stringify(orderBody));
+
+  const result = await oandaRequest(
+    "/v3/accounts/{accountId}/orders",
+    "POST",
+    orderBody,
+    environment
+  );
+
+  return result;
+}
+
+// Close an existing trade
+async function closeTrade(tradeId: string, environment: "practice" | "live") {
+  console.log(`[OANDA] Closing trade: ${tradeId}`);
+  const result = await oandaRequest(
+    `/v3/accounts/{accountId}/trades/${tradeId}/close`,
+    "PUT",
+    {},
+    environment
+  );
+  return result;
+}
+
+// Get account summary
+async function getAccountSummary(environment: "practice" | "live") {
+  const result = await oandaRequest(
+    "/v3/accounts/{accountId}/summary",
+    "GET",
+    undefined,
+    environment
+  );
+  return result;
+}
+
+// Get open trades
+async function getOpenTrades(environment: "practice" | "live") {
+  const result = await oandaRequest(
+    "/v3/accounts/{accountId}/openTrades",
+    "GET",
+    undefined,
+    environment
+  );
+  return result;
+}
+
+Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { headers: corsHeaders });
+  }
+
+  try {
+    // Auth check
+    const authHeader = req.headers.get("Authorization");
+    if (!authHeader?.startsWith("Bearer ")) {
+      return new Response(JSON.stringify({ error: "Unauthorized" }), {
+        status: 401,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    const supabase = createClient(
+      Deno.env.get("SUPABASE_URL")!,
+      Deno.env.get("SUPABASE_ANON_KEY")!,
+      { global: { headers: { Authorization: authHeader } } }
+    );
+
+    const token = authHeader.replace("Bearer ", "");
+    const { data: claimsData, error: claimsError } = await supabase.auth.getClaims(token);
+    if (claimsError || !claimsData?.claims) {
+      return new Response(JSON.stringify({ error: "Unauthorized" }), {
+        status: 401,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    const userId = claimsData.claims.sub as string;
+    const body: ExecuteRequest = await req.json();
+    const environment = body.environment || "practice";
+
+    console.log(`[OANDA] Action: ${body.action}, User: ${userId}, Env: ${environment}`);
+
+    // ─── Account Summary ───
+    if (body.action === "account-summary") {
+      const summary = await getAccountSummary(environment);
+      const openTrades = await getOpenTrades(environment);
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          account: summary.account,
+          openTrades: openTrades.trades || [],
+        }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // ─── Status (open orders from DB) ───
+    if (body.action === "status") {
+      const { data: orders, error } = await supabase
+        .from("oanda_orders")
+        .select("*")
+        .eq("user_id", userId)
+        .order("created_at", { ascending: false })
+        .limit(50);
+
+      if (error) throw error;
+
+      return new Response(
+        JSON.stringify({ success: true, orders: orders || [] }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // ─── Execute Trade ───
+    if (body.action === "execute") {
+      if (!body.signalId || !body.currencyPair || !body.direction || !body.units) {
+        return new Response(
+          JSON.stringify({ error: "Missing required fields: signalId, currencyPair, direction, units" }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      // Insert pending order
+      const { data: order, error: insertErr } = await supabase
+        .from("oanda_orders")
+        .insert({
+          user_id: userId,
+          signal_id: body.signalId,
+          currency_pair: body.currencyPair,
+          direction: body.direction,
+          units: body.units,
+          confidence_score: body.confidenceScore || null,
+          agent_id: body.agentId || null,
+          environment,
+          status: "submitted",
+        })
+        .select()
+        .single();
+
+      if (insertErr) {
+        console.error("[OANDA] DB insert error:", insertErr);
+        throw insertErr;
+      }
+
+      try {
+        // Forward to OANDA
+        const result = await executeMarketOrder(
+          body.currencyPair,
+          body.units,
+          body.direction,
+          environment
+        );
+
+        console.log("[OANDA] Order result:", JSON.stringify(result));
+
+        // Extract order/trade IDs from response
+        const oandaOrderId =
+          result.orderCreateTransaction?.id || result.orderFillTransaction?.orderID || null;
+        const oandaTradeId =
+          result.orderFillTransaction?.tradeOpened?.tradeID ||
+          result.orderFillTransaction?.id ||
+          null;
+        const filledPrice =
+          result.orderFillTransaction?.price
+            ? parseFloat(result.orderFillTransaction.price)
+            : null;
+
+        // Update order record
+        await supabase
+          .from("oanda_orders")
+          .update({
+            status: "filled",
+            oanda_order_id: oandaOrderId,
+            oanda_trade_id: oandaTradeId,
+            entry_price: filledPrice,
+          })
+          .eq("id", order.id);
+
+        return new Response(
+          JSON.stringify({
+            success: true,
+            order: { ...order, status: "filled", oanda_order_id: oandaOrderId, oanda_trade_id: oandaTradeId, entry_price: filledPrice },
+            oandaResult: result,
+          }),
+          { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      } catch (oandaErr) {
+        // Mark order as rejected
+        await supabase
+          .from("oanda_orders")
+          .update({
+            status: "rejected",
+            error_message: (oandaErr as Error).message,
+          })
+          .eq("id", order.id);
+
+        return new Response(
+          JSON.stringify({
+            success: false,
+            error: (oandaErr as Error).message,
+            order: { ...order, status: "rejected" },
+          }),
+          { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+    }
+
+    // ─── Close Trade ───
+    if (body.action === "close") {
+      if (!body.oandaTradeId) {
+        return new Response(
+          JSON.stringify({ error: "Missing oandaTradeId" }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      const result = await closeTrade(body.oandaTradeId, environment);
+
+      // Update DB record
+      const closePrice = result.orderFillTransaction?.price
+        ? parseFloat(result.orderFillTransaction.price)
+        : null;
+
+      await supabase
+        .from("oanda_orders")
+        .update({
+          status: "closed",
+          exit_price: closePrice,
+          closed_at: new Date().toISOString(),
+        })
+        .eq("oanda_trade_id", body.oandaTradeId)
+        .eq("user_id", userId);
+
+      return new Response(
+        JSON.stringify({ success: true, result }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    return new Response(
+      JSON.stringify({ error: "Invalid action. Use: execute, close, status, account-summary" }),
+      { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    );
+  } catch (err) {
+    console.error("[OANDA] Unhandled error:", err);
+    return new Response(
+      JSON.stringify({ error: (err as Error).message || "Internal error" }),
+      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    );
+  }
+});
