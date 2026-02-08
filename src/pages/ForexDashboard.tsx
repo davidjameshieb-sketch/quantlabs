@@ -3,7 +3,7 @@
 
 import { useState, useMemo, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Globe, TrendingUp, Crosshair } from 'lucide-react';
+import { Globe, TrendingUp, Crosshair, BarChart3 } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { DashboardLayout } from '@/components/dashboard/DashboardLayout';
 import { ForexPerformanceOverview } from '@/components/forex/ForexPerformanceOverview';
@@ -14,6 +14,7 @@ import { ForexExecutionStatus } from '@/components/forex/ForexExecutionStatus';
 import { ForexFilterBar } from '@/components/forex/ForexFilterBar';
 import { LiveForexTradesPanel } from '@/components/forex/LiveForexTradesPanel';
 import { ForexScalpingIntelligence } from '@/components/forex/ForexScalpingIntelligence';
+import { ScalpingTradesDashboard } from '@/components/forex/ScalpingTradesDashboard';
 import { IntelligenceModeBadge } from '@/components/dashboard/IntelligenceModeBadge';
 import {
   generateForexTrades,
@@ -25,6 +26,7 @@ import {
   fetchOandaLivePrices,
   hasLivePrices,
   getLastGovernanceStats,
+  getLastGovernanceResults,
 } from '@/lib/forex';
 import { ForexDashboardFilters } from '@/lib/forex/forexTypes';
 import { createAgents } from '@/lib/agents/agentEngine';
@@ -40,7 +42,6 @@ const ForexDashboard = () => {
 
   const [livePricesReady, setLivePricesReady] = useState(hasLivePrices());
 
-  // Fetch live OANDA prices on mount, then regenerate trades
   useEffect(() => {
     fetchOandaLivePrices().then(() => {
       setLivePricesReady(true);
@@ -48,12 +49,12 @@ const ForexDashboard = () => {
   }, []);
 
   const agents = useMemo(() => createAgents(), []);
-  // Re-generate trades once live prices are available (livePricesReady triggers recalc)
   const allTrades = useMemo(() => generateForexTrades(agents), [agents, livePricesReady]);
   const filteredTrades = useMemo(() => filterForexTrades(allTrades, filters), [allTrades, filters]);
 
   const performance = useMemo(() => computeForexPerformance(filteredTrades), [filteredTrades]);
   const governanceStats = useMemo(() => getLastGovernanceStats(), [allTrades]);
+  const governanceResults = useMemo(() => getLastGovernanceResults(), [allTrades]);
   const quality = useMemo(() => computeForexQuality(filteredTrades), [filteredTrades]);
   const risk = useMemo(() => computeForexRiskGovernance(filteredTrades), [filteredTrades]);
   const influence = useMemo(() => computeCrossAssetInfluence(), []);
@@ -88,9 +89,12 @@ const ForexDashboard = () => {
 
         {/* Master Tabs */}
         <Tabs defaultValue="performance" className="space-y-4">
-          <TabsList className="bg-card/50 border border-border/30 h-auto gap-1 p-1">
+          <TabsList className="bg-card/50 border border-border/30 h-auto gap-1 p-1 flex-wrap">
             <TabsTrigger value="performance" className="text-xs gap-1.5">
               <TrendingUp className="w-3.5 h-3.5" />Performance
+            </TabsTrigger>
+            <TabsTrigger value="scalping-trades" className="text-xs gap-1.5">
+              <BarChart3 className="w-3.5 h-3.5" />Scalping Trades
             </TabsTrigger>
             <TabsTrigger value="scalping" className="text-xs gap-1.5">
               <Crosshair className="w-3.5 h-3.5" />Scalping Intelligence
@@ -147,6 +151,17 @@ const ForexDashboard = () => {
             {/* Trade History Table */}
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.32 }}>
               <ForexTradeHistoryTable trades={filteredTrades} />
+            </motion.div>
+          </TabsContent>
+
+          <TabsContent value="scalping-trades" className="space-y-4">
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+              <ScalpingTradesDashboard
+                trades={filteredTrades}
+                performance={performance}
+                governanceStats={governanceStats}
+                governanceResults={governanceResults}
+              />
             </motion.div>
           </TabsContent>
 
