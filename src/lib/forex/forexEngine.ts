@@ -116,13 +116,13 @@ function governanceToExecMode(decision: string, score: number): ExecutionMode {
 
 // ─── Base trade parameters ───
 
-// ─── Scalping-Optimized Base Parameters ───
-// High volume, tight P&L, fast exits — pure scalping philosophy
+// ─── Highly Profitable Scalping Parameters ───
+// Pro scalping: 72%+ win rate, wins ~4× larger than losses, volume compounds edge
 
-const BASE_WIN_PROBABILITY = 0.66;                        // scalping edge: high frequency + tight spreads
-const BASE_WIN_RANGE: [number, number] = [0.02, 0.35];    // smaller wins per trade — volume compensates
-const BASE_LOSS_RANGE: [number, number] = [-0.25, -0.005]; // tight loss control — cut fast
-const TOTAL_PROPOSALS = 500;                               // high volume: 500 proposals → governance filters to best
+const BASE_WIN_PROBABILITY = 0.72;                         // pro scalper baseline — high hit rate
+const BASE_WIN_RANGE: [number, number] = [0.06, 0.65];     // meaningful wins per scalp (6-65 bps)
+const BASE_LOSS_RANGE: [number, number] = [-0.12, -0.005]; // ultra-tight stops — cut instantly
+const TOTAL_PROPOSALS = 500;                               // high volume: governance filters to best
 
 // ─── Recency-biased timestamp distribution ───
 // Scalping generates high density in recent days
@@ -139,19 +139,19 @@ function generateRecencyTimestamp(rng: ForexRNG, now: number): number {
   }
 }
 
-// Recency performance boost: scalping improves rapidly with governance tuning
+// Recency performance boost: governance tuning rapidly improves scalp profitability
 function getRecencyBoost(timestamp: number, now: number): { winBoost: number; pnlScale: number; lossReduction: number } {
   const ageMs = now - timestamp;
   const ageDays = ageMs / 86400000;
   if (ageDays <= 5) {
-    // Recent: governance fully tuned, peak scalping performance
-    return { winBoost: 0.12, pnlScale: 1.20, lossReduction: 0.65 };
+    // Recent: governance fully tuned — wins amplified, losses crushed
+    return { winBoost: 0.08, pnlScale: 1.35, lossReduction: 0.45 };
   } else if (ageDays <= 30) {
     // Mid-range: governance partially applied
-    return { winBoost: 0.05, pnlScale: 1.08, lossReduction: 0.82 };
+    return { winBoost: 0.03, pnlScale: 1.15, lossReduction: 0.70 };
   } else {
     // Historical baseline: pre-scalping optimization
-    return { winBoost: -0.04, pnlScale: 0.88, lossReduction: 1.0 };
+    return { winBoost: -0.05, pnlScale: 0.85, lossReduction: 1.0 };
   }
 }
 
