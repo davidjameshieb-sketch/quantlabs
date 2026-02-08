@@ -67,7 +67,16 @@ export const ForexTradeHistoryTable = ({ trades }: ForexTradeHistoryTableProps) 
                     <TableCell className="p-2">
                       {isExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
                     </TableCell>
-                    <TableCell className="font-mono text-xs font-bold">{trade.pairName}</TableCell>
+                    <TableCell className="font-mono text-xs font-bold">
+                      <div className="flex items-center gap-1.5">
+                        {trade.pairName}
+                        {trade.tradeDuration <= 15 && (
+                          <Badge className="text-[7px] px-1.5 py-0 bg-primary/20 text-primary border-primary/30 font-display uppercase tracking-wider">
+                            Scalp
+                          </Badge>
+                        )}
+                      </div>
+                    </TableCell>
                     <TableCell>
                       <Badge variant="outline" className={cn(
                         'text-[9px] gap-0.5',
