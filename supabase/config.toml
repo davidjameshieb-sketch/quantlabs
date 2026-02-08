@@ -23,3 +23,6 @@ verify_jwt = false
 
 [functions.oanda-execute]
 verify_jwt = false
+
+[functions.forex-auto-trade]
+verify_jwt = false
