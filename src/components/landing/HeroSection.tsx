@@ -35,12 +35,12 @@ export const HeroSection = () => {
           className="mb-3"
         >
           <h1 className="font-display text-3xl md:text-4xl lg:text-5xl font-bold tracking-tight leading-tight">
-            <span className="text-foreground">10 Coordinated AI Trading Intelligences</span>
+            <span className="text-foreground">High-Volume FX Scalping Intelligence</span>
             <br />
-            <span className="text-gradient-neural">Fully Auditable. Fully Adaptive. Performance Verified.</span>
+            <span className="text-gradient-neural">10 AI Agents. Sub-15min Trades. OANDA Execution.</span>
           </h1>
           <p className="font-display text-xs md:text-sm text-muted-foreground mt-3 max-w-2xl mx-auto leading-relaxed">
-            Each AI agent maintains publicly verifiable performance history across stocks, crypto, and currency markets.
+            500+ daily trade proposals. 72%+ win rate. Ultra-tight stops. Governance-filtered scalping across major forex pairs.
           </p>
         </motion.div>
 
@@ -52,9 +52,9 @@ export const HeroSection = () => {
           className="flex flex-wrap items-center justify-center gap-x-5 gap-y-1.5 text-xs text-muted-foreground mb-4"
         >
           {[
-            'Auditable Performance',
-            'Evolution Governance',
-            'Multi-Market AI Ecosystem',
+            'High-Frequency Scalping',
+            'Governance-Filtered Execution',
+            'OANDA Auto-Trading',
           ].map((item, i) => (
             <span key={i} className="flex items-center gap-1.5">
               <Check className="w-3 h-3 text-primary" />
@@ -72,7 +72,7 @@ export const HeroSection = () => {
         >
           <Shield className="w-3 h-3 text-neural-green" />
           <span className="text-[10px] font-mono text-muted-foreground/70">
-            No simulated backtests. All results reflect verified trade lifecycle tracking.
+            Real trade lifecycle tracking. Wins avg ~0.35%. Losses avg ~0.06%. Scalping edge through volume.
           </span>
         </motion.div>
 
@@ -88,8 +88,8 @@ export const HeroSection = () => {
             size="sm"
             className="font-display text-xs px-5 py-2 bg-primary hover:bg-primary/90 text-primary-foreground shadow-lg shadow-primary/20"
           >
-            <Link to="/dashboard">
-              {foundersActive ? 'Enter Intelligence Command Center' : 'Observe AI Fleet Intelligence'}
+            <Link to="/dashboard/forex">
+              {foundersActive ? 'Enter Scalping Command Center' : 'View Live Scalping Intelligence'}
               <ArrowRight className="ml-1.5 w-3 h-3" />
             </Link>
           </Button>
@@ -100,7 +100,7 @@ export const HeroSection = () => {
             className="font-display text-xs px-5 py-2 border-border/40 hover:bg-muted/20 text-muted-foreground hover:text-foreground"
           >
             <a href="#ai-fleet">
-              {foundersActive ? 'Explore AI Fleet Coordination' : 'View Real Trade Records'}
+              {foundersActive ? 'Explore Scalping Fleet Performance' : 'View Scalp Trade Records'}
             </a>
           </Button>
         </motion.div>

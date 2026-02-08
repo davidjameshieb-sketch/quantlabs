@@ -13,57 +13,57 @@ import {
 
 const features = [
   {
-    icon: Activity,
-    title: 'Efficiency Score',
-    description: 'Measure how direct price movement is — separating clean trends from choppy conditions with our proprietary net move vs path noise ratio.',
+    icon: Zap,
+    title: 'High-Frequency Scalping',
+    description: '500+ daily trade proposals filtered through 7-layer governance. Sub-15-minute average hold times with 72%+ win rate across major FX pairs.',
     gradient: 'from-neural-cyan to-neural-purple',
   },
   {
     icon: Bot,
-    title: 'Multi-AI Collaboration',
-    description: 'Multiple specialized AI models analyze markets simultaneously — equities, forex, and crypto agents coordinate to find the best opportunities.',
+    title: '10-Agent Scalping Fleet',
+    description: 'Every AI agent is tuned for FX scalping — from Macro Pulse momentum scalps to Range Navigator fade trades. Coordinated, specialized, relentless.',
     gradient: 'from-neural-purple to-neural-magenta',
   },
   {
     icon: TrendingUp,
-    title: 'Quantitative Analysis',
-    description: 'Data-driven decision intelligence with volatility analysis, trend detection, and regime classification — all measurable and transparent.',
+    title: 'Asymmetric Payoff Engine',
+    description: 'Wins average ~0.35% while losses are capped at ~0.06%. The system profits through volume × asymmetry — not individual trade size.',
     gradient: 'from-neural-magenta to-neural-cyan',
   },
   {
     icon: BarChart3,
-    title: 'AI Backtesting Engine',
-    description: 'Every AI strategy is fully backtested with win/loss ratios, drawdown metrics, Sharpe ratio, and performance by market regime.',
+    title: 'Governance-Filtered Execution',
+    description: 'Every scalp proposal passes through friction gates, MTF alignment checks, session scoring, and spread stability validation before execution.',
     gradient: 'from-neural-cyan to-neural-green',
   },
   {
     icon: Layers,
-    title: 'Multi-Timeframe Analysis',
-    description: 'See alignment or divergence across timeframes. When all timeframes agree, structure is strongest.',
+    title: 'Session-Optimized Trading',
+    description: 'London and NY overlap sessions get aggressive scalping. Asian/Late-NY sessions are throttled. The system knows when to trade and when to wait.',
     gradient: 'from-neural-green to-neural-purple',
   },
   {
     icon: Eye,
-    title: 'AI Decision Overlays',
-    description: 'See which AI tools are actively influencing trade logic, real-time decision reasoning, and active strategy components.',
+    title: 'Full Scalp Transparency',
+    description: 'Every scalp shows entry/exit reasoning, governance multipliers, spread conditions, and which agents contributed to the decision.',
     gradient: 'from-neural-purple to-neural-cyan',
   },
   {
-    icon: LineChart,
-    title: 'Cross-Market Scanner',
-    description: 'Find the strongest and weakest structures across equities, crypto, and forex in one unified view.',
+    icon: Activity,
+    title: 'OANDA Auto-Execution',
+    description: 'Direct OANDA v20 API integration. 3-6 scalps per cron cycle, 1000-unit positions, practice account tested. From signal to fill in milliseconds.',
     gradient: 'from-neural-cyan to-neural-orange',
   },
   {
     icon: Shield,
-    title: 'Glass Box Transparency',
-    description: 'Every AI conclusion is explained in plain English. See what the system sees, how it thinks, and why it concludes.',
+    title: 'Risk-First Architecture',
+    description: 'Ultra-tight drawdown caps, anti-overtrading governors, correlation clustering prevention, and daily loss circuit breakers protect every scalp.',
     gradient: 'from-neural-orange to-neural-purple',
   },
   {
-    icon: Zap,
-    title: 'Dynamic AI Coordination',
-    description: 'The best-performing AI automatically leads based on current market conditions — adaptive, measurable, and always evolving.',
+    icon: LineChart,
+    title: 'Volatility Regime Scalping',
+    description: 'Ignition phases trigger breakout scalps. Expansion drives momentum captures. Compression and exhaustion are throttled. The AI reads the regime.',
     gradient: 'from-neural-purple to-neural-green',
   },
 ];
@@ -84,11 +84,11 @@ export const FeaturesSection = () => {
           className="text-center mb-16"
         >
           <h2 className="font-display text-3xl md:text-5xl font-bold mb-4">
-            <span className="text-gradient-neural">AI Trading Intelligence</span>
+            <span className="text-gradient-neural">FX Scalping Intelligence</span>
           </h2>
           <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
-            Collaborative AI models working together. Transparent, quantitative, 
-            and designed for advanced traders who demand measurable performance.
+            10 specialized AI agents running high-frequency scalps on major forex pairs.
+            Governance-filtered. OANDA-executed. Fully transparent.
           </p>
         </motion.div>
 

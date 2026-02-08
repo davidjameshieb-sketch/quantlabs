@@ -6,26 +6,26 @@ import { UpgradeModal } from '@/components/dashboard/UpgradeModal';
 const lockedFeatures = [
   {
     icon: Activity,
-    title: 'Intraday AI Signal Intelligence',
-    description: '15-minute delayed signals across equities, crypto, and forex with real-time AI overlays.',
+    title: 'Live Scalp Signal Feed',
+    description: 'Real-time scalp entries across EUR/USD, GBP/USD, USD/JPY and 5 other major pairs with AI confidence overlays.',
     feature: 'signalTracking',
   },
   {
     icon: BarChart3,
-    title: 'Strategy Performance Deep Analytics',
-    description: 'Win/loss ratios, drawdown metrics, and Sharpe ratio across every market regime.',
+    title: 'Scalping Performance Analytics',
+    description: 'Win rate, profit factor, Sharpe ratio, and governance filter stats broken down by session, pair, and regime.',
     feature: 'advancedBacktesting',
   },
   {
     icon: Brain,
-    title: 'Multi-Agent Consensus Scoring',
-    description: 'See how multiple AI models agree or diverge — and which model leads in each condition.',
+    title: 'Multi-Agent Scalp Consensus',
+    description: 'See how 10 scalping agents agree or diverge on each entry — and which agent leads in current market conditions.',
     feature: 'aiDecisionOverlays',
   },
   {
     icon: Shield,
-    title: 'Advanced Risk Regime Detection',
-    description: 'Classify market conditions: trending, ranging, volatile, or avoidance zones.',
+    title: 'Scalp Risk Governance',
+    description: 'Real-time governance filtering: friction gates, spread stability, session scoring, and anti-overtrading governors.',
     feature: 'performanceBreakdowns',
   },
 ];
@@ -53,10 +53,10 @@ export const EdgeDiscoverySection = () => {
           className="text-center mb-14"
         >
           <h2 className="font-display text-3xl md:text-5xl font-bold mb-4">
-            <span className="text-gradient-neural">Edge Access Features</span>
+            <span className="text-gradient-neural">Edge Access: Live Scalping</span>
           </h2>
           <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
-            Premium intelligence layers that give you a quantitative market advantage.
+            Premium scalping intelligence layers — real-time entries, governance analytics, and OANDA execution status.
           </p>
         </motion.div>
 

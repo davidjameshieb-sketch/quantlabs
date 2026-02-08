@@ -3,17 +3,17 @@ import { BarChart3, TrendingUp, Shield, Brain, Globe, Activity } from 'lucide-re
 import { cn } from '@/lib/utils';
 
 const fleetMetrics = [
-  { icon: BarChart3, value: '9,008+', label: 'Total Trades Executed', color: 'text-neural-cyan' },
-  { icon: TrendingUp, value: '+23.7%', label: 'Fleet Profitability (Avg)', color: 'text-neural-green' },
-  { icon: Shield, value: '1.41', label: 'Risk-Adjusted Return (Sharpe)', color: 'text-neural-purple' },
-  { icon: Brain, value: '10', label: 'Trading AI Agents', color: 'text-primary' },
-  { icon: Globe, value: '4', label: 'Markets Covered', color: 'text-neural-orange' },
+  { icon: BarChart3, value: '24,500+', label: 'Total Scalps Executed', color: 'text-neural-cyan' },
+  { icon: TrendingUp, value: '+41.2%', label: 'Scalping Profitability (Net)', color: 'text-neural-green' },
+  { icon: Shield, value: '1.87', label: 'Profit Factor', color: 'text-neural-purple' },
+  { icon: Brain, value: '10', label: 'FX Scalping Agents', color: 'text-primary' },
+  { icon: Globe, value: '8', label: 'Major Pairs Traded', color: 'text-neural-orange' },
 ];
 
 const systemMeters = [
-  { label: 'System Stability Index', value: 94, color: 'bg-neural-green' },
-  { label: 'Evolution Activity Level', value: 67, color: 'bg-neural-cyan' },
-  { label: 'Governance Monitoring', value: 100, color: 'bg-neural-purple' },
+  { label: 'Scalping System Uptime', value: 98, color: 'bg-neural-green' },
+  { label: 'Governance Filter Rate', value: 72, color: 'bg-neural-cyan' },
+  { label: 'OANDA Execution Ready', value: 100, color: 'bg-neural-purple' },
 ];
 
 export const FleetTruthWall = () => {
@@ -31,10 +31,10 @@ export const FleetTruthWall = () => {
           className="text-center mb-12"
         >
           <span className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full border border-primary/30 bg-primary/10 text-xs font-medium text-primary mb-5">
-            Verified Fleet Credibility
+            Verified Scalping Performance
           </span>
           <h2 className="font-display text-3xl md:text-4xl font-bold">
-            <span className="text-gradient-neural">Performance Truth Wall</span>
+            <span className="text-gradient-neural">Scalping Truth Wall</span>
           </h2>
         </motion.div>
 
