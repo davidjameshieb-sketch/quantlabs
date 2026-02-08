@@ -100,6 +100,7 @@ export const ForexTradeHistoryTable = ({ trades }: ForexTradeHistoryTableProps) 
               <TableHead className="text-[10px] font-display">Agent</TableHead>
               <TableHead className="text-[10px] font-display">Outcome</TableHead>
               <TableHead className="text-[10px] font-display">Regime</TableHead>
+              <TableHead className="text-[10px] font-display">Time</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -176,12 +177,15 @@ export const ForexTradeHistoryTable = ({ trades }: ForexTradeHistoryTableProps) 
                         {FOREX_REGIME_LABELS[trade.regime].replace(' FX', '')}
                       </Badge>
                     </TableCell>
+                    <TableCell className="text-[10px] text-muted-foreground font-mono whitespace-nowrap">
+                      {new Date(trade.timestamp).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                    </TableCell>
                   </TableRow>
 
                   {/* Expanded: Scalping Forensics Detail */}
                   {isExpanded && (
                     <TableRow key={`${trade.id}-exp`} className="bg-primary/5 hover:bg-primary/5">
-                      <TableCell colSpan={14} className="p-4">
+                      <TableCell colSpan={15} className="p-4">
                         <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                           {/* P&L Forensics */}
                           <div className="space-y-2">

@@ -108,6 +108,7 @@ const CompactTradeTable = ({ trades, maxRows = 15 }: { trades: ForexTradeEntry[]
             <TableHead className="text-[10px] font-display">Dur</TableHead>
             <TableHead className="text-[10px] font-display">Regime</TableHead>
             <TableHead className="text-[10px] font-display">Result</TableHead>
+            <TableHead className="text-[10px] font-display">Time</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -155,6 +156,9 @@ const CompactTradeTable = ({ trades, maxRows = 15 }: { trades: ForexTradeEntry[]
                   {trade.outcome === 'avoided' && <Ban className="w-2.5 h-2.5 mr-0.5" />}
                   {trade.outcome.toUpperCase()}
                 </Badge>
+              </TableCell>
+              <TableCell className="text-[10px] text-muted-foreground font-mono whitespace-nowrap py-1.5">
+                {new Date(trade.timestamp).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
               </TableCell>
             </TableRow>
           ))}
