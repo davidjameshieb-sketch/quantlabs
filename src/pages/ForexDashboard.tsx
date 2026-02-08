@@ -3,7 +3,7 @@
 
 import { useState, useMemo, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Globe, TrendingUp, Crosshair, BarChart3, FlaskConical } from 'lucide-react';
+import { Globe, TrendingUp, Crosshair, BarChart3, FlaskConical, ShieldCheck } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { DashboardLayout } from '@/components/dashboard/DashboardLayout';
 import { ForexPerformanceOverview } from '@/components/forex/ForexPerformanceOverview';
@@ -16,6 +16,7 @@ import { LiveForexTradesPanel } from '@/components/forex/LiveForexTradesPanel';
 import { ForexScalpingIntelligence } from '@/components/forex/ForexScalpingIntelligence';
 import { ScalpingTradesDashboard } from '@/components/forex/ScalpingTradesDashboard';
 import { PerformanceReanalysisDashboard } from '@/components/forex/PerformanceReanalysisDashboard';
+import { DailyAuditPanel } from '@/components/forex/DailyAuditPanel';
 import { IntelligenceModeBadge } from '@/components/dashboard/IntelligenceModeBadge';
 import {
   generateForexTrades,
@@ -28,6 +29,8 @@ import {
   hasLivePrices,
   getLastGovernanceStats,
   getLastGovernanceResults,
+  computeRollingHealth,
+  computeShadowModeState,
 } from '@/lib/forex';
 import { ForexDashboardFilters } from '@/lib/forex/forexTypes';
 import { createAgents } from '@/lib/agents/agentEngine';
@@ -59,6 +62,8 @@ const ForexDashboard = () => {
   const quality = useMemo(() => computeForexQuality(filteredTrades), [filteredTrades]);
   const risk = useMemo(() => computeForexRiskGovernance(filteredTrades), [filteredTrades]);
   const influence = useMemo(() => computeCrossAssetInfluence(), []);
+  const rollingHealth = useMemo(() => computeRollingHealth(allTrades), [allTrades]);
+  const shadowMode = useMemo(() => computeShadowModeState(allTrades), [allTrades]);
 
   return (
     <DashboardLayout>
@@ -101,7 +106,10 @@ const ForexDashboard = () => {
               <Crosshair className="w-3.5 h-3.5" />Scalping Intelligence
             </TabsTrigger>
             <TabsTrigger value="reanalysis" className="text-xs gap-1.5">
-              <FlaskConical className="w-3.5 h-3.5" />Performance Reanalysis
+              <FlaskConical className="w-3.5 h-3.5" />Reanalysis
+            </TabsTrigger>
+            <TabsTrigger value="audit" className="text-xs gap-1.5">
+              <ShieldCheck className="w-3.5 h-3.5" />Daily Audit
             </TabsTrigger>
           </TabsList>
 
@@ -182,6 +190,17 @@ const ForexDashboard = () => {
                 performance={performance}
                 governanceStats={governanceStats}
                 governanceResults={governanceResults}
+              />
+            </motion.div>
+          </TabsContent>
+
+          <TabsContent value="audit" className="space-y-4">
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+              <DailyAuditPanel
+                trades={filteredTrades}
+                performance={performance}
+                rollingHealth={rollingHealth}
+                shadowMode={shadowMode}
               />
             </motion.div>
           </TabsContent>

@@ -6,4 +6,8 @@ export { evaluateTradeProposal, generateGovernanceContext, computeGovernanceStat
 export type { TradeProposal, GovernanceContext, GovernanceResult, GovernanceMultipliers, GovernanceStats, GovernanceDecision } from './tradeGovernanceEngine';
 export { computePerformanceReanalysis } from './performanceReanalysisEngine';
 export type { PerformanceReanalysis, BeforeAfterComparison, LeakageSource, SessionPerformance, PairOptimization, TuningRecommendation } from './performanceReanalysisEngine';
+export { computeRollingHealth } from './rollingWindowEngine';
+export type { RollingHealthState, RollingWindowMetrics, RollingWindowSize, DegradationAlert, AutoProtectionTrigger } from './rollingWindowEngine';
+export { computeShadowModeState } from './shadowModeValidator';
+export type { ShadowModeState, ShadowTestResult, ParameterDelta } from './shadowModeValidator';
 
