@@ -47,6 +47,30 @@ const FOREX_SUPPORT_AGENTS: AgentId[] = ['liquidity-radar', 'volatility-architec
 
 const OANDA_PAIRS = getTickersByType('forex');
 
+// ─── Realistic Forex Base Prices ───
+
+const FOREX_BASE_PRICES: Record<string, number> = {
+  'EUR/USD': 1.0380, 'GBP/USD': 1.2420, 'USD/JPY': 151.80, 'AUD/USD': 0.6280,
+  'USD/CAD': 1.4420, 'NZD/USD': 0.5650, 'EUR/GBP': 0.8360, 'EUR/JPY': 157.50,
+  'GBP/JPY': 188.60, 'AUD/JPY': 95.30, 'USD/CHF': 0.9060, 'EUR/CHF': 0.9400,
+  'EUR/AUD': 1.6530, 'GBP/AUD': 1.9780, 'AUD/NZD': 1.1120, 'USD/SGD': 1.3560,
+  'USD/HKD': 7.7850, 'USD/MXN': 20.45, 'USD/ZAR': 18.20, 'EUR/NZD': 1.8370,
+  'GBP/NZD': 2.1980, 'GBP/CAD': 1.7910, 'EUR/CAD': 1.4970, 'AUD/CAD': 0.9060,
+  'NZD/CAD': 0.8150, 'CHF/JPY': 167.60, 'CAD/JPY': 105.30, 'NZD/JPY': 85.80,
+  'CAD/CHF': 0.6280, 'AUD/CHF': 0.5690,
+};
+
+function getRealisticPrice(symbol: string, rng: ForexRNG): number {
+  const base = FOREX_BASE_PRICES[symbol];
+  if (base) {
+    // Small random deviation: ±0.3% to simulate recent price movement
+    const deviation = rng.range(-0.003, 0.003);
+    return base * (1 + deviation);
+  }
+  // Fallback for unknown pairs
+  return symbol.includes('JPY') ? rng.range(80, 195) : rng.range(0.55, 1.85);
+}
+
 // ─── Generate Forex Trades ───
 
 export const generateForexTrades = (agents: Record<AgentId, AIAgent>): ForexTradeEntry[] => {
@@ -64,7 +88,7 @@ export const generateForexTrades = (agents: Record<AgentId, AIAgent>): ForexTrad
     const isWin = !isAvoided && rng.bool(0.58);
     const pnl = isAvoided ? 0 : isWin ? rng.range(0.1, 4.2) : rng.range(-3.5, -0.05);
 
-    const entryPrice = pair.symbol.includes('JPY') ? rng.range(100, 195) : rng.range(0.55, 1.85);
+    const entryPrice = getRealisticPrice(pair.symbol, rng);
     const exitPrice = isAvoided ? undefined : entryPrice * (1 + pnl / 100);
 
     const regime: ForexRegime = rng.pick(['trending', 'ranging', 'high-volatility', 'low-liquidity']);
