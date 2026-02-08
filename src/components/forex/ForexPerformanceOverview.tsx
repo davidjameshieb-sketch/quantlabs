@@ -1,12 +1,14 @@
 // Forex Performance Overview Panel
-// Core metrics display for isolated forex trading performance
+// Core metrics + governance intelligence stats
 
-import { TrendingUp, TrendingDown, Clock, Shield, BarChart3, Zap, Target, Activity } from 'lucide-react';
+import { TrendingUp, TrendingDown, Clock, Shield, BarChart3, Zap, Target, Activity, ShieldCheck, ShieldX, ShieldAlert, Gauge } from 'lucide-react';
 import { ForexPerformanceMetrics } from '@/lib/forex/forexTypes';
+import { GovernanceStats } from '@/lib/forex/tradeGovernanceEngine';
 import { cn } from '@/lib/utils';
 
 interface ForexPerformanceOverviewProps {
   metrics: ForexPerformanceMetrics;
+  governanceStats?: GovernanceStats | null;
 }
 
 const MetricCard = ({
@@ -41,7 +43,7 @@ const MetricCard = ({
   </div>
 );
 
-export const ForexPerformanceOverview = ({ metrics }: ForexPerformanceOverviewProps) => {
+export const ForexPerformanceOverview = ({ metrics, governanceStats }: ForexPerformanceOverviewProps) => {
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-2">
@@ -102,6 +104,72 @@ export const ForexPerformanceOverview = ({ metrics }: ForexPerformanceOverviewPr
           positive={metrics.sharpeScore > 0.5}
         />
       </div>
+
+      {/* Governance Intelligence Strip */}
+      {governanceStats && (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2 pt-1">
+            <ShieldCheck className="w-3.5 h-3.5 text-primary" />
+            <span className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider">
+              Intelligence Governance
+            </span>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            <MetricCard
+              label="Proposed"
+              value={governanceStats.totalProposed.toString()}
+              icon={Activity}
+            />
+            <MetricCard
+              label="Approved"
+              value={governanceStats.totalApproved.toString()}
+              icon={ShieldCheck}
+              positive={true}
+            />
+            <MetricCard
+              label="Rejected"
+              value={governanceStats.totalRejected.toString()}
+              icon={ShieldX}
+              positive={governanceStats.rejectionRate < 0.3}
+            />
+            <MetricCard
+              label="Throttled"
+              value={governanceStats.totalThrottled.toString()}
+              icon={ShieldAlert}
+            />
+            <MetricCard
+              label="Rejection Rate"
+              value={`${(governanceStats.rejectionRate * 100).toFixed(1)}`}
+              suffix="%"
+              icon={ShieldX}
+              positive={governanceStats.rejectionRate > 0.15}
+            />
+            <MetricCard
+              label="Avg Multiplier"
+              value={governanceStats.avgCompositeMultiplier.toFixed(2)}
+              suffix="×"
+              icon={Gauge}
+              positive={governanceStats.avgCompositeMultiplier > 0.9}
+            />
+            <MetricCard
+              label="Gov Score"
+              value={governanceStats.avgGovernanceScore.toFixed(0)}
+              suffix="/100"
+              icon={ShieldCheck}
+              positive={governanceStats.avgGovernanceScore > 60}
+            />
+            <div className="p-3 rounded-xl bg-card/50 border border-border/50 space-y-1">
+              <div className="flex items-center gap-1.5">
+                <ShieldAlert className="w-3.5 h-3.5 text-primary" />
+                <span className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider">Top Rejection</span>
+              </div>
+              <span className="text-[10px] text-muted-foreground leading-tight line-clamp-2">
+                {governanceStats.topRejectionReasons[0]?.reason || 'None'}
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

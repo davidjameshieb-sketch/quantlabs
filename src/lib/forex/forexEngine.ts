@@ -1,5 +1,7 @@
 // Forex Trade Intelligence Engine
-// Generates forex-isolated trade data from the multi-agent ledger system
+// Generates forex-isolated trade data governed by intelligence multipliers.
+// Every trade proposal is evaluated through the governance layer before
+// outcomes are determined — no static RNG-only decisions.
 
 import { AgentId, AIAgent } from '@/lib/agents/types';
 import { ALL_AGENT_IDS, AGENT_DEFINITIONS } from '@/lib/agents/agentConfig';
@@ -17,6 +19,14 @@ import {
   ForexTradeOutcome,
 } from './forexTypes';
 import { getLivePrice } from './oandaPricingService';
+import {
+  evaluateTradeProposal,
+  generateGovernanceContext,
+  computeGovernanceStats,
+  GovernanceResult,
+  GovernanceStats,
+  TradeProposal,
+} from './tradeGovernanceEngine';
 
 // ─── Seeded RNG ───
 
@@ -50,7 +60,6 @@ const OANDA_PAIRS = getTickersByType('forex');
 
 // ─── Realistic Forex Base Prices ───
 
-// Fallback base prices aligned to OANDA practice account levels (Feb 2026)
 const FOREX_BASE_PRICES: Record<string, number> = {
   'EUR/USD': 1.1817, 'GBP/USD': 1.3612, 'USD/JPY': 157.24, 'AUD/USD': 0.7013,
   'USD/CAD': 1.3674, 'NZD/USD': 0.6016, 'EUR/GBP': 0.8681, 'EUR/JPY': 185.81,
@@ -62,66 +71,155 @@ const FOREX_BASE_PRICES: Record<string, number> = {
   'CAD/CHF': 0.5673, 'AUD/CHF': 0.5440,
 };
 
-/** Normalize symbol: 'AUDCAD' → 'AUD/CAD', already-slashed passes through */
 function toDisplaySymbol(symbol: string): string {
   if (symbol.includes('/')) return symbol;
   if (symbol.length === 6) return `${symbol.slice(0, 3)}/${symbol.slice(3)}`;
-  if (symbol.length === 7) return `${symbol.slice(0, 3)}/${symbol.slice(3)}`; // e.g. USD/MXN length=7 only with slash
+  if (symbol.length === 7) return `${symbol.slice(0, 3)}/${symbol.slice(3)}`;
   return symbol;
 }
 
 function getRealisticPrice(symbol: string, rng: ForexRNG): number {
   const displaySymbol = toDisplaySymbol(symbol);
-  // Prefer live OANDA mid-price when available
   const livePrice = getLivePrice(displaySymbol);
   if (livePrice) {
-    // Small random deviation: ±0.3% to simulate recent price movement around live price
     const deviation = rng.range(-0.003, 0.003);
     return livePrice * (1 + deviation);
   }
-  // Fallback to hardcoded base prices
   const base = FOREX_BASE_PRICES[displaySymbol];
   if (base) {
     const deviation = rng.range(-0.003, 0.003);
     return base * (1 + deviation);
   }
-  // Last resort fallback for unknown pairs
   return displaySymbol.includes('JPY') ? rng.range(80, 195) : rng.range(0.55, 1.85);
 }
 
-// ─── Generate Forex Trades ───
+// ─── Regime from governance volatility phase ───
+
+function governancePhaseToRegime(phase: string): ForexRegime {
+  switch (phase) {
+    case 'ignition': return 'trending';
+    case 'expansion': return 'trending';
+    case 'compression': return 'ranging';
+    case 'exhaustion': return 'high-volatility';
+    default: return 'ranging';
+  }
+}
+
+// ─── Governance-Mapped Execution Mode ───
+
+function governanceToExecMode(decision: string, score: number): ExecutionMode {
+  if (decision === 'rejected') return 'signal-only';
+  if (score > 75) return 'auto-eligible';
+  if (score > 50) return 'assisted-ready';
+  return 'signal-only';
+}
+
+// ─── Base trade parameters ───
+
+const BASE_WIN_PROBABILITY = 0.58;
+const BASE_WIN_RANGE: [number, number] = [0.02, 0.85];
+const BASE_LOSS_RANGE: [number, number] = [-0.65, -0.01];
+const TOTAL_PROPOSALS = 150; // propose more, governance filters down
+
+// ─── Last governance report (module-level cache) ───
+
+let _lastGovernanceStats: GovernanceStats | null = null;
+let _lastGovernanceResults: GovernanceResult[] = [];
+
+export const getLastGovernanceStats = (): GovernanceStats | null => _lastGovernanceStats;
+export const getLastGovernanceResults = (): GovernanceResult[] => _lastGovernanceResults;
+
+// ─── Generate Forex Trades (Intelligence-Governed) ───
 
 export const generateForexTrades = (agents: Record<AgentId, AIAgent>): ForexTradeEntry[] => {
   const trades: ForexTradeEntry[] = [];
+  const governanceResults: GovernanceResult[] = [];
   const now = Date.now();
 
-  for (let i = 0; i < 120; i++) {
+  for (let i = 0; i < TOTAL_PROPOSALS; i++) {
     const rng = new ForexRNG(hashStr(`forex-trade-${i}`));
     const pair = rng.pick(OANDA_PAIRS);
     const primaryAgentId = rng.pick(FOREX_PRIMARY_AGENTS);
     const primaryDef = AGENT_DEFINITIONS[primaryAgentId];
-
     const direction = rng.bool(0.52) ? 'long' as const : 'short' as const;
-    const isAvoided = rng.bool(0.12);
-    const isWin = !isAvoided && rng.bool(0.58);
-    const pnl = isAvoided ? 0 : isWin ? rng.range(0.02, 0.85) : rng.range(-0.65, -0.01);
+
+    // ── Step 1: Create trade proposal ──
+    const proposal: TradeProposal = {
+      index: i,
+      pair: pair.symbol,
+      direction,
+      baseWinProbability: BASE_WIN_PROBABILITY,
+      baseWinRange: BASE_WIN_RANGE,
+      baseLossRange: BASE_LOSS_RANGE,
+    };
+
+    // ── Step 2: Generate governance context for this specific trade ──
+    const govContext = generateGovernanceContext(pair.symbol, i);
+
+    // ── Step 3: Evaluate through governance layer ──
+    const govResult = evaluateTradeProposal(proposal, govContext);
+    governanceResults.push(govResult);
+
+    // ── Step 4: Apply governance decision ──
+    const isRejected = govResult.decision === 'rejected';
+    const isThrottled = govResult.decision === 'throttled';
+    const isAvoided = isRejected || isThrottled;
+
+    // Governance-adjusted outcome
+    const isWin = !isAvoided && rng.bool(govResult.adjustedWinProbability);
+
+    // Governance-adjusted P&L ranges
+    const pnl = isAvoided
+      ? 0
+      : isWin
+        ? rng.range(govResult.adjustedWinRange[0], govResult.adjustedWinRange[1])
+        : rng.range(govResult.adjustedLossRange[0], govResult.adjustedLossRange[1]);
 
     const entryPrice = getRealisticPrice(pair.symbol, rng);
     const exitPrice = isAvoided ? undefined : entryPrice * (1 + pnl / 100);
 
-    const regime: ForexRegime = rng.pick(['trending', 'ranging', 'high-volatility', 'low-liquidity']);
-    const execMode: ExecutionMode = rng.pick(['signal-only', 'assisted-ready', 'auto-eligible']);
-    const govStatus = rng.pick(['approved', 'throttled', 'restricted'] as const);
+    // Governance-derived regime and execution mode
+    const regime = governancePhaseToRegime(govContext.volatilityPhase);
+    const execMode = governanceToExecMode(govResult.decision, govResult.governanceScore);
+
+    // Governance status maps directly
+    const govStatus = govResult.decision === 'approved' ? 'approved' as const
+      : govResult.decision === 'throttled' ? 'throttled' as const
+      : 'restricted' as const;
 
     // Supporting agents (2-4)
     const supportCount = rng.int(2, 5);
-    const shuffled = FOREX_SUPPORT_AGENTS.sort(() => rng.next() - 0.5);
+    const shuffled = [...FOREX_SUPPORT_AGENTS].sort(() => rng.next() - 0.5);
     const supportingAgents = shuffled.slice(0, supportCount).map(id => {
       const def = AGENT_DEFINITIONS[id];
       return { id, name: def.name, icon: def.icon, weight: rng.range(0.05, 0.35) };
     });
 
     const outcome: ForexTradeOutcome = isAvoided ? 'avoided' : isWin ? 'win' : 'loss';
+
+    // Governance-adjusted duration
+    const duration = rng.int(
+      govResult.adjustedDuration.min,
+      govResult.adjustedDuration.max,
+    );
+
+    // Governance-adjusted confidence and drawdown
+    const baseConfidence = rng.range(35, 92);
+    const confidenceScore = Math.max(10, Math.min(99,
+      baseConfidence + govResult.confidenceBoost
+    ));
+
+    const drawdown = isAvoided ? 0 : Math.min(
+      govResult.adjustedDrawdownCap,
+      rng.range(0.1, govResult.adjustedDrawdownCap)
+    );
+
+    // Spread condition from microstructure
+    const spreadCondition = govContext.spreadStabilityRank > 75
+      ? 'tight' as const
+      : govContext.spreadStabilityRank > 40
+        ? 'normal' as const
+        : 'wide' as const;
 
     trades.push({
       id: `fx-${i}-${pair.symbol}`,
@@ -131,12 +229,12 @@ export const generateForexTrades = (agents: Record<AgentId, AIAgent>): ForexTrad
       entryPrice,
       exitPrice,
       pnlPercent: pnl,
-      tradeDuration: rng.int(15, 2880),
+      tradeDuration: duration,
       primaryAgent: primaryAgentId,
       primaryAgentName: primaryDef.name,
       primaryAgentIcon: primaryDef.icon,
       governanceStatus: govStatus,
-      confidenceScore: rng.range(35, 92),
+      confidenceScore,
       riskScore: rng.range(15, 75),
       timestamp: now - rng.int(60000, 90 * 86400000),
       outcome,
@@ -144,12 +242,16 @@ export const generateForexTrades = (agents: Record<AgentId, AIAgent>): ForexTrad
       regime,
       oandaCompatible: true,
       riskCompliant: govStatus !== 'restricted',
-      spreadCondition: rng.pick(['tight', 'normal', 'wide'] as const),
+      spreadCondition,
       supportingAgents,
-      drawdown: rng.range(0.1, 5.5),
+      drawdown,
       marketRegime: regime,
     });
   }
+
+  // Cache governance stats
+  _lastGovernanceResults = governanceResults;
+  _lastGovernanceStats = computeGovernanceStats(governanceResults);
 
   return trades.sort((a, b) => b.timestamp - a.timestamp);
 };
@@ -162,12 +264,11 @@ export const filterForexTrades = (
 ): ForexTradeEntry[] => {
   const now = Date.now();
   return trades.filter(t => {
-    // Period filter
     if (filters.period !== 'inception') {
       const cutoff = filters.period === '5d' ? 5 * 86400000
         : filters.period === '30d' ? 30 * 86400000
         : filters.period === '90d' ? 90 * 86400000
-        : 365 * 86400000; // ytd approximation
+        : 365 * 86400000;
       if (now - t.timestamp > cutoff) return false;
     }
     if (filters.outcome !== 'all' && t.outcome !== filters.outcome) return false;
@@ -201,7 +302,9 @@ export const computeForexPerformance = (trades: ForexTradeEntry[]): ForexPerform
     totalTrades: trades.length,
     winRate: executed.length > 0 ? wins.length / executed.length : 0,
     netPnlPercent: totalPnl,
-    riskRewardRatio: grossLoss > 0 ? (grossProfit / wins.length) / (grossLoss / losses.length) : 0,
+    riskRewardRatio: grossLoss > 0 && losses.length > 0 && wins.length > 0
+      ? (grossProfit / wins.length) / (grossLoss / losses.length)
+      : 0,
     avgTradeDuration: avgDuration,
     avgDrawdown,
     profitFactor,
