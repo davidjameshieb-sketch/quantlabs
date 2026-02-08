@@ -7,7 +7,7 @@ import { OandaOrderLog } from '@/components/forex/OandaOrderLog';
 import { ForexExecutionStatus } from '@/components/forex/ForexExecutionStatus';
 import { AutoExecutionPanel } from '@/components/forex/AutoExecutionPanel';
 import { IntelligenceModeBadge } from '@/components/dashboard/IntelligenceModeBadge';
-import { useMemo, useCallback } from 'react';
+import { useMemo, useCallback, useEffect, useRef } from 'react';
 import { generateForexTrades } from '@/lib/forex';
 import { createAgents } from '@/lib/agents/agentEngine';
 import { useAutoExecution } from '@/hooks/useAutoExecution';
@@ -18,6 +18,7 @@ const ForexOanda = () => {
   const allTrades = useMemo(() => generateForexTrades(agents), [agents]);
   const { connected } = useOandaExecution();
   const autoExec = useAutoExecution();
+  const hasAutoRun = useRef(false);
 
   const eligibleTrades = useMemo(
     () => allTrades.filter(t => t.outcome !== 'avoided'),
@@ -27,6 +28,14 @@ const ForexOanda = () => {
   const handleRunBatch = useCallback(() => {
     autoExec.runBatch(allTrades);
   }, [autoExec, allTrades]);
+
+  // Auto-execute all trades when OANDA connects and auto-exec is enabled
+  useEffect(() => {
+    if (connected && autoExec.status.enabled && !hasAutoRun.current && !autoExec.status.processing) {
+      hasAutoRun.current = true;
+      autoExec.runBatch(allTrades);
+    }
+  }, [connected, autoExec.status.enabled, autoExec.status.processing, allTrades, autoExec]);
 
   return (
     <DashboardLayout>

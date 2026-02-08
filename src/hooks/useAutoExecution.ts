@@ -29,7 +29,7 @@ const MAX_CONCURRENT = 1; // sequential to avoid flooding OANDA
 export function useAutoExecution() {
   const { executeTrade } = useOandaExecution();
   const [status, setStatus] = useState<AutoExecStatus>({
-    enabled: false,
+    enabled: true,
     processing: false,
     totalQueued: 0,
     totalExecuted: 0,
