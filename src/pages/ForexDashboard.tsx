@@ -3,7 +3,7 @@
 
 import { useState, useMemo, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Globe, TrendingUp, Crosshair, BarChart3 } from 'lucide-react';
+import { Globe, TrendingUp, Crosshair, BarChart3, FlaskConical } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { DashboardLayout } from '@/components/dashboard/DashboardLayout';
 import { ForexPerformanceOverview } from '@/components/forex/ForexPerformanceOverview';
@@ -15,6 +15,7 @@ import { ForexFilterBar } from '@/components/forex/ForexFilterBar';
 import { LiveForexTradesPanel } from '@/components/forex/LiveForexTradesPanel';
 import { ForexScalpingIntelligence } from '@/components/forex/ForexScalpingIntelligence';
 import { ScalpingTradesDashboard } from '@/components/forex/ScalpingTradesDashboard';
+import { PerformanceReanalysisDashboard } from '@/components/forex/PerformanceReanalysisDashboard';
 import { IntelligenceModeBadge } from '@/components/dashboard/IntelligenceModeBadge';
 import {
   generateForexTrades,
@@ -99,6 +100,9 @@ const ForexDashboard = () => {
             <TabsTrigger value="scalping" className="text-xs gap-1.5">
               <Crosshair className="w-3.5 h-3.5" />Scalping Intelligence
             </TabsTrigger>
+            <TabsTrigger value="reanalysis" className="text-xs gap-1.5">
+              <FlaskConical className="w-3.5 h-3.5" />Performance Reanalysis
+            </TabsTrigger>
           </TabsList>
 
           <TabsContent value="performance" className="space-y-6">
@@ -168,6 +172,17 @@ const ForexDashboard = () => {
           <TabsContent value="scalping" className="space-y-4">
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
               <ForexScalpingIntelligence />
+            </motion.div>
+          </TabsContent>
+
+          <TabsContent value="reanalysis" className="space-y-4">
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+              <PerformanceReanalysisDashboard
+                trades={filteredTrades}
+                performance={performance}
+                governanceStats={governanceStats}
+                governanceResults={governanceResults}
+              />
             </motion.div>
           </TabsContent>
         </Tabs>
