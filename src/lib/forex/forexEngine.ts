@@ -94,7 +94,7 @@ export const generateForexTrades = (agents: Record<AgentId, AIAgent>): ForexTrad
     const direction = rng.bool(0.52) ? 'long' as const : 'short' as const;
     const isAvoided = rng.bool(0.12);
     const isWin = !isAvoided && rng.bool(0.58);
-    const pnl = isAvoided ? 0 : isWin ? rng.range(0.1, 4.2) : rng.range(-3.5, -0.05);
+    const pnl = isAvoided ? 0 : isWin ? rng.range(0.02, 0.85) : rng.range(-0.65, -0.01);
 
     const entryPrice = getRealisticPrice(pair.symbol, rng);
     const exitPrice = isAvoided ? undefined : entryPrice * (1 + pnl / 100);
