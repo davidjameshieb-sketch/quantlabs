@@ -244,14 +244,21 @@ Deno.serve(async (req) => {
   const regime = getRegimeLabel();
   console.log(`[SCALP-TRADE] Execution Safety Mode — session: ${session}, regime: ${regime}, time: ${new Date().toISOString()}`);
 
+  // Parse optional body for force-test mode
+  let reqBody: { force?: boolean; pair?: string; direction?: "long" | "short" } = {};
+  try { reqBody = await req.json(); } catch { /* no body = normal cron */ }
+  const forceMode = reqBody.force === true;
+
   try {
     const supabase = createClient(
       Deno.env.get("SUPABASE_URL")!,
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
     );
 
-    // ─── Auto-Protection Check ───
-    const protection = await checkAutoProtection(supabase);
+    // ─── Auto-Protection Check (skip in force mode) ───
+    const protection = forceMode
+      ? { allow: true, kOverride: null, densityMult: 1.0, reason: "FORCE MODE — bypassing protection" }
+      : await checkAutoProtection(supabase);
     console.log(`[SCALP-TRADE] Protection: ${protection.reason} (allow=${protection.allow}, density=${protection.densityMult})`);
 
     if (!protection.allow) {
@@ -262,28 +269,31 @@ Deno.serve(async (req) => {
       );
     }
 
-    // Adjust signal count by density multiplier
-    const baseCount = 3 + Math.floor(Math.random() * 4);
-    const signalCount = Math.max(1, Math.round(baseCount * protection.densityMult));
+    // Adjust signal count by density multiplier (force mode = 1 trade)
+    const baseCount = forceMode ? 1 : 3 + Math.floor(Math.random() * 4);
+    const signalCount = forceMode ? 1 : Math.max(1, Math.round(baseCount * protection.densityMult));
     const results: Array<{
       pair: string; direction: string; status: string;
       gateResult?: string; frictionScore?: number; slippage?: number;
       executionQuality?: number; error?: string;
     }> = [];
 
-    console.log(`[SCALP-TRADE] Generating ${signalCount} signals (base=${baseCount}, densityMult=${protection.densityMult})`);
+    console.log(`[SCALP-TRADE] Generating ${signalCount} signals (base=${baseCount}, densityMult=${protection.densityMult}, force=${forceMode})`);
 
     for (let i = 0; i < signalCount; i++) {
-      const signal = generateScalpSignal(i);
+      const signal = forceMode
+        ? { pair: reqBody.pair || "EUR_USD", direction: reqBody.direction || "long" as const, confidence: 90, agentId: "manual-test" }
+        : generateScalpSignal(i);
 
-      // ─── Pre-Trade Friction Gate ───
-      const gate = runFrictionGate(signal.pair, session);
-      if (protection.kOverride) {
-        // Re-check with elevated K
+      // ─── Pre-Trade Friction Gate (skip in force mode) ───
+      const gate = forceMode
+        ? { pass: true, result: "FORCE" as const, frictionScore: 100, reasons: [], expectedMove: 10, totalFriction: 1, frictionRatio: 10 }
+        : runFrictionGate(signal.pair, session);
+      if (!forceMode && protection.kOverride) {
         const strictGate = runFrictionGate(signal.pair, session);
         if (strictGate.frictionRatio < protection.kOverride) {
           gate.pass = false;
-          gate.result = "REJECT";
+          gate.result = "REJECT" as const;
           gate.reasons.push(`Protection K override: ratio ${strictGate.frictionRatio.toFixed(1)} < ${protection.kOverride}`);
         }
       }
