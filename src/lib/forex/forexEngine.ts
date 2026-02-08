@@ -116,10 +116,41 @@ function governanceToExecMode(decision: string, score: number): ExecutionMode {
 
 // ─── Base trade parameters ───
 
-const BASE_WIN_PROBABILITY = 0.58;
-const BASE_WIN_RANGE: [number, number] = [0.02, 0.85];
-const BASE_LOSS_RANGE: [number, number] = [-0.65, -0.01];
-const TOTAL_PROPOSALS = 150; // propose more, governance filters down
+const BASE_WIN_PROBABILITY = 0.62;
+const BASE_WIN_RANGE: [number, number] = [0.04, 0.85];
+const BASE_LOSS_RANGE: [number, number] = [-0.55, -0.01];
+const TOTAL_PROPOSALS = 200; // propose more, governance filters down
+
+// ─── Recency-biased timestamp distribution ───
+// Simulates governance learning: more trades + better quality in recent days
+
+function generateRecencyTimestamp(rng: ForexRNG, now: number): number {
+  const r = rng.next();
+  // 30% of trades in last 5 days, 35% in 5-30 days, 35% in 30-90 days
+  if (r < 0.30) {
+    return now - rng.int(60000, 5 * 86400000);
+  } else if (r < 0.65) {
+    return now - rng.int(5 * 86400000, 30 * 86400000);
+  } else {
+    return now - rng.int(30 * 86400000, 90 * 86400000);
+  }
+}
+
+// Recency performance boost: trades in last 5 days get governance learning bonus
+function getRecencyBoost(timestamp: number, now: number): { winBoost: number; pnlScale: number; lossReduction: number } {
+  const ageMs = now - timestamp;
+  const ageDays = ageMs / 86400000;
+  if (ageDays <= 5) {
+    // Recent: governance fully tuned, best performance
+    return { winBoost: 0.10, pnlScale: 1.15, lossReduction: 0.75 };
+  } else if (ageDays <= 30) {
+    // Mid-range: governance partially applied
+    return { winBoost: 0.04, pnlScale: 1.05, lossReduction: 0.88 };
+  } else {
+    // Historical baseline: pre-governance
+    return { winBoost: -0.03, pnlScale: 0.92, lossReduction: 1.0 };
+  }
+}
 
 // ─── Last governance report (module-level cache) ───
 
@@ -143,14 +174,24 @@ export const generateForexTrades = (agents: Record<AgentId, AIAgent>): ForexTrad
     const primaryDef = AGENT_DEFINITIONS[primaryAgentId];
     const direction = rng.bool(0.52) ? 'long' as const : 'short' as const;
 
-    // ── Step 1: Create trade proposal ──
+    // ── Recency-biased timestamp ──
+    const timestamp = generateRecencyTimestamp(rng, now);
+    const recencyBoost = getRecencyBoost(timestamp, now);
+
+    // ── Step 1: Create trade proposal with recency-boosted base ──
     const proposal: TradeProposal = {
       index: i,
       pair: pair.symbol,
       direction,
-      baseWinProbability: BASE_WIN_PROBABILITY,
-      baseWinRange: BASE_WIN_RANGE,
-      baseLossRange: BASE_LOSS_RANGE,
+      baseWinProbability: BASE_WIN_PROBABILITY + recencyBoost.winBoost,
+      baseWinRange: [
+        BASE_WIN_RANGE[0] * recencyBoost.pnlScale,
+        BASE_WIN_RANGE[1] * recencyBoost.pnlScale,
+      ],
+      baseLossRange: [
+        BASE_LOSS_RANGE[0] * recencyBoost.lossReduction,
+        BASE_LOSS_RANGE[1] * recencyBoost.lossReduction,
+      ],
     };
 
     // ── Step 2: Generate governance context for this specific trade ──
@@ -236,7 +277,7 @@ export const generateForexTrades = (agents: Record<AgentId, AIAgent>): ForexTrad
       governanceStatus: govStatus,
       confidenceScore,
       riskScore: rng.range(15, 75),
-      timestamp: now - rng.int(60000, 90 * 86400000),
+      timestamp,
       outcome,
       executionMode: execMode,
       regime,
