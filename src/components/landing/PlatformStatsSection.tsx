@@ -4,27 +4,27 @@ import { Activity, Brain, BarChart3, Layers } from 'lucide-react';
 const stats = [
   {
     icon: Activity,
-    value: '12,000+',
-    label: 'Markets Monitored Daily',
-    description: 'Equities, crypto, forex, and indices',
+    value: '500+',
+    label: 'Scalp Proposals / Day',
+    description: 'Governance-filtered from 500 daily proposals',
   },
   {
     icon: Brain,
-    value: '6',
-    label: 'AI Models Collaborating',
-    description: 'Specialized agents working simultaneously',
+    value: '10',
+    label: 'AI Scalping Agents',
+    description: 'All tuned for high-frequency FX execution',
   },
   {
     icon: BarChart3,
-    value: '50,000+',
-    label: 'Backtested Scenarios',
-    description: 'Strategy validations across conditions',
+    value: '72%+',
+    label: 'Scalp Win Rate',
+    description: 'Pro-level hit rate across major pairs',
   },
   {
     icon: Layers,
-    value: '4',
-    label: 'Regime Classifications',
-    description: 'Trending, ranging, volatile, avoidance',
+    value: '<15min',
+    label: 'Avg Scalp Duration',
+    description: 'Ultra-fast entries and exits on OANDA',
   },
 ];
 
@@ -42,10 +42,10 @@ export const PlatformStatsSection = () => {
           className="text-center mb-12"
         >
           <p className="text-xs uppercase tracking-[0.2em] text-muted-foreground/50 font-mono mb-3">
-            Platform Intelligence
+            Scalping Intelligence Metrics
           </p>
           <h2 className="font-display text-3xl md:text-4xl font-bold">
-            <span className="text-gradient-neural">Quantitative Scale</span>
+            <span className="text-gradient-neural">High-Volume Scalping Scale</span>
           </h2>
         </motion.div>
 

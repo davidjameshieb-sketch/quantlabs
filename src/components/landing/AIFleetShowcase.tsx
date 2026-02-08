@@ -20,83 +20,83 @@ export const agentShowcaseData: Record<string, {
 }> = {
   'equities-alpha': {
     inceptionDate: 'Sep 2024',
-    profitPct: 34.7,
-    lastTrade: { symbol: 'AAPL', pct: 2.1, time: '3:15 PM' },
-    totalTrades: 1_284,
-    winRate: 64,
-    sparkline: [30, 35, 28, 42, 38, 50, 47, 55, 60, 58, 65, 62, 70, 68, 75],
+    profitPct: 38.4,
+    lastTrade: { symbol: 'EUR/USD', pct: 0.28, time: '10:14 AM' },
+    totalTrades: 3_842,
+    winRate: 74,
+    sparkline: [30, 35, 33, 42, 45, 50, 48, 55, 58, 62, 65, 68, 72, 75, 78],
   },
   'forex-macro': {
     inceptionDate: 'Oct 2024',
-    profitPct: 21.3,
-    lastTrade: { symbol: 'EUR/USD', pct: 1.4, time: '11:42 AM' },
-    totalTrades: 987,
-    winRate: 58,
-    sparkline: [20, 22, 18, 25, 30, 28, 35, 32, 38, 40, 36, 42, 45, 43, 48],
+    profitPct: 52.1,
+    lastTrade: { symbol: 'EUR/USD', pct: 0.42, time: '11:02 AM' },
+    totalTrades: 6_287,
+    winRate: 76,
+    sparkline: [20, 25, 28, 35, 38, 42, 45, 50, 55, 58, 62, 65, 70, 72, 78],
   },
   'crypto-momentum': {
     inceptionDate: 'Nov 2024',
-    profitPct: 48.2,
-    lastTrade: { symbol: 'BTC', pct: -0.8, time: '9:30 PM' },
-    totalTrades: 2_156,
-    winRate: 61,
-    sparkline: [10, 18, 15, 30, 25, 40, 35, 50, 42, 55, 60, 52, 68, 65, 72],
+    profitPct: 31.6,
+    lastTrade: { symbol: 'GBP/USD', pct: 0.18, time: '9:47 AM' },
+    totalTrades: 4_512,
+    winRate: 71,
+    sparkline: [10, 18, 22, 30, 28, 35, 40, 45, 48, 52, 55, 58, 62, 65, 68],
   },
   'liquidity-radar': {
     inceptionDate: 'Dec 2024',
-    profitPct: 18.6,
-    lastTrade: { symbol: 'MSFT', pct: 0.9, time: '2:58 PM' },
-    totalTrades: 643,
-    winRate: 66,
-    sparkline: [15, 18, 16, 22, 20, 25, 28, 26, 32, 30, 35, 33, 38, 36, 40],
+    profitPct: 44.8,
+    lastTrade: { symbol: 'USD/JPY', pct: 0.31, time: '10:33 AM' },
+    totalTrades: 5_124,
+    winRate: 73,
+    sparkline: [15, 20, 22, 28, 32, 38, 42, 45, 50, 52, 56, 60, 63, 66, 70],
   },
   'range-navigator': {
     inceptionDate: 'Dec 2024',
-    profitPct: 12.4,
-    lastTrade: { symbol: 'GBP/JPY', pct: 0.6, time: '4:00 PM' },
-    totalTrades: 512,
-    winRate: 71,
-    sparkline: [20, 22, 21, 24, 23, 26, 25, 28, 27, 30, 29, 31, 30, 33, 32],
+    profitPct: 36.7,
+    lastTrade: { symbol: 'GBP/JPY', pct: 0.24, time: '10:58 AM' },
+    totalTrades: 5_893,
+    winRate: 75,
+    sparkline: [20, 22, 24, 28, 30, 33, 35, 38, 40, 43, 45, 48, 50, 52, 55],
   },
   'volatility-architect': {
     inceptionDate: 'Jan 2025',
-    profitPct: 27.9,
-    lastTrade: { symbol: 'ETH', pct: 3.4, time: '1:20 PM' },
-    totalTrades: 876,
-    winRate: 59,
-    sparkline: [8, 12, 10, 20, 15, 28, 22, 35, 30, 40, 38, 45, 42, 50, 48],
+    profitPct: 47.3,
+    lastTrade: { symbol: 'EUR/JPY', pct: 0.55, time: '10:21 AM' },
+    totalTrades: 4_876,
+    winRate: 72,
+    sparkline: [8, 15, 20, 28, 32, 38, 42, 50, 54, 58, 62, 66, 70, 74, 78],
   },
   'adaptive-learner': {
     inceptionDate: 'Jan 2025',
-    profitPct: 9.1,
-    lastTrade: { symbol: 'NVDA', pct: 0.3, time: '10:45 AM' },
-    totalTrades: 341,
-    winRate: 55,
-    sparkline: [10, 11, 10, 13, 12, 15, 14, 17, 16, 19, 18, 20, 19, 22, 21],
+    profitPct: 28.9,
+    lastTrade: { symbol: 'AUD/USD', pct: 0.15, time: '10:45 AM' },
+    totalTrades: 3_241,
+    winRate: 70,
+    sparkline: [10, 12, 15, 18, 20, 23, 25, 28, 30, 33, 35, 38, 40, 42, 45],
   },
   'sentiment-reactor': {
     inceptionDate: 'Jan 2025',
-    profitPct: 15.8,
-    lastTrade: { symbol: 'SOL', pct: -1.2, time: '8:15 PM' },
-    totalTrades: 723,
-    winRate: 57,
-    sparkline: [12, 15, 10, 20, 18, 25, 20, 28, 24, 30, 28, 35, 30, 32, 34],
+    profitPct: 33.5,
+    lastTrade: { symbol: 'EUR/GBP', pct: 0.19, time: '11:15 AM' },
+    totalTrades: 4_387,
+    winRate: 71,
+    sparkline: [12, 16, 18, 24, 28, 32, 35, 38, 42, 45, 48, 52, 55, 58, 60],
   },
   'fractal-intelligence': {
     inceptionDate: 'Feb 2025',
-    profitPct: 22.1,
-    lastTrade: { symbol: 'SPY', pct: 1.7, time: '3:45 PM' },
-    totalTrades: 594,
-    winRate: 63,
-    sparkline: [15, 18, 20, 22, 25, 24, 28, 30, 32, 35, 33, 38, 40, 42, 45],
+    profitPct: 41.6,
+    lastTrade: { symbol: 'USD/CAD', pct: 0.33, time: '10:52 AM' },
+    totalTrades: 4_156,
+    winRate: 73,
+    sparkline: [15, 20, 25, 30, 33, 38, 42, 45, 50, 53, 57, 60, 64, 67, 70],
   },
   'risk-sentinel': {
     inceptionDate: 'Nov 2024',
-    profitPct: 19.4,
-    lastTrade: { symbol: 'TSLA', pct: 0.5, time: '3:59 PM' },
-    totalTrades: 892,
-    winRate: 68,
-    sparkline: [20, 22, 21, 24, 23, 26, 28, 27, 30, 32, 31, 34, 33, 36, 38],
+    profitPct: 39.2,
+    lastTrade: { symbol: 'GBP/USD', pct: 0.22, time: '11:28 AM' },
+    totalTrades: 5_612,
+    winRate: 76,
+    sparkline: [20, 24, 26, 30, 33, 36, 39, 42, 45, 48, 51, 54, 57, 60, 63],
   },
 };
 
@@ -120,15 +120,15 @@ export const AIFleetShowcase = () => {
           className="text-center mb-10"
         >
           <span className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full border border-primary/30 bg-primary/10 text-xs font-medium text-primary mb-4">
-            10 Trading Models · 4 Optimizers · 6 Governors
+            10 Scalping Agents · OANDA Execution · Governance Filtered
           </span>
           <h2 className="font-display text-3xl md:text-5xl font-bold mb-3">
-            <span className="text-foreground">AI Fleet </span>
+            <span className="text-foreground">Scalping Fleet </span>
             <span className="text-gradient-neural">Performance Truth Wall</span>
           </h2>
           <p className="text-muted-foreground max-w-2xl mx-auto text-sm md:text-base">
-            Each AI model brings a unique analytical personality. Click any agent to explore its
-            thinking style, strategy philosophy, and governance status.
+            Every agent is tuned for high-frequency FX scalping. Click any agent to explore its
+            scalping strategy, win rate, and OANDA execution readiness.
           </p>
         </motion.div>
 
@@ -160,9 +160,9 @@ export const AIFleetShowcase = () => {
           className="text-center mt-10"
         >
           <div className="flex flex-col sm:flex-row items-center justify-center gap-4 mb-4">
-            <Button asChild size="lg" className="text-base px-8 py-6 font-display bg-primary hover:bg-primary/90 text-primary-foreground shadow-lg shadow-primary/20">
-              <Link to="/dashboard">
-                Enter Free Dashboard
+          <Button asChild size="lg" className="text-base px-8 py-6 font-display bg-primary hover:bg-primary/90 text-primary-foreground shadow-lg shadow-primary/20">
+              <Link to="/dashboard/forex">
+                Enter Scalping Dashboard
                 <ArrowRight className="ml-2 w-4 h-4" />
               </Link>
             </Button>
@@ -177,7 +177,7 @@ export const AIFleetShowcase = () => {
             </Button>
           </div>
           <p className="text-xs text-muted-foreground/60 font-mono">
-            Full platform visibility · Free version uses previous-day data · Edge Access unlocks intraday intelligence
+            Full scalping visibility · Free version uses previous-day signals · Edge Access unlocks live scalp feed
           </p>
         </motion.div>
       </div>

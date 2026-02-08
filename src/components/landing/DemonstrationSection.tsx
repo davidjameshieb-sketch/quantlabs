@@ -4,37 +4,37 @@ import { Activity, Brain, BarChart3, Shield, TrendingUp } from 'lucide-react';
 const dashboardPanels = [
   {
     icon: Brain,
-    label: 'AI Agent Collaboration',
-    desc: 'Multi-model consensus',
-    value: '87%',
+    label: 'Scalp Consensus',
+    desc: 'Multi-agent agreement',
+    value: '92%',
     gradient: 'from-neural-cyan to-neural-purple',
   },
   {
     icon: Activity,
-    label: 'Market Mode Detection',
-    desc: 'Current regime: Trending',
-    value: 'ACTIVE',
+    label: 'Scalping Mode',
+    desc: 'High-frequency active',
+    value: 'LIVE',
     gradient: 'from-neural-green to-neural-cyan',
   },
   {
     icon: BarChart3,
-    label: 'Confidence Scoring',
-    desc: 'Signal confidence',
-    value: '92%',
+    label: 'Scalp Win Rate',
+    desc: 'Last 5 days',
+    value: '78%',
     gradient: 'from-neural-purple to-neural-magenta',
   },
   {
     icon: TrendingUp,
-    label: 'Signal Overlay',
-    desc: 'Active trade signals',
-    value: '14',
+    label: 'Active Scalps',
+    desc: 'Open positions',
+    value: '6',
     gradient: 'from-neural-orange to-neural-red',
   },
   {
     icon: Shield,
-    label: 'Performance Analytics',
-    desc: 'Win rate (30d)',
-    value: '68%',
+    label: 'Avg Scalp Duration',
+    desc: 'Minutes per trade',
+    value: '8m',
     gradient: 'from-neural-cyan to-neural-green',
   },
 ];
@@ -103,7 +103,7 @@ export const DemonstrationSection = () => {
           transition={{ duration: 0.5, delay: 0.5 }}
           className="text-center text-sm text-muted-foreground/60 mt-6 font-mono"
         >
-          Watch AI trading intelligence operate in real time.
+          Watch high-frequency FX scalping intelligence execute in real time.
         </motion.p>
       </div>
     </section>

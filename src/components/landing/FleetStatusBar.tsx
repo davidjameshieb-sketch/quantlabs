@@ -2,9 +2,9 @@ import { motion } from 'framer-motion';
 import { Activity, RefreshCw, Shield } from 'lucide-react';
 
 const statusItems = [
-  { icon: Activity, label: 'Trading Agents', value: '10 / 10', color: 'text-neural-green' },
-  { icon: RefreshCw, label: 'Optimization Engines', value: '4 / 4', color: 'text-neural-cyan' },
-  { icon: Shield, label: 'Governance Council', value: '6 / 6', color: 'text-neural-purple' },
+  { icon: Activity, label: 'Scalping Agents', value: '10 / 10', color: 'text-neural-green' },
+  { icon: RefreshCw, label: 'Scalps Today', value: '47', color: 'text-neural-cyan' },
+  { icon: Shield, label: 'Governance Filter', value: 'Active', color: 'text-neural-purple' },
 ];
 
 export const FleetStatusBar = () => {
@@ -17,7 +17,7 @@ export const FleetStatusBar = () => {
     >
       <div className="flex items-center justify-center gap-6 md:gap-10 rounded-xl border border-border/20 bg-background/10 backdrop-blur-md px-6 py-2.5">
         <span className="hidden md:block text-[10px] font-display uppercase tracking-[0.15em] text-muted-foreground/60">
-          AI Fleet Status
+          FX Scalping Fleet
         </span>
         <div className="hidden md:block w-px h-4 bg-border/30" />
         {statusItems.map((item) => (
