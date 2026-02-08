@@ -6,6 +6,8 @@ import { AGENT_DEFINITIONS, ALL_AGENT_IDS } from '@/lib/agents/agentConfig';
 import { Button } from '@/components/ui/button';
 import { EdgePreviewModal } from './EdgePreviewModal';
 import { FleetAgentCard } from './FleetAgentCard';
+import { AgentPersonalityModal } from './AgentPersonalityModal';
+import type { AgentId } from '@/lib/agents/types';
 
 // Deterministic "since inception" stats per agent
 export const agentShowcaseData: Record<string, {
@@ -100,6 +102,10 @@ export const agentShowcaseData: Record<string, {
 
 export const AIFleetShowcase = () => {
   const [previewOpen, setPreviewOpen] = useState(false);
+  const [selectedAgent, setSelectedAgent] = useState<AgentId | null>(null);
+
+  const selectedDef = selectedAgent ? AGENT_DEFINITIONS[selectedAgent] : null;
+  const selectedData = selectedAgent ? agentShowcaseData[selectedAgent] : null;
 
   return (
     <section className="relative py-8 px-4" id="ai-fleet">
@@ -121,8 +127,8 @@ export const AIFleetShowcase = () => {
             <span className="text-gradient-neural">Performance Truth Wall</span>
           </h2>
           <p className="text-muted-foreground max-w-2xl mx-auto text-sm md:text-base">
-            Each AI model brings a unique analytical personality. Explore their verified track records,
-            strategy profiles, and governance status — fully transparent, fully auditable.
+            Each AI model brings a unique analytical personality. Click any agent to explore its
+            thinking style, strategy philosophy, and governance status.
           </p>
         </motion.div>
 
@@ -134,7 +140,13 @@ export const AIFleetShowcase = () => {
             if (!def || !data) return null;
 
             return (
-              <FleetAgentCard key={id} def={def} data={data} index={i} />
+              <FleetAgentCard
+                key={id}
+                def={def}
+                data={data}
+                index={i}
+                onClick={() => setSelectedAgent(id)}
+              />
             );
           })}
         </div>
@@ -169,6 +181,14 @@ export const AIFleetShowcase = () => {
           </p>
         </motion.div>
       </div>
+
+      {/* Agent Personality Intelligence Panel */}
+      <AgentPersonalityModal
+        agent={selectedDef}
+        data={selectedData}
+        open={!!selectedAgent}
+        onClose={() => setSelectedAgent(null)}
+      />
 
       {/* Edge Access Preview Modal */}
       <EdgePreviewModal open={previewOpen} onClose={() => setPreviewOpen(false)} />

@@ -1,5 +1,4 @@
 import { motion } from 'framer-motion';
-import { Link } from 'react-router-dom';
 import { ArrowRight, BarChart3, Shield, Activity, Target } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { AgentDefinition } from '@/lib/agents/agentConfig';
@@ -15,6 +14,7 @@ interface FleetAgentCardProps {
     sparkline: number[];
   };
   index: number;
+  onClick?: () => void;
 }
 
 const MiniSparkline = ({ data, positive }: { data: number[]; positive: boolean }) => {
@@ -53,7 +53,7 @@ const MiniSparkline = ({ data, positive }: { data: number[]; positive: boolean }
   );
 };
 
-export const FleetAgentCard = ({ def, data, index }: FleetAgentCardProps) => {
+export const FleetAgentCard = ({ def, data, index, onClick }: FleetAgentCardProps) => {
   const isPositive = data.profitPct >= 0;
   const lastTradePositive = data.lastTrade.pct >= 0;
 
@@ -64,9 +64,9 @@ export const FleetAgentCard = ({ def, data, index }: FleetAgentCardProps) => {
       viewport={{ once: true }}
       transition={{ duration: 0.4, delay: index * 0.05 }}
     >
-      <Link
-        to="/dashboard/agents"
-        className="group block h-full"
+      <button
+        onClick={onClick}
+        className="group block h-full w-full text-left"
       >
         <div className={cn(
           'relative h-full rounded-xl border border-border/20 bg-background/10 backdrop-blur-sm',
@@ -163,7 +163,7 @@ export const FleetAgentCard = ({ def, data, index }: FleetAgentCardProps) => {
           {/* Footer CTA */}
           <div className="flex items-center justify-end">
             <span className="flex items-center gap-1 text-[10px] font-medium text-primary opacity-0 group-hover:opacity-100 transition-opacity">
-              Enter AI Dashboard
+              Explore Intelligence
               <ArrowRight className="w-3 h-3" />
             </span>
           </div>
@@ -171,7 +171,7 @@ export const FleetAgentCard = ({ def, data, index }: FleetAgentCardProps) => {
           {/* Hover glow */}
           <div className="absolute inset-0 rounded-xl opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none border border-primary/20" />
         </div>
-      </Link>
+      </button>
     </motion.div>
   );
 };
