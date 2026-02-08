@@ -92,6 +92,9 @@ export interface MultiTimeframeAnalysis {
   aggregatedScore: number;
   dominantBias: BiasDirection;
   alignmentLevel: 'aligned' | 'mixed' | 'conflicting';
+  mtfAlignmentScore?: number;              // 0-100 hierarchical alignment
+  mtfAlignmentState?: 'fully-aligned' | 'partially-aligned' | 'conflicting' | 'diverging';
+  mtfDominantLayer?: 'HTF' | 'MTF' | 'LTF';
 }
 
 export interface MarketSnapshot {

@@ -10,3 +10,4 @@ export * from './tierAccess';
 export * from './backtestEngine';
 export * from './snapshotService';
 export * from './sectorETFs';
+export * from './mtfAlignmentScoring';

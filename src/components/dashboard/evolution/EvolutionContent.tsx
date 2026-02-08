@@ -7,10 +7,12 @@ import { EvolutionConfidenceIndicator } from './EvolutionConfidenceIndicator';
 import { BehavioralRiskMonitor } from './BehavioralRiskMonitor';
 import { CapitalAllocationChart } from './CapitalAllocationChart';
 import { ReversionLog } from './ReversionLog';
+import { MTFIntelligencePanel } from './MTFIntelligencePanel';
 import { createAgents } from '@/lib/agents/agentEngine';
 import { createEvolutionEcosystem } from '@/lib/agents/metaControllerEngine';
 import { AgentId } from '@/lib/agents/types';
 import { cn } from '@/lib/utils';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
 const AGENT_TABS: Array<{ id: AgentId; label: string; icon: string }> = [
   { id: 'equities-alpha', label: 'Alpha Engine', icon: '📈' },
@@ -59,54 +61,68 @@ export const EvolutionContent = () => {
         ))}
       </motion.div>
 
-      {/* Row 1: Meta-Controller + Risk Anchors */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <MetaControllerPanel state={meta} />
-        <RiskStabilityMeter anchors={meta.riskAnchors} />
-      </div>
+      {/* Main Content Tabs */}
+      <Tabs defaultValue="evolution" className="space-y-4">
+        <TabsList className="bg-card/50 border border-border/30">
+          <TabsTrigger value="evolution" className="text-xs">Adaptive Evolution</TabsTrigger>
+          <TabsTrigger value="mtf" className="text-xs">MTF Intelligence</TabsTrigger>
+        </TabsList>
 
-      {/* Row 2: Capital Allocation + Evolution Confidence */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <CapitalAllocationChart allocation={meta.capitalAllocation} />
-        <EvolutionConfidenceIndicator evolution={ecosystem.agentEvolution} />
-      </div>
-
-      {/* Agent-Specific Deep Dive */}
-      <div className="space-y-4">
-        <div className="flex items-center gap-3">
-          <h2 className="font-display text-lg font-bold text-foreground">Agent Deep Dive</h2>
-          <div className="flex gap-2">
-            {AGENT_TABS.map(tab => (
-              <button
-                key={tab.id}
-                onClick={() => setSelectedAgent(tab.id)}
-                className={cn(
-                  'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all',
-                  selectedAgent === tab.id
-                    ? 'bg-primary/20 text-primary border-primary/30'
-                    : 'bg-muted/10 text-muted-foreground border-border/30 hover:bg-muted/20'
-                )}
-              >
-                <span>{tab.icon}</span>
-                {tab.label}
-              </button>
-            ))}
+        <TabsContent value="evolution" className="space-y-6">
+          {/* Row 1: Meta-Controller + Risk Anchors */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <MetaControllerPanel state={meta} />
+            <RiskStabilityMeter anchors={meta.riskAnchors} />
           </div>
-        </div>
 
-        <motion.div
-          key={selectedAgent}
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="grid grid-cols-1 lg:grid-cols-2 gap-4"
-        >
-          <AdaptiveRangeViz params={agentEvo.adaptiveParams} agentName={agentMeta.label} />
-          <BehavioralRiskMonitor risk={agentEvo.behavioralRisk} agentName={agentMeta.label} />
-        </motion.div>
-      </div>
+          {/* Row 2: Capital Allocation + Evolution Confidence */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <CapitalAllocationChart allocation={meta.capitalAllocation} />
+            <EvolutionConfidenceIndicator evolution={ecosystem.agentEvolution} />
+          </div>
 
-      {/* Reversion Log */}
-      <ReversionLog checkpoints={meta.reversionHistory} />
+          {/* Agent-Specific Deep Dive */}
+          <div className="space-y-4">
+            <div className="flex items-center gap-3">
+              <h2 className="font-display text-lg font-bold text-foreground">Agent Deep Dive</h2>
+              <div className="flex gap-2">
+                {AGENT_TABS.map(tab => (
+                  <button
+                    key={tab.id}
+                    onClick={() => setSelectedAgent(tab.id)}
+                    className={cn(
+                      'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all',
+                      selectedAgent === tab.id
+                        ? 'bg-primary/20 text-primary border-primary/30'
+                        : 'bg-muted/10 text-muted-foreground border-border/30 hover:bg-muted/20'
+                    )}
+                  >
+                    <span>{tab.icon}</span>
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <motion.div
+              key={selectedAgent}
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="grid grid-cols-1 lg:grid-cols-2 gap-4"
+            >
+              <AdaptiveRangeViz params={agentEvo.adaptiveParams} agentName={agentMeta.label} />
+              <BehavioralRiskMonitor risk={agentEvo.behavioralRisk} agentName={agentMeta.label} />
+            </motion.div>
+          </div>
+
+          {/* Reversion Log */}
+          <ReversionLog checkpoints={meta.reversionHistory} />
+        </TabsContent>
+
+        <TabsContent value="mtf" className="space-y-4">
+          <MTFIntelligencePanel />
+        </TabsContent>
+      </Tabs>
     </div>
   );
 };
