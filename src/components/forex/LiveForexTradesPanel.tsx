@@ -1,7 +1,7 @@
 // Live Forex Trades Panel
 // Shows real OANDA open positions and recent executed orders from the database
 
-import { useEffect } from 'react';
+import { useEffect, useCallback } from 'react';
 import { motion } from 'framer-motion';
 import {
   Wifi, RefreshCw, ArrowUpRight, ArrowDownRight,
@@ -11,6 +11,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 import { useOandaExecution, OandaOpenTrade, OandaOrder } from '@/hooks/useOandaExecution';
+import { useRealtimeOrders } from '@/hooks/useRealtimeOrders';
 
 export const LiveForexTradesPanel = () => {
   const {
@@ -23,15 +24,17 @@ export const LiveForexTradesPanel = () => {
     fetchOrderHistory,
   } = useOandaExecution();
 
-  useEffect(() => {
+  const handleRefresh = useCallback(() => {
     fetchAccountSummary('practice');
     fetchOrderHistory('practice');
   }, [fetchAccountSummary, fetchOrderHistory]);
 
-  const handleRefresh = () => {
-    fetchAccountSummary('practice');
-    fetchOrderHistory('practice');
-  };
+  // Realtime: auto-refresh when orders change (alerts handled by the hook)
+  useRealtimeOrders({ onOrderChange: handleRefresh, enableAlerts: false });
+
+  useEffect(() => {
+    handleRefresh();
+  }, [handleRefresh]);
 
   const recentOrders = orders.slice(0, 10);
 
