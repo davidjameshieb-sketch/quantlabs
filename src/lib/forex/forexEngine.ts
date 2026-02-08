@@ -16,6 +16,7 @@ import {
   ExecutionMode,
   ForexTradeOutcome,
 } from './forexTypes';
+import { getLivePrice } from './oandaPricingService';
 
 // ─── Seeded RNG ───
 
@@ -61,13 +62,20 @@ const FOREX_BASE_PRICES: Record<string, number> = {
 };
 
 function getRealisticPrice(symbol: string, rng: ForexRNG): number {
+  // Prefer live OANDA mid-price when available
+  const livePrice = getLivePrice(symbol);
+  if (livePrice) {
+    // Small random deviation: ±0.3% to simulate recent price movement around live price
+    const deviation = rng.range(-0.003, 0.003);
+    return livePrice * (1 + deviation);
+  }
+  // Fallback to hardcoded base prices
   const base = FOREX_BASE_PRICES[symbol];
   if (base) {
-    // Small random deviation: ±0.3% to simulate recent price movement
     const deviation = rng.range(-0.003, 0.003);
     return base * (1 + deviation);
   }
-  // Fallback for unknown pairs
+  // Last resort fallback for unknown pairs
   return symbol.includes('JPY') ? rng.range(80, 195) : rng.range(0.55, 1.85);
 }
 

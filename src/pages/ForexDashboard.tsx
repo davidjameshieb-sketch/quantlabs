@@ -1,7 +1,7 @@
 // Forex Trade Intelligence Dashboard
 // Isolated forex-only trade performance tracking & analysis
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { Globe, TrendingUp } from 'lucide-react';
 import { DashboardLayout } from '@/components/dashboard/DashboardLayout';
@@ -20,6 +20,8 @@ import {
   computeForexQuality,
   computeForexRiskGovernance,
   computeCrossAssetInfluence,
+  fetchOandaLivePrices,
+  hasLivePrices,
 } from '@/lib/forex';
 import { ForexDashboardFilters } from '@/lib/forex/forexTypes';
 import { createAgents } from '@/lib/agents/agentEngine';
@@ -33,8 +35,18 @@ const ForexDashboard = () => {
     agent: 'all',
   });
 
+  const [livePricesReady, setLivePricesReady] = useState(hasLivePrices());
+
+  // Fetch live OANDA prices on mount, then regenerate trades
+  useEffect(() => {
+    fetchOandaLivePrices().then(() => {
+      setLivePricesReady(true);
+    });
+  }, []);
+
   const agents = useMemo(() => createAgents(), []);
-  const allTrades = useMemo(() => generateForexTrades(agents), [agents]);
+  // Re-generate trades once live prices are available (livePricesReady triggers recalc)
+  const allTrades = useMemo(() => generateForexTrades(agents), [agents, livePricesReady]);
   const filteredTrades = useMemo(() => filterForexTrades(allTrades, filters), [allTrades, filters]);
 
   const performance = useMemo(() => computeForexPerformance(filteredTrades), [filteredTrades]);

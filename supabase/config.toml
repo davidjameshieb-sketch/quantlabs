@@ -26,3 +26,6 @@ verify_jwt = false
 
 [functions.forex-auto-trade]
 verify_jwt = false
+
+[functions.oanda-pricing]
+verify_jwt = false
