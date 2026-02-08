@@ -265,6 +265,19 @@ export const generateForexTrades = (agents: Record<AgentId, AIAgent>): ForexTrad
         ? 'normal' as const
         : 'wide' as const;
 
+    // ── MFE/MAE + Give-Back ──
+    const absPnl = Math.abs(pnl);
+    const mfe = isAvoided ? 0 : isWin
+      ? absPnl + rng.range(0.01, absPnl * 0.6)  // MFE always >= realized for wins
+      : rng.range(0.005, 0.08);                   // small favorable excursion before reversal
+    const mae = isAvoided ? 0 : isWin
+      ? rng.range(0.002, absPnl * 0.3)            // small adverse before recovery
+      : absPnl + rng.range(0.01, absPnl * 0.4);   // MAE always >= realized loss
+    const tradeCapture = mfe > 0 ? Math.min(1, Math.max(0, pnl / mfe)) : 0;
+    const giveBack = mfe > 0 && isWin ? Math.max(0, (1 - tradeCapture) * 100) : 0;
+    const tradeFriction = (1 - govContext.spreadStabilityRank / 100) * rng.range(0.005, 0.025);
+    const tradeNetExpectancy = pnl - tradeFriction;
+
     trades.push({
       id: `fx-${i}-${pair.symbol}`,
       currencyPair: pair.symbol,
@@ -290,6 +303,12 @@ export const generateForexTrades = (agents: Record<AgentId, AIAgent>): ForexTrad
       supportingAgents,
       drawdown,
       marketRegime: regime,
+      mfe,
+      mae,
+      giveBackPct: giveBack,
+      captureRatio: tradeCapture,
+      netExpectancy: tradeNetExpectancy,
+      frictionCost: tradeFriction,
     });
   }
 

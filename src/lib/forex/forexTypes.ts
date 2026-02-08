@@ -122,6 +122,13 @@ export interface ForexTradeEntry {
   supportingAgents: { id: AgentId; name: string; icon: string; weight: number }[];
   drawdown: number;
   marketRegime: string;
+  // ─── MFE/MAE + Give-Back Fields ───
+  mfe: number;           // Max Favorable Excursion (% from entry)
+  mae: number;           // Max Adverse Excursion (% from entry, always positive)
+  giveBackPct: number;   // % of peak unrealized profit given back (0-100)
+  captureRatio: number;  // Realized / MFE (0-1)
+  netExpectancy: number; // Expected value after friction costs
+  frictionCost: number;  // Spread + slippage cost estimate (%)
 }
 
 // ─── Forex Dashboard State ───
