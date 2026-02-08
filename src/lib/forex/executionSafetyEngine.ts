@@ -335,9 +335,16 @@ export function computeExecutionHealth(
     entry_price?: number | null;
   }>
 ): ExecutionHealthMetrics {
-  const filled = orders.filter(o => o.status === 'filled' || o.status === 'closed');
+  // Only count orders that have actual execution telemetry (entry_price set means real fill)
+  const filled = orders.filter(o =>
+    (o.status === 'filled' || o.status === 'closed') && o.entry_price != null
+  );
   const rejected = orders.filter(o => o.status === 'rejected');
-  const total = orders.length || 1;
+  // Total = orders with meaningful status (exclude bulk-cleared legacy)
+  const meaningful = orders.filter(o =>
+    o.entry_price != null || o.status === 'rejected' || o.status === 'submitted'
+  );
+  const total = meaningful.length || 1;
 
   const slippages = filled
     .map(o => o.slippage_pips)
