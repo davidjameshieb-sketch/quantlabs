@@ -3,7 +3,7 @@
 
 import { useState, useMemo, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Globe, TrendingUp, Crosshair, BarChart3, FlaskConical, ShieldCheck, SplitSquareHorizontal } from 'lucide-react';
+import { Globe, TrendingUp, Crosshair, BarChart3, FlaskConical, ShieldCheck, SplitSquareHorizontal, PieChart } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { DashboardLayout } from '@/components/dashboard/DashboardLayout';
 import { ForexPerformanceOverview } from '@/components/forex/ForexPerformanceOverview';
@@ -19,6 +19,9 @@ import { ScalpingTradesDashboard } from '@/components/forex/ScalpingTradesDashbo
 import { PerformanceReanalysisDashboard } from '@/components/forex/PerformanceReanalysisDashboard';
 import { DailyAuditPanel } from '@/components/forex/DailyAuditPanel';
 import { ScalpVsSwingView } from '@/components/forex/ScalpVsSwingView';
+import { PairPnLBreakdown } from '@/components/forex/PairPnLBreakdown';
+import { SessionHeatmap } from '@/components/forex/SessionHeatmap';
+import { RollingSharpeChart } from '@/components/forex/RollingSharpeChart';
 import { IntelligenceModeBadge } from '@/components/dashboard/IntelligenceModeBadge';
 import {
   generateForexTrades,
@@ -38,6 +41,7 @@ import { ForexDashboardFilters } from '@/lib/forex/forexTypes';
 import { createAgents } from '@/lib/agents/agentEngine';
 import { useOandaExecution } from '@/hooks/useOandaExecution';
 import { useOandaPerformance } from '@/hooks/useOandaPerformance';
+import { useTradeAnalytics } from '@/hooks/useTradeAnalytics';
 
 const ForexDashboard = () => {
   const [filters, setFilters] = useState<ForexDashboardFilters>({
@@ -53,7 +57,7 @@ const ForexDashboard = () => {
   // Real OANDA data hooks
   const { connected, account, openTrades, fetchAccountSummary } = useOandaExecution();
   const { metrics: executionMetrics } = useOandaPerformance();
-
+  const tradeAnalytics = useTradeAnalytics(executionMetrics);
   useEffect(() => {
     fetchOandaLivePrices().then(() => {
       setLivePricesReady(true);
@@ -122,6 +126,9 @@ const ForexDashboard = () => {
             </TabsTrigger>
             <TabsTrigger value="audit" className="text-xs gap-1.5">
               <ShieldCheck className="w-3.5 h-3.5" />Daily Audit
+            </TabsTrigger>
+            <TabsTrigger value="analytics" className="text-xs gap-1.5">
+              <PieChart className="w-3.5 h-3.5" />Deep Analytics
             </TabsTrigger>
           </TabsList>
 
@@ -230,6 +237,33 @@ const ForexDashboard = () => {
                 rollingHealth={rollingHealth}
                 shadowMode={shadowMode}
               />
+            </motion.div>
+          </TabsContent>
+
+          <TabsContent value="analytics" className="space-y-6">
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+              <div className="flex items-center gap-2 mb-1">
+                <PieChart className="w-4 h-4 text-primary" />
+                <h2 className="text-sm font-display font-bold">Deep Trade Analytics</h2>
+                <span className="text-[9px] text-muted-foreground">
+                  {tradeAnalytics.totalClosedTrades} closed trades · {tradeAnalytics.totalPnlPips >= 0 ? '+' : ''}{tradeAnalytics.totalPnlPips}p net
+                </span>
+              </div>
+            </motion.div>
+
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 }}>
+              <RollingSharpeChart
+                data={tradeAnalytics.rollingSharpe}
+                overallSharpe={tradeAnalytics.overallSharpe}
+              />
+            </motion.div>
+
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}>
+              <SessionHeatmap sessions={tradeAnalytics.sessionAnalytics} />
+            </motion.div>
+
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.15 }}>
+              <PairPnLBreakdown pairs={tradeAnalytics.pairAnalytics} />
             </motion.div>
           </TabsContent>
         </Tabs>
