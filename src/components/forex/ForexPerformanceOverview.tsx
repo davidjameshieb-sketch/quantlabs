@@ -1,6 +1,7 @@
 // Forex Performance Overview Panel
 // Core metrics + scalping P&L forensics + governance intelligence stats
 
+import React from 'react';
 import { TrendingUp, TrendingDown, Clock, Shield, BarChart3, Zap, Target, Activity, ShieldCheck, ShieldX, ShieldAlert, Gauge, Crosshair, Percent } from 'lucide-react';
 import { ForexPerformanceMetrics, ForexTradeEntry } from '@/lib/forex/forexTypes';
 import { GovernanceStats } from '@/lib/forex/tradeGovernanceEngine';
@@ -12,20 +13,14 @@ interface ForexPerformanceOverviewProps {
   trades?: ForexTradeEntry[];
 }
 
-const MetricCard = ({
-  label,
-  value,
-  suffix,
-  icon: Icon,
-  positive,
-}: {
+const MetricCard = React.forwardRef<HTMLDivElement, {
   label: string;
   value: string;
   suffix?: string;
   icon: React.ElementType;
   positive?: boolean;
-}) => (
-  <div className="p-3 rounded-xl bg-card/50 border border-border/50 space-y-1">
+}>(({ label, value, suffix, icon: Icon, positive }, ref) => (
+  <div ref={ref} className="p-3 rounded-xl bg-card/50 border border-border/50 space-y-1">
     <div className="flex items-center gap-1.5">
       <Icon className="w-3.5 h-3.5 text-primary" />
       <span className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider">{label}</span>
@@ -42,7 +37,9 @@ const MetricCard = ({
       {suffix && <span className="text-xs text-muted-foreground">{suffix}</span>}
     </div>
   </div>
-);
+));
+
+MetricCard.displayName = 'MetricCard';
 
 export const ForexPerformanceOverview = ({ metrics, governanceStats, trades = [] }: ForexPerformanceOverviewProps) => {
   // Compute scalping P&L forensics from trade-level data

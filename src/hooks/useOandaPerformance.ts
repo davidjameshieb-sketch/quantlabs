@@ -4,6 +4,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
+import { useRealtimeOrders } from '@/hooks/useRealtimeOrders';
 
 export interface RealExecutionMetrics {
   totalFilled: number;
@@ -194,6 +195,9 @@ export function useOandaPerformance() {
       setLoading(false);
     }
   }, [user]);
+
+  // Realtime: auto-refresh when orders change
+  useRealtimeOrders({ onOrderChange: fetchPerformance });
 
   useEffect(() => {
     fetchPerformance();
