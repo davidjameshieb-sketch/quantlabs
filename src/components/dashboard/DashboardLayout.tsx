@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
-import { Activity, Home, BarChart3, Settings, LogOut, Search, ChevronDown, Menu, BookOpen, Bot, LogIn, Shield } from 'lucide-react';
+import { Link, useNavigate, useLocation } from 'react-router-dom';
+import { Activity, Home, BarChart3, Settings, LogOut, Search, ChevronDown, ChevronRight, Menu, BookOpen, Bot, LogIn, Shield, Globe, Wifi } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
@@ -23,10 +23,12 @@ interface DashboardLayoutProps {
 
 export const DashboardLayout = ({ children }: DashboardLayoutProps) => {
   const navigate = useNavigate();
+  const location = useLocation();
   const { user, signOut, isAdmin } = useAuth();
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<typeof TICKERS>([]);
   const [showSearch, setShowSearch] = useState(false);
+  const isForexActive = location.pathname.startsWith('/dashboard/forex');
 
   const userEmail = user?.email || '';
   const isLoggedIn = !!user;
@@ -68,7 +70,12 @@ export const DashboardLayout = ({ children }: DashboardLayoutProps) => {
       <nav className="flex-1 p-4 space-y-2">
         <Link
           to="/dashboard"
-          className="flex items-center gap-3 px-3 py-2 rounded-lg text-foreground bg-primary/10 border border-primary/20"
+          className={cn(
+            "flex items-center gap-3 px-3 py-2 rounded-lg transition-colors",
+            location.pathname === '/dashboard'
+              ? "text-foreground bg-primary/10 border border-primary/20"
+              : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+          )}
         >
           <Bot className="w-5 h-5 text-primary" />
           <span className="font-medium">AI Strategy Agents</span>
@@ -76,19 +83,67 @@ export const DashboardLayout = ({ children }: DashboardLayoutProps) => {
 
         <Link
           to="/dashboard/evolution"
-          className="flex items-center gap-3 px-3 py-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+          className={cn(
+            "flex items-center gap-3 px-3 py-2 rounded-lg transition-colors",
+            location.pathname === '/dashboard/evolution'
+              ? "text-foreground bg-primary/10 border border-primary/20"
+              : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+          )}
         >
           <Activity className="w-5 h-5" />
           <span className="font-medium">Market Evolution</span>
         </Link>
 
-        <Link
-          to="/dashboard/forex"
-          className="flex items-center gap-3 px-3 py-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
-        >
-          <BarChart3 className="w-5 h-5 text-primary" />
-          <span className="font-medium">Forex Intelligence</span>
-        </Link>
+        {/* Forex Intelligence — Collapsible Group */}
+        <div className="space-y-0.5">
+          <button
+            onClick={() => navigate('/dashboard/forex')}
+            className={cn(
+              "flex items-center justify-between w-full px-3 py-2 rounded-lg transition-colors",
+              isForexActive
+                ? "text-foreground bg-primary/10 border border-primary/20"
+                : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+            )}
+          >
+            <div className="flex items-center gap-3">
+              <BarChart3 className="w-5 h-5 text-primary" />
+              <span className="font-medium">Forex Intelligence</span>
+            </div>
+            <ChevronRight className={cn(
+              "w-4 h-4 transition-transform duration-200",
+              isForexActive && "rotate-90"
+            )} />
+          </button>
+
+          {isForexActive && (
+            <div className="ml-8 space-y-0.5 border-l border-border/30 pl-3">
+              <Link
+                to="/dashboard/forex"
+                className={cn(
+                  "flex items-center gap-2 px-3 py-1.5 rounded-md text-sm transition-colors",
+                  location.pathname === '/dashboard/forex'
+                    ? "text-foreground bg-muted/60 font-medium"
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted/30"
+                )}
+              >
+                <Globe className="w-3.5 h-3.5" />
+                Overview
+              </Link>
+              <Link
+                to="/dashboard/forex/oanda"
+                className={cn(
+                  "flex items-center gap-2 px-3 py-1.5 rounded-md text-sm transition-colors",
+                  location.pathname === '/dashboard/forex/oanda'
+                    ? "text-foreground bg-muted/60 font-medium"
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted/30"
+                )}
+              >
+                <Wifi className="w-3.5 h-3.5" />
+                OANDA Broker
+              </Link>
+            </div>
+          )}
+        </div>
 
         <div className="pt-4">
           <p className="px-3 py-2 text-xs text-muted-foreground uppercase tracking-wider">

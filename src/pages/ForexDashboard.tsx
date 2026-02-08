@@ -11,8 +11,6 @@ import { ForexQualityPanel, ForexRiskGovernancePanel } from '@/components/forex/
 import { CrossAssetInfluencePanel, ForexRegimeTimeline } from '@/components/forex/ForexCrossAssetAndRegime';
 import { ForexExecutionStatus } from '@/components/forex/ForexExecutionStatus';
 import { ForexFilterBar } from '@/components/forex/ForexFilterBar';
-import { OandaConnectionPanel } from '@/components/forex/OandaConnectionPanel';
-import { OandaOrderLog } from '@/components/forex/OandaOrderLog';
 import { IntelligenceModeBadge } from '@/components/dashboard/IntelligenceModeBadge';
 import {
   generateForexTrades,
@@ -86,11 +84,6 @@ const ForexDashboard = () => {
           <ForexPerformanceOverview metrics={performance} />
         </motion.div>
 
-        {/* OANDA Broker Connection */}
-        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.13 }}>
-          <OandaConnectionPanel />
-        </motion.div>
-
         {/* Execution Status */}
         <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.16 }}>
           <ForexExecutionStatus trades={filteredTrades} />
@@ -115,11 +108,6 @@ const ForexDashboard = () => {
         >
           <ForexRegimeTimeline trades={filteredTrades} />
           <CrossAssetInfluencePanel influence={influence} />
-        </motion.div>
-
-        {/* OANDA Execution Log */}
-        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.28 }}>
-          <OandaOrderLog />
         </motion.div>
 
         {/* Trade History Table */}
