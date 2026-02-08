@@ -5,14 +5,28 @@ import { DashboardLayout } from '@/components/dashboard/DashboardLayout';
 import { OandaConnectionPanel } from '@/components/forex/OandaConnectionPanel';
 import { OandaOrderLog } from '@/components/forex/OandaOrderLog';
 import { ForexExecutionStatus } from '@/components/forex/ForexExecutionStatus';
+import { AutoExecutionPanel } from '@/components/forex/AutoExecutionPanel';
 import { IntelligenceModeBadge } from '@/components/dashboard/IntelligenceModeBadge';
-import { useMemo } from 'react';
+import { useMemo, useCallback } from 'react';
 import { generateForexTrades } from '@/lib/forex';
 import { createAgents } from '@/lib/agents/agentEngine';
+import { useAutoExecution } from '@/hooks/useAutoExecution';
+import { useOandaExecution } from '@/hooks/useOandaExecution';
 
 const ForexOanda = () => {
   const agents = useMemo(() => createAgents(), []);
   const allTrades = useMemo(() => generateForexTrades(agents), [agents]);
+  const { connected } = useOandaExecution();
+  const autoExec = useAutoExecution();
+
+  const eligibleTrades = useMemo(
+    () => allTrades.filter(t => t.outcome !== 'avoided'),
+    [allTrades]
+  );
+
+  const handleRunBatch = useCallback(() => {
+    autoExec.runBatch(allTrades);
+  }, [autoExec, allTrades]);
 
   return (
     <DashboardLayout>
@@ -27,13 +41,25 @@ const ForexOanda = () => {
             <IntelligenceModeBadge />
           </div>
           <p className="text-muted-foreground text-sm">
-            Live broker connection, account overview, and execution log.
+            Live broker connection, auto-execution bridge, and execution log.
           </p>
         </motion.div>
 
         {/* OANDA Broker Connection */}
         <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 }}>
           <OandaConnectionPanel />
+        </motion.div>
+
+        {/* Auto-Execution Bridge */}
+        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.08 }}>
+          <AutoExecutionPanel
+            status={autoExec.status}
+            onToggle={autoExec.toggle}
+            onRunBatch={handleRunBatch}
+            onReset={autoExec.reset}
+            tradeCount={eligibleTrades.length}
+            connected={connected}
+          />
         </motion.div>
 
         {/* Execution Status */}
