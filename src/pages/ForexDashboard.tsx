@@ -3,7 +3,8 @@
 
 import { useState, useMemo, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Globe, TrendingUp } from 'lucide-react';
+import { Globe, TrendingUp, Crosshair } from 'lucide-react';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { DashboardLayout } from '@/components/dashboard/DashboardLayout';
 import { ForexPerformanceOverview } from '@/components/forex/ForexPerformanceOverview';
 import { ForexTradeHistoryTable } from '@/components/forex/ForexTradeHistoryTable';
@@ -12,6 +13,7 @@ import { CrossAssetInfluencePanel, ForexRegimeTimeline } from '@/components/fore
 import { ForexExecutionStatus } from '@/components/forex/ForexExecutionStatus';
 import { ForexFilterBar } from '@/components/forex/ForexFilterBar';
 import { LiveForexTradesPanel } from '@/components/forex/LiveForexTradesPanel';
+import { ForexScalpingIntelligence } from '@/components/forex/ForexScalpingIntelligence';
 import { IntelligenceModeBadge } from '@/components/dashboard/IntelligenceModeBadge';
 import {
   generateForexTrades,
@@ -82,56 +84,76 @@ const ForexDashboard = () => {
           </div>
         </motion.div>
 
-        {/* Filters */}
-        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 }}>
-          <ForexFilterBar
-            filters={filters}
-            onFiltersChange={setFilters}
-            totalCount={allTrades.length}
-            filteredCount={filteredTrades.length}
-          />
-        </motion.div>
+        {/* Master Tabs */}
+        <Tabs defaultValue="performance" className="space-y-4">
+          <TabsList className="bg-card/50 border border-border/30 h-auto gap-1 p-1">
+            <TabsTrigger value="performance" className="text-xs gap-1.5">
+              <TrendingUp className="w-3.5 h-3.5" />Performance
+            </TabsTrigger>
+            <TabsTrigger value="scalping" className="text-xs gap-1.5">
+              <Crosshair className="w-3.5 h-3.5" />Scalping Intelligence
+            </TabsTrigger>
+          </TabsList>
 
-        {/* Performance Overview */}
-        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}>
-          <ForexPerformanceOverview metrics={performance} />
-        </motion.div>
+          <TabsContent value="performance" className="space-y-6">
+            {/* Filters */}
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 }}>
+              <ForexFilterBar
+                filters={filters}
+                onFiltersChange={setFilters}
+                totalCount={allTrades.length}
+                filteredCount={filteredTrades.length}
+              />
+            </motion.div>
 
-        {/* Live OANDA Trades */}
-        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.13 }}>
-          <LiveForexTradesPanel />
-        </motion.div>
+            {/* Performance Overview */}
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}>
+              <ForexPerformanceOverview metrics={performance} />
+            </motion.div>
 
-        {/* Execution Status */}
-        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.16 }}>
-          <ForexExecutionStatus trades={filteredTrades} />
-        </motion.div>
+            {/* Live OANDA Trades */}
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.13 }}>
+              <LiveForexTradesPanel />
+            </motion.div>
 
-        {/* Quality, Risk, Regime, Cross-Asset */}
-        <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.2 }}
-          className="grid grid-cols-1 lg:grid-cols-2 gap-4"
-        >
-          <ForexQualityPanel quality={quality} />
-          <ForexRiskGovernancePanel risk={risk} />
-        </motion.div>
+            {/* Execution Status */}
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.16 }}>
+              <ForexExecutionStatus trades={filteredTrades} />
+            </motion.div>
 
-        <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.25 }}
-          className="grid grid-cols-1 lg:grid-cols-2 gap-4"
-        >
-          <ForexRegimeTimeline trades={filteredTrades} />
-          <CrossAssetInfluencePanel influence={influence} />
-        </motion.div>
+            {/* Quality, Risk, Regime, Cross-Asset */}
+            <motion.div
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.2 }}
+              className="grid grid-cols-1 lg:grid-cols-2 gap-4"
+            >
+              <ForexQualityPanel quality={quality} />
+              <ForexRiskGovernancePanel risk={risk} />
+            </motion.div>
 
-        {/* Trade History Table */}
-        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.32 }}>
-          <ForexTradeHistoryTable trades={filteredTrades} />
-        </motion.div>
+            <motion.div
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.25 }}
+              className="grid grid-cols-1 lg:grid-cols-2 gap-4"
+            >
+              <ForexRegimeTimeline trades={filteredTrades} />
+              <CrossAssetInfluencePanel influence={influence} />
+            </motion.div>
+
+            {/* Trade History Table */}
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.32 }}>
+              <ForexTradeHistoryTable trades={filteredTrades} />
+            </motion.div>
+          </TabsContent>
+
+          <TabsContent value="scalping" className="space-y-4">
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+              <ForexScalpingIntelligence />
+            </motion.div>
+          </TabsContent>
+        </Tabs>
       </div>
     </DashboardLayout>
   );
