@@ -29,3 +29,6 @@ verify_jwt = false
 
 [functions.oanda-pricing]
 verify_jwt = false
+
+[functions.site-lock]
+verify_jwt = false

@@ -1,45 +1,51 @@
 import { useState, useRef, useEffect, KeyboardEvent } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Activity, Lock, ShieldCheck, ArrowRight, AlertCircle } from 'lucide-react';
+import { Activity, Lock, ShieldCheck, ArrowRight, AlertCircle, Loader2 } from 'lucide-react';
 import { useSiteLock } from '@/contexts/SiteLockContext';
 
 /* ── PIN Entry Screen ── */
 const PinScreen = () => {
   const { submitPin } = useSiteLock();
   const [digits, setDigits] = useState(['', '', '', '']);
-  const [error, setError] = useState(false);
+  const [error, setError] = useState('');
   const [shake, setShake] = useState(false);
+  const [loading, setLoading] = useState(false);
   const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
 
   useEffect(() => {
     inputRefs.current[0]?.focus();
   }, []);
 
+  const trySubmit = async (pin: string) => {
+    setLoading(true);
+    setError('');
+    const result = await submitPin(pin);
+    setLoading(false);
+
+    if (!result.valid) {
+      setError(result.error || 'Incorrect PIN. Try again.');
+      setShake(true);
+      setTimeout(() => {
+        setShake(false);
+        setDigits(['', '', '', '']);
+        inputRefs.current[0]?.focus();
+      }, 600);
+    }
+  };
+
   const handleChange = (index: number, value: string) => {
-    if (!/^\d*$/.test(value)) return;
+    if (!/^\d*$/.test(value) || loading) return;
     const next = [...digits];
     next[index] = value.slice(-1);
     setDigits(next);
-    setError(false);
+    setError('');
 
     if (value && index < 3) {
       inputRefs.current[index + 1]?.focus();
     }
 
-    // Auto-submit when all 4 digits entered
     if (next.every((d) => d !== '')) {
-      const pin = next.join('');
-      setTimeout(() => {
-        if (!submitPin(pin)) {
-          setError(true);
-          setShake(true);
-          setTimeout(() => {
-            setShake(false);
-            setDigits(['', '', '', '']);
-            inputRefs.current[0]?.focus();
-          }, 600);
-        }
-      }, 150);
+      setTimeout(() => trySubmit(next.join('')), 150);
     }
   };
 
@@ -53,17 +59,8 @@ const PinScreen = () => {
     e.preventDefault();
     const pasted = e.clipboardData.getData('text').replace(/\D/g, '').slice(0, 4);
     if (pasted.length === 4) {
-      const next = pasted.split('');
-      setDigits(next);
-      if (!submitPin(pasted)) {
-        setError(true);
-        setShake(true);
-        setTimeout(() => {
-          setShake(false);
-          setDigits(['', '', '', '']);
-          inputRefs.current[0]?.focus();
-        }, 600);
-      }
+      setDigits(pasted.split(''));
+      trySubmit(pasted);
     }
   };
 
@@ -93,26 +90,34 @@ const PinScreen = () => {
           <input
             key={i}
             ref={(el) => { inputRefs.current[i] = el; }}
-            type="text"
+            type="password"
             inputMode="numeric"
             maxLength={1}
-            value={digit}
+            value={digit ? '•' : ''}
             onChange={(e) => handleChange(i, e.target.value)}
             onKeyDown={(e) => handleKeyDown(i, e)}
             onPaste={i === 0 ? handlePaste : undefined}
+            disabled={loading}
             className={`w-14 h-16 text-center text-2xl font-mono font-bold rounded-lg border-2 bg-background/50 backdrop-blur-sm outline-none transition-all focus:ring-2 focus:ring-primary/50 ${
               error
                 ? 'border-destructive text-destructive'
                 : digit
                 ? 'border-primary/60 text-foreground'
                 : 'border-border/50 text-foreground'
-            }`}
+            } ${loading ? 'opacity-50' : ''}`}
           />
         ))}
       </motion.div>
 
+      {loading && (
+        <div className="flex items-center gap-2 text-muted-foreground text-sm">
+          <Loader2 className="w-4 h-4 animate-spin" />
+          <span>Verifying...</span>
+        </div>
+      )}
+
       <AnimatePresence>
-        {error && (
+        {error && !loading && (
           <motion.div
             initial={{ opacity: 0, y: -8 }}
             animate={{ opacity: 1, y: 0 }}
@@ -120,7 +125,7 @@ const PinScreen = () => {
             className="flex items-center gap-2 text-destructive text-sm"
           >
             <AlertCircle className="w-4 h-4" />
-            <span>Incorrect PIN. Try again.</span>
+            <span>{error}</span>
           </motion.div>
         )}
       </AnimatePresence>
@@ -132,18 +137,26 @@ const PinScreen = () => {
 const PasswordScreen = () => {
   const { submitPassword } = useSiteLock();
   const [password, setPassword] = useState('');
-  const [error, setError] = useState(false);
+  const [error, setError] = useState('');
   const [shake, setShake] = useState(false);
+  const [loading, setLoading] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     inputRef.current?.focus();
   }, []);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!submitPassword(password)) {
-      setError(true);
+    if (!password || loading) return;
+
+    setLoading(true);
+    setError('');
+    const result = await submitPassword(password);
+    setLoading(false);
+
+    if (!result.valid) {
+      setError(result.error || 'Incorrect password. Try again.');
       setShake(true);
       setTimeout(() => {
         setShake(false);
@@ -184,17 +197,19 @@ const PasswordScreen = () => {
             value={password}
             onChange={(e) => {
               setPassword(e.target.value);
-              setError(false);
+              setError('');
             }}
             placeholder="Enter password"
+            disabled={loading}
+            autoComplete="off"
             className={`w-full pl-10 pr-4 py-3 rounded-lg border-2 bg-background/50 backdrop-blur-sm text-foreground placeholder:text-muted-foreground outline-none transition-all focus:ring-2 focus:ring-primary/50 ${
               error ? 'border-destructive' : 'border-border/50 focus:border-primary/60'
-            }`}
+            } ${loading ? 'opacity-50' : ''}`}
           />
         </div>
 
         <AnimatePresence>
-          {error && (
+          {error && !loading && (
             <motion.div
               initial={{ opacity: 0, y: -8 }}
               animate={{ opacity: 1, y: 0 }}
@@ -202,18 +217,27 @@ const PasswordScreen = () => {
               className="flex items-center gap-2 text-destructive text-sm"
             >
               <AlertCircle className="w-4 h-4" />
-              <span>Incorrect password. Try again.</span>
+              <span>{error}</span>
             </motion.div>
           )}
         </AnimatePresence>
 
         <button
           type="submit"
-          disabled={!password}
+          disabled={!password || loading}
           className="w-full py-3 rounded-lg bg-primary text-primary-foreground font-display font-semibold flex items-center justify-center gap-2 hover:opacity-90 transition-opacity disabled:opacity-40 disabled:cursor-not-allowed"
         >
-          Verify Access
-          <ArrowRight className="w-4 h-4" />
+          {loading ? (
+            <>
+              <Loader2 className="w-4 h-4 animate-spin" />
+              Verifying...
+            </>
+          ) : (
+            <>
+              Verify Access
+              <ArrowRight className="w-4 h-4" />
+            </>
+          )}
         </button>
       </motion.form>
     </motion.div>
@@ -228,13 +252,11 @@ export const SiteLockGate = ({ children }: { children: React.ReactNode }) => {
 
   return (
     <div className="fixed inset-0 z-[9999] bg-background flex flex-col items-center justify-center p-4">
-      {/* Subtle grid pattern */}
       <div className="absolute inset-0 opacity-[0.03]" style={{
         backgroundImage: 'linear-gradient(hsl(var(--primary)) 1px, transparent 1px), linear-gradient(90deg, hsl(var(--primary)) 1px, transparent 1px)',
         backgroundSize: '40px 40px',
       }} />
 
-      {/* Logo */}
       <motion.div
         initial={{ opacity: 0, y: -10 }}
         animate={{ opacity: 1, y: 0 }}
@@ -249,7 +271,6 @@ export const SiteLockGate = ({ children }: { children: React.ReactNode }) => {
         {step === 'password' && <PasswordScreen key="password" />}
       </AnimatePresence>
 
-      {/* Step indicator */}
       <motion.div
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
@@ -259,6 +280,11 @@ export const SiteLockGate = ({ children }: { children: React.ReactNode }) => {
         <div className={`w-2 h-2 rounded-full transition-colors ${step === 'pin' ? 'bg-primary' : 'bg-primary/30'}`} />
         <div className={`w-2 h-2 rounded-full transition-colors ${step === 'password' ? 'bg-primary' : 'bg-primary/30'}`} />
       </motion.div>
+
+      <p className="mt-8 text-xs text-muted-foreground/50 flex items-center gap-1">
+        <ShieldCheck className="w-3 h-3" />
+        Server-verified • HMAC-SHA256 • Rate limited
+      </p>
     </div>
   );
 };
