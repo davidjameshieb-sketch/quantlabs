@@ -24,6 +24,7 @@ import {
   computeCrossAssetInfluence,
   fetchOandaLivePrices,
   hasLivePrices,
+  getLastGovernanceStats,
 } from '@/lib/forex';
 import { ForexDashboardFilters } from '@/lib/forex/forexTypes';
 import { createAgents } from '@/lib/agents/agentEngine';
@@ -52,6 +53,7 @@ const ForexDashboard = () => {
   const filteredTrades = useMemo(() => filterForexTrades(allTrades, filters), [allTrades, filters]);
 
   const performance = useMemo(() => computeForexPerformance(filteredTrades), [filteredTrades]);
+  const governanceStats = useMemo(() => getLastGovernanceStats(), [allTrades]);
   const quality = useMemo(() => computeForexQuality(filteredTrades), [filteredTrades]);
   const risk = useMemo(() => computeForexRiskGovernance(filteredTrades), [filteredTrades]);
   const influence = useMemo(() => computeCrossAssetInfluence(), []);
@@ -108,7 +110,7 @@ const ForexDashboard = () => {
 
             {/* Performance Overview */}
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}>
-              <ForexPerformanceOverview metrics={performance} />
+              <ForexPerformanceOverview metrics={performance} governanceStats={governanceStats} />
             </motion.div>
 
             {/* Live OANDA Trades */}
