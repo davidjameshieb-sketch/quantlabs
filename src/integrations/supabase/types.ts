@@ -25,11 +25,22 @@ export type Database = {
           entry_price: number | null
           environment: string
           error_message: string | null
+          execution_quality_score: number | null
           exit_price: number | null
+          fill_latency_ms: number | null
+          friction_score: number | null
+          gate_reasons: string[] | null
+          gate_result: string | null
           id: string
+          idempotency_key: string | null
           oanda_order_id: string | null
           oanda_trade_id: string | null
+          regime_label: string | null
+          requested_price: number | null
+          session_label: string | null
           signal_id: string
+          slippage_pips: number | null
+          spread_at_entry: number | null
           status: string
           units: number
           updated_at: string
@@ -45,11 +56,22 @@ export type Database = {
           entry_price?: number | null
           environment?: string
           error_message?: string | null
+          execution_quality_score?: number | null
           exit_price?: number | null
+          fill_latency_ms?: number | null
+          friction_score?: number | null
+          gate_reasons?: string[] | null
+          gate_result?: string | null
           id?: string
+          idempotency_key?: string | null
           oanda_order_id?: string | null
           oanda_trade_id?: string | null
+          regime_label?: string | null
+          requested_price?: number | null
+          session_label?: string | null
           signal_id: string
+          slippage_pips?: number | null
+          spread_at_entry?: number | null
           status?: string
           units: number
           updated_at?: string
@@ -65,11 +87,22 @@ export type Database = {
           entry_price?: number | null
           environment?: string
           error_message?: string | null
+          execution_quality_score?: number | null
           exit_price?: number | null
+          fill_latency_ms?: number | null
+          friction_score?: number | null
+          gate_reasons?: string[] | null
+          gate_result?: string | null
           id?: string
+          idempotency_key?: string | null
           oanda_order_id?: string | null
           oanda_trade_id?: string | null
+          regime_label?: string | null
+          requested_price?: number | null
+          session_label?: string | null
           signal_id?: string
+          slippage_pips?: number | null
+          spread_at_entry?: number | null
           status?: string
           units?: number
           updated_at?: string

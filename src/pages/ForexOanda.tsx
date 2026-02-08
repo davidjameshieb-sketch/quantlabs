@@ -1,4 +1,4 @@
-// OANDA Broker Connection & Execution Dashboard
+// OANDA Broker Connection, Execution Safety & Health Dashboard
 import { motion } from 'framer-motion';
 import { Wifi } from 'lucide-react';
 import { DashboardLayout } from '@/components/dashboard/DashboardLayout';
@@ -6,6 +6,7 @@ import { OandaConnectionPanel } from '@/components/forex/OandaConnectionPanel';
 import { OandaOrderLog } from '@/components/forex/OandaOrderLog';
 import { ForexExecutionStatus } from '@/components/forex/ForexExecutionStatus';
 import { AutoExecutionPanel } from '@/components/forex/AutoExecutionPanel';
+import { ExecutionHealthPanel } from '@/components/forex/ExecutionHealthPanel';
 import { IntelligenceModeBadge } from '@/components/dashboard/IntelligenceModeBadge';
 import { useMemo, useCallback, useEffect, useRef } from 'react';
 import { generateForexTrades } from '@/lib/forex';
@@ -16,7 +17,7 @@ import { useOandaExecution } from '@/hooks/useOandaExecution';
 const ForexOanda = () => {
   const agents = useMemo(() => createAgents(), []);
   const allTrades = useMemo(() => generateForexTrades(agents), [agents]);
-  const { connected } = useOandaExecution();
+  const { connected, orders } = useOandaExecution();
   const autoExec = useAutoExecution();
   const hasAutoRun = useRef(false);
 
@@ -50,7 +51,7 @@ const ForexOanda = () => {
             <IntelligenceModeBadge />
           </div>
           <p className="text-muted-foreground text-sm">
-            Live broker connection, auto-execution bridge, and execution log.
+            Live broker connection, execution safety gates, auto-execution bridge, and health monitoring.
           </p>
         </motion.div>
 
@@ -59,8 +60,19 @@ const ForexOanda = () => {
           <OandaConnectionPanel />
         </motion.div>
 
+        {/* Execution Health & Safety */}
+        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.07 }}>
+          <div className="p-4 rounded-xl bg-card/50 border border-border/50 space-y-3">
+            <h3 className="text-xs font-display font-bold flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-primary animate-pulse" />
+              EXECUTION HEALTH & SAFETY
+            </h3>
+            <ExecutionHealthPanel orders={orders} />
+          </div>
+        </motion.div>
+
         {/* Auto-Execution Bridge */}
-        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.08 }}>
+        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}>
           <AutoExecutionPanel
             status={autoExec.status}
             onToggle={autoExec.toggle}
@@ -72,12 +84,12 @@ const ForexOanda = () => {
         </motion.div>
 
         {/* Execution Status */}
-        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}>
+        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.13 }}>
           <ForexExecutionStatus trades={allTrades} />
         </motion.div>
 
         {/* OANDA Execution Log */}
-        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.15 }}>
+        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.16 }}>
           <OandaOrderLog />
         </motion.div>
       </div>
