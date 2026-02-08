@@ -16,8 +16,11 @@ import { AccessModelSection } from '@/components/landing/AccessModelSection';
 import { PlatformPositioning } from '@/components/landing/PlatformPositioning';
 import { PlatformVisionClose } from '@/components/landing/PlatformVisionClose';
 import { Footer } from '@/components/landing/Footer';
+import { isFoundersEventActive } from '@/lib/foundersEvent';
 
 const Index = () => {
+  const foundersActive = isFoundersEventActive();
+
   return (
     <div className="min-h-screen bg-transparent text-foreground">
       <DashboardBackground />

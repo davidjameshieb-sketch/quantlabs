@@ -1,9 +1,30 @@
 import { Activity } from 'lucide-react';
 import { Link } from 'react-router-dom';
+import { useFoundersCountdown } from '@/hooks/useFoundersEvent';
 
 export const Footer = () => {
+  const { time, active } = useFoundersCountdown();
+
   return (
     <footer className="relative border-t border-border/30 bg-card/10 backdrop-blur-sm">
+      {/* Founders Access urgency strip */}
+      {active && (
+        <div className="border-b border-primary/15 bg-primary/5">
+          <div className="container max-w-7xl mx-auto px-4 py-3 flex flex-col sm:flex-row items-center justify-center gap-2 text-center">
+            <span className="text-[11px] font-display font-medium text-primary">
+              Founders Access Window closes in
+            </span>
+            <span className="font-mono text-[11px] font-bold text-foreground tabular-nums">
+              {String(time.days).padStart(2, '0')}d {String(time.hours).padStart(2, '0')}h{' '}
+              {String(time.minutes).padStart(2, '0')}m {String(time.seconds).padStart(2, '0')}s
+            </span>
+            <span className="text-[10px] text-muted-foreground hidden sm:inline">
+              — Early participants receive permanent intelligence priority access consideration.
+            </span>
+          </div>
+        </div>
+      )}
+
       <div className="container max-w-7xl mx-auto px-4 py-12">
         <div className="grid grid-cols-1 md:grid-cols-4 gap-8">
           {/* Brand */}
@@ -15,8 +36,8 @@ export const Footer = () => {
               </span>
             </Link>
             <p className="text-sm text-muted-foreground max-w-md mb-4">
-              AI-powered quantitative trading intelligence. Transparent, data-driven, 
-              and performance measurable collaborative AI system.
+              QuantLabs is not a trading signal platform. It is a coordinated AI intelligence ecosystem
+              designed to evolve with financial markets.
             </p>
             <p className="text-xs text-muted-foreground">
               Market research and analytical intelligence only. Not financial advice.
@@ -25,21 +46,21 @@ export const Footer = () => {
 
           {/* Links */}
           <div>
-            <h4 className="font-display font-semibold mb-4 text-foreground">Product</h4>
+            <h4 className="font-display font-semibold mb-4 text-foreground">Intelligence</h4>
             <ul className="space-y-2">
               <li>
-                <a href="#features" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
-                  Features
-                </a>
+                <Link to="/dashboard" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
+                  Command Center
+                </Link>
               </li>
               <li>
-                <a href="#pricing" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
-                  Pricing
+                <a href="#ai-fleet" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
+                  AI Fleet
                 </a>
               </li>
               <li>
                 <Link to="/dashboard" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
-                  Dashboard
+                  Verified Trade Network
                 </Link>
               </li>
             </ul>
@@ -68,7 +89,7 @@ export const Footer = () => {
             © {new Date().getFullYear()} QuantLabs. All rights reserved.
           </p>
           <p className="text-xs text-muted-foreground">
-            Powered by collaborative AI intelligence
+            Powered by coordinated AI intelligence ecosystem
           </p>
         </div>
       </div>

@@ -1,13 +1,10 @@
 import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { Link } from 'react-router-dom';
-import { ArrowRight, Lock, Sparkles } from 'lucide-react';
+import { ArrowRight, Zap, Shield, Eye } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { useFoundersCountdown } from '@/hooks/useFoundersEvent';
 import { cn } from '@/lib/utils';
-
-// Open Access event: 30 days from a fixed launch date
-const EVENT_START = new Date('2026-02-08T00:00:00Z');
-const EVENT_END = new Date(EVENT_START.getTime() + 30 * 24 * 60 * 60 * 1000);
 
 const TimeUnit = ({ value, label }: { value: number; label: string }) => (
   <div className="flex flex-col items-center">
@@ -17,7 +14,6 @@ const TimeUnit = ({ value, label }: { value: number; label: string }) => (
           {String(value).padStart(2, '0')}
         </span>
       </div>
-      {/* Subtle glow */}
       <div className="absolute inset-0 rounded-xl bg-primary/5 blur-sm pointer-events-none" />
     </div>
     <span className="text-[9px] font-display uppercase tracking-[0.15em] text-muted-foreground/60 mt-2">
@@ -27,31 +23,7 @@ const TimeUnit = ({ value, label }: { value: number; label: string }) => (
 );
 
 export const OpenAccessCountdown = () => {
-  const [timeLeft, setTimeLeft] = useState({ days: 0, hours: 0, minutes: 0, seconds: 0 });
-  const [isExpired, setIsExpired] = useState(false);
-
-  useEffect(() => {
-    const tick = () => {
-      const now = new Date();
-      const diff = EVENT_END.getTime() - now.getTime();
-
-      if (diff <= 0) {
-        setIsExpired(true);
-        return;
-      }
-
-      setTimeLeft({
-        days: Math.floor(diff / (1000 * 60 * 60 * 24)),
-        hours: Math.floor((diff / (1000 * 60 * 60)) % 24),
-        minutes: Math.floor((diff / (1000 * 60)) % 60),
-        seconds: Math.floor((diff / 1000) % 60),
-      });
-    };
-
-    tick();
-    const interval = setInterval(tick, 1000);
-    return () => clearInterval(interval);
-  }, []);
+  const { time, active } = useFoundersCountdown();
 
   return (
     <section className="relative py-16 md:py-20 px-4">
@@ -68,23 +40,39 @@ export const OpenAccessCountdown = () => {
         >
           {/* Badge */}
           <span className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full border border-primary/30 bg-primary/10 text-xs font-medium text-primary">
-            <Sparkles className="w-3 h-3" />
-            Limited Time Open Access Event
+            <Zap className="w-3 h-3" />
+            Founders Intelligence Access Event
           </span>
 
           {/* Headline */}
           <h2 className="font-display text-2xl md:text-4xl font-bold">
-            <span className="text-foreground">QuantLabs Open Access — </span>
+            <span className="text-foreground">QuantLabs Founders Access — </span>
             <span className="text-gradient-neural">30 Days Full Intelligence</span>
           </h2>
 
           <p className="text-sm text-muted-foreground max-w-xl mx-auto">
-            Explore the complete AI ecosystem with unrestricted access.
-            After the event ends, the platform transitions to Free (Delayed Intelligence) and Premium (Live Intelligence).
+            The entire QuantLabs AI Intelligence Network is open. Unrestricted access to all dashboards,
+            live trade signals, governance analytics, and the complete multi-agent ecosystem.
           </p>
 
+          {/* Verification Strip */}
+          <div className="flex flex-wrap items-center justify-center gap-4 py-2">
+            <span className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+              <Shield className="w-3 h-3 text-neural-green" />
+              Verified Trade History Public
+            </span>
+            <span className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+              <Eye className="w-3 h-3 text-primary" />
+              Full Fleet Visibility
+            </span>
+            <span className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+              <Zap className="w-3 h-3 text-neural-purple" />
+              Multi-Agent Governance Active
+            </span>
+          </div>
+
           {/* Countdown */}
-          {!isExpired ? (
+          {active ? (
             <motion.div
               initial={{ opacity: 0, scale: 0.95 }}
               whileInView={{ opacity: 1, scale: 1 }}
@@ -92,18 +80,18 @@ export const OpenAccessCountdown = () => {
               transition={{ duration: 0.5, delay: 0.2 }}
               className="flex items-center justify-center gap-3 md:gap-5 py-4"
             >
-              <TimeUnit value={timeLeft.days} label="Days" />
+              <TimeUnit value={time.days} label="Days" />
               <span className="text-xl font-display text-primary/40 mt-[-20px]">:</span>
-              <TimeUnit value={timeLeft.hours} label="Hours" />
+              <TimeUnit value={time.hours} label="Hours" />
               <span className="text-xl font-display text-primary/40 mt-[-20px]">:</span>
-              <TimeUnit value={timeLeft.minutes} label="Minutes" />
+              <TimeUnit value={time.minutes} label="Minutes" />
               <span className="text-xl font-display text-primary/40 mt-[-20px]">:</span>
-              <TimeUnit value={timeLeft.seconds} label="Seconds" />
+              <TimeUnit value={time.seconds} label="Seconds" />
             </motion.div>
           ) : (
             <div className="py-6">
               <p className="text-sm font-display text-muted-foreground">
-                Open Access event has concluded. Platform now operates in tiered mode.
+                Founders Access event has concluded. Platform now operates in tiered intelligence mode.
               </p>
             </div>
           )}
@@ -116,7 +104,7 @@ export const OpenAccessCountdown = () => {
               className="text-base px-8 py-6 font-display bg-primary hover:bg-primary/90 text-primary-foreground shadow-lg shadow-primary/20"
             >
               <Link to="/dashboard">
-                Enter Free Dashboard
+                Enter Intelligence Command Center
                 <ArrowRight className="ml-2 w-4 h-4" />
               </Link>
             </Button>
@@ -126,9 +114,9 @@ export const OpenAccessCountdown = () => {
               size="lg"
               className="text-base px-8 py-6 font-display border-primary/30 hover:bg-primary/10 text-primary hover:text-primary gap-2"
             >
-              <Link to="/auth">
-                <Lock className="w-4 h-4" />
-                Lock Founder Pricing
+              <Link to="/dashboard">
+                <Eye className="w-4 h-4" />
+                Observe AI Fleet Coordination
               </Link>
             </Button>
           </div>

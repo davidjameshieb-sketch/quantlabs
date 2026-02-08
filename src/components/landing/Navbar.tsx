@@ -3,9 +3,11 @@ import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
 import { Activity, Menu, X } from 'lucide-react';
+import { isFoundersEventActive } from '@/lib/foundersEvent';
 
 export const Navbar = () => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const foundersActive = isFoundersEventActive();
 
   const navLinks = [
     { href: '#ai-fleet', label: 'AI Fleet' },
@@ -17,7 +19,8 @@ export const Navbar = () => {
       initial={{ opacity: 0, y: -20 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.5 }}
-      className="fixed top-0 left-0 right-0 z-50 border-b border-border/20 bg-background/30 backdrop-blur-md"
+      className="fixed left-0 right-0 z-50 border-b border-border/20 bg-background/30 backdrop-blur-md"
+      style={{ top: foundersActive ? '36px' : '0px' }}
     >
       <div className="container max-w-7xl mx-auto px-4">
         <div className="flex items-center justify-between h-16">
@@ -51,7 +54,9 @@ export const Navbar = () => {
               <Link to="/auth">Sign In</Link>
             </Button>
             <Button asChild className="glow-cyan font-display">
-              <Link to="/dashboard">Explore Free</Link>
+              <Link to="/dashboard">
+                {foundersActive ? 'Enter Intelligence Center' : 'Explore Free'}
+              </Link>
             </Button>
           </div>
 
@@ -88,7 +93,9 @@ export const Navbar = () => {
                   <Link to="/auth">Sign In</Link>
                 </Button>
                 <Button asChild className="w-full glow-cyan font-display">
-                  <Link to="/dashboard">Explore Free</Link>
+                  <Link to="/dashboard">
+                    {foundersActive ? 'Enter Intelligence Center' : 'Explore Free'}
+                  </Link>
                 </Button>
               </div>
             </div>

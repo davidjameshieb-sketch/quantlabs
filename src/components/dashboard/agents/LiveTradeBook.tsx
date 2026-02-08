@@ -8,6 +8,7 @@ import {
   Ban, Eye, ChevronDown, ChevronRight, Users, Cpu, Shield,
   Award, BookOpen, ArrowUpDown, AlertTriangle,
 } from 'lucide-react';
+import { isFoundersEventActive } from '@/lib/foundersEvent';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -59,6 +60,7 @@ const formatDuration = (mins: number) => {
 
 export const LiveTradeBook = ({ agents }: LiveTradeBookProps) => {
   const { subscribed } = useAuth();
+  const hasFullAccess = subscribed || isFoundersEventActive();
   const [upgradeOpen, setUpgradeOpen] = useState(false);
   const [expandedTradeId, setExpandedTradeId] = useState<string | null>(null);
   const [expandedSection, setExpandedSection] = useState<'agents' | 'governance' | 'lifecycle' | 'quality'>('agents');
@@ -161,16 +163,16 @@ export const LiveTradeBook = ({ agents }: LiveTradeBookProps) => {
                     <CardTitle className="text-sm font-display">Active Signals</CardTitle>
                     <Badge className="text-[10px] bg-primary/20 text-primary border-primary/30 hover:bg-primary/20">{LIVE_COUNT} live</Badge>
                   </div>
-                  {subscribed && (
+                  {hasFullAccess && (
                     <Badge variant="outline" className="text-[10px] border-neural-green/30 bg-neural-green/10 text-neural-green gap-1">
                       <Eye className="w-2.5 h-2.5" />
-                      Edge Access
+                      {isFoundersEventActive() ? 'Founders Access' : 'Edge Access'}
                     </Badge>
                   )}
                 </div>
               </CardHeader>
               <CardContent className="px-4 pb-3 pt-1">
-                {subscribed ? (
+                {hasFullAccess ? (
                   <div className="space-y-1">
                     <LedgerHeader />
                     <Separator className="opacity-30" />

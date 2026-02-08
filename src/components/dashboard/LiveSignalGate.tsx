@@ -3,6 +3,7 @@ import { Lock, Zap, ArrowRight } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { UpgradeModal } from './UpgradeModal';
+import { isFoundersEventActive } from '@/lib/foundersEvent';
 import { cn } from '@/lib/utils';
 
 interface LiveSignalGateProps {
@@ -12,12 +13,13 @@ interface LiveSignalGateProps {
 
 /**
  * Inline upgrade prompt shown when free users have hidden (delayed) trades.
- * Communicates how many live signals are being withheld.
+ * Hidden during Founders Event since all trades are visible.
  */
 export const LiveSignalGate = ({ hiddenCount, className }: LiveSignalGateProps) => {
   const [upgradeOpen, setUpgradeOpen] = useState(false);
 
-  if (hiddenCount <= 0) return null;
+  // During Founders Event, no signals are hidden
+  if (isFoundersEventActive() || hiddenCount <= 0) return null;
 
   return (
     <>

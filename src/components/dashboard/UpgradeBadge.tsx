@@ -3,6 +3,7 @@ import { Lock, Zap } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/contexts/AuthContext';
 import { UpgradeModal } from './UpgradeModal';
+import { isFoundersEventActive } from '@/lib/foundersEvent';
 import type { TierFeatures } from '@/lib/market/tierAccess';
 
 interface UpgradeBadgeProps {
@@ -16,8 +17,8 @@ export const UpgradeBadge = ({ feature, label, className, variant = 'inline' }: 
   const { subscribed } = useAuth();
   const [modalOpen, setModalOpen] = useState(false);
 
-  // Don't show badge if user has premium subscription
-  if (subscribed) return null;
+  // Don't show badge if user has premium subscription OR founders event is active
+  if (subscribed || isFoundersEventActive()) return null;
 
   if (variant === 'button') {
     return (
