@@ -140,11 +140,12 @@ async function checkAutoProtection(supabase: ReturnType<typeof createClient>): P
   densityMult: number;
   reason: string;
 }> {
-  // Check recent execution quality from last 20 orders
+  // Check recent execution quality — only from FILLED orders (not closed/rejected stale ones)
   const { data: recent } = await supabase
     .from("oanda_orders")
     .select("slippage_pips, execution_quality_score, status")
     .eq("user_id", USER_ID)
+    .in("status", ["filled", "rejected", "submitted"])
     .order("created_at", { ascending: false })
     .limit(20);
 
@@ -152,30 +153,35 @@ async function checkAutoProtection(supabase: ReturnType<typeof createClient>): P
     return { allow: true, kOverride: null, densityMult: 1.0, reason: "Insufficient data for protection check" };
   }
 
+  // Only count genuinely rejected orders (not stale/cleared ones)
   const rejected = recent.filter((r: Record<string, unknown>) => r.status === "rejected").length;
-  const rejectionRate = rejected / recent.length;
+  const filled = recent.filter((r: Record<string, unknown>) => r.status === "filled").length;
+  const activeOrders = rejected + filled;
+  const rejectionRate = activeOrders > 0 ? rejected / activeOrders : 0;
 
-  const slippages = recent
+  // Only use quality scores from filled orders (rejected orders always have quality=0)
+  const filledOrders = recent.filter((r: Record<string, unknown>) => r.status === "filled");
+  const slippages = filledOrders
     .map((r: Record<string, unknown>) => r.slippage_pips as number | null)
     .filter((v: number | null): v is number => v != null);
-  const qualities = recent
+  const qualities = filledOrders
     .map((r: Record<string, unknown>) => r.execution_quality_score as number | null)
     .filter((v: number | null): v is number => v != null);
 
   const avgSlip = slippages.length ? slippages.reduce((a, b) => a + b, 0) / slippages.length : 0;
   const avgQuality = qualities.length ? qualities.reduce((a, b) => a + b, 0) / qualities.length : 100;
 
-  // Kill switch: critical degradation
-  if (rejectionRate > 0.5 && avgQuality < 40) {
+  // Kill switch: only triggers on genuine execution degradation (enough filled data)
+  if (rejectionRate > 0.5 && avgQuality < 40 && filledOrders.length >= 3) {
     return { allow: false, kOverride: null, densityMult: 0, reason: "KILL SWITCH: rejection rate + quality critical" };
   }
 
-  // Elevated protection
-  if (avgSlip > 0.4 || avgQuality < 55) {
+  // Elevated protection — only if we have enough fills to judge quality
+  if (filledOrders.length >= 3 && (avgSlip > 0.4 || avgQuality < 55)) {
     return { allow: true, kOverride: 4.5, densityMult: 0.5, reason: `Elevated: avgSlip=${avgSlip.toFixed(2)}, avgQ=${avgQuality.toFixed(0)}` };
   }
 
-  if (rejectionRate > 0.25) {
+  if (rejectionRate > 0.25 && activeOrders >= 5) {
     return { allow: true, kOverride: 4.0, densityMult: 0.7, reason: `High rejection rate: ${(rejectionRate * 100).toFixed(0)}%` };
   }
 

@@ -21,7 +21,7 @@ export const OandaConnectionPanel = () => {
     fetchAccountSummary('practice');
   }, [fetchAccountSummary]);
 
-  const formatCurrency = (val: string | undefined, currency = 'GBP') => {
+  const formatCurrency = (val: string | undefined, currency = 'USD') => {
     if (!val) return '—';
     const num = parseFloat(val);
     return new Intl.NumberFormat('en-US', {

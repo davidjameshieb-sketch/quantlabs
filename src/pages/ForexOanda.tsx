@@ -8,7 +8,7 @@ import { ForexExecutionStatus } from '@/components/forex/ForexExecutionStatus';
 import { AutoExecutionPanel } from '@/components/forex/AutoExecutionPanel';
 import { ExecutionHealthPanel } from '@/components/forex/ExecutionHealthPanel';
 import { IntelligenceModeBadge } from '@/components/dashboard/IntelligenceModeBadge';
-import { useMemo, useCallback, useEffect, useRef } from 'react';
+import { useMemo, useCallback, useEffect } from 'react';
 import { generateForexTrades } from '@/lib/forex';
 import { createAgents } from '@/lib/agents/agentEngine';
 import { useAutoExecution } from '@/hooks/useAutoExecution';
@@ -17,9 +17,8 @@ import { useOandaExecution } from '@/hooks/useOandaExecution';
 const ForexOanda = () => {
   const agents = useMemo(() => createAgents(), []);
   const allTrades = useMemo(() => generateForexTrades(agents), [agents]);
-  const { connected, orders } = useOandaExecution();
+  const { connected, orders, fetchOrderHistory, fetchAccountSummary } = useOandaExecution();
   const autoExec = useAutoExecution();
-  const hasAutoRun = useRef(false);
 
   const eligibleTrades = useMemo(
     () => allTrades.filter(t => t.outcome !== 'avoided'),
@@ -30,13 +29,11 @@ const ForexOanda = () => {
     autoExec.runBatch(allTrades);
   }, [autoExec, allTrades]);
 
-  // Auto-execute all trades when OANDA connects and auto-exec is enabled
+  // Fetch real order data for the execution health panel on mount
   useEffect(() => {
-    if (connected && autoExec.status.enabled && !hasAutoRun.current && !autoExec.status.processing) {
-      hasAutoRun.current = true;
-      autoExec.runBatch(allTrades);
-    }
-  }, [connected, autoExec.status.enabled, autoExec.status.processing, allTrades, autoExec]);
+    fetchAccountSummary('practice');
+    fetchOrderHistory('practice');
+  }, [fetchAccountSummary, fetchOrderHistory]);
 
   return (
     <DashboardLayout>
