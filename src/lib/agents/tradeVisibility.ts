@@ -1,10 +1,12 @@
 // Trade Visibility Delay System
 // Controls what AI trade intelligence is visible based on subscription tier.
+// During Founders Event, all trades are visible to everyone.
 //
 // Free users: see trades only after 24h delay OR when trade is "closed" (>4h old)
 // Premium users: see all trades (near real-time, ~15min platform default)
 
 import { AgentDecision } from './types';
+import { isFoundersEventActive } from '@/lib/foundersEvent';
 
 /** How many ms before a trade is considered "closed" for simulation purposes */
 const TRADE_CLOSE_THRESHOLD_MS = 4 * 60 * 60 * 1000; // 4 hours
@@ -28,17 +30,29 @@ export const filterDecisionsByTier = (
   decisions: AgentDecision[],
   isSubscribed: boolean
 ): AgentDecision[] => {
+  // During Founders Event, everything is visible
+  if (isFoundersEventActive()) return decisions;
   if (isSubscribed) return decisions;
   return decisions.filter(isTradeVisibleToFree);
 };
 
 /** Count how many trades are hidden from free users */
 export const getHiddenTradeCount = (decisions: AgentDecision[]): number => {
+  // During Founders Event, nothing is hidden
+  if (isFoundersEventActive()) return 0;
   return decisions.filter(d => !isTradeVisibleToFree(d)).length;
 };
 
 /** Get the intelligence mode label based on subscription */
 export const getIntelligenceMode = (isSubscribed: boolean) => {
+  // During Founders Event, everyone gets edge-level access
+  if (isFoundersEventActive()) {
+    return {
+      label: 'Founders Intelligence',
+      description: 'Full AI Intelligence Access — 30 Day Window',
+      badge: 'edge' as const,
+    };
+  }
   if (isSubscribed) {
     return {
       label: 'Edge Intelligence',

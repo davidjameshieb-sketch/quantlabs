@@ -1,5 +1,7 @@
 // Tier-based feature access control - Simplified Free + Edge model
+// During Founders Event, ALL features are unlocked for everyone.
 import type { MarketType, Timeframe } from './types';
+import { isFoundersEventActive } from '@/lib/foundersEvent';
 
 export interface TierFeatures {
   // Data access
@@ -65,10 +67,14 @@ export const TIER_PRICES: Record<TierName, { current: number; original: number }
 };
 
 export const getTierFeatures = (tier: TierName): TierFeatures => {
+  // During Founders Event, everyone gets full edge access
+  if (isFoundersEventActive()) return TIER_FEATURES.edge;
   return TIER_FEATURES[tier] || TIER_FEATURES.free;
 };
 
 export const canAccessFeature = (tier: TierName, feature: keyof TierFeatures): boolean => {
+  // During Founders Event, everything is unlocked
+  if (isFoundersEventActive()) return true;
   const features = getTierFeatures(tier);
   return features[feature] === true;
 };
@@ -78,6 +84,8 @@ export const isEdge = (tier: TierName): boolean => tier === 'edge';
 // Get upgrade prompt based on what feature the user is trying to access
 export const getUpgradePrompt = (currentTier: TierName, feature: string): string | null => {
   if (currentTier === 'edge') return null;
+  // During Founders Event, no upgrade prompts
+  if (isFoundersEventActive()) return null;
   
   const prompts: Record<string, string> = {
     intradayData: 'Upgrade to Edge Access for 15-minute delayed intraday data',

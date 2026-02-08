@@ -14,6 +14,8 @@ import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet';
 import { TICKERS, MARKET_LABELS } from '@/lib/market';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/contexts/AuthContext';
+import { isFoundersEventActive } from '@/lib/foundersEvent';
+import { FoundersWelcomeOverlay } from '@/components/founders/FoundersWelcomeOverlay';
 
 interface DashboardLayoutProps {
   children: React.ReactNode;
@@ -126,7 +128,7 @@ export const DashboardLayout = ({ children }: DashboardLayoutProps) => {
               </p>
               <div className="flex items-center gap-1 mt-1">
                 <span className="text-xs px-2 py-0.5 rounded-full bg-primary/20 text-primary font-medium">
-                  Edge
+                  {isFoundersEventActive() ? 'Founders' : 'Edge'}
                 </span>
               </div>
             </div>
@@ -135,7 +137,7 @@ export const DashboardLayout = ({ children }: DashboardLayoutProps) => {
           <Link to="/auth">
             <Button variant="outline" size="sm" className="w-full gap-2">
               <LogIn className="w-4 h-4" />
-              Sign In for Edge
+              {isFoundersEventActive() ? 'Sign In' : 'Sign In for Edge'}
             </Button>
           </Link>
         )}
@@ -144,7 +146,9 @@ export const DashboardLayout = ({ children }: DashboardLayoutProps) => {
   );
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-screen bg-background" style={{ paddingTop: isFoundersEventActive() ? '36px' : '0px' }}>
+      {/* Welcome Overlay */}
+      <FoundersWelcomeOverlay />
       {/* Desktop Sidebar */}
       <aside className="fixed left-0 top-0 bottom-0 w-64 border-r border-border/50 bg-sidebar hidden lg:block">
         <SidebarContent />
