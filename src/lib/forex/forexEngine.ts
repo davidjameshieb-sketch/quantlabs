@@ -61,22 +61,31 @@ const FOREX_BASE_PRICES: Record<string, number> = {
   'CAD/CHF': 0.6280, 'AUD/CHF': 0.5690,
 };
 
+/** Normalize symbol: 'AUDCAD' → 'AUD/CAD', already-slashed passes through */
+function toDisplaySymbol(symbol: string): string {
+  if (symbol.includes('/')) return symbol;
+  if (symbol.length === 6) return `${symbol.slice(0, 3)}/${symbol.slice(3)}`;
+  if (symbol.length === 7) return `${symbol.slice(0, 3)}/${symbol.slice(3)}`; // e.g. USD/MXN length=7 only with slash
+  return symbol;
+}
+
 function getRealisticPrice(symbol: string, rng: ForexRNG): number {
+  const displaySymbol = toDisplaySymbol(symbol);
   // Prefer live OANDA mid-price when available
-  const livePrice = getLivePrice(symbol);
+  const livePrice = getLivePrice(displaySymbol);
   if (livePrice) {
     // Small random deviation: ±0.3% to simulate recent price movement around live price
     const deviation = rng.range(-0.003, 0.003);
     return livePrice * (1 + deviation);
   }
   // Fallback to hardcoded base prices
-  const base = FOREX_BASE_PRICES[symbol];
+  const base = FOREX_BASE_PRICES[displaySymbol];
   if (base) {
     const deviation = rng.range(-0.003, 0.003);
     return base * (1 + deviation);
   }
   // Last resort fallback for unknown pairs
-  return symbol.includes('JPY') ? rng.range(80, 195) : rng.range(0.55, 1.85);
+  return displaySymbol.includes('JPY') ? rng.range(80, 195) : rng.range(0.55, 1.85);
 }
 
 // ─── Generate Forex Trades ───
