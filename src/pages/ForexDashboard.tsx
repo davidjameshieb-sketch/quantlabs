@@ -3,7 +3,7 @@
 
 import { useState, useMemo, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Globe, TrendingUp, Crosshair, BarChart3, FlaskConical, ShieldCheck } from 'lucide-react';
+import { Globe, TrendingUp, Crosshair, BarChart3, FlaskConical, ShieldCheck, SplitSquareHorizontal } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { DashboardLayout } from '@/components/dashboard/DashboardLayout';
 import { ForexPerformanceOverview } from '@/components/forex/ForexPerformanceOverview';
@@ -17,6 +17,7 @@ import { ForexScalpingIntelligence } from '@/components/forex/ForexScalpingIntel
 import { ScalpingTradesDashboard } from '@/components/forex/ScalpingTradesDashboard';
 import { PerformanceReanalysisDashboard } from '@/components/forex/PerformanceReanalysisDashboard';
 import { DailyAuditPanel } from '@/components/forex/DailyAuditPanel';
+import { ScalpVsSwingView } from '@/components/forex/ScalpVsSwingView';
 import { IntelligenceModeBadge } from '@/components/dashboard/IntelligenceModeBadge';
 import {
   generateForexTrades,
@@ -99,6 +100,9 @@ const ForexDashboard = () => {
             <TabsTrigger value="performance" className="text-xs gap-1.5">
               <TrendingUp className="w-3.5 h-3.5" />Performance
             </TabsTrigger>
+            <TabsTrigger value="scalp-vs-swing" className="text-xs gap-1.5">
+              <SplitSquareHorizontal className="w-3.5 h-3.5" />Scalp vs Swing
+            </TabsTrigger>
             <TabsTrigger value="scalping-trades" className="text-xs gap-1.5">
               <BarChart3 className="w-3.5 h-3.5" />Scalping Trades
             </TabsTrigger>
@@ -163,6 +167,12 @@ const ForexDashboard = () => {
             {/* Trade History Table */}
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.32 }}>
               <ForexTradeHistoryTable trades={filteredTrades} />
+            </motion.div>
+          </TabsContent>
+
+          <TabsContent value="scalp-vs-swing" className="space-y-4">
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+              <ScalpVsSwingView trades={filteredTrades} />
             </motion.div>
           </TabsContent>
 
