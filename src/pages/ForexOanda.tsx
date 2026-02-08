@@ -7,17 +7,20 @@ import { OandaOrderLog } from '@/components/forex/OandaOrderLog';
 import { ForexExecutionStatus } from '@/components/forex/ForexExecutionStatus';
 import { AutoExecutionPanel } from '@/components/forex/AutoExecutionPanel';
 import { ExecutionHealthPanel } from '@/components/forex/ExecutionHealthPanel';
+import { LiveExecutionHero } from '@/components/forex/LiveExecutionHero';
 import { IntelligenceModeBadge } from '@/components/dashboard/IntelligenceModeBadge';
 import { useMemo, useCallback, useEffect } from 'react';
 import { generateForexTrades } from '@/lib/forex';
 import { createAgents } from '@/lib/agents/agentEngine';
 import { useAutoExecution } from '@/hooks/useAutoExecution';
 import { useOandaExecution } from '@/hooks/useOandaExecution';
+import { useOandaPerformance } from '@/hooks/useOandaPerformance';
 
 const ForexOanda = () => {
   const agents = useMemo(() => createAgents(), []);
   const allTrades = useMemo(() => generateForexTrades(agents), [agents]);
-  const { connected, orders, fetchOrderHistory, fetchAccountSummary } = useOandaExecution();
+  const { connected, account, openTrades, orders, fetchOrderHistory, fetchAccountSummary } = useOandaExecution();
+  const { metrics: executionMetrics } = useOandaPerformance();
   const autoExec = useAutoExecution();
 
   const eligibleTrades = useMemo(
@@ -50,6 +53,16 @@ const ForexOanda = () => {
           <p className="text-muted-foreground text-sm">
             Live broker connection, execution safety gates, auto-execution bridge, and health monitoring.
           </p>
+        </motion.div>
+
+        {/* Live Execution Hero */}
+        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.03 }}>
+          <LiveExecutionHero
+            account={account}
+            connected={connected}
+            openTradeCount={openTrades.length}
+            executionMetrics={executionMetrics}
+          />
         </motion.div>
 
         {/* OANDA Broker Connection */}
