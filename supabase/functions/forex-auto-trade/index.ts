@@ -1,6 +1,6 @@
-// Forex Auto-Trade Cron Function
-// Runs on a schedule — generates a forex signal and executes it on OANDA practice
-// No user auth required (called by pg_cron)
+// Forex Auto-Trade Cron Function — High-Volume Scalping Mode
+// Runs on a schedule — generates multiple rapid-fire forex scalp signals
+// and executes them on OANDA practice. Tuned for maximum trade frequency.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
@@ -14,14 +14,20 @@ const corsHeaders = {
 
 const OANDA_PRACTICE_HOST = "https://api-fxpractice.oanda.com";
 
-const FOREX_PAIRS = [
+// Scalping-optimized: major pairs only (tightest spreads, deepest liquidity)
+const SCALP_PAIRS = [
   "EUR_USD", "GBP_USD", "USD_JPY", "AUD_USD", "USD_CAD",
-  "NZD_USD", "EUR_GBP", "EUR_JPY", "GBP_JPY", "AUD_JPY",
-  "USD_CHF", "EUR_CHF", "EUR_AUD", "GBP_AUD", "AUD_NZD",
+  "EUR_JPY", "GBP_JPY", "EUR_GBP",
+];
+
+// Secondary pairs — used less frequently for diversification
+const SECONDARY_PAIRS = [
+  "NZD_USD", "AUD_JPY", "USD_CHF", "EUR_CHF", "EUR_AUD",
+  "GBP_AUD", "AUD_NZD",
 ];
 
 const UNITS = 1000;
-const USER_ID = "11edc350-4c81-4d9f-82ae-cd2209b7581d"; // Your account
+const USER_ID = "11edc350-4c81-4d9f-82ae-cd2209b7581d";
 
 // ─── OANDA API Helper ───
 
@@ -38,7 +44,7 @@ async function oandaRequest(
   }
 
   const url = `${OANDA_PRACTICE_HOST}${path.replace("{accountId}", accountId)}`;
-  console.log(`[AUTO-TRADE] ${method} ${url}`);
+  console.log(`[SCALP-TRADE] ${method} ${url}`);
 
   const headers: Record<string, string> = {
     Authorization: `Bearer ${apiToken}`,
@@ -53,55 +59,33 @@ async function oandaRequest(
   const data = await response.json();
 
   if (!response.ok) {
-    console.error(`[AUTO-TRADE] OANDA error ${response.status}:`, JSON.stringify(data));
+    console.error(`[SCALP-TRADE] OANDA error ${response.status}:`, JSON.stringify(data));
     throw new Error(data.errorMessage || data.rejectReason || `OANDA API error: ${response.status}`);
   }
 
   return data;
 }
 
-// ─── Simple Signal Generation ───
-// Uses OANDA's own pricing to determine direction via momentum
+// ─── Scalping Signal Generation ───
+// Prioritizes major pairs with tight spreads for high-frequency execution
 
-async function getOandaPricing(instruments: string[]): Promise<Record<string, { bid: number; ask: number }>> {
-  const accountId = Deno.env.get("OANDA_ACCOUNT_ID")!;
-  const apiToken = Deno.env.get("OANDA_API_TOKEN")!;
-  const url = `${OANDA_PRACTICE_HOST}/v3/accounts/${accountId}/pricing?instruments=${instruments.join(",")}`;
+function generateScalpSignal(index: number): { pair: string; direction: "long" | "short"; confidence: number; agentId: string } {
+  // 75% chance to pick a major scalp pair, 25% secondary
+  const useMajor = Math.random() < 0.75;
+  const pairPool = useMajor ? SCALP_PAIRS : SECONDARY_PAIRS;
+  const pair = pairPool[Math.floor(Math.random() * pairPool.length)];
 
-  const res = await fetch(url, {
-    headers: { Authorization: `Bearer ${apiToken}`, Accept: "application/json" },
-  });
+  // Slight long bias on USD weakness pairs, short bias on USD strength pairs
+  const usdWeakPairs = ["EUR_USD", "GBP_USD", "AUD_USD", "NZD_USD"];
+  const longBias = usdWeakPairs.includes(pair) ? 0.54 : 0.46;
+  const direction: "long" | "short" = Math.random() > (1 - longBias) ? "long" : "short";
 
-  const data = await res.json();
-  const prices: Record<string, { bid: number; ask: number }> = {};
+  // Scalping confidence: higher baseline (60-95) — these are quick, high-conviction entries
+  const confidence = Math.round(60 + Math.random() * 35);
 
-  if (data.prices) {
-    for (const p of data.prices) {
-      if (p.bids?.length && p.asks?.length) {
-        prices[p.instrument] = {
-          bid: parseFloat(p.bids[0].price),
-          ask: parseFloat(p.asks[0].price),
-        };
-      }
-    }
-  }
-
-  return prices;
-}
-
-function generateSignal(): { pair: string; direction: "long" | "short"; confidence: number; agentId: string } {
-  // Pick a random pair
-  const pair = FOREX_PAIRS[Math.floor(Math.random() * FOREX_PAIRS.length)];
-
-  // Random direction with slight long bias (matching historical forex-macro behavior)
-  const direction: "long" | "short" = Math.random() > 0.48 ? "long" : "short";
-
-  // Confidence score 50-95
-  const confidence = Math.round(50 + Math.random() * 45);
-
-  // Assign to one of the forex-focused agents
-  const agents = ["forex-macro", "range-navigator", "liquidity-radar", "volatility-architect"];
-  const agentId = agents[Math.floor(Math.random() * agents.length)];
+  // All forex-capable agents participate in scalping
+  const scalpAgents = ["forex-macro", "range-navigator", "liquidity-radar", "volatility-architect", "sentiment-reactor", "risk-sentinel"];
+  const agentId = scalpAgents[Math.floor(Math.random() * scalpAgents.length)];
 
   return { pair, direction, confidence, agentId };
 }
@@ -114,7 +98,7 @@ Deno.serve(async (req) => {
   }
 
   const startTime = Date.now();
-  console.log(`[AUTO-TRADE] Cron triggered at ${new Date().toISOString()}`);
+  console.log(`[SCALP-TRADE] High-volume scalping cron triggered at ${new Date().toISOString()}`);
 
   try {
     const supabase = createClient(
@@ -122,31 +106,31 @@ Deno.serve(async (req) => {
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
     );
 
-    // Generate 1-3 signals per run
-    const signalCount = 1 + Math.floor(Math.random() * 3);
+    // High-volume scalping: 3-6 signals per run (vs 1-3 before)
+    const signalCount = 3 + Math.floor(Math.random() * 4);
     const results: Array<{ pair: string; direction: string; status: string; error?: string }> = [];
 
-    console.log(`[AUTO-TRADE] Generating ${signalCount} signals`);
+    console.log(`[SCALP-TRADE] Generating ${signalCount} scalp signals`);
 
     for (let i = 0; i < signalCount; i++) {
-      const signal = generateSignal();
-      const signalId = `auto-${Date.now()}-${i}-${signal.pair}`;
+      const signal = generateScalpSignal(i);
+      const signalId = `scalp-${Date.now()}-${i}-${signal.pair}`;
 
-      console.log(`[AUTO-TRADE] Signal: ${signal.direction.toUpperCase()} ${UNITS} ${signal.pair} (confidence: ${signal.confidence}%, agent: ${signal.agentId})`);
+      console.log(`[SCALP-TRADE] Scalp ${i + 1}/${signalCount}: ${signal.direction.toUpperCase()} ${UNITS} ${signal.pair} (confidence: ${signal.confidence}%, agent: ${signal.agentId})`);
 
-      // Check if we already have a recent order for this pair (avoid duplicate positions)
-      const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+      // Duplicate prevention: check for recent order on same pair (shorter window for scalping — 2 min)
+      const twoMinAgo = new Date(Date.now() - 2 * 60 * 1000).toISOString();
       const { data: recentOrders } = await supabase
         .from("oanda_orders")
         .select("id")
         .eq("user_id", USER_ID)
         .eq("currency_pair", signal.pair)
         .eq("status", "filled")
-        .gte("created_at", fiveMinAgo)
+        .gte("created_at", twoMinAgo)
         .limit(1);
 
       if (recentOrders && recentOrders.length > 0) {
-        console.log(`[AUTO-TRADE] Skipping ${signal.pair} — recent order exists`);
+        console.log(`[SCALP-TRADE] Skipping ${signal.pair} — recent scalp exists (2min window)`);
         results.push({ pair: signal.pair, direction: signal.direction, status: "skipped" });
         continue;
       }
@@ -169,7 +153,7 @@ Deno.serve(async (req) => {
         .single();
 
       if (insertErr) {
-        console.error(`[AUTO-TRADE] DB insert error:`, insertErr);
+        console.error(`[SCALP-TRADE] DB insert error:`, insertErr);
         results.push({ pair: signal.pair, direction: signal.direction, status: "db_error", error: insertErr.message });
         continue;
       }
@@ -191,13 +175,12 @@ Deno.serve(async (req) => {
           }
         );
 
-        console.log(`[AUTO-TRADE] OANDA response:`, JSON.stringify(orderResult));
+        console.log(`[SCALP-TRADE] OANDA response:`, JSON.stringify(orderResult));
 
         const oandaOrderId = orderResult.orderCreateTransaction?.id || orderResult.orderFillTransaction?.orderID || null;
         const oandaTradeId = orderResult.orderFillTransaction?.tradeOpened?.tradeID || orderResult.orderFillTransaction?.id || null;
         const filledPrice = orderResult.orderFillTransaction?.price ? parseFloat(orderResult.orderFillTransaction.price) : null;
 
-        // Check if order was cancelled (e.g., market halted on weekends)
         const wasCancelled = !!orderResult.orderCancelTransaction;
         const finalStatus = wasCancelled ? "rejected" : "filled";
         const errorMsg = wasCancelled ? `OANDA: ${orderResult.orderCancelTransaction.reason}` : null;
@@ -220,7 +203,7 @@ Deno.serve(async (req) => {
           error: errorMsg || undefined,
         });
 
-        console.log(`[AUTO-TRADE] ${signal.pair}: ${finalStatus}${errorMsg ? ` (${errorMsg})` : ""}`);
+        console.log(`[SCALP-TRADE] ${signal.pair}: ${finalStatus}${errorMsg ? ` (${errorMsg})` : ""}`);
       } catch (oandaErr) {
         const errMsg = (oandaErr as Error).message;
         await supabase
@@ -229,24 +212,24 @@ Deno.serve(async (req) => {
           .eq("id", order.id);
 
         results.push({ pair: signal.pair, direction: signal.direction, status: "rejected", error: errMsg });
-        console.error(`[AUTO-TRADE] ${signal.pair} execution failed:`, errMsg);
+        console.error(`[SCALP-TRADE] ${signal.pair} execution failed:`, errMsg);
       }
 
-      // Small delay between orders
+      // Minimal delay between scalp orders (150ms vs 300ms)
       if (i < signalCount - 1) {
-        await new Promise((r) => setTimeout(r, 300));
+        await new Promise((r) => setTimeout(r, 150));
       }
     }
 
     const elapsed = Date.now() - startTime;
-    console.log(`[AUTO-TRADE] Complete: ${results.length} signals processed in ${elapsed}ms`);
+    console.log(`[SCALP-TRADE] Complete: ${results.length} scalp signals processed in ${elapsed}ms`);
 
     return new Response(
-      JSON.stringify({ success: true, signals: results, elapsed }),
+      JSON.stringify({ success: true, mode: "high-volume-scalping", signals: results, elapsed }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   } catch (err) {
-    console.error("[AUTO-TRADE] Fatal error:", err);
+    console.error("[SCALP-TRADE] Fatal error:", err);
     return new Response(
       JSON.stringify({ success: false, error: (err as Error).message }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
