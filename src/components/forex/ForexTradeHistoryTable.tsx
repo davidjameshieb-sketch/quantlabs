@@ -1,10 +1,10 @@
 // Forex Trade History Table
-// Comprehensive forex-only trade log
+// Comprehensive forex-only trade log with scalping P&L forensics
 
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
-import { ChevronDown, ChevronUp, ArrowUp, ArrowDown, Ban } from 'lucide-react';
+import { ChevronDown, ChevronUp, ArrowUp, ArrowDown, Ban, TrendingUp, TrendingDown } from 'lucide-react';
 import {
   ForexTradeEntry,
   EXECUTION_MODE_LABELS,
@@ -18,6 +18,51 @@ import { cn } from '@/lib/utils';
 interface ForexTradeHistoryTableProps {
   trades: ForexTradeEntry[];
 }
+
+// ─── Cumulative P&L Summary Strip ───
+
+const PnlSummaryStrip = ({ trades }: { trades: ForexTradeEntry[] }) => {
+  const stats = useMemo(() => {
+    const executed = trades.filter(t => t.outcome !== 'avoided');
+    const wins = executed.filter(t => t.pnlPercent > 0);
+    const losses = executed.filter(t => t.pnlPercent <= 0);
+    const totalPnl = executed.reduce((s, t) => s + t.pnlPercent, 0);
+    const totalNetPnl = executed.reduce((s, t) => s + t.netExpectancy, 0);
+    const avgCapture = executed.length > 0 ? executed.reduce((s, t) => s + t.captureRatio, 0) / executed.length : 0;
+    const avgGiveBack = wins.length > 0 ? wins.reduce((s, t) => s + t.giveBackPct, 0) / wins.length : 0;
+    const totalFriction = executed.reduce((s, t) => s + t.frictionCost, 0);
+    return { executed: executed.length, wins: wins.length, losses: losses.length, totalPnl, totalNetPnl, avgCapture, avgGiveBack, totalFriction };
+  }, [trades]);
+
+  return (
+    <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2">
+      {[
+        { label: 'Executed', value: stats.executed.toString() },
+        { label: 'W / L', value: `${stats.wins} / ${stats.losses}`, color: stats.wins > stats.losses ? 'text-neural-green' : 'text-neural-red' },
+        { label: 'Gross P&L', value: `${stats.totalPnl >= 0 ? '+' : ''}${stats.totalPnl.toFixed(2)}%`, color: stats.totalPnl >= 0 ? 'text-neural-green' : 'text-neural-red' },
+        { label: 'Net P&L', value: `${stats.totalNetPnl >= 0 ? '+' : ''}${stats.totalNetPnl.toFixed(2)}%`, color: stats.totalNetPnl >= 0 ? 'text-neural-green' : 'text-neural-red' },
+        { label: 'Capture', value: `${(stats.avgCapture * 100).toFixed(0)}%`, color: stats.avgCapture > 0.6 ? 'text-neural-green' : 'text-neural-orange' },
+        { label: 'Give-Back', value: `${stats.avgGiveBack.toFixed(1)}%`, color: stats.avgGiveBack < 30 ? 'text-neural-green' : 'text-neural-red' },
+        { label: 'Friction', value: `${stats.totalFriction.toFixed(3)}%`, color: 'text-muted-foreground' },
+        { label: 'Win Rate', value: `${stats.executed > 0 ? ((stats.wins / stats.executed) * 100).toFixed(1) : 0}%`, color: stats.wins / (stats.executed || 1) > 0.55 ? 'text-neural-green' : 'text-neural-red' },
+      ].map(item => (
+        <div key={item.label} className="p-2 rounded-lg bg-card/50 border border-border/30 text-center">
+          <p className="text-[9px] text-muted-foreground uppercase tracking-wider">{item.label}</p>
+          <p className={cn('text-sm font-mono font-bold', item.color || 'text-foreground')}>{item.value}</p>
+        </div>
+      ))}
+    </div>
+  );
+};
+
+// ─── Exit Quality Grade ───
+
+const getExitGrade = (captureRatio: number): { grade: string; color: string } => {
+  if (captureRatio >= 0.8) return { grade: 'A', color: 'text-neural-green' };
+  if (captureRatio >= 0.6) return { grade: 'B', color: 'text-primary' };
+  if (captureRatio >= 0.4) return { grade: 'C', color: 'text-neural-orange' };
+  return { grade: 'D', color: 'text-neural-red' };
+};
 
 export const ForexTradeHistoryTable = ({ trades }: ForexTradeHistoryTableProps) => {
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -34,6 +79,9 @@ export const ForexTradeHistoryTable = ({ trades }: ForexTradeHistoryTableProps) 
         <span className="text-[10px] text-muted-foreground">{trades.length} total trades</span>
       </div>
 
+      {/* P&L Summary Strip */}
+      <PnlSummaryStrip trades={trades} />
+
       <div className="rounded-xl border border-border/50 overflow-hidden">
         <Table>
           <TableHeader>
@@ -44,19 +92,20 @@ export const ForexTradeHistoryTable = ({ trades }: ForexTradeHistoryTableProps) 
               <TableHead className="text-[10px] font-display">Entry</TableHead>
               <TableHead className="text-[10px] font-display">Exit</TableHead>
               <TableHead className="text-[10px] font-display">P&L</TableHead>
+              <TableHead className="text-[10px] font-display">Net P&L</TableHead>
+              <TableHead className="text-[10px] font-display">MFE</TableHead>
+              <TableHead className="text-[10px] font-display">Capture</TableHead>
+              <TableHead className="text-[10px] font-display">Grade</TableHead>
               <TableHead className="text-[10px] font-display">Duration</TableHead>
               <TableHead className="text-[10px] font-display">Agent</TableHead>
-              <TableHead className="text-[10px] font-display">Governance</TableHead>
-              <TableHead className="text-[10px] font-display">Conf</TableHead>
-              <TableHead className="text-[10px] font-display">Risk</TableHead>
               <TableHead className="text-[10px] font-display">Outcome</TableHead>
-              <TableHead className="text-[10px] font-display">Exec Mode</TableHead>
               <TableHead className="text-[10px] font-display">Regime</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {paged.map(trade => {
               const isExpanded = expandedId === trade.id;
+              const exitGrade = getExitGrade(trade.captureRatio);
               return (
                 <>
                   <TableRow
@@ -89,7 +138,21 @@ export const ForexTradeHistoryTable = ({ trades }: ForexTradeHistoryTableProps) 
                     <TableCell className="font-mono text-[11px]">{trade.entryPrice.toFixed(trade.currencyPair.includes('JPY') ? 3 : 5)}</TableCell>
                     <TableCell className="font-mono text-[11px]">{trade.exitPrice ? trade.exitPrice.toFixed(trade.currencyPair.includes('JPY') ? 3 : 5) : '—'}</TableCell>
                     <TableCell className={cn('font-mono text-[11px] font-bold', trade.pnlPercent > 0 ? 'text-neural-green' : trade.pnlPercent < 0 ? 'text-neural-red' : 'text-muted-foreground')}>
-                      {trade.pnlPercent > 0 ? '+' : ''}{trade.pnlPercent.toFixed(2)}%
+                      {trade.pnlPercent > 0 ? '+' : ''}{trade.pnlPercent.toFixed(3)}%
+                    </TableCell>
+                    <TableCell className={cn('font-mono text-[11px]', trade.netExpectancy > 0 ? 'text-neural-green' : trade.netExpectancy < 0 ? 'text-neural-red' : 'text-muted-foreground')}>
+                      {trade.netExpectancy > 0 ? '+' : ''}{trade.netExpectancy.toFixed(3)}%
+                    </TableCell>
+                    <TableCell className="font-mono text-[11px] text-neural-green">
+                      {trade.mfe > 0 ? `+${trade.mfe.toFixed(3)}%` : '—'}
+                    </TableCell>
+                    <TableCell className={cn('font-mono text-[11px] font-semibold', trade.captureRatio > 0.6 ? 'text-neural-green' : trade.captureRatio > 0.3 ? 'text-neural-orange' : 'text-neural-red')}>
+                      {trade.outcome !== 'avoided' ? `${(trade.captureRatio * 100).toFixed(0)}%` : '—'}
+                    </TableCell>
+                    <TableCell>
+                      {trade.outcome !== 'avoided' ? (
+                        <span className={cn('font-mono text-xs font-bold', exitGrade.color)}>{exitGrade.grade}</span>
+                      ) : '—'}
                     </TableCell>
                     <TableCell className="text-[11px]">
                       {trade.tradeDuration < 60 ? `${trade.tradeDuration}m` : `${(trade.tradeDuration / 60).toFixed(1)}h`}
@@ -97,18 +160,6 @@ export const ForexTradeHistoryTable = ({ trades }: ForexTradeHistoryTableProps) 
                     <TableCell className="text-[11px]">
                       <span title={trade.primaryAgentName}>{trade.primaryAgentIcon} {trade.primaryAgentName.split(' ')[0]}</span>
                     </TableCell>
-                    <TableCell>
-                      <Badge variant="outline" className={cn(
-                        'text-[9px]',
-                        trade.governanceStatus === 'approved' ? 'text-neural-green border-neural-green/30' :
-                        trade.governanceStatus === 'throttled' ? 'text-neural-orange border-neural-orange/30' :
-                        'text-neural-red border-neural-red/30'
-                      )}>
-                        {trade.governanceStatus}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="text-[11px] font-mono">{trade.confidenceScore.toFixed(0)}%</TableCell>
-                    <TableCell className="text-[11px] font-mono">{trade.riskScore.toFixed(0)}%</TableCell>
                     <TableCell>
                       <Badge variant="outline" className={cn(
                         'text-[9px]',
@@ -121,22 +172,38 @@ export const ForexTradeHistoryTable = ({ trades }: ForexTradeHistoryTableProps) 
                       </Badge>
                     </TableCell>
                     <TableCell>
-                      <Badge variant="outline" className={cn('text-[8px]', EXECUTION_MODE_COLORS[trade.executionMode])}>
-                        {trade.executionMode === 'signal-only' ? 'Signal' : trade.executionMode === 'assisted-ready' ? 'Assisted' : 'Auto'}
-                      </Badge>
-                    </TableCell>
-                    <TableCell>
                       <Badge variant="outline" className={cn('text-[8px]', FOREX_REGIME_COLORS[trade.regime])}>
                         {FOREX_REGIME_LABELS[trade.regime].replace(' FX', '')}
                       </Badge>
                     </TableCell>
                   </TableRow>
 
-                  {/* Expanded: Agent Contribution Detail */}
+                  {/* Expanded: Scalping Forensics Detail */}
                   {isExpanded && (
                     <TableRow key={`${trade.id}-exp`} className="bg-primary/5 hover:bg-primary/5">
                       <TableCell colSpan={14} className="p-4">
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                          {/* P&L Forensics */}
+                          <div className="space-y-2">
+                            <p className="text-[10px] font-display font-bold text-primary uppercase tracking-wider">P&L Forensics</p>
+                            <div className="space-y-1 text-[11px]">
+                              <div className="flex justify-between"><span className="text-muted-foreground">Gross P&L:</span><span className={cn('font-mono font-semibold', trade.pnlPercent > 0 ? 'text-neural-green' : 'text-neural-red')}>{trade.pnlPercent > 0 ? '+' : ''}{trade.pnlPercent.toFixed(4)}%</span></div>
+                              <div className="flex justify-between"><span className="text-muted-foreground">Friction Cost:</span><span className="font-mono text-neural-orange">-{trade.frictionCost.toFixed(4)}%</span></div>
+                              <div className="flex justify-between"><span className="text-muted-foreground">Net P&L:</span><span className={cn('font-mono font-bold', trade.netExpectancy > 0 ? 'text-neural-green' : 'text-neural-red')}>{trade.netExpectancy > 0 ? '+' : ''}{trade.netExpectancy.toFixed(4)}%</span></div>
+                            </div>
+                          </div>
+
+                          {/* MFE / MAE */}
+                          <div className="space-y-2">
+                            <p className="text-[10px] font-display font-bold text-primary uppercase tracking-wider">MFE / MAE</p>
+                            <div className="space-y-1 text-[11px]">
+                              <div className="flex justify-between"><span className="text-muted-foreground">MFE (Peak):</span><span className="font-mono text-neural-green">+{trade.mfe.toFixed(4)}%</span></div>
+                              <div className="flex justify-between"><span className="text-muted-foreground">MAE (Trough):</span><span className="font-mono text-neural-red">-{trade.mae.toFixed(4)}%</span></div>
+                              <div className="flex justify-between"><span className="text-muted-foreground">Capture Ratio:</span><span className={cn('font-mono font-semibold', trade.captureRatio > 0.6 ? 'text-neural-green' : 'text-neural-orange')}>{(trade.captureRatio * 100).toFixed(1)}%</span></div>
+                              <div className="flex justify-between"><span className="text-muted-foreground">Give-Back:</span><span className={cn('font-mono', trade.giveBackPct < 25 ? 'text-neural-green' : 'text-neural-orange')}>{trade.giveBackPct.toFixed(1)}%</span></div>
+                            </div>
+                          </div>
+
                           {/* Primary Agent */}
                           <div className="space-y-2">
                             <p className="text-[10px] font-display font-bold text-primary uppercase tracking-wider">Primary Agent</p>
@@ -147,13 +214,8 @@ export const ForexTradeHistoryTable = ({ trades }: ForexTradeHistoryTableProps) 
                                 <p className="text-[10px] text-muted-foreground">{AGENT_DEFINITIONS[trade.primaryAgent].model}</p>
                               </div>
                             </div>
-                          </div>
-
-                          {/* Supporting Agents */}
-                          <div className="space-y-2">
-                            <p className="text-[10px] font-display font-bold text-primary uppercase tracking-wider">Supporting Agents</p>
                             <div className="space-y-1">
-                              {trade.supportingAgents.map(a => (
+                              {trade.supportingAgents.slice(0, 3).map(a => (
                                 <div key={a.id} className="flex items-center justify-between p-1.5 rounded bg-card/30 border border-border/30">
                                   <span className="text-[10px]">{a.icon} {a.name}</span>
                                   <span className="text-[10px] font-mono text-muted-foreground">{(a.weight * 100).toFixed(0)}%</span>
@@ -164,7 +226,7 @@ export const ForexTradeHistoryTable = ({ trades }: ForexTradeHistoryTableProps) 
 
                           {/* Execution Status */}
                           <div className="space-y-2">
-                            <p className="text-[10px] font-display font-bold text-primary uppercase tracking-wider">Execution Status</p>
+                            <p className="text-[10px] font-display font-bold text-primary uppercase tracking-wider">Execution</p>
                             <div className="space-y-1.5 text-[10px]">
                               <div className="flex items-center gap-1.5">
                                 <span className={cn('w-2 h-2 rounded-full', trade.oandaCompatible ? 'bg-neural-green' : 'bg-neural-red')} />
@@ -180,6 +242,10 @@ export const ForexTradeHistoryTable = ({ trades }: ForexTradeHistoryTableProps) 
                                   trade.spreadCondition === 'normal' ? 'bg-neural-orange' : 'bg-neural-red'
                                 )} />
                                 <span>Spread: {trade.spreadCondition}</span>
+                              </div>
+                              <div className="flex items-center gap-1.5">
+                                <span className={cn('w-2 h-2 rounded-full', trade.governanceStatus === 'approved' ? 'bg-neural-green' : trade.governanceStatus === 'throttled' ? 'bg-neural-orange' : 'bg-neural-red')} />
+                                <span>Gov: {trade.governanceStatus}</span>
                               </div>
                               <p className="mt-1 text-muted-foreground">{EXECUTION_MODE_LABELS[trade.executionMode]}</p>
                               <p className="text-muted-foreground/70">
