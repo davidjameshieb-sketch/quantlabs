@@ -32,3 +32,6 @@ verify_jwt = false
 
 [functions.site-lock]
 verify_jwt = false
+
+[functions.forex-trade-monitor]
+verify_jwt = false
