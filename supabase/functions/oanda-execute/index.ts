@@ -193,10 +193,12 @@ Deno.serve(async (req) => {
 
     // ─── Status (open orders from DB) ───
     if (body.action === "status") {
+      // Fetch recent orders, excluding bulk-cleared legacy entries
       const { data: orders, error } = await supabase
         .from("oanda_orders")
         .select("*")
         .eq("user_id", userId)
+        .or("error_message.is.null,error_message.not.like.cleared:%")
         .order("created_at", { ascending: false })
         .limit(50);
 
