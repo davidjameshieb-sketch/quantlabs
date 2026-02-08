@@ -307,12 +307,12 @@ export const evaluateTradeProposal = (
     proposal.baseLossRange[1] * (0.75 + lossReduction * 0.20),
   ];
 
-  // Scalping-optimized duration windows (minutes)
+  // Ultra-scalping duration windows (minutes) — high-volume, fast turnover
   const durationMap: Record<VolatilityPhase, { min: number; max: number }> = {
-    compression: { min: 20, max: 180 },    // reduced from 480
-    ignition: { min: 3, max: 45 },         // fast breakout scalps
-    expansion: { min: 8, max: 120 },       // momentum continuation
-    exhaustion: { min: 5, max: 35 },       // quick defensive exits
+    compression: { min: 8, max: 45 },      // even compression = short scalps
+    ignition: { min: 1, max: 15 },         // lightning breakout scalps
+    expansion: { min: 2, max: 25 },        // quick momentum capture
+    exhaustion: { min: 1, max: 12 },       // fastest exits, minimal exposure
   };
 
   // Drawdown cap (tighter for scalping)
