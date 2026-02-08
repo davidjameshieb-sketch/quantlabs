@@ -287,24 +287,26 @@ export const evaluateTradeProposal = (
     decision = 'throttled';
   }
 
-  // Scalping-tuned win probability
-  const adjustedWinProbability = Math.max(0.18, Math.min(0.85,
-    proposal.baseWinProbability * composite
+  // Scalping-tuned win probability — composite boosts winners
+  const adjustedWinProbability = Math.max(0.30, Math.min(0.88,
+    proposal.baseWinProbability * (0.70 + composite * 0.45)
   ));
 
-  // P&L range shaping
+  // P&L range shaping — good conditions = bigger wins
   const winBoost = exitEfficiency * (ctx.spreadStabilityRank / 100);
-  const lossReduction = microstructure * session;
 
   const adjustedWinRange: [number, number] = [
-    proposal.baseWinRange[0] * (0.85 + winBoost * 0.35),
-    proposal.baseWinRange[1] * (0.88 + winBoost * 0.30),
+    proposal.baseWinRange[0] * (0.90 + winBoost * 0.40),
+    proposal.baseWinRange[1] * (0.85 + winBoost * 0.45),
   ];
 
-  // Scalping: tighter losses in good conditions, losers close faster
+  // CRITICAL: Loss reduction — good conditions SHRINK losses (multiply toward 0)
+  // microstructure & session > 1.0 in good conditions → divide to reduce loss magnitude
+  const lossShrinker = Math.max(0.35, Math.min(1.0, 1.0 / (microstructure * session)));
+
   const adjustedLossRange: [number, number] = [
-    proposal.baseLossRange[0] * (0.50 + lossReduction * 0.40),
-    proposal.baseLossRange[1] * (0.75 + lossReduction * 0.20),
+    proposal.baseLossRange[0] * lossShrinker,  // e.g. -0.12 * 0.5 = -0.06 (tighter)
+    proposal.baseLossRange[1] * lossShrinker,
   ];
 
   // Ultra-scalping duration windows (minutes) — high-volume, fast turnover
