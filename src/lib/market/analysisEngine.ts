@@ -14,6 +14,7 @@ import {
   SignalStates,
 } from './types';
 import { getMarketData } from './dataGenerator';
+import { computeAlignmentFromAnalyses } from './mtfAlignmentScoring';
 
 // Calculate True Range
 const calculateTR = (current: OHLC, previous: OHLC): number => {
@@ -348,6 +349,9 @@ export const analyzeMultiTimeframe = (
     alignmentLevel = 'mixed';
   }
   
+  // Compute MTF hierarchical alignment
+  const mtfAlignment = computeAlignmentFromAnalyses(analyses);
+
   return {
     ticker,
     timestamp: Date.now(),
@@ -355,5 +359,8 @@ export const analyzeMultiTimeframe = (
     aggregatedScore,
     dominantBias,
     alignmentLevel,
+    mtfAlignmentScore: mtfAlignment.overallScore,
+    mtfAlignmentState: mtfAlignment.state,
+    mtfDominantLayer: mtfAlignment.dominantLayer,
   };
 };
