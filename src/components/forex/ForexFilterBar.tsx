@@ -2,6 +2,7 @@
 // Period, outcome, regime, pair, era, environment, and direction engine filters
 
 import { Filter, Calendar, Layers, Globe2, Cpu } from 'lucide-react';
+import { BacktestRunnerButton } from './BacktestRunnerButton';
 import { Badge } from '@/components/ui/badge';
 import {
   ForexDashboardFilters,
@@ -53,9 +54,12 @@ export const ForexFilterBar = ({ filters, onFiltersChange, totalCount, filteredC
           <Filter className="w-4 h-4 text-primary" />
           <span className="text-xs font-display font-bold">Forex Intelligence Filters</span>
         </div>
-        <Badge variant="outline" className="text-[10px]">
-          {filteredCount}/{totalCount} trades
-        </Badge>
+        <div className="flex items-center gap-3">
+          <BacktestRunnerButton />
+          <Badge variant="outline" className="text-[10px]">
+            {filteredCount}/{totalCount} trades
+          </Badge>
+        </div>
       </div>
 
       {/* Era + Environment + Direction Engine */}
