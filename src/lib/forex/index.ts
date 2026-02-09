@@ -2,8 +2,10 @@ export * from './forexTypes';
 export * from './forexEngine';
 export * from './oandaPricingService';
 export * from './microstructureEngine';
+export { normalizeForexSymbol, toDisplaySymbol, toCanonicalSymbol, toRawSymbol } from './forexSymbolMap';
+export type { ForexSymbolInfo } from './forexSymbolMap';
 export { evaluateTradeProposal, evaluateFullDecision, computeGovernanceStats, setShadowMode, isShadowMode } from './tradeGovernanceEngine';
-export type { TradeProposal, GovernanceContext, GovernanceResult, GovernanceMultipliers, GovernanceStats, GovernanceDecision, FullGovernanceDecisionResult } from './tradeGovernanceEngine';
+export type { TradeProposal, GovernanceContext, GovernanceResult, GovernanceMultipliers, GovernanceStats, GovernanceDecision, FullGovernanceDecisionResult, GateId, GateEntry } from './tradeGovernanceEngine';
 export { getGovernanceContext, getGovernanceContextCached, detectLiquiditySession } from './governanceContextProvider';
 export type { TradeHistoryEntry } from './governanceContextProvider';
 export { getQuantLabsDirection } from './quantlabsDirectionProvider';
@@ -20,4 +22,3 @@ export { runPreTradeGate, computeExecutionHealth, createSimulatedExecutionHealth
 export type { PreTradeGateResult, ExecutionTelemetry, ExecutionHealthMetrics, PairExecutionHealth, ExecutionAutoProtection, FrictionBudget, GateResult } from './executionSafetyEngine';
 export { computeGovernanceDashboard, GOVERNANCE_STATE_CONFIGS } from './adaptiveGovernanceEngine';
 export type { GovernanceDashboardData, GovernanceState, GovernanceStateConfig, RollingWindow, PairAllocation, SessionBudget, ShadowCandidate } from './adaptiveGovernanceEngine';
-

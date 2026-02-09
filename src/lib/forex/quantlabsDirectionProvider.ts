@@ -2,10 +2,16 @@
 // Retrieves directional signals from the QuantLabs analysis engine.
 // This module supplies ONLY direction — governance determines WHEN to trade.
 // QuantLabs NEVER overrides governance rejection.
+//
+// FIX #5: Deterministic timeframe policy
+// Direction source: 1h bias (fallback 4h if 1h missing)
+// Confirmation: requested timeframe efficiency/confidence
+// Logged: directionTimeframeUsed + confirmationTimeframeUsed
 
 import type { Timeframe, BiasDirection } from '@/lib/market/types';
 import { analyzeMultiTimeframe } from '@/lib/market/analysisEngine';
 import { getTickersByType } from '@/lib/market/tickers';
+import { toDisplaySymbol } from './forexSymbolMap';
 
 // ─── Output Types ───
 
@@ -15,6 +21,8 @@ export interface QuantLabsDirectionResult {
   directionalBias: DirectionalBias;
   directionalConfidence: number; // 0..1
   sourceSignals: QuantLabsSignalSnapshot;
+  directionTimeframeUsed: string;
+  confirmationTimeframeUsed: string;
 }
 
 export interface QuantLabsSignalSnapshot {
@@ -38,7 +46,6 @@ function mapBiasToDirection(
   efficiencyScore: number,
   alignmentState: string,
 ): { direction: DirectionalBias; adjustedConfidence: number } {
-  // NEUTRAL conditions: low confidence, noisy efficiency, or conflicting alignment
   if (confidence < 35) {
     return { direction: 'NEUTRAL', adjustedConfidence: confidence / 100 };
   }
@@ -49,7 +56,6 @@ function mapBiasToDirection(
     return { direction: 'NEUTRAL', adjustedConfidence: Math.min(confidence / 100, 0.35) };
   }
 
-  // Directional bias with confidence scaling
   const baseConfidence = confidence / 100;
   const efficiencyBoost = efficiencyScore > 0.6 ? 0.1 : 0;
   const alignmentBoost = alignmentState === 'fully-aligned' ? 0.1 : alignmentState === 'partially-aligned' ? 0.05 : 0;
@@ -61,44 +67,63 @@ function mapBiasToDirection(
   };
 }
 
-// ─── Main Provider ───
+// ─── Main Provider (Fix #5: Deterministic Timeframe Policy) ───
 
 export function getQuantLabsDirection(
   symbol: string,
-  _timeframe: Timeframe = '15m',
+  requestedTimeframe: Timeframe = '15m',
 ): QuantLabsDirectionResult | null {
   try {
-    const displayPair = symbol.includes('/') ? symbol : `${symbol.slice(0, 3)}/${symbol.slice(3)}`;
+    const displayPair = toDisplaySymbol(symbol);
     const ticker = getTickersByType('forex').find(t => t.symbol === displayPair);
 
     if (!ticker) {
       return null; // Failsafe: signal unavailable → SKIP
     }
 
+    // Always analyze a fixed set of timeframes for consistency
     const mtfAnalysis = analyzeMultiTimeframe(ticker, ['15m', '1h', '4h', '1d']);
-    const primaryTf = mtfAnalysis.analyses['1h'] || mtfAnalysis.analyses['15m'];
 
-    if (!primaryTf) {
-      return null; // Failsafe: no analysis available
+    // ── Deterministic direction source: 1h bias, fallback 4h ──
+    let directionTimeframeUsed: string;
+    const directionSource = mtfAnalysis.analyses['1h'] ?? mtfAnalysis.analyses['4h'] ?? null;
+
+    if (mtfAnalysis.analyses['1h']) {
+      directionTimeframeUsed = '1h';
+    } else if (mtfAnalysis.analyses['4h']) {
+      directionTimeframeUsed = '4h';
+    } else {
+      return null; // No direction source available
     }
 
+    if (!directionSource) {
+      return null;
+    }
+
+    // ── Confirmation: use requested timeframe, fallback 1h ──
+    const confirmationTimeframeUsed = mtfAnalysis.analyses[requestedTimeframe]
+      ? requestedTimeframe
+      : '1h';
+    const confirmationTf = mtfAnalysis.analyses[confirmationTimeframeUsed] ?? directionSource;
+
+    // Direction from dominant bias, confirmation from requested timeframe
     const { direction, adjustedConfidence } = mapBiasToDirection(
       mtfAnalysis.dominantBias,
-      primaryTf.confidencePercent,
-      primaryTf.efficiency.score,
+      confirmationTf.confidencePercent,
+      confirmationTf.efficiency.score,
       mtfAnalysis.mtfAlignmentState || mtfAnalysis.alignmentLevel,
     );
 
     const snapshot: QuantLabsSignalSnapshot = {
-      trendCoreBias: primaryTf.bias,
-      efficiencyScore: primaryTf.efficiency.score,
-      efficiencyVerdict: primaryTf.efficiency.verdict,
-      confidencePercent: primaryTf.confidencePercent,
+      trendCoreBias: directionSource.bias,
+      efficiencyScore: confirmationTf.efficiency.score,
+      efficiencyVerdict: confirmationTf.efficiency.verdict,
+      confidencePercent: confirmationTf.confidencePercent,
       mtfAlignmentScore: mtfAnalysis.mtfAlignmentScore ?? 0,
       mtfAlignmentState: mtfAnalysis.mtfAlignmentState || mtfAnalysis.alignmentLevel,
-      macroStrength: primaryTf.macroStrength,
-      strategyState: primaryTf.strategyState,
-      conviction: primaryTf.conviction,
+      macroStrength: directionSource.macroStrength,
+      strategyState: directionSource.strategyState,
+      conviction: directionSource.conviction,
       dominantBias: mtfAnalysis.dominantBias,
     };
 
@@ -106,9 +131,11 @@ export function getQuantLabsDirection(
       directionalBias: direction,
       directionalConfidence: adjustedConfidence,
       sourceSignals: snapshot,
+      directionTimeframeUsed,
+      confirmationTimeframeUsed,
     };
   } catch (err) {
     console.error('[QuantLabsDirection] Failed to retrieve directional signal:', err);
-    return null; // Failsafe: signal retrieval failure → SKIP
+    return null;
   }
 }
