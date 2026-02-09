@@ -3,7 +3,7 @@
 
 import { useState, useMemo, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Globe, TrendingUp, Crosshair, BarChart3, FlaskConical, ShieldCheck, SplitSquareHorizontal, PieChart, Shield, HeartPulse, Radar, Filter, Rocket, ShieldAlert } from 'lucide-react';
+import { Globe, TrendingUp, Crosshair, BarChart3, FlaskConical, ShieldCheck, SplitSquareHorizontal, PieChart, Shield, HeartPulse, Radar, Filter, Rocket, ShieldAlert, Brain } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { DashboardLayout } from '@/components/dashboard/DashboardLayout';
 import { ForexPerformanceOverview } from '@/components/forex/ForexPerformanceOverview';
@@ -33,6 +33,7 @@ import { EdgeDiscoveryDashboard } from '@/components/forex/edge-discovery/EdgeDi
 import { EdgeExtractionDashboard } from '@/components/forex/edge-extraction/EdgeExtractionDashboard';
 import { EdgeGoLivePanel } from '@/components/forex/edge-discovery/EdgeGoLivePanel';
 import { DiscoveryRiskPanel } from '@/components/forex/DiscoveryRiskPanel';
+import { AdaptiveEdgeDashboard } from '@/components/forex/AdaptiveEdgeDashboard';
 import {
   generateForexTrades,
   filterForexTrades,
@@ -186,6 +187,9 @@ const ForexDashboard = () => {
             </TabsTrigger>
             <TabsTrigger value="discovery-risk" className="text-xs gap-1.5">
               <ShieldAlert className="w-3.5 h-3.5" />Discovery Risk
+            </TabsTrigger>
+            <TabsTrigger value="adaptive-edge" className="text-xs gap-1.5">
+              <Brain className="w-3.5 h-3.5" />Adaptive Edge
             </TabsTrigger>
           </TabsList>
 
@@ -382,6 +386,11 @@ const ForexDashboard = () => {
           <TabsContent value="discovery-risk" className="space-y-4">
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
               <DiscoveryRiskPanel trades={filteredTrades} />
+            </motion.div>
+          </TabsContent>
+          <TabsContent value="adaptive-edge" className="space-y-4">
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+              <AdaptiveEdgeDashboard trades={filteredTrades} />
             </motion.div>
           </TabsContent>
         </Tabs>
