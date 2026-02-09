@@ -15,6 +15,7 @@ import {
   type DiscoveryRiskStats,
   type RiskLabel,
 } from '@/lib/forex/discoveryRiskEngine';
+import { setAdaptiveEdgeEnabled, getAdaptiveEdgeEnabled } from '@/lib/forex/environmentSignature';
 import type { ForexTradeEntry } from '@/lib/forex/forexTypes';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, PieChart, Pie } from 'recharts';
 
@@ -145,7 +146,10 @@ export function DiscoveryRiskPanel({ trades }: DiscoveryRiskPanelProps) {
               <span className="text-[10px] text-muted-foreground">Enable</span>
               <Switch
                 checked={config.enabled}
-                onCheckedChange={(checked) => setDiscoveryRiskConfig({ enabled: checked })}
+                onCheckedChange={(checked) => {
+                  setDiscoveryRiskConfig({ enabled: checked });
+                  setAdaptiveEdgeEnabled(checked);
+                }}
               />
             </div>
           </div>
