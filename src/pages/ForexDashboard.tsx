@@ -48,6 +48,7 @@ import { createAgents } from '@/lib/agents/agentEngine';
 import { useOandaExecution } from '@/hooks/useOandaExecution';
 import { useOandaPerformance } from '@/hooks/useOandaPerformance';
 import { useTradeAnalytics } from '@/hooks/useTradeAnalytics';
+import { useRealtimeOrders } from '@/hooks/useRealtimeOrders';
 
 const ForexDashboard = () => {
   const [filters, setFilters] = useState<ForexDashboardFilters>({
@@ -64,6 +65,12 @@ const ForexDashboard = () => {
   const { connected, account, openTrades, fetchAccountSummary } = useOandaExecution();
   const { metrics: executionMetrics } = useOandaPerformance();
   const tradeAnalytics = useTradeAnalytics(executionMetrics);
+  // Realtime alerts for fills, closes, and rejections
+  useRealtimeOrders({
+    onOrderChange: () => fetchAccountSummary('practice'),
+    enableAlerts: true,
+  });
+
   useEffect(() => {
     fetchOandaLivePrices().then(() => {
       setLivePricesReady(true);
