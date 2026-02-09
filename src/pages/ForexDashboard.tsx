@@ -3,7 +3,7 @@
 
 import { useState, useMemo, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Globe, TrendingUp, Crosshair, BarChart3, FlaskConical, ShieldCheck, SplitSquareHorizontal, PieChart } from 'lucide-react';
+import { Globe, TrendingUp, Crosshair, BarChart3, FlaskConical, ShieldCheck, SplitSquareHorizontal, PieChart, Shield } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { DashboardLayout } from '@/components/dashboard/DashboardLayout';
 import { ForexPerformanceOverview } from '@/components/forex/ForexPerformanceOverview';
@@ -23,6 +23,8 @@ import { PairPnLBreakdown } from '@/components/forex/PairPnLBreakdown';
 import { SessionHeatmap } from '@/components/forex/SessionHeatmap';
 import { RollingSharpeChart } from '@/components/forex/RollingSharpeChart';
 import { IntelligenceModeBadge } from '@/components/dashboard/IntelligenceModeBadge';
+import { GovernanceStateBanner } from '@/components/forex/GovernanceStateBanner';
+import { AdaptiveGovernancePanel } from '@/components/forex/AdaptiveGovernancePanel';
 import {
   generateForexTrades,
   filterForexTrades,
@@ -36,6 +38,7 @@ import {
   getLastGovernanceResults,
   computeRollingHealth,
   computeShadowModeState,
+  computeGovernanceDashboard,
 } from '@/lib/forex';
 import { ForexDashboardFilters } from '@/lib/forex/forexTypes';
 import { createAgents } from '@/lib/agents/agentEngine';
@@ -77,6 +80,24 @@ const ForexDashboard = () => {
   const influence = useMemo(() => computeCrossAssetInfluence(), []);
   const rollingHealth = useMemo(() => computeRollingHealth(allTrades), [allTrades]);
   const shadowMode = useMemo(() => computeShadowModeState(allTrades), [allTrades]);
+
+  // Adaptive governance data from live OANDA orders
+  const governanceDashboard = useMemo(() => {
+    // Convert forex trades to the OrderRecord format the governance engine expects
+    const orderRecords = filteredTrades
+      .filter(t => t.outcome !== 'avoided')
+      .map(t => ({
+        currency_pair: t.currencyPair.replace('/', '_'),
+        direction: t.direction,
+        status: t.outcome === 'win' || t.outcome === 'loss' ? 'closed' : 'filled',
+        entry_price: t.entryPrice,
+        exit_price: t.exitPrice ?? null,
+        execution_quality_score: Math.round(t.captureRatio * 100),
+        slippage_pips: t.frictionCost * 10000,
+        session_label: null,
+      }));
+    return computeGovernanceDashboard(orderRecords);
+  }, [filteredTrades]);
 
   return (
     <DashboardLayout>
@@ -127,12 +148,27 @@ const ForexDashboard = () => {
             <TabsTrigger value="audit" className="text-xs gap-1.5">
               <ShieldCheck className="w-3.5 h-3.5" />Daily Audit
             </TabsTrigger>
+            <TabsTrigger value="governance" className="text-xs gap-1.5">
+              <Shield className="w-3.5 h-3.5" />Governance
+            </TabsTrigger>
             <TabsTrigger value="analytics" className="text-xs gap-1.5">
               <PieChart className="w-3.5 h-3.5" />Deep Analytics
             </TabsTrigger>
           </TabsList>
 
           <TabsContent value="performance" className="space-y-6">
+            {/* Governance State Banner */}
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.01 }}>
+              <GovernanceStateBanner
+                state={governanceDashboard.currentState}
+                reasons={governanceDashboard.stateReasons}
+                promotedPairs={governanceDashboard.promotedPairs}
+                restrictedPairs={governanceDashboard.restrictedPairs}
+                bannedPairs={governanceDashboard.bannedPairs}
+                sessionBudgets={governanceDashboard.sessionBudgets}
+              />
+            </motion.div>
+
             {/* Live Execution Hero — Real OANDA Data */}
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.03 }}>
               <LiveExecutionHero
@@ -237,6 +273,12 @@ const ForexDashboard = () => {
                 rollingHealth={rollingHealth}
                 shadowMode={shadowMode}
               />
+            </motion.div>
+          </TabsContent>
+
+          <TabsContent value="governance" className="space-y-4">
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+              <AdaptiveGovernancePanel data={governanceDashboard} />
             </motion.div>
           </TabsContent>
 
