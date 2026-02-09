@@ -6,6 +6,7 @@
 // Only provides confidence scores for capital allocation adaptation.
 
 import { avg, computeMaxDD } from './edgeDiscoveryEngine';
+import { buildEnvKeyFromRaw, type EnvironmentKey } from './environmentSignature';
 
 // ─── Types ────────────────────────────────────────────────────────────
 
@@ -98,7 +99,7 @@ export function clearEdgeMemory(): void {
   _lastRecalcAt = 0;
 }
 
-// ─── Environment Signature Builder ───────────────────────────────────
+// ─── Environment Signature Builder (delegates to unified module) ─────
 
 export function buildEnvironmentSignature(
   session: string,
@@ -106,10 +107,8 @@ export function buildEnvironmentSignature(
   symbol: string,
   direction: string,
   agentId?: string,
-): string {
-  const parts = [session, regime, symbol.replace('/', '_').toUpperCase(), direction];
-  if (agentId) parts.push(agentId);
-  return parts.join('|');
+): EnvironmentKey {
+  return buildEnvKeyFromRaw(session, regime, symbol, direction, agentId);
 }
 
 // ─── Trade Data for Learning ─────────────────────────────────────────

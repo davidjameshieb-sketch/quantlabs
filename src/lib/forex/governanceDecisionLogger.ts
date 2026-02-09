@@ -10,6 +10,8 @@
 import type { GovernanceMultipliers, GovernanceDecision, GateEntry, GateId } from './tradeGovernanceEngine';
 import type { DirectionalBias, QuantLabsSignalSnapshot } from './quantlabsDirectionProvider';
 import type { RiskLabel } from './discoveryRiskEngine';
+import type { AdaptiveEdgeExplain, EnvironmentKey } from './environmentSignature';
+import { supabase } from '@/integrations/supabase/client';
 
 // ─── Decision Log Types ───
 
@@ -65,6 +67,9 @@ export interface GovernanceDecisionLog {
     positionMultiplier: number;
     blockedByDiscoveryRisk: boolean;
   };
+
+  adaptiveEdgeExplain?: AdaptiveEdgeExplain;
+  environmentKey?: EnvironmentKey;
 }
 
 // ─── In-Memory Decision Log Store ───
@@ -105,6 +110,70 @@ export function getRecentDecisionLogs(count: number = 50): GovernanceDecisionLog
 
 export function clearDecisionLogs(): void {
   decisionLogs = [];
+}
+
+// ─── Shadow Evaluation Persistence ───
+
+let _shadowPersistenceHealthy = true;
+
+export function isShadowPersistenceHealthy(): boolean {
+  return _shadowPersistenceHealthy;
+}
+
+export async function persistShadowEvaluation(log: GovernanceDecisionLog): Promise<void> {
+  if (!log.shadowMode) return;
+
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) {
+      // No auth session — skip silently (background process)
+      return;
+    }
+
+    const direction = log.finalDecision.decision === 'BUY' ? 'long'
+      : log.finalDecision.decision === 'SELL' ? 'short' : 'long';
+
+    const { error } = await supabase.from('oanda_orders').insert({
+      user_id: session.user.id,
+      signal_id: `shadow-${Date.now()}-${log.symbol}`,
+      currency_pair: log.symbol.replace('/', '_').toUpperCase(),
+      direction,
+      units: 0,
+      environment: 'shadow',
+      status: 'shadow_eval',
+      session_label: log.marketContextSnapshot.session,
+      regime_label: log.marketContextSnapshot.volatilityPhase,
+      gate_result: log.governance.governanceDecision,
+      gate_reasons: log.governance.gatesTriggered.map(g => g.message),
+      governance_composite: log.governance.compositeScore,
+      governance_payload: {
+        multipliers: log.governance.multipliers,
+        quantlabs: log.quantlabs,
+        finalDecision: log.finalDecision,
+        discoveryRisk: log.discoveryRisk,
+        adaptiveEdgeExplain: log.adaptiveEdgeExplain,
+        environmentKey: log.environmentKey,
+      } as any,
+      confidence_score: log.quantlabs?.directionalConfidence
+        ? Math.round(log.quantlabs.directionalConfidence * 100)
+        : null,
+      quantlabs_bias: log.quantlabs?.directionalBias || null,
+      quantlabs_confidence: log.quantlabs?.directionalConfidence || null,
+      direction_engine: 'shadow-eval',
+      spread_at_entry: log.marketContextSnapshot.spread,
+      agent_id: log.adaptiveEdgeExplain?.envKey?.split('|')[4] || null,
+    });
+
+    if (error) {
+      console.warn('[GOV-LOG] Shadow persistence error:', error.message);
+      _shadowPersistenceHealthy = false;
+    } else {
+      _shadowPersistenceHealthy = true;
+    }
+  } catch (err) {
+    console.warn('[GOV-LOG] Shadow persistence failed:', (err as Error).message);
+    _shadowPersistenceHealthy = false;
+  }
 }
 
 // ─── Analytics Helpers (Fix #6: count by gate ID) ───

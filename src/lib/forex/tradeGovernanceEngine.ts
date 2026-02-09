@@ -14,6 +14,7 @@ import { getGovernanceContextCached, type TradeHistoryEntry } from './governance
 import { getQuantLabsDirection, type DirectionalBias, type QuantLabsDirectionResult } from './quantlabsDirectionProvider';
 import {
   logGovernanceDecision,
+  persistShadowEvaluation,
   type GovernanceDecisionLog,
   type FinalDecision,
 } from './governanceDecisionLogger';
@@ -23,6 +24,16 @@ import {
   getDiscoveryRiskConfig,
   type DiscoveryRiskDecision,
 } from './discoveryRiskEngine';
+import {
+  buildEnvironmentFeatures,
+  buildEnvironmentKey,
+  isAdaptiveEdgeActive,
+  buildExplainability,
+  type AdaptiveEdgeExplain,
+  type EnvironmentKey,
+} from './environmentSignature';
+import { getEdgeMemoryEntry, getDeploymentMode } from './edgeLearningState';
+import { computeAdaptiveAllocation, isShadowValidated } from './adaptiveCapitalAllocator';
 import type { Timeframe } from '@/lib/market/types';
 
 // ─── Re-export from microstructureEngine for convenience ───
@@ -152,6 +163,10 @@ export interface FullGovernanceDecisionResult {
   quantlabsResult: QuantLabsDirectionResult | null;
   shadowMode: boolean;
   discoveryRisk: DiscoveryRiskDecision | null;
+  adaptiveEdgeExplain: AdaptiveEdgeExplain | null;
+  environmentKey: EnvironmentKey | null;
+  finalUnits?: number;
+  allocationMultiplierApplied?: number;
 }
 
 // ─── Aggregate Governance Stats ───
@@ -508,6 +523,8 @@ export const evaluateFullDecision = (
       quantlabsResult: null,
       shadowMode: SHADOW_MODE,
       discoveryRisk: null,
+      adaptiveEdgeExplain: null,
+      environmentKey: null,
     };
   }
 
@@ -583,7 +600,65 @@ export const evaluateFullDecision = (
     logDiscoveryRiskDecision(discoveryRiskResult);
   }
 
-  // ── Step 4: Log decision ──
+  // ── Step 4: Build environment key + adaptive edge explainability ──
+  const directionStr = directionalBias === 'LONG' ? 'long' : directionalBias === 'SHORT' ? 'short' : 'neutral';
+  const spreadPips = ctx.currentSpread > 0 ? ctx.currentSpread * 10000 : 0;
+  const envFeatures = buildEnvironmentFeatures({
+    symbol: proposal.pair,
+    session: ctx.currentSession,
+    regime: ctx.volatilityPhase,
+    direction: directionStr,
+    agentId: '',
+    spreadPips,
+    compositeScore: govResult.multipliers.composite,
+  });
+  const envKey = buildEnvironmentKey(envFeatures);
+
+  // Build explainability
+  let adaptiveExplain: AdaptiveEdgeExplain | null = null;
+
+  if (isAdaptiveEdgeActive()) {
+    const reasons: string[] = [];
+
+    if (discoveryRiskResult?.blockedByDiscoveryRisk) {
+      reasons.push(discoveryRiskResult.isHistoricallyDestructive
+        ? `Historically destructive: ${discoveryRiskResult.environmentLabel}`
+        : `Discovery Risk blocked`);
+    } else if (discoveryRiskResult?.riskLabel === 'EDGE_BOOST') {
+      reasons.push(`Edge candidate: ${discoveryRiskResult.environmentLabel}`);
+    } else if (discoveryRiskResult?.riskLabel === 'REDUCED') {
+      reasons.push('Baseline reduction (0.55x) — not in edge environment');
+    }
+
+    const memEntry = getEdgeMemoryEntry(envKey);
+    const mode = getDeploymentMode();
+    const alloc = computeAdaptiveAllocation(envKey, discoveryRiskResult?.multiplierApplied ?? 1.0);
+
+    if (memEntry) {
+      reasons.push(`Edge confidence: ${(memEntry.edgeConfidence * 100).toFixed(0)}% (${memEntry.learningState})`);
+    }
+    if (alloc.velocityCapped) {
+      reasons.push('Velocity capped — max 10% change per 50 trades');
+    }
+
+    adaptiveExplain = buildExplainability(
+      envKey,
+      !isAdaptiveEdgeActive() ? 'KILL_SWITCH'
+        : discoveryRiskResult?.blockedByDiscoveryRisk ? 'BLOCKED'
+        : discoveryRiskResult?.riskLabel === 'EDGE_BOOST' ? 'EDGE_BOOST'
+        : discoveryRiskResult?.riskLabel === 'REDUCED' ? 'REDUCED'
+        : 'NORMAL',
+      alloc.allocationMultiplier,
+      reasons,
+      memEntry?.learningState ?? 'N/A',
+      memEntry?.tradeCount ?? 0,
+      memEntry?.edgeConfidence ?? 0,
+    );
+  } else {
+    adaptiveExplain = buildExplainability(envKey, 'KILL_SWITCH', 1.0, ['Adaptive Edge disabled (kill-switch)']);
+  }
+
+  // ── Step 5: Log decision ──
   const decisionLog: GovernanceDecisionLog = {
     timestamp: Date.now(),
     symbol: proposal.pair,
@@ -630,9 +705,18 @@ export const evaluateFullDecision = (
       positionMultiplier: discoveryRiskResult.multiplierApplied,
       blockedByDiscoveryRisk: discoveryRiskResult.blockedByDiscoveryRisk,
     } : undefined,
+    adaptiveEdgeExplain: adaptiveExplain ?? undefined,
+    environmentKey: envKey,
   };
 
   logGovernanceDecision(decisionLog);
+
+  // Persist shadow evaluation (fire-and-forget)
+  if (SHADOW_MODE) {
+    persistShadowEvaluation(decisionLog).catch(() => {
+      // Non-blocking — error already logged inside
+    });
+  }
 
   return {
     governanceDecision: govResult.decision,
@@ -646,6 +730,9 @@ export const evaluateFullDecision = (
     quantlabsResult,
     shadowMode: SHADOW_MODE,
     discoveryRisk: discoveryRiskResult,
+    adaptiveEdgeExplain: adaptiveExplain,
+    environmentKey: envKey,
+    allocationMultiplierApplied: adaptiveExplain?.allocationMultiplier ?? 1.0,
   };
 };
 
