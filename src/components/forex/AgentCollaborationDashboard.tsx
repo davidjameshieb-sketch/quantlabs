@@ -1,14 +1,16 @@
 // ═══════════════════════════════════════════════════════════════
-// Agent Collaboration Dashboard
+// Agent Collaboration Dashboard — Execution Grade
 // Section 6 — Network Graph, Heatmap, Leaderboard, Veto Ranking
+// + Collaboration Impact Card (Section 6 addition)
 // ═══════════════════════════════════════════════════════════════
 
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { motion } from 'framer-motion';
-import { Network, Trophy, AlertTriangle, Shield, ToggleLeft, ToggleRight, Lock, Unlock, RotateCcw } from 'lucide-react';
+import { Network, Trophy, AlertTriangle, Shield, RotateCcw, Activity, TrendingUp, TrendingDown, Info } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { cn } from '@/lib/utils';
 import { supabase } from '@/integrations/supabase/client';
 import { AGENT_DEFINITIONS } from '@/lib/agents/agentConfig';
@@ -17,12 +19,15 @@ import {
   CollaborationSnapshot,
   AgentPairStats,
   CollaborationLabel,
+  LearnMode,
 } from '@/lib/agents/agentCollaborationEngine';
 import {
   getCollaborationSafetyState,
   setCollaborationWeightingEnabled,
   setIndependentRoutingMode,
+  getCollaborationImpactStats,
   CollaborationSafetyState,
+  CollaborationImpactStats,
 } from '@/lib/agents/agentCollaborationRouter';
 
 // ─── Color helpers ───────────────────────────────────────────
@@ -43,56 +48,59 @@ const labelBg: Record<CollaborationLabel, string> = {
   INSUFFICIENT_DATA: 'bg-muted/10 border-border/20',
 };
 
+const modeColors: Record<CollaborationImpactStats['currentMode'], string> = {
+  enabled: 'text-neural-green',
+  disabled: 'text-muted-foreground',
+  fallback: 'text-neural-orange',
+  independent: 'text-primary',
+};
+
 // ─── Component ───────────────────────────────────────────────
 
 export const AgentCollaborationDashboard = () => {
   const [snapshot, setSnapshot] = useState<CollaborationSnapshot | null>(null);
   const [safety, setSafety] = useState<CollaborationSafetyState>(getCollaborationSafetyState());
+  const [impact, setImpact] = useState<CollaborationImpactStats>(getCollaborationImpactStats());
   const [loading, setLoading] = useState(true);
+  const [learnMode, setLearnMode] = useState<LearnMode>('live+practice');
 
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
       const { data } = await supabase
         .from('oanda_orders')
-        .select('agent_id, direction, currency_pair, entry_price, exit_price, status, created_at, confidence_score, session_label, governance_composite')
+        .select('agent_id, direction, currency_pair, entry_price, exit_price, status, created_at, confidence_score, session_label, governance_composite, environment, regime_label')
         .eq('status', 'closed')
         .not('agent_id', 'is', null)
         .order('created_at', { ascending: false })
         .limit(1000);
 
       if (data && data.length > 0) {
-        const snap = analyzeAgentCollaboration(data as any);
+        const snap = analyzeAgentCollaboration(data as any, learnMode);
         setSnapshot(snap);
       }
+      setImpact(getCollaborationImpactStats());
     } catch (err) {
       console.error('[Collaboration] Fetch error:', err);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [learnMode]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
-  // Sorted views
   const synergyLeaderboard = useMemo(() =>
-    snapshot?.pairStats
-      .filter(p => p.label === 'SYNERGY')
-      .sort((a, b) => b.pairedExpectancy - a.pairedExpectancy) || [],
+    snapshot?.pairStats.filter(p => p.label === 'SYNERGY').sort((a, b) => b.pairedExpectancy - a.pairedExpectancy) || [],
     [snapshot]
   );
 
   const conflicts = useMemo(() =>
-    snapshot?.pairStats
-      .filter(p => p.label === 'CONFLICT')
-      .sort((a, b) => a.pairedExpectancy - b.pairedExpectancy) || [],
+    snapshot?.pairStats.filter(p => p.label === 'CONFLICT').sort((a, b) => a.pairedExpectancy - b.pairedExpectancy) || [],
     [snapshot]
   );
 
   const vetoPairs = useMemo(() =>
-    snapshot?.pairStats
-      .filter(p => p.label === 'PREDICTIVE-VETO')
-      .sort((a, b) => b.vetoSuccessRate - a.vetoSuccessRate) || [],
+    snapshot?.pairStats.filter(p => p.label === 'PREDICTIVE-VETO').sort((a, b) => b.vetoSuccessRate - a.vetoSuccessRate) || [],
     [snapshot]
   );
 
@@ -101,17 +109,18 @@ export const AgentCollaborationDashboard = () => {
   const agentName = (id: string) => AGENT_DEFINITIONS[id as keyof typeof AGENT_DEFINITIONS]?.name || id;
   const agentIcon = (id: string) => AGENT_DEFINITIONS[id as keyof typeof AGENT_DEFINITIONS]?.icon || '🤖';
 
-  // Safety toggles
   const handleToggleWeighting = () => {
     const newVal = !safety.collaborationWeightingEnabled;
     setCollaborationWeightingEnabled(newVal);
     setSafety(getCollaborationSafetyState());
+    setImpact(getCollaborationImpactStats());
   };
 
   const handleToggleIndependent = () => {
     const newVal = !safety.independentRoutingMode;
     setIndependentRoutingMode(newVal);
     setSafety(getCollaborationSafetyState());
+    setImpact(getCollaborationImpactStats());
   };
 
   if (loading) {
@@ -132,16 +141,72 @@ export const AgentCollaborationDashboard = () => {
           <Badge variant="outline" className="text-[9px]">
             {allPairs.length} pairs tracked
           </Badge>
+          <Badge variant="outline" className="text-[9px]">
+            {snapshot?.learnMode || learnMode}
+          </Badge>
         </div>
-        <Button size="sm" variant="ghost" onClick={fetchData} className="text-[10px] h-7">
-          <RotateCcw className="w-3 h-3 mr-1" /> Refresh
-        </Button>
+        <div className="flex items-center gap-2">
+          <Select value={learnMode} onValueChange={(v) => setLearnMode(v as LearnMode)}>
+            <SelectTrigger className="h-7 text-[10px] w-[130px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="live+practice">Live + Practice</SelectItem>
+              <SelectItem value="backtest">Backtest Only</SelectItem>
+              <SelectItem value="all">All Environments</SelectItem>
+            </SelectContent>
+          </Select>
+          <Button size="sm" variant="ghost" onClick={fetchData} className="text-[10px] h-7">
+            <RotateCcw className="w-3 h-3 mr-1" /> Refresh
+          </Button>
+        </div>
       </div>
 
-      {/* Safety Controls — Section 7 */}
+      {/* Collaboration Impact Card */}
       <motion.div
         initial={{ opacity: 0, y: 5 }}
         animate={{ opacity: 1, y: 0 }}
+        className="p-4 rounded-xl bg-card/50 border border-border/30"
+      >
+        <h3 className="text-xs font-display font-bold mb-3 flex items-center gap-1.5">
+          <Activity className="w-3.5 h-3.5 text-primary" /> Collaboration Impact
+        </h3>
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <div className="p-2.5 rounded-lg bg-muted/10 border border-border/20">
+            <div className="text-[9px] text-muted-foreground mb-1">Pips Saved (Veto/Conflict)</div>
+            <div className={cn('font-mono text-sm font-bold', impact.netPipsSavedByVeto >= 0 ? 'text-neural-green' : 'text-neural-red')}>
+              {impact.netPipsSavedByVeto >= 0 ? '+' : ''}{impact.netPipsSavedByVeto.toFixed(1)}p
+            </div>
+          </div>
+          <div className="p-2.5 rounded-lg bg-muted/10 border border-border/20">
+            <div className="text-[9px] text-muted-foreground mb-1">Pips Gained (Synergy)</div>
+            <div className={cn('font-mono text-sm font-bold', impact.netPipsGainedBySynergy >= 0 ? 'text-neural-green' : 'text-neural-red')}>
+              {impact.netPipsGainedBySynergy >= 0 ? '+' : ''}{impact.netPipsGainedBySynergy.toFixed(1)}p
+            </div>
+          </div>
+          <div className="p-2.5 rounded-lg bg-muted/10 border border-border/20">
+            <div className="text-[9px] text-muted-foreground mb-1">Decisions Changed</div>
+            <div className="font-mono text-sm font-bold text-foreground">
+              {impact.decisionsChangedByCollaboration}
+            </div>
+          </div>
+          <div className="p-2.5 rounded-lg bg-muted/10 border border-border/20">
+            <div className="text-[9px] text-muted-foreground mb-1">Mode</div>
+            <div className={cn('text-sm font-bold uppercase', modeColors[impact.currentMode])}>
+              {impact.currentMode}
+            </div>
+            {impact.currentMode === 'fallback' && (
+              <div className="text-[8px] text-neural-orange mt-0.5">Auto-disabled for 24h</div>
+            )}
+          </div>
+        </div>
+      </motion.div>
+
+      {/* Safety Controls */}
+      <motion.div
+        initial={{ opacity: 0, y: 5 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.02 }}
         className="p-3 rounded-lg bg-card/30 border border-border/30 flex flex-wrap gap-4 items-center"
       >
         <div className="flex items-center gap-2">
@@ -149,24 +214,16 @@ export const AgentCollaborationDashboard = () => {
           <span className="text-[10px] text-muted-foreground">Safety Controls</span>
         </div>
         <label className="flex items-center gap-1.5 text-[10px] cursor-pointer">
-          <Switch
-            checked={safety.collaborationWeightingEnabled}
-            onCheckedChange={handleToggleWeighting}
-            className="scale-75"
-          />
+          <Switch checked={safety.collaborationWeightingEnabled} onCheckedChange={handleToggleWeighting} className="scale-75" />
           Collaboration Weighting
         </label>
         <label className="flex items-center gap-1.5 text-[10px] cursor-pointer">
-          <Switch
-            checked={safety.independentRoutingMode}
-            onCheckedChange={handleToggleIndependent}
-            className="scale-75"
-          />
+          <Switch checked={safety.independentRoutingMode} onCheckedChange={handleToggleIndependent} className="scale-75" />
           Independent Routing
         </label>
       </motion.div>
 
-      {/* Relationship Network Graph (simplified grid) */}
+      {/* Conflict Heatmap */}
       <motion.div
         initial={{ opacity: 0, y: 10 }}
         animate={{ opacity: 1, y: 0 }}
@@ -185,10 +242,7 @@ export const AgentCollaborationDashboard = () => {
             {allPairs.map((pair, i) => (
               <div
                 key={i}
-                className={cn(
-                  'flex items-center gap-2 px-2 py-1.5 rounded border text-[10px]',
-                  labelBg[pair.label]
-                )}
+                className={cn('flex items-center gap-2 px-2 py-1.5 rounded border text-[10px]', labelBg[pair.label])}
               >
                 <span className="shrink-0">{agentIcon(pair.agentA)}</span>
                 <span className="font-medium w-24 truncate">{agentName(pair.agentA)}</span>
@@ -198,30 +252,20 @@ export const AgentCollaborationDashboard = () => {
                 <Badge variant="outline" className={cn('text-[8px] px-1.5 py-0', labelColor[pair.label])}>
                   {pair.label}
                 </Badge>
-                <span className="text-muted-foreground ml-auto font-mono">
-                  {pair.pairedTrades} trades
-                </span>
+                <span className="text-muted-foreground ml-auto font-mono">{pair.pairedTrades} trades</span>
                 <span className={cn('font-mono', pair.pairedExpectancy >= 0 ? 'text-neural-green' : 'text-neural-red')}>
                   {pair.pairedExpectancy >= 0 ? '+' : ''}{pair.pairedExpectancy}p
                 </span>
-                <span className="text-muted-foreground font-mono">
-                  PF {pair.coApprovalProfitFactor}
-                </span>
+                <span className="text-muted-foreground font-mono">PF {pair.coApprovalProfitFactor}</span>
               </div>
             ))}
           </div>
         )}
       </motion.div>
 
-      {/* Synergy Leaderboard + Conflict + Veto */}
+      {/* Synergy + Conflict + Veto */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        {/* Synergy Leaderboard */}
-        <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.1 }}
-          className="p-4 rounded-xl bg-card/50 border border-neural-green/20"
-        >
+        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }} className="p-4 rounded-xl bg-card/50 border border-neural-green/20">
           <h3 className="text-xs font-display font-bold mb-2 flex items-center gap-1.5 text-neural-green">
             <Trophy className="w-3.5 h-3.5" /> Synergy Leaderboard
           </h3>
@@ -242,13 +286,7 @@ export const AgentCollaborationDashboard = () => {
           )}
         </motion.div>
 
-        {/* Conflict Zone */}
-        <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.15 }}
-          className="p-4 rounded-xl bg-card/50 border border-neural-red/20"
-        >
+        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.15 }} className="p-4 rounded-xl bg-card/50 border border-neural-red/20">
           <h3 className="text-xs font-display font-bold mb-2 flex items-center gap-1.5 text-neural-red">
             <AlertTriangle className="w-3.5 h-3.5" /> Conflict Zone
           </h3>
@@ -269,13 +307,7 @@ export const AgentCollaborationDashboard = () => {
           )}
         </motion.div>
 
-        {/* Veto Efficiency */}
-        <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.2 }}
-          className="p-4 rounded-xl bg-card/50 border border-primary/20"
-        >
+        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }} className="p-4 rounded-xl bg-card/50 border border-primary/20">
           <h3 className="text-xs font-display font-bold mb-2 flex items-center gap-1.5 text-primary">
             <Shield className="w-3.5 h-3.5" /> Veto Efficiency
           </h3>
@@ -288,7 +320,12 @@ export const AgentCollaborationDashboard = () => {
                   <span>{agentIcon(pair.agentA)} {agentName(pair.agentA)}</span>
                   <span className="text-primary">→ veto →</span>
                   <span>{agentIcon(pair.agentB)} {agentName(pair.agentB)}</span>
-                  <span className="ml-auto text-primary font-mono">{(pair.vetoSuccessRate * 100).toFixed(0)}%</span>
+                  <span className="ml-auto font-mono">
+                    <span className="text-primary">{(pair.vetoPrecision * 100).toFixed(0)}%</span>
+                    <span className="text-muted-foreground mx-1">prec</span>
+                    <span className="text-neural-red">{(pair.falseVetoRate * 100).toFixed(0)}%</span>
+                    <span className="text-muted-foreground ml-1">false</span>
+                  </span>
                 </div>
               ))}
             </div>
@@ -297,12 +334,7 @@ export const AgentCollaborationDashboard = () => {
       </div>
 
       {/* Pair Performance Delta Table */}
-      <motion.div
-        initial={{ opacity: 0, y: 10 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.25 }}
-        className="p-4 rounded-xl bg-card/50 border border-border/30"
-      >
+      <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.25 }} className="p-4 rounded-xl bg-card/50 border border-border/30">
         <h3 className="text-xs font-display font-bold mb-3">Pair Performance Delta</h3>
         <div className="overflow-x-auto">
           <table className="w-full text-[10px]">
@@ -317,6 +349,7 @@ export const AgentCollaborationDashboard = () => {
                 <th className="text-right py-1 px-2">WR%</th>
                 <th className="text-right py-1 px-2">Sharpe</th>
                 <th className="text-right py-1 px-2">Conflict%</th>
+                <th className="text-right py-1 px-2">Veto Prec</th>
                 <th className="text-center py-1 px-2">Label</th>
               </tr>
             </thead>
@@ -326,26 +359,22 @@ export const AgentCollaborationDashboard = () => {
                 const soloB = snapshot?.singleAgentStats[pair.agentB]?.soloExpectancy || 0;
                 const avgSolo = (soloA + soloB) / 2;
                 const delta = pair.pairedExpectancy - avgSolo;
-
                 return (
                   <tr key={i} className="border-b border-border/10 hover:bg-muted/5">
                     <td className="py-1 px-2">{agentIcon(pair.agentA)} {agentName(pair.agentA)}</td>
                     <td className="py-1 px-2">{agentIcon(pair.agentB)} {agentName(pair.agentB)}</td>
                     <td className="text-right py-1 px-2 font-mono">{soloA}p</td>
                     <td className="text-right py-1 px-2 font-mono">{soloB}p</td>
-                    <td className={cn('text-right py-1 px-2 font-mono font-medium',
-                      pair.pairedExpectancy >= 0 ? 'text-neural-green' : 'text-neural-red'
-                    )}>
+                    <td className={cn('text-right py-1 px-2 font-mono font-medium', pair.pairedExpectancy >= 0 ? 'text-neural-green' : 'text-neural-red')}>
                       {pair.pairedExpectancy >= 0 ? '+' : ''}{pair.pairedExpectancy}p
                     </td>
-                    <td className={cn('text-right py-1 px-2 font-mono',
-                      delta >= 0 ? 'text-neural-green' : 'text-neural-red'
-                    )}>
+                    <td className={cn('text-right py-1 px-2 font-mono', delta >= 0 ? 'text-neural-green' : 'text-neural-red')}>
                       {delta >= 0 ? '+' : ''}{delta.toFixed(2)}p
                     </td>
                     <td className="text-right py-1 px-2 font-mono">{pair.pairedWinRate}%</td>
                     <td className="text-right py-1 px-2 font-mono">{pair.pairedSharpe}</td>
                     <td className="text-right py-1 px-2 font-mono">{(pair.conflictFrequency * 100).toFixed(0)}%</td>
+                    <td className="text-right py-1 px-2 font-mono">{(pair.vetoPrecision * 100).toFixed(0)}%</td>
                     <td className="text-center py-1 px-2">
                       <Badge variant="outline" className={cn('text-[8px] px-1 py-0', labelColor[pair.label])}>
                         {pair.label}
@@ -361,12 +390,7 @@ export const AgentCollaborationDashboard = () => {
 
       {/* Drift Events */}
       {snapshot && snapshot.driftEvents.length > 0 && (
-        <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.3 }}
-          className="p-4 rounded-xl bg-card/50 border border-neural-orange/20"
-        >
+        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }} className="p-4 rounded-xl bg-card/50 border border-neural-orange/20">
           <h3 className="text-xs font-display font-bold mb-2 flex items-center gap-1.5 text-neural-orange">
             <AlertTriangle className="w-3.5 h-3.5" /> Collaboration Drift Events
           </h3>

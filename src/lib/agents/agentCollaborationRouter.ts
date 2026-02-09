@@ -1,6 +1,6 @@
 // ═══════════════════════════════════════════════════════════════
-// Agent Collaboration Router
-// Sections 3, 4, 7, 8 — Authority Adjustment, Voting, Safety, Logging
+// Agent Collaboration Router — Execution Grade
+// Sections 3, 4, 7, 8 — Authority, Voting, Safety, Logging
 // ═══════════════════════════════════════════════════════════════
 
 import { AgentId } from './types';
@@ -14,8 +14,8 @@ import {
 
 export interface AuthorityAdjustment {
   agentId: AgentId;
-  baseAuthority: number;          // 1.0 = default
-  collaborationMultiplier: number; // synergy boosts, conflict reduces
+  baseAuthority: number;
+  collaborationMultiplier: number;
   finalAuthority: number;
   reason: string;
 }
@@ -36,19 +36,32 @@ export interface VotingResult {
   explanation: string;
 }
 
-export interface CollaborationLog {
+export interface CollaborationDecisionLog {
   timestamp: number;
   collaboratingAgents: AgentId[];
   collaborationScores: Record<string, CollaborationLabel>;
   authorityAdjustments: AuthorityAdjustment[];
   vetoTriggers: string[];
-  votingResult: VotingResult | null;
+  baselineVotingResult: VotingResult | null;
+  weightedVotingResult: VotingResult | null;
+  outcomeChanged: boolean;
+  topCollaborationFactors: string[];
+  finalDecisionReason: string;
 }
 
 export interface CollaborationSafetyState {
   collaborationWeightingEnabled: boolean;
   frozenPairs: Set<string>;
   independentRoutingMode: boolean;
+  fallbackUntilTs: number | null;
+  fallbackReason: string | null;
+}
+
+export interface CollaborationImpactStats {
+  netPipsSavedByVeto: number;
+  netPipsGainedBySynergy: number;
+  decisionsChangedByCollaboration: number;
+  currentMode: 'enabled' | 'disabled' | 'fallback' | 'independent';
 }
 
 // ─── Constants ───────────────────────────────────────────────
@@ -59,16 +72,62 @@ const CONFLICT_REDUCE_MIN = 0.30;
 const CONFLICT_REDUCE_MAX = 0.60;
 const VOTING_THRESHOLD = 0.55;
 
+// Velocity limit: max 10% change per 50 evaluated opportunities
+const VELOCITY_MAX_CHANGE = 0.10;
+const VELOCITY_WINDOW = 50;
+
+// Fallback: if collaboration-weighted expectancy < baseline by 20% over 100 trades → disable 24h
+const FALLBACK_LOOKBACK = 100;
+const FALLBACK_DEGRADATION_THRESHOLD = 0.20;
+const FALLBACK_DURATION_MS = 24 * 60 * 60 * 1000;
+
 // ─── Safety State ────────────────────────────────────────────
 
 let safetyState: CollaborationSafetyState = {
   collaborationWeightingEnabled: true,
   frozenPairs: new Set(),
   independentRoutingMode: false,
+  fallbackUntilTs: null,
+  fallbackReason: null,
 };
+
+// Velocity tracking: previous authority per agent
+let previousAuthorities: Map<string, number> = new Map();
+let evaluationCount = 0;
+
+// Impact tracking
+let impactStats: CollaborationImpactStats = {
+  netPipsSavedByVeto: 0,
+  netPipsGainedBySynergy: 0,
+  decisionsChangedByCollaboration: 0,
+  currentMode: 'enabled',
+};
+
+// ─── Getters / Setters ───────────────────────────────────────
 
 export function getCollaborationSafetyState(): CollaborationSafetyState {
   return { ...safetyState, frozenPairs: new Set(safetyState.frozenPairs) };
+}
+
+export function getCollaborationImpactStats(): CollaborationImpactStats {
+  return { ...impactStats, currentMode: resolveCurrentMode() };
+}
+
+function resolveCurrentMode(): CollaborationImpactStats['currentMode'] {
+  if (safetyState.independentRoutingMode) return 'independent';
+  if (!safetyState.collaborationWeightingEnabled) return 'disabled';
+  if (safetyState.fallbackUntilTs && Date.now() < safetyState.fallbackUntilTs) return 'fallback';
+  return 'enabled';
+}
+
+export function resetImpactStats(): void {
+  impactStats = { netPipsSavedByVeto: 0, netPipsGainedBySynergy: 0, decisionsChangedByCollaboration: 0, currentMode: 'enabled' };
+}
+
+export function recordImpact(pipsSavedByVeto: number, pipsGainedBySynergy: number, outcomeChanged: boolean): void {
+  impactStats.netPipsSavedByVeto += pipsSavedByVeto;
+  impactStats.netPipsGainedBySynergy += pipsGainedBySynergy;
+  if (outcomeChanged) impactStats.decisionsChangedByCollaboration++;
 }
 
 export function setCollaborationWeightingEnabled(enabled: boolean): void {
@@ -87,21 +146,69 @@ export function unfreezeAgentPair(agentA: AgentId, agentB: AgentId): void {
   safetyState.frozenPairs.delete([agentA, agentB].sort().join('::'));
 }
 
+// ─── Fallback Logic ──────────────────────────────────────────
+
+export function checkFallbackTrigger(
+  collaborationWeightedExpectancy: number,
+  baselineExpectancy: number,
+): boolean {
+  if (baselineExpectancy <= 0) return false;
+  const degradation = (baselineExpectancy - collaborationWeightedExpectancy) / Math.abs(baselineExpectancy);
+  if (degradation >= FALLBACK_DEGRADATION_THRESHOLD) {
+    safetyState.fallbackUntilTs = Date.now() + FALLBACK_DURATION_MS;
+    safetyState.fallbackReason = `Weighted expectancy ${collaborationWeightedExpectancy.toFixed(2)}p is ${(degradation * 100).toFixed(0)}% worse than baseline ${baselineExpectancy.toFixed(2)}p — fallback for 24h`;
+    console.log(`[COLLAB-ROUTER] FALLBACK TRIGGERED: ${safetyState.fallbackReason}`);
+    return true;
+  }
+  return false;
+}
+
+export function isFallbackActive(): boolean {
+  return safetyState.fallbackUntilTs !== null && Date.now() < safetyState.fallbackUntilTs;
+}
+
+export function clearFallback(): void {
+  safetyState.fallbackUntilTs = null;
+  safetyState.fallbackReason = null;
+}
+
+// ─── Velocity Clamp ──────────────────────────────────────────
+
+function applyVelocityClamp(agentId: AgentId, rawMultiplier: number): number {
+  const prev = previousAuthorities.get(agentId) ?? 1.0;
+  const maxDelta = VELOCITY_MAX_CHANGE;
+  const clamped = Math.max(prev - maxDelta, Math.min(prev + maxDelta, rawMultiplier));
+  return clamped;
+}
+
+function isWeightingActive(): boolean {
+  if (!safetyState.collaborationWeightingEnabled) return false;
+  if (safetyState.independentRoutingMode) return false;
+  if (isFallbackActive()) return false;
+  return true;
+}
+
 // ─── SECTION 3: Trade Authority Adjustment ───────────────────
 
 export function computeAuthorityAdjustments(
   snapshot: CollaborationSnapshot,
   participatingAgents: AgentId[]
 ): AuthorityAdjustment[] {
-  if (!safetyState.collaborationWeightingEnabled || safetyState.independentRoutingMode) {
+  evaluationCount++;
+
+  if (!isWeightingActive()) {
+    const reason = safetyState.independentRoutingMode
+      ? 'Independent routing mode'
+      : isFallbackActive()
+        ? `Automatic fallback active: ${safetyState.fallbackReason || 'performance degradation'}`
+        : 'Collaboration weighting disabled';
+
     return participatingAgents.map(id => ({
       agentId: id,
       baseAuthority: 1.0,
       collaborationMultiplier: 1.0,
       finalAuthority: 1.0,
-      reason: safetyState.independentRoutingMode
-        ? 'Independent routing mode — no collaboration weighting'
-        : 'Collaboration weighting disabled',
+      reason,
     }));
   }
 
@@ -111,7 +218,6 @@ export function computeAuthorityAdjustments(
     let multiplier = 1.0;
     const reasons: string[] = [];
 
-    // Find all pair relationships for this agent
     const relevantPairs = snapshot.pairStats.filter(
       p => (p.agentA === agentId || p.agentB === agentId) &&
            participatingAgents.includes(p.agentA) &&
@@ -135,7 +241,6 @@ export function computeAuthorityAdjustments(
           break;
         }
         case 'CONFLICT': {
-          // Secondary agent (lower solo expectancy) gets reduced
           const selfExp = snapshot.singleAgentStats[agentId]?.soloExpectancy || 0;
           const partnerExp = snapshot.singleAgentStats[partner]?.soloExpectancy || 0;
           if (selfExp < partnerExp) {
@@ -146,7 +251,6 @@ export function computeAuthorityAdjustments(
           break;
         }
         case 'PREDICTIVE-VETO': {
-          // Veto agent keeps authority, target gets reduced
           const selfExp = snapshot.singleAgentStats[agentId]?.soloExpectancy || 0;
           const partnerExp = snapshot.singleAgentStats[partner]?.soloExpectancy || 0;
           if (selfExp < partnerExp) {
@@ -161,11 +265,23 @@ export function computeAuthorityAdjustments(
       }
     }
 
+    // Apply velocity clamp (max 10% change per window)
+    const velocityClamped = applyVelocityClamp(agentId, multiplier);
+    if (Math.abs(velocityClamped - multiplier) > 0.001) {
+      reasons.push(`Velocity clamped: raw ${multiplier.toFixed(3)} → ${velocityClamped.toFixed(3)}`);
+    }
+
+    // Hard clamp [0.1, 2.0]
+    const final = Math.round(Math.max(0.1, Math.min(2.0, velocityClamped)) * 100) / 100;
+
+    // Update velocity tracker
+    previousAuthorities.set(agentId, final);
+
     adjustments.push({
       agentId,
       baseAuthority: 1.0,
-      collaborationMultiplier: Math.round(multiplier * 100) / 100,
-      finalAuthority: Math.round(Math.max(0.1, Math.min(2.0, multiplier)) * 100) / 100,
+      collaborationMultiplier: Math.round(velocityClamped * 100) / 100,
+      finalAuthority: final,
       reason: reasons.length > 0 ? reasons.join('; ') : 'No active pair relationships',
     });
   }
@@ -177,7 +293,7 @@ export function computeAuthorityAdjustments(
 
 export function computeWeightedVote(
   participatingAgents: AgentId[],
-  agentConfidences: Record<string, number>,  // edge confidence per agent
+  agentConfidences: Record<string, number>,
   authorityAdjustments: AuthorityAdjustment[],
   snapshot: CollaborationSnapshot,
   threshold: number = VOTING_THRESHOLD
@@ -189,7 +305,6 @@ export function computeWeightedVote(
     const authority = authMap.get(agentId) || 1.0;
     const edgeConfidence = agentConfidences[agentId] || 0.5;
 
-    // Collaboration score: average pair label quality
     const pairScores = snapshot.pairStats
       .filter(p => p.agentA === agentId || p.agentB === agentId)
       .map(p => {
@@ -235,14 +350,33 @@ export function computeWeightedVote(
   };
 }
 
+/**
+ * Compute baseline vote (all agents with 1.0 authority) for comparison
+ */
+export function computeBaselineVote(
+  participatingAgents: AgentId[],
+  agentConfidences: Record<string, number>,
+  snapshot: CollaborationSnapshot,
+  threshold: number = VOTING_THRESHOLD
+): VotingResult {
+  const baselineAdjustments: AuthorityAdjustment[] = participatingAgents.map(id => ({
+    agentId: id,
+    baseAuthority: 1.0,
+    collaborationMultiplier: 1.0,
+    finalAuthority: 1.0,
+    reason: 'baseline',
+  }));
+  return computeWeightedVote(participatingAgents, agentConfidences, baselineAdjustments, snapshot, threshold);
+}
+
 // ─── SECTION 8: Explainability Logging ──────────────────────
 
-export function createCollaborationLog(
+export function createCollaborationDecisionLog(
   participatingAgents: AgentId[],
   snapshot: CollaborationSnapshot,
   authorityAdjustments: AuthorityAdjustment[],
-  votingResult: VotingResult | null
-): CollaborationLog {
+  agentConfidences: Record<string, number>,
+): CollaborationDecisionLog {
   const collaborationScores: Record<string, CollaborationLabel> = {};
   const vetoTriggers: string[] = [];
 
@@ -251,10 +385,26 @@ export function createCollaborationLog(
     collaborationScores[pk] = pair.label;
     if (pair.label === 'PREDICTIVE-VETO') {
       vetoTriggers.push(
-        `${pair.agentA} ↔ ${pair.agentB}: veto success rate ${(pair.vetoSuccessRate * 100).toFixed(0)}%`
+        `${pair.agentA} ↔ ${pair.agentB}: precision ${(pair.vetoPrecision * 100).toFixed(0)}%, false-veto ${(pair.falseVetoRate * 100).toFixed(0)}%`
       );
     }
   }
+
+  // Compute both baseline and weighted votes
+  const baselineVote = computeBaselineVote(participatingAgents, agentConfidences, snapshot);
+  const weightedVote = computeWeightedVote(participatingAgents, agentConfidences, authorityAdjustments, snapshot);
+  const outcomeChanged = baselineVote.approved !== weightedVote.approved;
+
+  // Top 3 collaboration factors
+  const topFactors = authorityAdjustments
+    .filter(a => a.reason !== 'No active pair relationships' && a.reason !== 'baseline')
+    .sort((a, b) => Math.abs(b.collaborationMultiplier - 1.0) - Math.abs(a.collaborationMultiplier - 1.0))
+    .slice(0, 3)
+    .map(a => `${a.agentId}: ${a.reason}`);
+
+  const finalDecisionReason = outcomeChanged
+    ? `Collaboration changed outcome: baseline=${baselineVote.approved ? 'APPROVED' : 'BLOCKED'}, weighted=${weightedVote.approved ? 'APPROVED' : 'BLOCKED'}. Top factors: ${topFactors.join('; ')}`
+    : `Collaboration confirmed outcome (${weightedVote.approved ? 'APPROVED' : 'BLOCKED'}). Top factors: ${topFactors.join('; ') || 'none'}`;
 
   return {
     timestamp: Date.now(),
@@ -262,6 +412,27 @@ export function createCollaborationLog(
     collaborationScores,
     authorityAdjustments,
     vetoTriggers,
+    baselineVotingResult: baselineVote,
+    weightedVotingResult: weightedVote,
+    outcomeChanged,
+    topCollaborationFactors: topFactors,
+    finalDecisionReason,
+  };
+}
+
+// Legacy compat
+export function createCollaborationLog(
+  participatingAgents: AgentId[],
+  snapshot: CollaborationSnapshot,
+  authorityAdjustments: AuthorityAdjustment[],
+  votingResult: VotingResult | null
+) {
+  return {
+    timestamp: Date.now(),
+    collaboratingAgents: participatingAgents,
+    collaborationScores: {} as Record<string, CollaborationLabel>,
+    authorityAdjustments,
+    vetoTriggers: [] as string[],
     votingResult,
   };
 }
