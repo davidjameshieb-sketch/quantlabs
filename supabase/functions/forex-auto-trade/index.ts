@@ -946,10 +946,12 @@ Deno.serve(async (req) => {
       const orderTimestamp = Date.now();
 
       // ═══════════════════════════════════════════════════════════
-      // DISCOVERY RISK MODE — Environment classification overlay
+      // DISCOVERY RISK MODE + ADAPTIVE EDGE ALLOCATION
       // Does NOT change governance gates/multipliers. Only blocks
       // historically destructive environments and adjusts sizing.
+      // Kill-switch: ADAPTIVE_EDGE_ENABLED flag
       // ═══════════════════════════════════════════════════════════
+      const ADAPTIVE_EDGE_ENABLED = true;
       const DISCOVERY_RISK_MODE = true;
       const EDGE_BOOST_MULTIPLIER = 1.35;
       const BASELINE_REDUCTION_MULTIPLIER = 0.55;
@@ -959,8 +961,10 @@ Deno.serve(async (req) => {
       let discoveryRiskLabel = "NORMAL";
       let discoveryMultiplier = 1.0;
       let discoveryBlocked = false;
+      let envKey = `${session}|${regime}|${signal.pair}|${signal.direction}|${signal.agentId}`;
+      const explainReasons: string[] = [];
 
-      if (DISCOVERY_RISK_MODE && !forceMode) {
+      if (DISCOVERY_RISK_MODE && !forceMode && ADAPTIVE_EDGE_ENABLED) {
         const sym = signal.pair.toUpperCase();
         const dir = signal.direction;
         const baseSpread = PAIR_BASE_SPREADS[signal.pair] || 1.5;
@@ -995,15 +999,23 @@ Deno.serve(async (req) => {
           discoveryRiskLabel = "BLOCKED";
           discoveryMultiplier = 0;
           discoveryBlocked = true;
+          if (isAudCross) explainReasons.push("AUD cross pair blocked");
+          else if (sym === "GBP_USD" || sym === "GBP_JPY") explainReasons.push(`${sym} blocked`);
+          else if (signal.agentId === "sentiment-reactor" || signal.agentId === "range-navigator") explainReasons.push(`Agent ${signal.agentId} blocked`);
+          else if (session === "rollover" && dir === "short") explainReasons.push("Rollover short blocked");
+          else if (spreadPips > SPREAD_BLOCK_THRESHOLD) explainReasons.push(`Spread ${spreadPips.toFixed(1)}p > ${SPREAD_BLOCK_THRESHOLD}p`);
+          else explainReasons.push("Ignition + low composite");
         } else if (isEdge) {
           discoveryRiskLabel = "EDGE_BOOST";
           discoveryMultiplier = EDGE_BOOST_MULTIPLIER;
+          explainReasons.push(`Edge candidate: ${session} ${regime} ${dir}`);
         } else {
           discoveryRiskLabel = "REDUCED";
           discoveryMultiplier = BASELINE_REDUCTION_MULTIPLIER;
+          explainReasons.push("Baseline reduction — not in edge environment");
         }
 
-        console.log(`[SCALP-TRADE] Discovery Risk: ${signal.pair} ${dir} → ${discoveryRiskLabel} (mult=${discoveryMultiplier})`);
+        console.log(`[SCALP-TRADE] Discovery Risk: ${signal.pair} ${dir} → ${discoveryRiskLabel} (mult=${discoveryMultiplier}) env=${envKey}`);
 
         if (discoveryBlocked) {
           // Log shadow evaluation even for blocked trades
@@ -1020,8 +1032,9 @@ Deno.serve(async (req) => {
             session_label: session,
             regime_label: regime,
             gate_result: `DISCOVERY_BLOCKED:${discoveryRiskLabel}`,
-            gate_reasons: [`Discovery Risk: ${discoveryRiskLabel}`],
+            gate_reasons: explainReasons.length > 0 ? explainReasons : [`Discovery Risk: ${discoveryRiskLabel}`],
             friction_score: gate.frictionScore,
+            governance_payload: { envKey, discoveryRiskLabel, adaptiveEdgeEnabled: ADAPTIVE_EDGE_ENABLED, explainReasons },
           });
 
           results.push({
@@ -1031,6 +1044,11 @@ Deno.serve(async (req) => {
           });
           continue;
         }
+      } else if (!ADAPTIVE_EDGE_ENABLED && !forceMode) {
+        // Kill-switch active — force multiplier to 1.0
+        discoveryMultiplier = 1.0;
+        discoveryRiskLabel = "NORMAL";
+        explainReasons.push("Adaptive Edge disabled (kill-switch)");
       }
 
       // ─── Dynamic Position Sizing (governance + pair + session + discovery aware) ───
@@ -1060,6 +1078,15 @@ Deno.serve(async (req) => {
           gate_result: gate.result,
           gate_reasons: gate.reasons.length > 0 ? gate.reasons : null,
           friction_score: gate.frictionScore,
+          governance_payload: {
+            envKey,
+            discoveryRiskLabel,
+            discoveryMultiplier,
+            adaptiveEdgeEnabled: ADAPTIVE_EDGE_ENABLED,
+            explainReasons,
+            baseUnits: baseTradeUnits,
+            finalUnits: tradeUnits,
+          },
         })
         .select()
         .single();

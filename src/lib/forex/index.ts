@@ -46,3 +46,10 @@ export { computeAdaptiveAllocation, computeShadowValidation, getShadowValidation
 export type { AdaptiveAllocationResult, ShadowValidationState, AdaptiveAllocatorConfig } from './adaptiveCapitalAllocator';
 export { runDriftMonitor, detectDrift, getActiveAlerts, getReversionLog, triggerReversion, clearDriftMonitor, getDriftMonitorConfig, setDriftMonitorConfig } from './edgeDriftMonitor';
 export type { DriftAlert, DriftMonitorState, ReversionEntry, DriftMonitorConfig } from './edgeDriftMonitor';
+
+// ─── Environment Signature (unified) ───
+export { buildEnvironmentFeatures, buildEnvironmentKey, buildExtendedEnvironmentKey, buildShortEnvironmentKey, buildEnvKeyFromRaw, normalizeSession, normalizeRegime, normalizeDirection, normalizeSymbol, computeSpreadBucket, computeCompositeDecile, isAdaptiveEdgeActive, setAdaptiveEdgeEnabled, getAdaptiveEdgeEnabled, setForceBaselineUntil, getForceBaselineUntilTs, buildExplainability } from './environmentSignature';
+export type { EnvironmentFeatures, EnvironmentKey, EnvironmentInput, AdaptiveEdgeExplain } from './environmentSignature';
+
+// ─── Shadow Persistence ───
+export { isShadowPersistenceHealthy, persistShadowEvaluation } from './governanceDecisionLogger';
