@@ -35,6 +35,7 @@ import { EdgeGoLivePanel } from '@/components/forex/edge-discovery/EdgeGoLivePan
 import { DiscoveryRiskPanel } from '@/components/forex/DiscoveryRiskPanel';
 import { AdaptiveEdgeDashboard } from '@/components/forex/AdaptiveEdgeDashboard';
 import { AgentWeightingTable } from '@/components/forex/AgentWeightingTable';
+import { AgentPriorityReasoningPanel } from '@/components/forex/AgentPriorityReasoningPanel';
 import { AgentCollaborationDashboard } from '@/components/forex/AgentCollaborationDashboard';
 import { EnsembleHealthDashboard } from '@/components/forex/EnsembleHealthDashboard';
 import { BaselineVsEnsembleCard } from '@/components/forex/BaselineVsEnsembleCard';
@@ -404,6 +405,9 @@ const ForexDashboard = () => {
             </motion.div>
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}>
               <AgentWeightingTable />
+            </motion.div>
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}>
+              <AgentPriorityReasoningPanel />
             </motion.div>
           </TabsContent>
           <TabsContent value="collaboration" className="space-y-4">
