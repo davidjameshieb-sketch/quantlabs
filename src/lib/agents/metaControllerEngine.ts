@@ -71,20 +71,40 @@ const ADAPTIVE_CONFIGS: Record<AgentId, { timing: number; freq: number; hold: nu
   'sentiment-reactor': { timing: 0.55, freq: 0.5, hold: 0.6 },
   'fractal-intelligence': { timing: 0.6, freq: 0.4, hold: 0.65 },
   'risk-sentinel': { timing: 0.5, freq: 0.3, hold: 0.8 },
+  // FX Specialists
+  'session-momentum': { timing: 0.75, freq: 0.65, hold: 0.35 },
+  'carry-flow': { timing: 0.5, freq: 0.3, hold: 0.8 },
+  'correlation-regime': { timing: 0.55, freq: 0.35, hold: 0.6 },
+  'spread-microstructure': { timing: 0.7, freq: 0.55, hold: 0.4 },
+  'news-event-shield': { timing: 0.45, freq: 0.25, hold: 0.7 },
+  // Cross-Asset Intelligence
+  'cross-asset-sync': { timing: 0.5, freq: 0.35, hold: 0.65 },
+  'execution-optimizer': { timing: 0.65, freq: 0.5, hold: 0.45 },
+  'regime-transition': { timing: 0.6, freq: 0.4, hold: 0.55 },
 };
 
 // Capital weight distribution across all agents
 const CAPITAL_WEIGHTS: Record<AgentId, number> = {
-  'equities-alpha': 0.18,
-  'forex-macro': 0.12,
-  'crypto-momentum': 0.10,
-  'liquidity-radar': 0.10,
-  'range-navigator': 0.08,
-  'volatility-architect': 0.09,
-  'adaptive-learner': 0.06,
-  'sentiment-reactor': 0.07,
-  'fractal-intelligence': 0.10,
-  'risk-sentinel': 0.10,
+  'equities-alpha': 0.12,
+  'forex-macro': 0.08,
+  'crypto-momentum': 0.06,
+  'liquidity-radar': 0.07,
+  'range-navigator': 0.05,
+  'volatility-architect': 0.06,
+  'adaptive-learner': 0.04,
+  'sentiment-reactor': 0.05,
+  'fractal-intelligence': 0.07,
+  'risk-sentinel': 0.07,
+  // FX Specialists
+  'session-momentum': 0.06,
+  'carry-flow': 0.05,
+  'correlation-regime': 0.04,
+  'spread-microstructure': 0.05,
+  'news-event-shield': 0.03,
+  // Cross-Asset Intelligence
+  'cross-asset-sync': 0.04,
+  'execution-optimizer': 0.03,
+  'regime-transition': 0.03,
 };
 
 const createAdaptiveParameters = (agentId: AgentId, rng: EvolutionRNG): AdaptiveParameters => {

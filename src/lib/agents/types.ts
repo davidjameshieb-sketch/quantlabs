@@ -13,7 +13,17 @@ export type AgentId =
   | 'adaptive-learner'
   | 'sentiment-reactor'
   | 'fractal-intelligence'
-  | 'risk-sentinel';
+  | 'risk-sentinel'
+  // FX Specialists
+  | 'session-momentum'
+  | 'carry-flow'
+  | 'correlation-regime'
+  | 'spread-microstructure'
+  | 'news-event-shield'
+  // Cross-Asset Intelligence
+  | 'cross-asset-sync'
+  | 'execution-optimizer'
+  | 'regime-transition';
 
 export type AgentStatus = 'active' | 'idle' | 'analyzing' | 'leading';
 
