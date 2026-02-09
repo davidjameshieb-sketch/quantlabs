@@ -22,7 +22,7 @@ import {
   type InfluenceTier,
 } from '@/lib/agents/agentCollaborationRouter';
 import type { CollaborationSnapshot } from '@/lib/agents/agentCollaborationEngine';
-import { buildCollaborationMatrix, PAIR_WINDOW_MINUTES, type OrderRecord } from '@/lib/agents/agentCollaborationEngine';
+import { buildCollaborationMatrix, computeOpportunityStats, PAIR_WINDOW_MINUTES, type OrderRecord } from '@/lib/agents/agentCollaborationEngine';
 import type { AgentId } from '@/lib/agents/types';
 
 // Reset state before each test
@@ -187,25 +187,25 @@ describe('pairing window', () => {
     };
   }
 
-  it('uses 15-minute pairing window', () => {
-    expect(PAIR_WINDOW_MINUTES).toBe(15);
+  it('uses 20-minute pairing window', () => {
+    expect(PAIR_WINDOW_MINUTES).toBe(20);
   });
 
-  it('pairs agents within the 15-minute window', () => {
+  it('pairs agents within the 20-minute window', () => {
     const orders = [
       makeOrder('forex-macro', 'EUR_USD', 0),
-      makeOrder('session-momentum', 'EUR_USD', 10), // 10 min apart — within 15-min bucket
+      makeOrder('session-momentum', 'EUR_USD', 15), // 15 min apart — within 20-min bucket
     ];
     const result = buildCollaborationMatrix(orders);
     expect(result.length).toBeGreaterThanOrEqual(1);
     expect(result[0].pairTimeDeltaMinutes.length).toBe(1);
-    expect(result[0].pairTimeDeltaMinutes[0]).toBe(10);
+    expect(result[0].pairTimeDeltaMinutes[0]).toBe(15);
   });
 
-  it('does NOT pair agents across different 15-minute buckets', () => {
+  it('does NOT pair agents across different 20-minute buckets', () => {
     const orders = [
       makeOrder('forex-macro', 'EUR_USD', 0),
-      makeOrder('session-momentum', 'EUR_USD', 16), // in next 15-min bucket
+      makeOrder('session-momentum', 'EUR_USD', 21), // in next 20-min bucket
     ];
     const result = buildCollaborationMatrix(orders);
     expect(result.length).toBe(0);
@@ -215,14 +215,32 @@ describe('pairing window', () => {
     const orders = [
       makeOrder('forex-macro', 'EUR_USD', 0),
       makeOrder('session-momentum', 'EUR_USD', 5),
-      makeOrder('forex-macro', 'EUR_USD', 15),
-      makeOrder('session-momentum', 'EUR_USD', 20),
+      makeOrder('forex-macro', 'EUR_USD', 20),
+      makeOrder('session-momentum', 'EUR_USD', 25),
     ];
     const result = buildCollaborationMatrix(orders);
     expect(result.length).toBe(1);
     expect(result[0].pairTimeDeltaMinutes.length).toBe(2);
     expect(result[0].pairTimeDeltaMinutes[0]).toBe(5);
     expect(result[0].pairTimeDeltaMinutes[1]).toBe(5);
+  });
+
+  it('counts shadow_eval records as paired opportunities', () => {
+    const shadowOrder = (agentId: string, pair: string, minuteOffset: number): OrderRecord => ({
+      ...makeOrder(agentId, pair, minuteOffset),
+      status: 'shadow_eval',
+      environment: 'shadow',
+      entry_price: null,
+      exit_price: null,
+    });
+    const orders = [
+      shadowOrder('forex-macro', 'EUR_USD', 0),
+      shadowOrder('session-momentum', 'EUR_USD', 5),
+    ];
+    const stats = computeOpportunityStats(orders);
+    expect(stats.totalOpportunities).toBe(1);
+    expect(stats.shadowPairs).toBe(1);
+    expect(stats.executedPairs).toBe(0);
   });
 });
 

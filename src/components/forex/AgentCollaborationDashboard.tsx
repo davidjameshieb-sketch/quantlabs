@@ -20,6 +20,7 @@ import {
   AgentPairStats,
   CollaborationLabel,
   LearnMode,
+  PairedOpportunityStats,
 } from '@/lib/agents/agentCollaborationEngine';
 import {
   getCollaborationSafetyState,
@@ -78,10 +79,10 @@ export const AgentCollaborationDashboard = () => {
       const { data } = await supabase
         .from('oanda_orders')
         .select('agent_id, direction, currency_pair, entry_price, exit_price, status, created_at, confidence_score, session_label, governance_composite, environment, regime_label')
-        .eq('status', 'closed')
+        .in('status', ['closed', 'shadow_eval', 'rejected', 'throttled', 'gated'])
         .not('agent_id', 'is', null)
         .order('created_at', { ascending: false })
-        .limit(1000);
+        .limit(2000);
 
       if (data && data.length > 0) {
         const snap = analyzeAgentCollaboration(data as any, learnMode);
@@ -226,7 +227,52 @@ export const AgentCollaborationDashboard = () => {
         </div>
       </motion.div>
 
-      {/* Safety Controls */}
+      {/* Paired Opportunity Stats */}
+      {snapshot?.opportunityStats && (
+        <motion.div
+          initial={{ opacity: 0, y: 5 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.015 }}
+          className="p-4 rounded-xl bg-card/50 border border-border/30"
+        >
+          <h3 className="text-xs font-display font-bold mb-3 flex items-center gap-1.5">
+            <TrendingUp className="w-3.5 h-3.5 text-primary" /> Paired Opportunities
+          </h3>
+          <div className="grid grid-cols-3 lg:grid-cols-6 gap-3">
+            <div className="p-2.5 rounded-lg bg-muted/10 border border-border/20">
+              <div className="text-[9px] text-muted-foreground mb-1">Last 24h</div>
+              <div className="font-mono text-sm font-bold text-foreground">{snapshot.opportunityStats.opportunities24h}</div>
+            </div>
+            <div className="p-2.5 rounded-lg bg-muted/10 border border-border/20">
+              <div className="text-[9px] text-muted-foreground mb-1">Last 7d</div>
+              <div className="font-mono text-sm font-bold text-foreground">{snapshot.opportunityStats.opportunities7d}</div>
+            </div>
+            <div className="p-2.5 rounded-lg bg-muted/10 border border-border/20">
+              <div className="text-[9px] text-muted-foreground mb-1">Last 30d</div>
+              <div className="font-mono text-sm font-bold text-foreground">{snapshot.opportunityStats.opportunities30d}</div>
+            </div>
+            <div className="p-2.5 rounded-lg bg-muted/10 border border-border/20">
+              <div className="text-[9px] text-muted-foreground mb-1">Executed Pairs</div>
+              <div className="font-mono text-sm font-bold text-neural-green">{snapshot.opportunityStats.executedPairs}</div>
+            </div>
+            <div className="p-2.5 rounded-lg bg-muted/10 border border-border/20">
+              <div className="text-[9px] text-muted-foreground mb-1">Shadow Pairs</div>
+              <div className="font-mono text-sm font-bold text-primary">{snapshot.opportunityStats.shadowPairs}</div>
+            </div>
+            <div className="p-2.5 rounded-lg bg-muted/10 border border-border/20">
+              <div className="text-[9px] text-muted-foreground mb-1">Δt Percentiles</div>
+              <div className="font-mono text-[10px] text-foreground">
+                p50: {snapshot.opportunityStats.timeDeltaP50}m
+                <span className="text-muted-foreground mx-1">|</span>
+                p75: {snapshot.opportunityStats.timeDeltaP75}m
+                <span className="text-muted-foreground mx-1">|</span>
+                p90: {snapshot.opportunityStats.timeDeltaP90}m
+              </div>
+            </div>
+          </div>
+        </motion.div>
+      )}
+
       <motion.div
         initial={{ opacity: 0, y: 5 }}
         animate={{ opacity: 1, y: 0 }}
@@ -259,7 +305,7 @@ export const AgentCollaborationDashboard = () => {
         </h3>
         {allPairs.length === 0 ? (
           <p className="text-[10px] text-muted-foreground text-center py-4">
-            No paired trades detected yet. Pairs form when 2+ agents trade the same instrument within a 15-minute window.
+            No paired trades detected yet. Pairs form when 2+ agents trade the same instrument within a 20-minute window.
           </p>
         ) : (
           <div className="space-y-1 max-h-72 overflow-y-auto">
