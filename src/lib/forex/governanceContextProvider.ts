@@ -16,6 +16,11 @@ import { analyzeMultiTimeframe } from '@/lib/market/analysisEngine';
 import { getTickersByType } from '@/lib/market/tickers';
 import { getAllLivePrices } from './oandaPricingService';
 import { toDisplaySymbol } from './forexSymbolMap';
+import {
+  recordSlowCacheHit, recordSlowCacheMiss,
+  recordFastCacheHit, recordFastCacheMiss,
+  recordContextRetrieval,
+} from './governanceCacheMonitor';
 
 // ─── Session Detection (UTC-based, deterministic) ───
 
@@ -422,6 +427,8 @@ export function getGovernanceContextCached(
   const fastKey = displayPair;
   const now = Date.now();
 
+  const startTime = performance.now();
+
   // FIX #2: Sort trade history descending before any use
   const sortedHistory = sortTradeHistoryDescending(tradeHistory);
 
@@ -430,9 +437,11 @@ export function getGovernanceContextCached(
   const cachedSlow = slowCache[slowKey];
   if (cachedSlow && now - cachedSlow.ts < SLOW_CACHE_TTL) {
     slow = cachedSlow.ctx;
+    recordSlowCacheHit();
   } else {
     slow = computeSlowContext(displayPair, timeframe, sortedHistory);
     slowCache[slowKey] = { ctx: slow, ts: now };
+    recordSlowCacheMiss();
   }
 
   // Fast context: always recompute or use very short cache
@@ -440,10 +449,14 @@ export function getGovernanceContextCached(
   const cachedFast = fastCache[fastKey];
   if (cachedFast && now - cachedFast.ts < FAST_CACHE_TTL) {
     fast = cachedFast.ctx;
+    recordFastCacheHit();
   } else {
     fast = computeFastContext(displayPair, slow.volatilityPhase, slow.currentSession, slow.atrValue);
     fastCache[fastKey] = { ctx: fast, ts: now };
+    recordFastCacheMiss();
   }
+
+  recordContextRetrieval(performance.now() - startTime);
 
   return {
     mtfAlignmentScore: slow.mtfAlignmentScore,
