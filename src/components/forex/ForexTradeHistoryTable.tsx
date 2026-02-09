@@ -1,7 +1,7 @@
 // Forex Trade History Table
 // Comprehensive forex-only trade log with scalping P&L forensics
 
-import { useState, useMemo } from 'react';
+import React, { useState, useMemo } from 'react';
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 import { ChevronDown, ChevronUp, ArrowUp, ArrowDown, Ban, TrendingUp, TrendingDown } from 'lucide-react';
@@ -108,9 +108,8 @@ export const ForexTradeHistoryTable = ({ trades }: ForexTradeHistoryTableProps) 
               const isExpanded = expandedId === trade.id;
               const exitGrade = getExitGrade(trade.captureRatio);
               return (
-                <>
+                <React.Fragment key={trade.id}>
                   <TableRow
-                    key={trade.id}
                     className="cursor-pointer hover:bg-primary/5 transition-colors"
                     onClick={() => setExpandedId(isExpanded ? null : trade.id)}
                   >
@@ -261,7 +260,7 @@ export const ForexTradeHistoryTable = ({ trades }: ForexTradeHistoryTableProps) 
                       </TableCell>
                     </TableRow>
                   )}
-                </>
+                </React.Fragment>
               );
             })}
           </TableBody>

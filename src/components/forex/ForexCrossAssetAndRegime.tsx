@@ -1,6 +1,7 @@
 // Forex Cross-Asset Influence & Regime Timeline
 // Informational panel for external market influence on forex trades
 
+import React from 'react';
 import { Globe, TrendingUp, Gem, BarChart3 } from 'lucide-react';
 import { CrossAssetInfluence, ForexTradeEntry, FOREX_REGIME_LABELS, FOREX_REGIME_COLORS, ForexRegime } from '@/lib/forex/forexTypes';
 import { Badge } from '@/components/ui/badge';
@@ -12,39 +13,42 @@ interface CrossAssetInfluencePanelProps {
   influence: CrossAssetInfluence;
 }
 
-const InfluenceBar = ({ label, value, icon: Icon }: { label: string; value: number; icon: React.ElementType }) => {
-  const absVal = Math.abs(value);
-  const isPositive = value >= 0;
-  return (
-    <div className="space-y-1">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-1.5">
-          <Icon className="w-3 h-3 text-primary" />
-          <span className="text-[10px] font-medium">{label}</span>
+const InfluenceBar = React.forwardRef<HTMLDivElement, { label: string; value: number; icon: React.ElementType }>(
+  ({ label, value, icon: Icon }, ref) => {
+    const absVal = Math.abs(value);
+    const isPositive = value >= 0;
+    return (
+      <div ref={ref} className="space-y-1">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-1.5">
+            <Icon className="w-3 h-3 text-primary" />
+            <span className="text-[10px] font-medium">{label}</span>
+          </div>
+          <span className={cn(
+            'text-[10px] font-mono font-bold',
+            isPositive ? 'text-neural-green' : 'text-neural-red'
+          )}>
+            {isPositive ? '+' : ''}{value.toFixed(1)}
+          </span>
         </div>
-        <span className={cn(
-          'text-[10px] font-mono font-bold',
-          isPositive ? 'text-neural-green' : 'text-neural-red'
-        )}>
-          {isPositive ? '+' : ''}{value.toFixed(1)}
-        </span>
+        <div className="h-1.5 rounded-full bg-muted/30 overflow-hidden relative">
+          <div className="absolute left-1/2 w-px h-full bg-border/50" />
+          <div
+            className={cn(
+              'h-full rounded-full transition-all absolute',
+              isPositive ? 'bg-neural-green left-1/2' : 'bg-neural-red right-1/2',
+            )}
+            style={{
+              width: `${absVal / 2}%`,
+              ...(isPositive ? { left: '50%' } : { right: '50%' }),
+            }}
+          />
+        </div>
       </div>
-      <div className="h-1.5 rounded-full bg-muted/30 overflow-hidden relative">
-        <div className="absolute left-1/2 w-px h-full bg-border/50" />
-        <div
-          className={cn(
-            'h-full rounded-full transition-all absolute',
-            isPositive ? 'bg-neural-green left-1/2' : 'bg-neural-red right-1/2',
-          )}
-          style={{
-            width: `${absVal / 2}%`,
-            ...(isPositive ? { left: '50%' } : { right: '50%' }),
-          }}
-        />
-      </div>
-    </div>
-  );
-};
+    );
+  }
+);
+InfluenceBar.displayName = 'InfluenceBar';
 
 export const CrossAssetInfluencePanel = ({ influence }: CrossAssetInfluencePanelProps) => (
   <div className="p-4 rounded-xl bg-card/50 border border-border/50 space-y-3">

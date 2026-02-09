@@ -53,9 +53,27 @@ export function useOandaExecution() {
   const [orders, setOrders] = useState<OandaOrder[]>([]);
   const [connected, setConnected] = useState<boolean | null>(null);
 
-  const callOanda = useCallback(async (body: Record<string, unknown>) => {
+  const getValidSession = useCallback(async () => {
     const { data: { session } } = await supabase.auth.getSession();
-    if (!session) throw new Error('Not authenticated');
+    if (session) return session;
+
+    // Session expired — attempt automatic refresh
+    console.log('[OANDA] Session expired, attempting refresh...');
+    const { data: refreshData, error: refreshError } = await supabase.auth.refreshSession();
+    if (refreshError || !refreshData.session) {
+      console.warn('[OANDA] Session refresh failed:', refreshError?.message);
+      return null;
+    }
+    console.log('[OANDA] Session refreshed successfully');
+    return refreshData.session;
+  }, []);
+
+  const callOanda = useCallback(async (body: Record<string, unknown>) => {
+    const session = await getValidSession();
+    if (!session) {
+      // Silently skip — don't toast or throw for background fetches
+      throw new Error('Not authenticated');
+    }
 
     const response = await fetch(
       `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/oanda-execute`,
@@ -75,7 +93,7 @@ export function useOandaExecution() {
       throw new Error(data.error || `Request failed: ${response.status}`);
     }
     return data;
-  }, []);
+  }, [getValidSession]);
 
   const fetchAccountSummary = useCallback(async (environment: OandaEnvironment = 'practice') => {
     setLoading(true);
