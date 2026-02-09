@@ -37,6 +37,7 @@ import { AdaptiveEdgeDashboard } from '@/components/forex/AdaptiveEdgeDashboard'
 import { AgentWeightingTable } from '@/components/forex/AgentWeightingTable';
 import { AgentCollaborationDashboard } from '@/components/forex/AgentCollaborationDashboard';
 import { EnsembleHealthDashboard } from '@/components/forex/EnsembleHealthDashboard';
+import { BaselineVsEnsembleCard } from '@/components/forex/BaselineVsEnsembleCard';
 import {
   generateForexTrades,
   filterForexTrades,
@@ -412,6 +413,9 @@ const ForexDashboard = () => {
           </TabsContent>
           <TabsContent value="ensemble" className="space-y-4">
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+              <BaselineVsEnsembleCard />
+            </motion.div>
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 }}>
               <EnsembleHealthDashboard />
             </motion.div>
           </TabsContent>
