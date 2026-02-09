@@ -3,7 +3,7 @@
 
 import { useState, useMemo, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Globe, TrendingUp, Crosshair, BarChart3, FlaskConical, ShieldCheck, SplitSquareHorizontal, PieChart, Shield, HeartPulse } from 'lucide-react';
+import { Globe, TrendingUp, Crosshair, BarChart3, FlaskConical, ShieldCheck, SplitSquareHorizontal, PieChart, Shield, HeartPulse, Radar } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { DashboardLayout } from '@/components/dashboard/DashboardLayout';
 import { ForexPerformanceOverview } from '@/components/forex/ForexPerformanceOverview';
@@ -29,6 +29,7 @@ import { ShadowModePanel } from '@/components/forex/ShadowModePanel';
 import { EquityCurveChart } from '@/components/forex/EquityCurveChart';
 import { AgentAccountabilityPanel } from '@/components/forex/AgentAccountabilityPanel';
 import { GovernanceHealthDashboard } from '@/components/forex/GovernanceHealthDashboard';
+import { EdgeDiscoveryDashboard } from '@/components/forex/edge-discovery/EdgeDiscoveryDashboard';
 import {
   generateForexTrades,
   filterForexTrades,
@@ -170,6 +171,9 @@ const ForexDashboard = () => {
             </TabsTrigger>
             <TabsTrigger value="health" className="text-xs gap-1.5">
               <HeartPulse className="w-3.5 h-3.5" />Health
+            </TabsTrigger>
+            <TabsTrigger value="edge-discovery" className="text-xs gap-1.5">
+              <Radar className="w-3.5 h-3.5" />Edge Discovery
             </TabsTrigger>
           </TabsList>
 
@@ -344,6 +348,12 @@ const ForexDashboard = () => {
           <TabsContent value="health" className="space-y-4">
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
               <GovernanceHealthDashboard trades={filteredTrades} />
+            </motion.div>
+          </TabsContent>
+
+          <TabsContent value="edge-discovery" className="space-y-4">
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+              <EdgeDiscoveryDashboard />
             </motion.div>
           </TabsContent>
         </Tabs>
