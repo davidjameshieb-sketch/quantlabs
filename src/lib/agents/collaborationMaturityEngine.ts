@@ -23,6 +23,23 @@ const HARD_THRESHOLD = 40;
 
 export type MaturityLevel = 'Observation' | 'Soft Eligible' | 'Hard Eligible';
 
+export type RelationshipLabel = 'SYNERGY' | 'CONFLICT' | 'NEUTRAL' | 'PREDICTIVE-VETO' | 'INSUFFICIENT_DATA';
+
+export interface LiftConfidenceInterval {
+  lower: number;
+  upper: number;
+  mean: number;
+  sampleSize: number;
+}
+
+export interface EnvKeyRelationship {
+  envKey: string;
+  pairedExpectancy: number;
+  trades: number;
+  soloAvg: number;
+  synergyLift: number;
+}
+
 export interface PairMaturity {
   agentA: AgentId;
   agentB: AgentId;
@@ -36,11 +53,25 @@ export interface PairMaturity {
   soloExpectancyA: number;
   soloExpectancyB: number;
   delta: number;                // paired - avg solo
+  /** synergyLift = pairedExpectancy − weightedAvg(soloA, soloB) */
+  synergyLift: number;
+  /** Variance of synergyLift across envKeys */
+  liftStability: number;
+  /** 95% confidence interval for synergyLift */
+  liftCI: LiftConfidenceInterval;
   deltaStability: number;       // lower = more stable (std dev of envKey deltas)
   label: CollaborationLabel;
+  /** Relationship label derived from synergyLift + stability */
+  relationshipLabel: RelationshipLabel;
   envKeyCount: number;
   positiveEnvKeys: number;      // envKeys where paired > solo avg
+  /** Per-envKey relationship breakdown */
+  envKeyRelationships: EnvKeyRelationship[];
   earlySignal: 'Early Synergy Candidate' | 'Early Conflict Candidate' | 'Neutral';
+  // Veto metrics (from pair stats)
+  vetoPrecision: number;
+  falseVetoRate: number;
+  vetoSuccessRate: number;
 }
 
 export interface MaturityDistribution {
@@ -101,6 +132,38 @@ function clamp01(v: number): number {
   return Math.max(0, Math.min(1, v));
 }
 
+/** Compute 95% CI using t-distribution approximation (z=1.96 for large n) */
+function computeCI(values: number[]): LiftConfidenceInterval {
+  const n = values.length;
+  if (n === 0) return { lower: 0, upper: 0, mean: 0, sampleSize: 0 };
+  const mean = values.reduce((s, v) => s + v, 0) / n;
+  if (n === 1) return { lower: mean, upper: mean, mean: r2(mean), sampleSize: 1 };
+  const stdDev = Math.sqrt(values.reduce((s, v) => s + (v - mean) ** 2, 0) / (n - 1));
+  const se = stdDev / Math.sqrt(n);
+  const z = 1.96;
+  return { lower: r2(mean - z * se), upper: r2(mean + z * se), mean: r2(mean), sampleSize: n };
+}
+
+function r2(v: number): number { return Math.round(v * 100) / 100; }
+
+/** Classify relationship from synergyLift + stability + veto metrics */
+function classifyRelationship(
+  synergyLift: number,
+  liftCI: LiftConfidenceInterval,
+  opps: number,
+  vetoPrecision: number,
+  falseVetoRate: number,
+): RelationshipLabel {
+  if (opps < 5) return 'INSUFFICIENT_DATA';
+  // Predictive-VETO check (strict)
+  if (opps >= HARD_THRESHOLD && vetoPrecision >= 0.60 && falseVetoRate <= 0.40) return 'PREDICTIVE-VETO';
+  // Stable synergy: lift CI lower bound > 0
+  if (synergyLift > 0 && liftCI.lower > 0) return 'SYNERGY';
+  // Stable conflict: lift CI upper bound < 0
+  if (synergyLift < 0 && liftCI.upper < 0) return 'CONFLICT';
+  return 'NEUTRAL';
+}
+
 // ─── Core Analysis ──────────────────────────────────────────
 
 export function computeCollaborationMaturity(
@@ -112,16 +175,35 @@ export function computeCollaborationMaturity(
   const pairs: PairMaturity[] = pairStats.map(pair => {
     const soloA = singleAgentStats[pair.agentA]?.soloExpectancy || 0;
     const soloB = singleAgentStats[pair.agentB]?.soloExpectancy || 0;
+    // Sample-weighted average of solo expectancies
+    const soloTradesA = singleAgentStats[pair.agentA]?.soloTrades || 0;
+    const soloTradesB = singleAgentStats[pair.agentB]?.soloTrades || 0;
+    const totalSoloTrades = soloTradesA + soloTradesB;
+    const weightedAvgSolo = totalSoloTrades > 0
+      ? (soloA * soloTradesA + soloB * soloTradesB) / totalSoloTrades
+      : (soloA + soloB) / 2;
     const avgSolo = (soloA + soloB) / 2;
     const delta = pair.pairedExpectancy - avgSolo;
+    const synergyLift = r2(pair.pairedExpectancy - weightedAvgSolo);
 
-    // Compute delta stability from envKey breakdown
+    // Compute delta stability and envKey relationships
     const envDeltas: number[] = [];
+    const envLifts: number[] = [];
     let positiveEnvKeys = 0;
-    for (const [, data] of Object.entries(pair.envKeyBreakdown)) {
+    const envKeyRelationships: EnvKeyRelationship[] = [];
+    for (const [ek, data] of Object.entries(pair.envKeyBreakdown)) {
       const envDelta = data.expectancy - avgSolo;
+      const envLift = data.expectancy - weightedAvgSolo;
       envDeltas.push(envDelta);
+      envLifts.push(envLift);
       if (envDelta > 0) positiveEnvKeys++;
+      envKeyRelationships.push({
+        envKey: ek,
+        pairedExpectancy: data.expectancy,
+        trades: data.trades,
+        soloAvg: r2(weightedAvgSolo),
+        synergyLift: r2(envLift),
+      });
     }
     const meanEnvDelta = envDeltas.length > 0
       ? envDeltas.reduce((s, d) => s + d, 0) / envDeltas.length
@@ -130,12 +212,20 @@ export function computeCollaborationMaturity(
       ? Math.sqrt(envDeltas.reduce((s, d) => s + (d - meanEnvDelta) ** 2, 0) / envDeltas.length)
       : 0;
 
-    const opps = pair.pairedTrades; // paired opportunities count
+    // Lift stability = variance of synergyLift across envKeys
+    const liftStability = envLifts.length > 1
+      ? r2(Math.sqrt(envLifts.reduce((s, v) => s + (v - synergyLift) ** 2, 0) / envLifts.length))
+      : 0;
+    const liftCI = computeCI(envLifts.length > 0 ? envLifts : [synergyLift]);
+
+    const opps = pair.pairedTrades;
+    const relationshipLabel = classifyRelationship(synergyLift, liftCI, opps, pair.vetoPrecision, pair.falseVetoRate);
+
     return {
       agentA: pair.agentA,
       agentB: pair.agentB,
       pairedOpportunities: opps,
-      executedPairs: opps, // from closed-only matrix
+      executedPairs: opps,
       shadowPairs: 0,
       sampleProgressSoft: clamp01(opps / SOFT_THRESHOLD),
       sampleProgressHard: clamp01(opps / HARD_THRESHOLD),
@@ -143,12 +233,20 @@ export function computeCollaborationMaturity(
       pairedExpectancy: pair.pairedExpectancy,
       soloExpectancyA: soloA,
       soloExpectancyB: soloB,
-      delta: Math.round(delta * 100) / 100,
-      deltaStability: Math.round(deltaStability * 100) / 100,
+      delta: r2(delta),
+      synergyLift,
+      liftStability,
+      liftCI,
+      deltaStability: r2(deltaStability),
       label: pair.label,
+      relationshipLabel,
       envKeyCount: Object.keys(pair.envKeyBreakdown).length,
       positiveEnvKeys,
+      envKeyRelationships: envKeyRelationships.sort((a, b) => b.trades - a.trades),
       earlySignal: classifyEarlySignal(delta, opps),
+      vetoPrecision: pair.vetoPrecision,
+      falseVetoRate: pair.falseVetoRate,
+      vetoSuccessRate: pair.vetoSuccessRate,
     };
   });
 
@@ -293,7 +391,7 @@ function computeOutcomeChangedForecast(
 export function exportMaturityCSV(report: CollaborationMaturityReport): string {
   const agentName = (id: string) => AGENT_DEFINITIONS[id as keyof typeof AGENT_DEFINITIONS]?.name || id;
   const lines = [
-    'Agent A,Agent B,Opportunities,Soft Progress,Hard Progress,Maturity,Paired Exp,Solo A Exp,Solo B Exp,Delta,Delta Stability,EnvKeys,Positive EnvKeys,Early Signal,Label',
+    'Agent A,Agent B,Opportunities,Soft Progress,Hard Progress,Maturity,Paired Exp,Solo A Exp,Solo B Exp,Delta,Synergy Lift,Lift CI Lower,Lift CI Upper,Lift Stability,Delta Stability,EnvKeys,Positive EnvKeys,Relationship,Early Signal,Label,Veto Precision,False Veto Rate',
     ...report.pairs.map(p =>
       [
         agentName(p.agentA),
@@ -306,13 +404,46 @@ export function exportMaturityCSV(report: CollaborationMaturityReport): string {
         p.soloExpectancyA,
         p.soloExpectancyB,
         p.delta,
+        p.synergyLift,
+        p.liftCI.lower,
+        p.liftCI.upper,
+        p.liftStability,
         p.deltaStability,
         p.envKeyCount,
         p.positiveEnvKeys,
+        p.relationshipLabel,
         p.earlySignal,
         p.label,
+        (p.vetoPrecision * 100).toFixed(0) + '%',
+        (p.falseVetoRate * 100).toFixed(0) + '%',
       ].join(',')
     ),
   ];
+  return lines.join('\n');
+}
+
+/** Export relationship report as CSV with envKey drilldowns */
+export function exportRelationshipCSV(report: CollaborationMaturityReport): string {
+  const agentName = (id: string) => AGENT_DEFINITIONS[id as keyof typeof AGENT_DEFINITIONS]?.name || id;
+  const lines = [
+    'Agent A,Agent B,Relationship,Synergy Lift,Lift CI Lower,Lift CI Upper,Lift Stability,EnvKey,EnvKey Trades,EnvKey Paired Exp,EnvKey Solo Avg,EnvKey Lift',
+  ];
+  for (const p of report.pairs) {
+    if (p.envKeyRelationships.length === 0) {
+      lines.push([
+        agentName(p.agentA), agentName(p.agentB), p.relationshipLabel,
+        p.synergyLift, p.liftCI.lower, p.liftCI.upper, p.liftStability,
+        'N/A', 0, 0, 0, 0,
+      ].join(','));
+    } else {
+      for (const ek of p.envKeyRelationships) {
+        lines.push([
+          agentName(p.agentA), agentName(p.agentB), p.relationshipLabel,
+          p.synergyLift, p.liftCI.lower, p.liftCI.upper, p.liftStability,
+          ek.envKey, ek.trades, ek.pairedExpectancy, ek.soloAvg, ek.synergyLift,
+        ].join(','));
+      }
+    }
+  }
   return lines.join('\n');
 }

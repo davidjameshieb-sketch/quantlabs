@@ -32,6 +32,7 @@ import {
   InfluenceTier,
 } from '@/lib/agents/agentCollaborationRouter';
 import { CollaborationMaturityPanel } from './CollaborationMaturityPanel';
+import { AgentRelationshipPanel } from './AgentRelationshipPanel';
 
 // ─── Color helpers ───────────────────────────────────────────
 
@@ -466,6 +467,9 @@ export const AgentCollaborationDashboard = () => {
 
       {/* Collaboration Maturity & Readiness */}
       <CollaborationMaturityPanel snapshot={snapshot} />
+
+      {/* Agent Relationship Models */}
+      <AgentRelationshipPanel snapshot={snapshot} />
 
       {/* Drift Events */}
       {snapshot && snapshot.driftEvents.length > 0 && (
