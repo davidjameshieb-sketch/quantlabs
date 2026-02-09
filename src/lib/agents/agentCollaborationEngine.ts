@@ -58,6 +58,20 @@ export interface CollaborationDriftEvent {
   reason: string;
 }
 
+export interface PairedOpportunityStats {
+  totalOpportunities: number;
+  executedPairs: number;
+  shadowPairs: number;
+  /** Percentiles of pairTimeDeltaMinutes across all pairs */
+  timeDeltaP50: number;
+  timeDeltaP75: number;
+  timeDeltaP90: number;
+  /** Rolling window counts */
+  opportunities24h: number;
+  opportunities7d: number;
+  opportunities30d: number;
+}
+
 export interface CollaborationSnapshot {
   singleAgentStats: Record<string, SingleAgentStats>;
   pairStats: AgentPairStats[];
@@ -66,6 +80,8 @@ export interface CollaborationSnapshot {
   learnMode: LearnMode;
   /** True when env context is insufficient — collaboration runs independently */
   independentDueToMissingContext?: boolean;
+  /** Paired opportunity statistics (includes non-executed proposals) */
+  opportunityStats?: PairedOpportunityStats;
 }
 
 // ─── Constants ───────────────────────────────────────────────
@@ -96,6 +112,8 @@ export interface OrderRecord {
 // ─── Environment Filter ──────────────────────────────────────
 
 const LIVE_PRACTICE_ENVS = new Set(['live', 'practice']);
+/** Shadow environment is used for collaboration learning only */
+const LEARNING_ENVS = new Set(['live', 'practice', 'shadow']);
 
 export function filterOrdersByLearnMode(
   orders: OrderRecord[],
@@ -180,19 +198,23 @@ export function computeSingleAgentStats(
   return stats;
 }
 
-/** Pairing window in minutes — widened from 5 to 15 to detect more collaboration events */
-export const PAIR_WINDOW_MINUTES = 15;
+/** Pairing window in minutes — widened to 20 to detect more collaboration events */
+export const PAIR_WINDOW_MINUTES = 20;
+
+/** Statuses that count as paired opportunities (not only executed trades) */
+const OPPORTUNITY_STATUSES = new Set(['closed', 'shadow_eval', 'rejected', 'throttled', 'gated']);
 
 /**
- * Detect co-occurring trades: same pair, same 15-minute window.
- * Returns paired groups plus time deltas for each group.
+ * Detect co-occurring events: same instrument, same 20-minute window.
+ * Includes non-executed proposals/votes/vetoes as "paired opportunities".
  */
-function findPairedTrades(orders: OrderRecord[]): Map<string, { groups: OrderRecord[][]; timeDeltas: number[] }> {
-  const pairs = new Map<string, { groups: OrderRecord[][]; timeDeltas: number[] }>();
-  const closed = orders.filter(o => o.status === 'closed' && o.agent_id && o.entry_price && o.exit_price);
+function findPairedOpportunities(orders: OrderRecord[]): Map<string, { groups: OrderRecord[][]; timeDeltas: number[]; executedGroups: number; shadowGroups: number }> {
+  const pairs = new Map<string, { groups: OrderRecord[][]; timeDeltas: number[]; executedGroups: number; shadowGroups: number }>();
+  // Include all records with an agent_id (not just closed trades)
+  const eligible = orders.filter(o => o.agent_id && OPPORTUNITY_STATUSES.has(o.status));
 
   const buckets = new Map<string, OrderRecord[]>();
-  for (const o of closed) {
+  for (const o of eligible) {
     const ts = new Date(o.created_at).getTime();
     const bucket = Math.floor(ts / (PAIR_WINDOW_MINUTES * 60_000));
     const key = `${o.currency_pair}::${bucket}`;
@@ -208,11 +230,17 @@ function findPairedTrades(orders: OrderRecord[]): Map<string, { groups: OrderRec
     for (let i = 0; i < agentIds.length; i++) {
       for (let j = i + 1; j < agentIds.length; j++) {
         const pk = pairKey(agentIds[i] as AgentId, agentIds[j] as AgentId);
-        if (!pairs.has(pk)) pairs.set(pk, { groups: [], timeDeltas: [] });
+        if (!pairs.has(pk)) pairs.set(pk, { groups: [], timeDeltas: [], executedGroups: 0, shadowGroups: 0 });
         const aOrders = group.filter(o => o.agent_id === agentIds[i]);
         const bOrders = group.filter(o => o.agent_id === agentIds[j]);
-        pairs.get(pk)!.groups.push([...aOrders, ...bOrders]);
-        // Calculate time delta between earliest orders of each agent
+        const combined = [...aOrders, ...bOrders];
+        pairs.get(pk)!.groups.push(combined);
+        // Track whether this group has executed trades or is shadow-only
+        const hasExecuted = combined.some(o => o.status === 'closed');
+        const isShadow = combined.every(o => o.status === 'shadow_eval' || o.environment === 'shadow');
+        if (hasExecuted) pairs.get(pk)!.executedGroups++;
+        if (isShadow) pairs.get(pk)!.shadowGroups++;
+        // Calculate time delta
         const aTs = Math.min(...aOrders.map(o => new Date(o.created_at).getTime()));
         const bTs = Math.min(...bOrders.map(o => new Date(o.created_at).getTime()));
         pairs.get(pk)!.timeDeltas.push(Math.abs(aTs - bTs) / 60_000);
@@ -221,6 +249,67 @@ function findPairedTrades(orders: OrderRecord[]): Map<string, { groups: OrderRec
   }
 
   return pairs;
+}
+
+/** Legacy wrapper: only closed trades for PnL calculations */
+function findPairedTrades(orders: OrderRecord[]): Map<string, { groups: OrderRecord[][]; timeDeltas: number[] }> {
+  const result = new Map<string, { groups: OrderRecord[][]; timeDeltas: number[] }>();
+  const closed = orders.filter(o => o.status === 'closed');
+  const allPairs = findPairedOpportunities(closed);
+  for (const [pk, data] of allPairs) {
+    result.set(pk, { groups: data.groups, timeDeltas: data.timeDeltas });
+  }
+  return result;
+}
+
+/** Compute percentile from sorted array */
+function percentile(sorted: number[], p: number): number {
+  if (sorted.length === 0) return 0;
+  const idx = Math.ceil((p / 100) * sorted.length) - 1;
+  return sorted[Math.max(0, idx)];
+}
+
+/** Compute paired opportunity statistics from all order records */
+export function computeOpportunityStats(orders: OrderRecord[]): PairedOpportunityStats {
+  const allPairs = findPairedOpportunities(orders);
+  const now = Date.now();
+  const DAY = 24 * 60 * 60_000;
+
+  let totalOpportunities = 0;
+  let executedPairs = 0;
+  let shadowPairs = 0;
+  let opp24h = 0, opp7d = 0, opp30d = 0;
+  const allDeltas: number[] = [];
+
+  for (const [, data] of allPairs) {
+    totalOpportunities += data.groups.length;
+    executedPairs += data.executedGroups;
+    shadowPairs += data.shadowGroups;
+    allDeltas.push(...data.timeDeltas);
+
+    // Count by time window
+    for (const group of data.groups) {
+      const latestTs = Math.max(...group.map(o => new Date(o.created_at).getTime()));
+      const age = now - latestTs;
+      if (age <= DAY) opp24h++;
+      if (age <= 7 * DAY) opp7d++;
+      if (age <= 30 * DAY) opp30d++;
+    }
+  }
+
+  const sorted = allDeltas.sort((a, b) => a - b);
+
+  return {
+    totalOpportunities,
+    executedPairs,
+    shadowPairs,
+    timeDeltaP50: Math.round(percentile(sorted, 50) * 100) / 100,
+    timeDeltaP75: Math.round(percentile(sorted, 75) * 100) / 100,
+    timeDeltaP90: Math.round(percentile(sorted, 90) * 100) / 100,
+    opportunities24h: opp24h,
+    opportunities7d: opp7d,
+    opportunities30d: opp30d,
+  };
 }
 
 // ─── SECTION 2: Collaboration Scoring (execution-grade) ─────
@@ -415,6 +504,8 @@ export function analyzeAgentCollaboration(
   const singleAgentStats = computeSingleAgentStats(filtered);
   const pairStats = envContextOk ? buildCollaborationMatrix(filtered) : [];
   const driftEvents = envContextOk ? detectCollaborationDrift(pairStats) : [];
+  // Compute opportunity stats from ALL eligible records (including shadow_eval)
+  const opportunityStats = envContextOk ? computeOpportunityStats(filtered) : undefined;
 
   return {
     singleAgentStats,
@@ -423,5 +514,6 @@ export function analyzeAgentCollaboration(
     timestamp: Date.now(),
     learnMode,
     independentDueToMissingContext: !envContextOk,
+    opportunityStats,
   };
 }
