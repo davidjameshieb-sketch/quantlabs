@@ -1,8 +1,13 @@
 // Governance Decision Logger
 // Structured, persistent decision logging for every governance evaluation.
-// Supports analytics dashboards and forensic audit trails.
+//
+// FIXES APPLIED:
+// - Real spread/ATR/bid/ask in marketContextSnapshot (Fix #1)
+// - Gate IDs stored for analytics stability (Fix #6)
+// - shadowMode flag in every log entry (Fix #8)
+// - Analytics counts gate IDs instead of parsing strings
 
-import type { GovernanceMultipliers, GovernanceDecision, GovernanceContext } from './tradeGovernanceEngine';
+import type { GovernanceMultipliers, GovernanceDecision, GateEntry, GateId } from './tradeGovernanceEngine';
 import type { DirectionalBias, QuantLabsSignalSnapshot } from './quantlabsDirectionProvider';
 
 // ─── Decision Log Types ───
@@ -13,11 +18,12 @@ export interface GovernanceDecisionLog {
   timestamp: number;
   symbol: string;
   timeframe: string;
+  shadowMode: boolean;
 
   governance: {
     multipliers: GovernanceMultipliers;
     compositeScore: number;
-    gatesTriggered: string[];
+    gatesTriggered: GateEntry[];
     governanceDecision: GovernanceDecision;
   };
 
@@ -25,6 +31,8 @@ export interface GovernanceDecisionLog {
     directionalBias: DirectionalBias | null;
     directionalConfidence: number;
     signalSnapshot: QuantLabsSignalSnapshot | null;
+    directionTimeframeUsed?: string;
+    confirmationTimeframeUsed?: string;
   } | null;
 
   finalDecision: {
@@ -34,36 +42,40 @@ export interface GovernanceDecisionLog {
 
   marketContextSnapshot: {
     spread: number;
-    atr: number;
+    bid: number;
+    ask: number;
+    slippageEstimate: number;
+    totalFriction: number;
+    atrValue: number;
+    atrAvg: number;
     volatilityPhase: string;
     session: string;
     frictionRatio: number;
     mtfAlignmentScore: number;
     spreadStabilityRank: number;
     liquidityShockProb: number;
+    priceDataAvailable: boolean;
+    analysisAvailable: boolean;
   };
 }
 
 // ─── In-Memory Decision Log Store ───
-// Retained for dashboard analytics. Async-safe, non-blocking.
 
 const MAX_LOG_ENTRIES = 1000;
 let decisionLogs: GovernanceDecisionLog[] = [];
 
 export function logGovernanceDecision(log: GovernanceDecisionLog): void {
-  // Non-blocking: push to in-memory store
   decisionLogs.push(log);
 
-  // Prune oldest when exceeding capacity
   if (decisionLogs.length > MAX_LOG_ENTRIES) {
     decisionLogs = decisionLogs.slice(-MAX_LOG_ENTRIES);
   }
 
-  // Async console log for observability (non-blocking)
   if (typeof queueMicrotask !== 'undefined') {
     queueMicrotask(() => {
+      const gateIds = log.governance.gatesTriggered.map(g => g.id).join(',');
       console.log(
-        `[GOV-LOG] ${log.symbol} | ${log.governance.governanceDecision} → ${log.finalDecision.decision} | composite=${log.governance.compositeScore.toFixed(3)} | gates=${log.governance.gatesTriggered.length}`,
+        `[GOV-LOG] ${log.symbol} | ${log.governance.governanceDecision} → ${log.finalDecision.decision} | composite=${log.governance.compositeScore.toFixed(3)} | gates=[${gateIds}] | shadow=${log.shadowMode}`,
       );
     });
   }
@@ -87,7 +99,7 @@ export function clearDecisionLogs(): void {
   decisionLogs = [];
 }
 
-// ─── Analytics Helpers ───
+// ─── Analytics Helpers (Fix #6: count by gate ID) ───
 
 export interface DecisionAnalytics {
   totalEvaluations: number;
@@ -98,6 +110,7 @@ export interface DecisionAnalytics {
   buyCount: number;
   sellCount: number;
   avgCompositeScore: number;
+  topGateIds: { id: GateId; count: number }[];
   topGateReasons: { reason: string; count: number }[];
   neutralBiasRate: number;
 }
@@ -108,7 +121,7 @@ export function computeDecisionAnalytics(logs?: GovernanceDecisionLog[]): Decisi
     return {
       totalEvaluations: 0, approvedCount: 0, rejectedCount: 0, throttledCount: 0,
       skipCount: 0, buyCount: 0, sellCount: 0, avgCompositeScore: 0,
-      topGateReasons: [], neutralBiasRate: 0,
+      topGateIds: [], topGateReasons: [], neutralBiasRate: 0,
     };
   }
 
@@ -121,14 +134,21 @@ export function computeDecisionAnalytics(logs?: GovernanceDecisionLog[]): Decisi
 
   const avgComposite = source.reduce((s, l) => s + l.governance.compositeScore, 0) / source.length;
 
-  // Gate reason frequency
+  // Gate ID frequency (Fix #6)
+  const gateIdCounts: Record<string, number> = {};
   const reasonCounts: Record<string, number> = {};
   for (const l of source) {
     for (const g of l.governance.gatesTriggered) {
-      const key = g.split('—')[0].split('(')[0].trim();
+      gateIdCounts[g.id] = (gateIdCounts[g.id] || 0) + 1;
+      const key = g.message.split('—')[0].split('(')[0].trim();
       reasonCounts[key] = (reasonCounts[key] || 0) + 1;
     }
   }
+
+  const topGateIds = Object.entries(gateIdCounts)
+    .map(([id, count]) => ({ id: id as GateId, count }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 10);
 
   const topGateReasons = Object.entries(reasonCounts)
     .map(([reason, count]) => ({ reason, count }))
@@ -148,6 +168,7 @@ export function computeDecisionAnalytics(logs?: GovernanceDecisionLog[]): Decisi
     buyCount: buys.length,
     sellCount: sells.length,
     avgCompositeScore: avgComposite,
+    topGateIds,
     topGateReasons,
     neutralBiasRate,
   };

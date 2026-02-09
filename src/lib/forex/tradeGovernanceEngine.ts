@@ -1,13 +1,13 @@
 // Trade Governance Engine — Intelligence-Driven Context Edition
 // Evaluates every proposed trade through intelligence multipliers
-// before allowing execution. Tuned for profitable FX scalping:
-// major pairs prioritized, short durations, tight friction gates,
-// session-aware aggressiveness, and forensic trade logging.
+// before allowing execution. Tuned for profitable FX scalping.
 //
-// REFACTORED: RNG-based context generation removed.
-// Context now derived from real market data via getGovernanceContext().
-// QuantLabs directional bias attached only after governance PASS.
-// Shadow mode + structured decision logging added.
+// FIXES APPLIED:
+// - GovernanceContext extended with real spread/ATR/bid/ask fields
+// - Structured gate IDs (Fix #6)
+// - Hard block on missing data (Fix #7)
+// - Shadow mode flag in output (Fix #8)
+// - Updated output contract
 
 import type { VolatilityPhase, LiquiditySession } from './microstructureEngine';
 import { getGovernanceContextCached, type TradeHistoryEntry } from './governanceContextProvider';
@@ -33,6 +33,25 @@ export function setShadowMode(enabled: boolean): void {
 
 export function isShadowMode(): boolean {
   return SHADOW_MODE;
+}
+
+// ─── Gate ID Type (Fix #6) ───
+
+export type GateId =
+  | 'G1_FRICTION'
+  | 'G2_NO_HTF_WEAK_MTF'
+  | 'G3_EDGE_DECAY'
+  | 'G4_SPREAD_INSTABILITY'
+  | 'G5_COMPRESSION_LOW_SESSION'
+  | 'G6_OVERTRADING'
+  | 'G7_LOSS_CLUSTER_WEAK_MTF'
+  | 'G8_HIGH_SHOCK'
+  | 'G9_PRICE_DATA_UNAVAILABLE'
+  | 'G10_ANALYSIS_UNAVAILABLE';
+
+export interface GateEntry {
+  id: GateId;
+  message: string;
 }
 
 // ─── Governance Input Types ───
@@ -65,6 +84,16 @@ export interface GovernanceContext {
   edgeDecayRate: number;
   overtradingThrottled: boolean;
   sequencingCluster: 'profit-momentum' | 'loss-cluster' | 'mixed' | 'neutral';
+  // Extended fields (Fix #1 + #7)
+  currentSpread: number;
+  bid: number;
+  ask: number;
+  slippageEstimate: number;
+  totalFriction: number;
+  atrValue: number;
+  atrAvg: number;
+  priceDataAvailable: boolean;
+  analysisAvailable: boolean;
 }
 
 export type GovernanceDecision = 'approved' | 'rejected' | 'throttled';
@@ -78,9 +107,10 @@ export interface GovernanceResult {
   adjustedDrawdownCap: number;
   multipliers: GovernanceMultipliers;
   rejectionReasons: string[];
+  triggeredGates: GateEntry[];
   governanceScore: number;
   confidenceBoost: number;
-  // ── Forensic fields for scalping dashboard ──
+  // Forensic fields
   captureRatio: number;
   expectedExpectancy: number;
   frictionCost: number;
@@ -110,7 +140,7 @@ export interface FullGovernanceDecisionResult {
   finalDecision: FinalDecision;
   finalDecisionReason: string;
   compositeScore: number;
-  triggeredGates: string[];
+  triggeredGates: GateEntry[];
   contextSnapshot: GovernanceContext;
   governanceResult: GovernanceResult;
   quantlabsResult: QuantLabsDirectionResult | null;
@@ -131,6 +161,7 @@ export interface GovernanceStats {
   avgExpectancy: number;
   approvedWinRate: number;
   topRejectionReasons: { reason: string; count: number }[];
+  topGateIds: { id: GateId; count: number }[];
 }
 
 // ─── Session & Phase Labels ───
@@ -143,8 +174,7 @@ const PHASE_LABELS: Record<VolatilityPhase, string> = {
   compression: 'Compression', ignition: 'Ignition', expansion: 'Expansion', exhaustion: 'Exhaustion',
 };
 
-// ─── Multiplier Computation (Scalping-Tuned) ───
-// PRESERVED EXACTLY from original implementation
+// ─── Multiplier Computation (PRESERVED EXACTLY) ───
 
 const computeMTFMultiplier = (ctx: GovernanceContext): number => {
   if (ctx.htfSupports && ctx.mtfConfirms && ctx.ltfClean) {
@@ -218,55 +248,95 @@ const computeSequencingMultiplier = (ctx: GovernanceContext): number => {
   }
 };
 
-// ─── Rejection Gating (All 8 Gates PRESERVED) ───
+// ─── Rejection Gating (All 8 Gates PRESERVED + Fix #6 IDs + Fix #7 data gates) ───
 
-const evaluateRejectionGates = (ctx: GovernanceContext): string[] => {
-  const reasons: string[] = [];
+const evaluateRejectionGates = (ctx: GovernanceContext): GateEntry[] => {
+  const gates: GateEntry[] = [];
+
+  // Gate 9: Price data unavailable (Fix #7) — HARD GATE
+  if (!ctx.priceDataAvailable) {
+    gates.push({
+      id: 'G9_PRICE_DATA_UNAVAILABLE',
+      message: 'Live price data unavailable — cannot assess microstructure',
+    });
+  }
+
+  // Gate 10: Analysis unavailable (Fix #7) — HARD GATE
+  if (!ctx.analysisAvailable) {
+    gates.push({
+      id: 'G10_ANALYSIS_UNAVAILABLE',
+      message: 'Ticker analysis unavailable — cannot assess MTF alignment',
+    });
+  }
 
   // Gate 1: Friction expectancy < 3×
   if (ctx.frictionRatio < 3) {
-    reasons.push(`Friction ratio ${ctx.frictionRatio.toFixed(1)}× < 3× threshold`);
+    gates.push({
+      id: 'G1_FRICTION',
+      message: `Friction ratio ${ctx.frictionRatio.toFixed(1)}× < 3× threshold`,
+    });
   }
 
   // Gate 2: No HTF support with poor alignment
   if (!ctx.htfSupports && ctx.mtfAlignmentScore < 35) {
-    reasons.push(`MTF alignment ${ctx.mtfAlignmentScore.toFixed(0)}% without HTF support`);
+    gates.push({
+      id: 'G2_NO_HTF_WEAK_MTF',
+      message: `MTF alignment ${ctx.mtfAlignmentScore.toFixed(0)}% without HTF support`,
+    });
   }
 
   // Gate 3: Edge decay
   if (ctx.edgeDecaying && ctx.edgeDecayRate > 20) {
-    reasons.push(`Edge decaying ${ctx.edgeDecayRate.toFixed(0)}%`);
+    gates.push({
+      id: 'G3_EDGE_DECAY',
+      message: `Edge decaying ${ctx.edgeDecayRate.toFixed(0)}%`,
+    });
   }
 
   // Gate 4: Spread instability
   if (ctx.spreadStabilityRank < 30) {
-    reasons.push(`Spread instability ${ctx.spreadStabilityRank.toFixed(0)}%`);
+    gates.push({
+      id: 'G4_SPREAD_INSTABILITY',
+      message: `Spread instability ${ctx.spreadStabilityRank.toFixed(0)}%`,
+    });
   }
 
   // Gate 5: Compression + low session
   if (ctx.sessionAggressiveness < 30 && ctx.volatilityPhase === 'compression') {
-    reasons.push('Compression + low-activity session');
+    gates.push({
+      id: 'G5_COMPRESSION_LOW_SESSION',
+      message: 'Compression + low-activity session',
+    });
   }
 
   // Gate 6: Overtrading governor
   if (ctx.overtradingThrottled) {
-    reasons.push('Anti-overtrading governor active');
+    gates.push({
+      id: 'G6_OVERTRADING',
+      message: 'Anti-overtrading governor active',
+    });
   }
 
   // Gate 7: Loss cluster with weak alignment
   if (ctx.sequencingCluster === 'loss-cluster' && ctx.mtfAlignmentScore < 55) {
-    reasons.push(`Loss cluster + weak alignment ${ctx.mtfAlignmentScore.toFixed(0)}%`);
+    gates.push({
+      id: 'G7_LOSS_CLUSTER_WEAK_MTF',
+      message: `Loss cluster + weak alignment ${ctx.mtfAlignmentScore.toFixed(0)}%`,
+    });
   }
 
   // Gate 8: High shock probability outside ignition
   if (ctx.liquidityShockProb > 70 && ctx.volatilityPhase !== 'ignition') {
-    reasons.push(`High shock risk ${ctx.liquidityShockProb.toFixed(0)}% outside ignition`);
+    gates.push({
+      id: 'G8_HIGH_SHOCK',
+      message: `High shock risk ${ctx.liquidityShockProb.toFixed(0)}% outside ignition`,
+    });
   }
 
-  return reasons;
+  return gates;
 };
 
-// ─── Core Governance Evaluation (PRESERVED) ───
+// ─── Core Governance Evaluation (PRESERVED — only data source changed) ───
 
 export const evaluateTradeProposal = (
   proposal: TradeProposal,
@@ -287,12 +357,14 @@ export const evaluateTradeProposal = (
     exitEfficiency, session, sequencing, composite,
   };
 
-  const rejectionReasons = evaluateRejectionGates(ctx);
+  const triggeredGates = evaluateRejectionGates(ctx);
+  // Backwards-compatible string reasons
+  const rejectionReasons = triggeredGates.map(g => g.message);
 
   let decision: GovernanceDecision = 'approved';
-  if (rejectionReasons.length >= 2) {
+  if (triggeredGates.length >= 2) {
     decision = 'rejected';
-  } else if (rejectionReasons.length === 1 || composite < 0.60) {
+  } else if (triggeredGates.length === 1 || composite < 0.60) {
     decision = 'throttled';
   }
 
@@ -324,7 +396,7 @@ export const evaluateTradeProposal = (
   const adjustedDrawdownCap = Math.max(0.15, 3.8 * (1 - (composite - 0.5) * 0.5));
 
   const governanceScore = Math.max(0, Math.min(100,
-    composite * 60 + (rejectionReasons.length === 0 ? 25 : 0) + (ctx.isMajorPair ? 5 : 0)
+    composite * 60 + (triggeredGates.length === 0 ? 25 : 0) + (ctx.isMajorPair ? 5 : 0)
   ));
 
   const confidenceBoost = composite > 1.1 ? 18 : composite > 0.9 ? 8 : composite > 0.7 ? -3 : -12;
@@ -365,6 +437,7 @@ export const evaluateTradeProposal = (
     adjustedDrawdownCap,
     multipliers,
     rejectionReasons,
+    triggeredGates,
     governanceScore,
     confidenceBoost,
     captureRatio,
@@ -379,7 +452,6 @@ export const evaluateTradeProposal = (
 };
 
 // ─── Full Decision Orchestrator (Section 10 Output Contract) ───
-// Combines governance evaluation + QuantLabs direction + shadow mode + logging
 
 export const evaluateFullDecision = (
   proposal: TradeProposal,
@@ -392,7 +464,6 @@ export const evaluateFullDecision = (
     ctx = getGovernanceContextCached(proposal.pair, timeframe, tradeHistory);
   } catch (err) {
     console.error('[GOVERNANCE] Context retrieval failed — HARD BLOCK:', err);
-    // Hard block: context failure = no trade
     const emptyMultipliers: GovernanceMultipliers = {
       mtfAlignment: 0, regime: 0, pairPerformance: 0, microstructure: 0,
       exitEfficiency: 0, session: 0, sequencing: 0, composite: 0,
@@ -403,7 +474,7 @@ export const evaluateFullDecision = (
       finalDecision: 'SKIP',
       finalDecisionReason: 'Governance context retrieval failed — HARD BLOCK',
       compositeScore: 0,
-      triggeredGates: ['CONTEXT_FAILURE'],
+      triggeredGates: [{ id: 'G9_PRICE_DATA_UNAVAILABLE', message: 'Context retrieval failed' }],
       contextSnapshot: {} as GovernanceContext,
       governanceResult: {
         decision: 'rejected',
@@ -414,6 +485,7 @@ export const evaluateFullDecision = (
         adjustedDrawdownCap: 0,
         multipliers: emptyMultipliers,
         rejectionReasons: ['Context retrieval failed'],
+        triggeredGates: [{ id: 'G9_PRICE_DATA_UNAVAILABLE', message: 'Context retrieval failed' }],
         governanceScore: 0,
         confidenceBoost: 0,
         captureRatio: 0,
@@ -440,13 +512,11 @@ export const evaluateFullDecision = (
   let finalDecisionReason = '';
 
   if (govResult.decision === 'approved') {
-    // QuantLabs direction retrieval
     quantlabsResult = getQuantLabsDirection(proposal.pair, timeframe);
 
     if (!quantlabsResult) {
-      // Failsafe: signal retrieval failed → SKIP
       finalDecision = 'SKIP';
-      finalDecisionReason = 'Directional signal unavailable';
+      finalDecisionReason = 'Directional signal unavailable (DIRECTION_UNAVAILABLE)';
       directionalBias = null;
     } else if (quantlabsResult.directionalBias === 'NEUTRAL') {
       finalDecision = 'SKIP';
@@ -465,35 +535,46 @@ export const evaluateFullDecision = (
     finalDecisionReason = `Governance rejected: ${govResult.rejectionReasons.join(', ')}`;
   }
 
-  // ── Step 3: Log decision (async, non-blocking) ──
+  // ── Step 3: Log decision ──
   const decisionLog: GovernanceDecisionLog = {
     timestamp: Date.now(),
     symbol: proposal.pair,
     timeframe,
+    shadowMode: SHADOW_MODE,
+
     governance: {
       multipliers: govResult.multipliers,
       compositeScore: govResult.multipliers.composite,
-      gatesTriggered: govResult.rejectionReasons,
+      gatesTriggered: govResult.triggeredGates,
       governanceDecision: govResult.decision,
     },
     quantlabs: quantlabsResult ? {
       directionalBias: quantlabsResult.directionalBias,
       directionalConfidence: quantlabsResult.directionalConfidence,
       signalSnapshot: quantlabsResult.sourceSignals,
+      directionTimeframeUsed: quantlabsResult.directionTimeframeUsed,
+      confirmationTimeframeUsed: quantlabsResult.confirmationTimeframeUsed,
     } : null,
     finalDecision: {
       decision: finalDecision,
       reason: finalDecisionReason,
     },
     marketContextSnapshot: {
-      spread: ctx.frictionRatio > 0 ? 1 / ctx.frictionRatio : 0, // inverse proxy
-      atr: 0, // ATR embedded in context indirectly via phase/friction
+      spread: ctx.currentSpread,
+      bid: ctx.bid,
+      ask: ctx.ask,
+      slippageEstimate: ctx.slippageEstimate,
+      totalFriction: ctx.totalFriction,
+      atrValue: ctx.atrValue,
+      atrAvg: ctx.atrAvg,
       volatilityPhase: ctx.volatilityPhase,
       session: ctx.currentSession,
       frictionRatio: ctx.frictionRatio,
       mtfAlignmentScore: ctx.mtfAlignmentScore,
       spreadStabilityRank: ctx.spreadStabilityRank,
       liquidityShockProb: ctx.liquidityShockProb,
+      priceDataAvailable: ctx.priceDataAvailable,
+      analysisAvailable: ctx.analysisAvailable,
     },
   };
 
@@ -505,7 +586,7 @@ export const evaluateFullDecision = (
     finalDecision,
     finalDecisionReason,
     compositeScore: govResult.multipliers.composite,
-    triggeredGates: govResult.rejectionReasons,
+    triggeredGates: govResult.triggeredGates,
     contextSnapshot: ctx,
     governanceResult: govResult,
     quantlabsResult,
@@ -513,7 +594,7 @@ export const evaluateFullDecision = (
   };
 };
 
-// ─── Compute Aggregate Stats ───
+// ─── Compute Aggregate Stats (Fix #6: gate ID counting) ───
 
 export const computeGovernanceStats = (
   results: GovernanceResult[],
@@ -542,8 +623,13 @@ export const computeGovernanceStats = (
     ? approved.reduce((s, r) => s + r.adjustedWinProbability, 0) / approved.length
     : 0;
 
+  // Gate ID counting (Fix #6)
+  const gateIdCounts: Record<string, number> = {};
   const reasonCounts: Record<string, number> = {};
   for (const r of results) {
+    for (const gate of r.triggeredGates) {
+      gateIdCounts[gate.id] = (gateIdCounts[gate.id] || 0) + 1;
+    }
     for (const reason of r.rejectionReasons) {
       const key = reason.split('—')[0].split('(')[0].trim();
       reasonCounts[key] = (reasonCounts[key] || 0) + 1;
@@ -554,6 +640,11 @@ export const computeGovernanceStats = (
     .map(([reason, count]) => ({ reason, count }))
     .sort((a, b) => b.count - a.count)
     .slice(0, 5);
+
+  const topGateIds = Object.entries(gateIdCounts)
+    .map(([id, count]) => ({ id: id as GateId, count }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 10);
 
   return {
     totalProposed: results.length,
@@ -567,5 +658,6 @@ export const computeGovernanceStats = (
     avgExpectancy,
     approvedWinRate,
     topRejectionReasons: topReasons,
+    topGateIds,
   };
 };
