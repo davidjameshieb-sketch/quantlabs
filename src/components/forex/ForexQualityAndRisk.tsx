@@ -1,6 +1,7 @@
 // Forex Quality & Risk Panels
 // Trade quality metrics and risk governance monitoring
 
+import React from 'react';
 import { Shield, Target, Crosshair, Gauge, Activity, AlertTriangle, TrendingDown, BarChart3 } from 'lucide-react';
 import { ForexQualityMetrics, ForexRiskGovernance, FOREX_REGIME_LABELS, ForexRegime } from '@/lib/forex/forexTypes';
 import { cn } from '@/lib/utils';
@@ -11,8 +12,8 @@ interface ForexQualityPanelProps {
   quality: ForexQualityMetrics;
 }
 
-const QualityBar = ({ label, value, icon: Icon }: { label: string; value: number; icon: React.ElementType }) => (
-  <div className="space-y-1">
+const QualityBar = React.forwardRef<HTMLDivElement, { label: string; value: number; icon: React.ElementType }>(({ label, value, icon: Icon }, ref) => (
+  <div ref={ref} className="space-y-1">
     <div className="flex items-center justify-between">
       <div className="flex items-center gap-1.5">
         <Icon className="w-3 h-3 text-primary" />
@@ -35,8 +36,8 @@ const QualityBar = ({ label, value, icon: Icon }: { label: string; value: number
       />
     </div>
   </div>
-);
-
+));
+QualityBar.displayName = 'QualityBar';
 export const ForexQualityPanel = ({ quality }: ForexQualityPanelProps) => (
   <div className="p-4 rounded-xl bg-card/50 border border-border/50 space-y-3">
     <div className="flex items-center gap-2">

@@ -25,6 +25,9 @@ import { RollingSharpeChart } from '@/components/forex/RollingSharpeChart';
 import { IntelligenceModeBadge } from '@/components/dashboard/IntelligenceModeBadge';
 import { GovernanceStateBanner } from '@/components/forex/GovernanceStateBanner';
 import { AdaptiveGovernancePanel } from '@/components/forex/AdaptiveGovernancePanel';
+import { ShadowModePanel } from '@/components/forex/ShadowModePanel';
+import { EquityCurveChart } from '@/components/forex/EquityCurveChart';
+import { AgentAccountabilityPanel } from '@/components/forex/AgentAccountabilityPanel';
 import {
   generateForexTrades,
   filterForexTrades,
@@ -280,6 +283,9 @@ const ForexDashboard = () => {
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
               <AdaptiveGovernancePanel data={governanceDashboard} />
             </motion.div>
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}>
+              <ShadowModePanel state={shadowMode} />
+            </motion.div>
           </TabsContent>
 
           <TabsContent value="analytics" className="space-y-6">
@@ -293,14 +299,26 @@ const ForexDashboard = () => {
               </div>
             </motion.div>
 
-            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 }}>
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.03 }}>
+              <EquityCurveChart
+                data={tradeAnalytics.rollingSharpe}
+                totalPnlPips={tradeAnalytics.totalPnlPips}
+                totalTrades={tradeAnalytics.totalClosedTrades}
+              />
+            </motion.div>
+
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.06 }}>
+              <AgentAccountabilityPanel metrics={executionMetrics} />
+            </motion.div>
+
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.09 }}>
               <RollingSharpeChart
                 data={tradeAnalytics.rollingSharpe}
                 overallSharpe={tradeAnalytics.overallSharpe}
               />
             </motion.div>
 
-            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}>
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.12 }}>
               <SessionHeatmap sessions={tradeAnalytics.sessionAnalytics} />
             </motion.div>
 
