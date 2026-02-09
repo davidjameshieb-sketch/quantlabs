@@ -1,6 +1,7 @@
 // Compact edge health widget for the dashboard sidebar — auto-refreshes
+// Includes GREEN/YELLOW/RED badge based on quantitative edge health rules.
 import { useEdgeHealthStats, type HealthColor } from '@/hooks/useEdgeHealthStats';
-import { TrendingUp, TrendingDown, Minus, ArrowUp, ArrowDown, Clock } from 'lucide-react';
+import { TrendingUp, TrendingDown, ArrowUp, ArrowDown, Clock, Layers } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 const dot: Record<HealthColor, string> = {
@@ -21,6 +22,12 @@ const text: Record<HealthColor, string> = {
   red: 'text-neural-red',
 };
 
+const BADGE_RULES: Record<HealthColor, string> = {
+  green: 'PF≥1.5 · Exp>0.3 · ShortWR>45%',
+  yellow: 'PF 1.0–1.5 or developing',
+  red: 'PF<1.0 or Exp≤0 or ShortWR<35%',
+};
+
 export const EdgeHealthSidebar = () => {
   const stats = useEdgeHealthStats(45_000);
 
@@ -35,13 +42,22 @@ export const EdgeHealthSidebar = () => {
 
   return (
     <div className="px-4 py-3 space-y-3">
-      {/* Header badge */}
-      <div className="flex items-center justify-between">
-        <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Edge Health</p>
-        <div className={cn('flex items-center gap-1.5 px-2 py-0.5 rounded-full border text-[10px] font-bold', bg[stats.status], text[stats.status])}>
-          <span className={cn('w-1.5 h-1.5 rounded-full animate-pulse', dot[stats.status])} />
-          {stats.statusLabel}
+      {/* Header badge with classification rule */}
+      <div className="space-y-1">
+        <div className="flex items-center justify-between">
+          <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Edge Health</p>
+          <div className={cn('flex items-center gap-1.5 px-2 py-0.5 rounded-full border text-[10px] font-bold', bg[stats.status], text[stats.status])}>
+            <span className={cn('w-1.5 h-1.5 rounded-full animate-pulse', dot[stats.status])} />
+            {stats.statusLabel}
+          </div>
         </div>
+        <p className="text-[8px] text-muted-foreground/60 font-mono">{BADGE_RULES[stats.status]}</p>
+      </div>
+
+      {/* 4-Layer stack indicator */}
+      <div className="flex items-center gap-1.5 text-[9px] text-muted-foreground/70">
+        <Layers className="w-3 h-3" />
+        <span className="font-mono">L1→L2→L3→L4 active</span>
       </div>
 
       {/* Core stats grid */}
@@ -49,7 +65,7 @@ export const EdgeHealthSidebar = () => {
         <MiniStat label="Trades" value={stats.totalTrades.toLocaleString()} />
         <MiniStat label="Win Rate" value={`${stats.overallWinRate}%`} color={stats.overallWinRate >= 50 ? 'green' : 'red'} />
         <MiniStat label="Expect." value={`${stats.overallExpectancy >= 0 ? '+' : ''}${stats.overallExpectancy}p`} color={stats.overallExpectancy > 0 ? 'green' : 'red'} />
-        <MiniStat label="PF" value={`${stats.overallPF}`} color={stats.overallPF >= 1.0 ? 'green' : 'red'} />
+        <MiniStat label="PF" value={`${stats.overallPF}`} color={stats.overallPF >= 1.5 ? 'green' : stats.overallPF >= 1.0 ? 'yellow' : 'red'} />
       </div>
 
       {/* Direction split */}
