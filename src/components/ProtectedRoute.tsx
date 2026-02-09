@@ -1,4 +1,4 @@
-import { Navigate, useLocation } from 'react-router-dom';
+import { useEffect, useRef } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 
 interface ProtectedRouteProps {
@@ -6,23 +6,27 @@ interface ProtectedRouteProps {
 }
 
 export const ProtectedRoute = ({ children }: ProtectedRouteProps) => {
-  const { user, loading } = useAuth();
-  const location = useLocation();
+  const { user, loading, signInWithGoogle } = useAuth();
+  const triggered = useRef(false);
 
-  if (loading) {
+  useEffect(() => {
+    // Auto-trigger Google sign-in if not authenticated after loading completes
+    if (!loading && !user && !triggered.current) {
+      triggered.current = true;
+      console.log('[ProtectedRoute] No session — auto-triggering Google sign-in');
+      signInWithGoogle();
+    }
+  }, [loading, user, signInWithGoogle]);
+
+  if (loading || !user) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
         <div className="flex flex-col items-center gap-4">
           <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
-          <p className="text-muted-foreground">Loading...</p>
+          <p className="text-muted-foreground">Authenticating...</p>
         </div>
       </div>
     );
-  }
-
-  if (!user) {
-    // Redirect to auth page but save the attempted location
-    return <Navigate to="/auth" state={{ from: location }} replace />;
   }
 
   return <>{children}</>;
