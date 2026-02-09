@@ -38,3 +38,11 @@ export type { ExecutionPerformanceMetrics, ExecutionAnalyticsReport, CompositeDe
 // ─── Discovery Risk Mode ───
 export { evaluateDiscoveryRisk, classifyTradeEnvironment, applyDiscoveryRiskAllocation, getDiscoveryRiskConfig, setDiscoveryRiskConfig, resetDiscoveryRiskConfig, getDiscoveryRiskStats, logDiscoveryRiskDecision, clearDiscoveryRiskStats } from './discoveryRiskEngine';
 export type { DiscoveryRiskConfig, DiscoveryRiskDecision, DiscoveryRiskStats, RiskLabel, EnvironmentClassification, RiskAllocation } from './discoveryRiskEngine';
+
+// ─── Adaptive Edge Governance ───
+export { updateEdgeMemory, getEdgeLearningSummary, getEdgeMemory, getEdgeMemoryEntry, clearEdgeMemory, buildEnvironmentSignature, setDeploymentMode, getDeploymentMode, getEdgeLearningConfig, setEdgeLearningConfig, loadEdgeMemory, persistEdgeMemory } from './edgeLearningState';
+export type { EdgeMemoryEntry, LearningState, AdaptiveDeploymentMode, EdgeLearningSummary, EdgeLearningConfig, LearningTradeInput } from './edgeLearningState';
+export { computeAdaptiveAllocation, computeShadowValidation, getShadowValidationState, isShadowValidated, getAdaptiveAllocatorConfig, setAdaptiveAllocatorConfig } from './adaptiveCapitalAllocator';
+export type { AdaptiveAllocationResult, ShadowValidationState, AdaptiveAllocatorConfig } from './adaptiveCapitalAllocator';
+export { runDriftMonitor, detectDrift, getActiveAlerts, getReversionLog, triggerReversion, clearDriftMonitor, getDriftMonitorConfig, setDriftMonitorConfig } from './edgeDriftMonitor';
+export type { DriftAlert, DriftMonitorState, ReversionEntry, DriftMonitorConfig } from './edgeDriftMonitor';
