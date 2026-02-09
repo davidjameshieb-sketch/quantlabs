@@ -62,6 +62,8 @@ export interface CollaborationSnapshot {
   driftEvents: CollaborationDriftEvent[];
   timestamp: number;
   learnMode: LearnMode;
+  /** True when env context is insufficient — collaboration runs independently */
+  independentDueToMissingContext?: boolean;
 }
 
 // ─── Constants ───────────────────────────────────────────────
@@ -97,9 +99,26 @@ export function filterOrdersByLearnMode(
   orders: OrderRecord[],
   mode: LearnMode = 'live+practice',
 ): OrderRecord[] {
-  if (mode === 'all') return orders;
-  if (mode === 'backtest') return orders.filter(o => o.environment === 'backtest');
-  return orders.filter(o => !o.environment || LIVE_PRACTICE_ENVS.has(o.environment));
+  // Step 1: Require environment + regime_label for collaboration learning
+  const withContext = orders.filter(o => {
+    const hasEnv = !!o.environment;
+    const hasRegime = !!o.regime_label;
+    return hasEnv && hasRegime;
+  });
+
+  if (mode === 'all') return withContext;
+  if (mode === 'backtest') return withContext.filter(o => o.environment === 'backtest');
+  return withContext.filter(o => LIVE_PRACTICE_ENVS.has(o.environment!));
+}
+
+/**
+ * Check if orders have sufficient environment context for collaboration.
+ * If not, collaboration should run in independent mode.
+ */
+export function hasEnvironmentContext(orders: OrderRecord[]): boolean {
+  if (orders.length === 0) return false;
+  const withContext = orders.filter(o => o.environment && o.regime_label);
+  return withContext.length / orders.length >= 0.5;
 }
 
 // ─── Core Engine ─────────────────────────────────────────────
@@ -380,9 +399,10 @@ export function analyzeAgentCollaboration(
   learnMode: LearnMode = 'live+practice',
 ): CollaborationSnapshot {
   const filtered = filterOrdersByLearnMode(orders, learnMode);
+  const envContextOk = hasEnvironmentContext(orders);
   const singleAgentStats = computeSingleAgentStats(filtered);
-  const pairStats = buildCollaborationMatrix(filtered);
-  const driftEvents = detectCollaborationDrift(pairStats);
+  const pairStats = envContextOk ? buildCollaborationMatrix(filtered) : [];
+  const driftEvents = envContextOk ? detectCollaborationDrift(pairStats) : [];
 
   return {
     singleAgentStats,
@@ -390,5 +410,6 @@ export function analyzeAgentCollaboration(
     driftEvents,
     timestamp: Date.now(),
     learnMode,
+    independentDueToMissingContext: !envContextOk,
   };
 }
