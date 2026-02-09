@@ -32,3 +32,5 @@ export { computeCachePerformance, resetCacheMetrics, setStaleFastCacheThreshold 
 export type { CachePerformanceStats } from './governanceCacheMonitor';
 export { governanceAlerts } from './governanceAlerts';
 export type { GovernanceAlert, GovernanceAlertType } from './governanceAlerts';
+export { computeExecutionAnalytics } from './executionPerformanceAnalytics';
+export type { ExecutionPerformanceMetrics, ExecutionAnalyticsReport, CompositeDecilePerformance, SessionPerformanceBreakdown, RegimePerformanceBreakdown } from './executionPerformanceAnalytics';
