@@ -1,10 +1,15 @@
 // ═══════════════════════════════════════════════════════════════
-// Agent Collaboration Engine
+// Agent Collaboration Engine — Execution Grade
 // Sections 1, 2, 5 — Pair Performance Matrix, Scoring, Drift
+// Uses environmentSignature.ts envKey as primary grouping key.
 // ═══════════════════════════════════════════════════════════════
 
 import { AgentId } from './types';
 import { ALL_AGENT_IDS } from './agentConfig';
+import {
+  buildEnvKeyFromRaw,
+  type EnvironmentKey,
+} from '@/lib/forex/environmentSignature';
 
 // ─── Types ───────────────────────────────────────────────────
 
@@ -15,6 +20,8 @@ export type CollaborationLabel =
   | 'PREDICTIVE-VETO'
   | 'INSUFFICIENT_DATA';
 
+export type LearnMode = 'live+practice' | 'backtest' | 'all';
+
 export interface AgentPairStats {
   agentA: AgentId;
   agentB: AgentId;
@@ -22,11 +29,15 @@ export interface AgentPairStats {
   pairedExpectancy: number;       // pips
   pairedWinRate: number;
   pairedSharpe: number;
-  conflictFrequency: number;      // 0-1, how often they disagree
-  vetoSuccessRate: number;        // when A vetoes B, how often that prevented a loss
+  conflictFrequency: number;      // 0-1
+  vetoSuccessRate: number;
+  vetoPrecision: number;          // true-positive rate
+  falseVetoRate: number;          // false-positive rate
   coApprovalProfitFactor: number;
   label: CollaborationLabel;
   lastUpdated: number;
+  // envKey-level breakdowns
+  envKeyBreakdown: Record<EnvironmentKey, { expectancy: number; trades: number }>;
 }
 
 export interface SingleAgentStats {
@@ -50,19 +61,20 @@ export interface CollaborationSnapshot {
   pairStats: AgentPairStats[];
   driftEvents: CollaborationDriftEvent[];
   timestamp: number;
+  learnMode: LearnMode;
 }
 
 // ─── Constants ───────────────────────────────────────────────
 
 const MIN_PAIRED_SAMPLE = 40;
-const SYNERGY_THRESHOLD = 1.25;       // paired exp >= 1.25x individual
-const CONFLICT_THRESHOLD = 0.80;      // paired exp < 0.80x individual
-const VETO_SUCCESS_THRESHOLD = 0.60;  // 60%+ of vetoed trades would have lost
-const DRIFT_WINDOW_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+const SYNERGY_THRESHOLD = 1.25;
+const CONFLICT_THRESHOLD = 0.80;
+const VETO_PRECISION_THRESHOLD = 0.60;
+const FALSE_VETO_MAX = 0.40;
 
 // ─── Order Record Interface ─────────────────────────────────
 
-interface OrderRecord {
+export interface OrderRecord {
   agent_id: string | null;
   direction: string;
   currency_pair: string;
@@ -73,6 +85,21 @@ interface OrderRecord {
   confidence_score: number | null;
   session_label: string | null;
   governance_composite: number | null;
+  environment?: string;
+  regime_label?: string | null;
+}
+
+// ─── Environment Filter ──────────────────────────────────────
+
+const LIVE_PRACTICE_ENVS = new Set(['live', 'practice']);
+
+export function filterOrdersByLearnMode(
+  orders: OrderRecord[],
+  mode: LearnMode = 'live+practice',
+): OrderRecord[] {
+  if (mode === 'all') return orders;
+  if (mode === 'backtest') return orders.filter(o => o.environment === 'backtest');
+  return orders.filter(o => !o.environment || LIVE_PRACTICE_ENVS.has(o.environment));
 }
 
 // ─── Core Engine ─────────────────────────────────────────────
@@ -85,6 +112,16 @@ function computePnlPips(entry: number | null, exit: number | null, pair: string)
   if (!entry || !exit) return 0;
   const isJpy = pair.includes('JPY');
   return (exit - entry) * (isJpy ? 100 : 10000);
+}
+
+function buildOrderEnvKey(o: OrderRecord): EnvironmentKey {
+  return buildEnvKeyFromRaw(
+    o.session_label || 'unknown',
+    o.regime_label || 'unknown',
+    o.currency_pair,
+    o.direction,
+    o.agent_id || undefined,
+  );
 }
 
 /**
@@ -129,7 +166,6 @@ function findPairedTrades(orders: OrderRecord[]): Map<string, OrderRecord[][]> {
   const pairs = new Map<string, OrderRecord[][]>();
   const closed = orders.filter(o => o.status === 'closed' && o.agent_id && o.entry_price && o.exit_price);
 
-  // Group by currency pair + 5-min bucket
   const buckets = new Map<string, OrderRecord[]>();
   for (const o of closed) {
     const ts = new Date(o.created_at).getTime();
@@ -139,7 +175,6 @@ function findPairedTrades(orders: OrderRecord[]): Map<string, OrderRecord[][]> {
     buckets.get(key)!.push(o);
   }
 
-  // Extract pairs from buckets with 2+ agents
   for (const [, group] of buckets) {
     if (group.length < 2) continue;
     const agentIds = [...new Set(group.map(o => o.agent_id!))];
@@ -159,20 +194,30 @@ function findPairedTrades(orders: OrderRecord[]): Map<string, OrderRecord[][]> {
   return pairs;
 }
 
-/**
- * SECTION 2: Compute collaboration score for a pair
- */
+// ─── SECTION 2: Collaboration Scoring (execution-grade) ─────
+
 export function computeAgentCollaborationScore(
-  pairStat: { pairedExpectancy: number; pairedTrades: number; vetoSuccessRate: number },
+  pairStat: {
+    pairedExpectancy: number;
+    pairedTrades: number;
+    vetoPrecision: number;
+    falseVetoRate: number;
+    vetoSuccessRate: number;
+  },
   avgIndividualExpectancy: number
 ): CollaborationLabel {
   if (pairStat.pairedTrades < MIN_PAIRED_SAMPLE) return 'INSUFFICIENT_DATA';
 
-  // Predictive veto takes priority
-  if (pairStat.vetoSuccessRate >= VETO_SUCCESS_THRESHOLD) return 'PREDICTIVE-VETO';
+  // PREDICTIVE-VETO: strict precision + false-veto guard
+  if (
+    pairStat.vetoPrecision >= VETO_PRECISION_THRESHOLD &&
+    pairStat.falseVetoRate <= FALSE_VETO_MAX &&
+    pairStat.pairedTrades >= MIN_PAIRED_SAMPLE
+  ) {
+    return 'PREDICTIVE-VETO';
+  }
 
   if (avgIndividualExpectancy <= 0) {
-    // If individual agents lose money, any positive pair is synergy
     if (pairStat.pairedExpectancy > 0) return 'SYNERGY';
     return 'CONFLICT';
   }
@@ -199,8 +244,10 @@ export function buildCollaborationMatrix(
     let conflicts = 0;
     let vetoPreventedLoss = 0;
     let vetoTotal = 0;
+    let vetoFalsePositive = 0;
     let grossWin = 0;
     let grossLoss = 0;
+    const envBreakdown: Record<EnvironmentKey, { expectancy: number; trades: number; totalPnl: number }> = {};
 
     for (const group of tradeGroups) {
       const aOrders = group.filter(o => o.agent_id === agentA);
@@ -209,12 +256,15 @@ export function buildCollaborationMatrix(
       // Check for directional conflict
       const aDirs = new Set(aOrders.map(o => o.direction));
       const bDirs = new Set(bOrders.map(o => o.direction));
-      if (aDirs.has('long') && bDirs.has('short') || aDirs.has('short') && bDirs.has('long')) {
+      if ((aDirs.has('long') && bDirs.has('short')) || (aDirs.has('short') && bDirs.has('long'))) {
         conflicts++;
-        // Check if conflict (veto) prevented loss
         vetoTotal++;
         const netPnl = group.reduce((s, o) => s + computePnlPips(o.entry_price, o.exit_price, o.currency_pair), 0);
-        if (netPnl > 0) vetoPreventedLoss++;
+        if (netPnl > 0) {
+          vetoPreventedLoss++;
+        } else {
+          vetoFalsePositive++;
+        }
       }
 
       for (const o of group) {
@@ -222,7 +272,22 @@ export function buildCollaborationMatrix(
         allPnls.push(pnl);
         if (pnl > 0) grossWin += pnl;
         else grossLoss += Math.abs(pnl);
+
+        // EnvKey breakdown
+        const ek = buildOrderEnvKey(o);
+        if (!envBreakdown[ek]) envBreakdown[ek] = { expectancy: 0, trades: 0, totalPnl: 0 };
+        envBreakdown[ek].trades++;
+        envBreakdown[ek].totalPnl += pnl;
       }
+    }
+
+    // Finalize envKey breakdown expectancy
+    const envKeyBreakdown: Record<EnvironmentKey, { expectancy: number; trades: number }> = {};
+    for (const [ek, data] of Object.entries(envBreakdown)) {
+      envKeyBreakdown[ek] = {
+        expectancy: data.trades > 0 ? Math.round((data.totalPnl / data.trades) * 100) / 100 : 0,
+        trades: data.trades,
+      };
     }
 
     const wins = allPnls.filter(p => p > 0).length;
@@ -232,6 +297,8 @@ export function buildCollaborationMatrix(
       : 1;
 
     const avgIndExp = ((singleStats[agentA]?.soloExpectancy || 0) + (singleStats[agentB]?.soloExpectancy || 0)) / 2;
+    const vetoPrecision = vetoTotal > 0 ? vetoPreventedLoss / vetoTotal : 0;
+    const falseVetoRate = vetoTotal > 0 ? vetoFalsePositive / vetoTotal : 0;
 
     const stat: AgentPairStats = {
       agentA,
@@ -242,9 +309,12 @@ export function buildCollaborationMatrix(
       pairedSharpe: Math.round((avg / stdDev) * 100) / 100,
       conflictFrequency: tradeGroups.length > 0 ? Math.round((conflicts / tradeGroups.length) * 100) / 100 : 0,
       vetoSuccessRate: vetoTotal > 0 ? Math.round((vetoPreventedLoss / vetoTotal) * 100) / 100 : 0,
+      vetoPrecision: Math.round(vetoPrecision * 100) / 100,
+      falseVetoRate: Math.round(falseVetoRate * 100) / 100,
       coApprovalProfitFactor: grossLoss > 0 ? Math.round((grossWin / grossLoss) * 100) / 100 : grossWin > 0 ? 99 : 0,
       label: 'NEUTRAL',
       lastUpdated: Date.now(),
+      envKeyBreakdown,
     };
 
     stat.label = computeAgentCollaborationScore(stat, avgIndExp);
@@ -291,12 +361,12 @@ export function detectCollaborationDrift(
     }
   }
 
-  // Update snapshot
   previousSnapshot = {
     singleAgentStats: {},
     pairStats: currentMatrix,
     driftEvents: events,
     timestamp: now,
+    learnMode: 'live+practice',
   };
 
   return events;
@@ -306,10 +376,12 @@ export function detectCollaborationDrift(
  * Full collaboration analysis: build matrix + detect drift
  */
 export function analyzeAgentCollaboration(
-  orders: OrderRecord[]
+  orders: OrderRecord[],
+  learnMode: LearnMode = 'live+practice',
 ): CollaborationSnapshot {
-  const singleAgentStats = computeSingleAgentStats(orders);
-  const pairStats = buildCollaborationMatrix(orders);
+  const filtered = filterOrdersByLearnMode(orders, learnMode);
+  const singleAgentStats = computeSingleAgentStats(filtered);
+  const pairStats = buildCollaborationMatrix(filtered);
   const driftEvents = detectCollaborationDrift(pairStats);
 
   return {
@@ -317,5 +389,6 @@ export function analyzeAgentCollaboration(
     pairStats,
     driftEvents,
     timestamp: Date.now(),
+    learnMode,
   };
 }
