@@ -22,6 +22,7 @@ import {
   type InfluenceTier,
 } from '@/lib/agents/agentCollaborationRouter';
 import type { CollaborationSnapshot } from '@/lib/agents/agentCollaborationEngine';
+import { buildCollaborationMatrix, PAIR_WINDOW_MINUTES, type OrderRecord } from '@/lib/agents/agentCollaborationEngine';
 import type { AgentId } from '@/lib/agents/types';
 
 // Reset state before each test
@@ -88,6 +89,7 @@ describe('soft tier authority clamp', () => {
         coApprovalProfitFactor: 2.0,
         label: 'SYNERGY',
         lastUpdated: Date.now(),
+        pairTimeDeltaMinutes: [],
         envKeyBreakdown: {},
       }],
       driftEvents: [],
@@ -160,6 +162,67 @@ describe('changed-trade safety rollback', () => {
     }
     const triggered = checkChangedTradeRollback();
     expect(triggered).toBe(false);
+  });
+});
+
+// ─── Pairing Window & pairTimeDeltaMinutes ───────────────────
+
+describe('pairing window', () => {
+  const baseTime = new Date('2025-01-15T10:00:00Z').getTime();
+
+  function makeOrder(agentId: string, pair: string, minuteOffset: number): OrderRecord {
+    return {
+      agent_id: agentId,
+      direction: 'long',
+      currency_pair: pair,
+      entry_price: 1.1000,
+      exit_price: 1.1010,
+      status: 'closed',
+      created_at: new Date(baseTime + minuteOffset * 60_000).toISOString(),
+      confidence_score: 0.8,
+      session_label: 'london',
+      governance_composite: 0.7,
+      environment: 'practice',
+      regime_label: 'trending',
+    };
+  }
+
+  it('uses 15-minute pairing window', () => {
+    expect(PAIR_WINDOW_MINUTES).toBe(15);
+  });
+
+  it('pairs agents within the 15-minute window', () => {
+    const orders = [
+      makeOrder('forex-macro', 'EUR_USD', 0),
+      makeOrder('session-momentum', 'EUR_USD', 10), // 10 min apart — within 15-min bucket
+    ];
+    const result = buildCollaborationMatrix(orders);
+    expect(result.length).toBeGreaterThanOrEqual(1);
+    expect(result[0].pairTimeDeltaMinutes.length).toBe(1);
+    expect(result[0].pairTimeDeltaMinutes[0]).toBe(10);
+  });
+
+  it('does NOT pair agents across different 15-minute buckets', () => {
+    const orders = [
+      makeOrder('forex-macro', 'EUR_USD', 0),
+      makeOrder('session-momentum', 'EUR_USD', 16), // in next 15-min bucket
+    ];
+    const result = buildCollaborationMatrix(orders);
+    expect(result.length).toBe(0);
+  });
+
+  it('records pairTimeDeltaMinutes for multiple groups', () => {
+    const orders = [
+      makeOrder('forex-macro', 'EUR_USD', 0),
+      makeOrder('session-momentum', 'EUR_USD', 5),
+      makeOrder('forex-macro', 'EUR_USD', 15),
+      makeOrder('session-momentum', 'EUR_USD', 20),
+    ];
+    const result = buildCollaborationMatrix(orders);
+    expect(result.length).toBe(1);
+    expect(result[0].pairTimeDeltaMinutes.length).toBe(2);
+    expect(result[0].pairTimeDeltaMinutes[0]).toBe(5);
+    expect(result[0].pairTimeDeltaMinutes[1]).toBe(5);
   });
 });
 

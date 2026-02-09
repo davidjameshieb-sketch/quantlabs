@@ -186,6 +186,7 @@ describe('routing outcome changes', () => {
         coApprovalProfitFactor: 0.6,
         label: 'CONFLICT',
         lastUpdated: Date.now(),
+        pairTimeDeltaMinutes: [],
         envKeyBreakdown: {},
       }],
       driftEvents: [],

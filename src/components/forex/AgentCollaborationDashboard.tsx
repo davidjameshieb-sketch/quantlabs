@@ -259,7 +259,7 @@ export const AgentCollaborationDashboard = () => {
         </h3>
         {allPairs.length === 0 ? (
           <p className="text-[10px] text-muted-foreground text-center py-4">
-            No paired trades detected yet. Pairs form when 2+ agents trade the same instrument within a 5-minute window.
+            No paired trades detected yet. Pairs form when 2+ agents trade the same instrument within a 15-minute window.
           </p>
         ) : (
           <div className="space-y-1 max-h-72 overflow-y-auto">
@@ -281,6 +281,11 @@ export const AgentCollaborationDashboard = () => {
                   {pair.pairedExpectancy >= 0 ? '+' : ''}{pair.pairedExpectancy}p
                 </span>
                 <span className="text-muted-foreground font-mono">PF {pair.coApprovalProfitFactor}</span>
+                {pair.pairTimeDeltaMinutes && pair.pairTimeDeltaMinutes.length > 0 && (
+                  <span className="text-muted-foreground font-mono text-[8px]">
+                    Δt {(pair.pairTimeDeltaMinutes.reduce((s, v) => s + v, 0) / pair.pairTimeDeltaMinutes.length).toFixed(1)}m
+                  </span>
+                )}
               </div>
             ))}
           </div>
