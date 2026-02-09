@@ -114,9 +114,13 @@ export function useOandaExecution() {
         setConnected(true);
       }
     } catch (err) {
-      console.error('[OANDA] Account fetch error:', err);
+      const msg = (err as Error).message;
+      // Silently handle auth errors (no session) — only toast real OANDA failures
+      if (msg !== 'Not authenticated') {
+        console.error('[OANDA] Account fetch error:', err);
+        toast.error('Failed to connect to OANDA: ' + msg);
+      }
       setConnected(false);
-      toast.error('Failed to connect to OANDA: ' + (err as Error).message);
     } finally {
       setLoading(false);
     }
