@@ -13,12 +13,15 @@ import {
 
 // ─── Types ───────────────────────────────────────────────────
 
+export type InfluenceTier = 'NONE' | 'SOFT' | 'HARD';
+
 export interface AuthorityAdjustment {
   agentId: AgentId;
   baseAuthority: number;
   collaborationMultiplier: number;
   finalAuthority: number;
   reason: string;
+  influenceTier: InfluenceTier;
 }
 
 export interface CollaborationVote {
@@ -48,6 +51,9 @@ export interface CollaborationDecisionLog {
   outcomeChanged: boolean;
   topCollaborationFactors: string[];
   finalDecisionReason: string;
+  influenceTierUsed: InfluenceTier;
+  budgetExceeded: boolean;
+  flipMarginInsufficient: boolean;
 }
 
 export interface CollaborationSafetyState {
@@ -63,6 +69,10 @@ export interface CollaborationImpactStats {
   netPipsGainedBySynergy: number;
   decisionsChangedByCollaboration: number;
   currentMode: 'enabled' | 'disabled' | 'fallback' | 'independent';
+  influenceTier: InfluenceTier;
+  budgetUsedToday: number;
+  budgetMaxToday: number;
+  softInfluenceDisabledUntil: number | null;
 }
 
 // ─── Constants ───────────────────────────────────────────────
@@ -81,6 +91,26 @@ const VELOCITY_WINDOW = 50;
 const FALLBACK_LOOKBACK = 100;
 const FALLBACK_DEGRADATION_THRESHOLD = 0.20;
 const FALLBACK_DURATION_MS = 24 * 60 * 60 * 1000;
+
+// ─── Soft Influence Constants ────────────────────────────────
+
+/** Tier A: soft influence activates at 10 paired samples */
+export const SOFT_MIN_SAMPLE = 10;
+/** Tier B: hard influence requires 40 paired samples (unchanged) */
+export const HARD_MIN_SAMPLE = 40;
+/** Soft tier authority clamp */
+export const SOFT_CLAMP_MIN = 0.9;
+export const SOFT_CLAMP_MAX = 1.1;
+/** Influence budget: max fraction of daily decisions that can be flipped */
+export const INFLUENCE_BUDGET_FRACTION = 0.10;
+/** Minimum margin for a flip to be allowed */
+export const FLIP_MARGIN_MIN = 0.02;
+/** Changed-trade rollback: lookback window */
+export const CHANGED_TRADE_ROLLBACK_LOOKBACK = 50;
+/** Changed-trade rollback: degradation threshold */
+export const CHANGED_TRADE_ROLLBACK_THRESHOLD = 0.20;
+/** Soft influence disable duration */
+export const SOFT_INFLUENCE_DISABLE_MS = 24 * 60 * 60 * 1000;
 
 // ─── Safety State ────────────────────────────────────────────
 
@@ -102,7 +132,23 @@ let impactStats: CollaborationImpactStats = {
   netPipsGainedBySynergy: 0,
   decisionsChangedByCollaboration: 0,
   currentMode: 'enabled',
+  influenceTier: 'NONE',
+  budgetUsedToday: 0,
+  budgetMaxToday: 0,
+  softInfluenceDisabledUntil: null,
 };
+
+// ─── Influence Budget State ──────────────────────────────────
+
+let dailyBudget = {
+  date: '',
+  totalDecisions: 0,
+  flippedDecisions: 0,
+};
+
+// Changed-trade rollback state
+let changedTradeTracker: { expectancyChanged: number; expectancyBaseline: number; count: number }[] = [];
+let softInfluenceDisabledUntil: number | null = null;
 
 // ─── Getters / Setters ───────────────────────────────────────
 
@@ -111,7 +157,15 @@ export function getCollaborationSafetyState(): CollaborationSafetyState {
 }
 
 export function getCollaborationImpactStats(): CollaborationImpactStats {
-  return { ...impactStats, currentMode: resolveCurrentMode() };
+  const budget = getBudgetStats();
+  return {
+    ...impactStats,
+    currentMode: resolveCurrentMode(),
+    influenceTier: isSoftInfluenceDisabled() ? 'NONE' : 'SOFT',
+    budgetUsedToday: budget.used,
+    budgetMaxToday: budget.max,
+    softInfluenceDisabledUntil: getSoftInfluenceDisabledUntil(),
+  };
 }
 
 function resolveCurrentMode(): CollaborationImpactStats['currentMode'] {
@@ -122,7 +176,96 @@ function resolveCurrentMode(): CollaborationImpactStats['currentMode'] {
 }
 
 export function resetImpactStats(): void {
-  impactStats = { netPipsSavedByVeto: 0, netPipsGainedBySynergy: 0, decisionsChangedByCollaboration: 0, currentMode: 'enabled' };
+  impactStats = { netPipsSavedByVeto: 0, netPipsGainedBySynergy: 0, decisionsChangedByCollaboration: 0, currentMode: 'enabled', influenceTier: 'NONE', budgetUsedToday: 0, budgetMaxToday: 0, softInfluenceDisabledUntil: null };
+}
+
+// ─── Soft Influence Rollback ─────────────────────────────────
+
+export function isSoftInfluenceDisabled(): boolean {
+  return softInfluenceDisabledUntil !== null && Date.now() < softInfluenceDisabledUntil;
+}
+
+export function disableSoftInfluence(reason: string): void {
+  softInfluenceDisabledUntil = Date.now() + SOFT_INFLUENCE_DISABLE_MS;
+  console.log(`[COLLAB-ROUTER] SOFT INFLUENCE DISABLED: ${reason}`);
+}
+
+export function clearSoftInfluenceDisable(): void {
+  softInfluenceDisabledUntil = null;
+}
+
+export function getSoftInfluenceDisabledUntil(): number | null {
+  return softInfluenceDisabledUntil;
+}
+
+// ─── Influence Budget ────────────────────────────────────────
+
+function todayKey(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function ensureBudgetDay(): void {
+  const today = todayKey();
+  if (dailyBudget.date !== today) {
+    dailyBudget = { date: today, totalDecisions: 0, flippedDecisions: 0 };
+  }
+}
+
+export function recordDecision(flipped: boolean): void {
+  ensureBudgetDay();
+  dailyBudget.totalDecisions++;
+  if (flipped) dailyBudget.flippedDecisions++;
+}
+
+export function isBudgetExceeded(): boolean {
+  ensureBudgetDay();
+  if (dailyBudget.totalDecisions === 0) return false;
+  return (dailyBudget.flippedDecisions / dailyBudget.totalDecisions) > INFLUENCE_BUDGET_FRACTION;
+}
+
+export function getBudgetStats(): { used: number; max: number } {
+  ensureBudgetDay();
+  const maxFlips = Math.max(1, Math.floor(dailyBudget.totalDecisions * INFLUENCE_BUDGET_FRACTION));
+  return { used: dailyBudget.flippedDecisions, max: maxFlips };
+}
+
+// ─── Changed-Trade Rollback ──────────────────────────────────
+
+export function recordChangedTradeOutcome(changedExpectancy: number, baselineExpectancy: number): void {
+  changedTradeTracker.push({ expectancyChanged: changedExpectancy, expectancyBaseline: baselineExpectancy, count: 1 });
+  if (changedTradeTracker.length > CHANGED_TRADE_ROLLBACK_LOOKBACK) {
+    changedTradeTracker = changedTradeTracker.slice(-CHANGED_TRADE_ROLLBACK_LOOKBACK);
+  }
+}
+
+export function checkChangedTradeRollback(): boolean {
+  if (changedTradeTracker.length < CHANGED_TRADE_ROLLBACK_LOOKBACK) return false;
+  const avgChanged = changedTradeTracker.reduce((s, t) => s + t.expectancyChanged, 0) / changedTradeTracker.length;
+  const avgBaseline = changedTradeTracker.reduce((s, t) => s + t.expectancyBaseline, 0) / changedTradeTracker.length;
+  if (avgBaseline <= 0) return false;
+  const degradation = (avgBaseline - avgChanged) / Math.abs(avgBaseline);
+  if (degradation >= CHANGED_TRADE_ROLLBACK_THRESHOLD) {
+    disableSoftInfluence(`Changed-trade expectancy ${avgChanged.toFixed(2)}p is ${(degradation * 100).toFixed(0)}% worse than baseline ${avgBaseline.toFixed(2)}p`);
+    return true;
+  }
+  return false;
+}
+
+export function resetChangedTradeTracker(): void {
+  changedTradeTracker = [];
+}
+
+// ─── Influence Tier Resolution ───────────────────────────────
+
+export function resolveInfluenceTier(pairedTrades: number): InfluenceTier {
+  if (pairedTrades >= HARD_MIN_SAMPLE) return 'HARD';
+  if (pairedTrades >= SOFT_MIN_SAMPLE && !isSoftInfluenceDisabled()) return 'SOFT';
+  return 'NONE';
+}
+
+/** Check if a flip passes the margin requirement */
+export function passesFlipMargin(baselineScore: number, weightedScore: number): boolean {
+  return Math.abs(weightedScore - baselineScore) >= FLIP_MARGIN_MIN;
 }
 
 export function recordImpact(pipsSavedByVeto: number, pipsGainedBySynergy: number, outcomeChanged: boolean): void {
@@ -214,6 +357,7 @@ export function computeAuthorityAdjustments(
       collaborationMultiplier: 1.0,
       finalAuthority: 1.0,
       reason,
+      influenceTier: 'NONE' as InfluenceTier,
     }));
   }
 
@@ -276,18 +420,36 @@ export function computeAuthorityAdjustments(
       reasons.push(`Velocity clamped: raw ${multiplier.toFixed(3)} → ${velocityClamped.toFixed(3)}`);
     }
 
-    // Hard clamp [0.1, 2.0]
-    const final = Math.round(Math.max(0.1, Math.min(2.0, velocityClamped)) * 100) / 100;
+    // Determine influence tier based on max paired trades for this agent
+    const maxPairedTrades = relevantPairs.reduce((m, p) => Math.max(m, p.pairedTrades), 0);
+    const tier = resolveInfluenceTier(maxPairedTrades);
+
+    // Apply soft clamp if in SOFT tier
+    let finalClamped: number;
+    if (tier === 'SOFT') {
+      finalClamped = Math.round(Math.max(SOFT_CLAMP_MIN, Math.min(SOFT_CLAMP_MAX, velocityClamped)) * 100) / 100;
+      if (Math.abs(finalClamped - velocityClamped) > 0.001) {
+        reasons.push(`Soft-tier clamp: ${velocityClamped.toFixed(3)} → [${SOFT_CLAMP_MIN}, ${SOFT_CLAMP_MAX}]`);
+      }
+    } else {
+      // Hard clamp [0.1, 2.0]
+      finalClamped = Math.round(Math.max(0.1, Math.min(2.0, velocityClamped)) * 100) / 100;
+    }
+
+    if (tier !== 'NONE') {
+      reasons.push(`Influence tier: ${tier}`);
+    }
 
     // Update velocity tracker
-    previousAuthorities.set(agentId, final);
+    previousAuthorities.set(agentId, finalClamped);
 
     adjustments.push({
       agentId,
       baseAuthority: 1.0,
       collaborationMultiplier: Math.round(velocityClamped * 100) / 100,
-      finalAuthority: final,
+      finalAuthority: finalClamped,
       reason: reasons.length > 0 ? reasons.join('; ') : 'No active pair relationships',
+      influenceTier: tier,
     });
   }
 
@@ -370,6 +532,7 @@ export function computeBaselineVote(
     collaborationMultiplier: 1.0,
     finalAuthority: 1.0,
     reason: 'baseline',
+    influenceTier: 'NONE' as InfluenceTier,
   }));
   return computeWeightedVote(participatingAgents, agentConfidences, baselineAdjustments, snapshot, threshold);
 }
@@ -398,7 +561,26 @@ export function createCollaborationDecisionLog(
   // Compute both baseline and weighted votes
   const baselineVote = computeBaselineVote(participatingAgents, agentConfidences, snapshot);
   const weightedVote = computeWeightedVote(participatingAgents, agentConfidences, authorityAdjustments, snapshot);
-  const outcomeChanged = baselineVote.approved !== weightedVote.approved;
+  const rawOutcomeChanged = baselineVote.approved !== weightedVote.approved;
+
+  // Determine influence tier used
+  const tiers = authorityAdjustments.map(a => a.influenceTier);
+  const influenceTierUsed: InfluenceTier = tiers.includes('HARD') ? 'HARD' : tiers.includes('SOFT') ? 'SOFT' : 'NONE';
+
+  // Budget check
+  const budgetExceeded = rawOutcomeChanged && isBudgetExceeded();
+
+  // Flip margin check
+  const flipMarginInsufficient = rawOutcomeChanged && !passesFlipMargin(
+    baselineVote.totalWeightedConfidence,
+    weightedVote.totalWeightedConfidence,
+  );
+
+  // Final outcomeChanged: only true if passes budget + margin
+  const outcomeChanged = rawOutcomeChanged && !budgetExceeded && !flipMarginInsufficient;
+
+  // Record decision in budget tracker
+  recordDecision(outcomeChanged);
 
   // Top 3 collaboration factors
   const topFactors = authorityAdjustments
@@ -407,9 +589,16 @@ export function createCollaborationDecisionLog(
     .slice(0, 3)
     .map(a => `${a.agentId}: ${a.reason}`);
 
-  const finalDecisionReason = outcomeChanged
-    ? `Collaboration changed outcome: baseline=${baselineVote.approved ? 'APPROVED' : 'BLOCKED'}, weighted=${weightedVote.approved ? 'APPROVED' : 'BLOCKED'}. Top factors: ${topFactors.join('; ')}`
-    : `Collaboration confirmed outcome (${weightedVote.approved ? 'APPROVED' : 'BLOCKED'}). Top factors: ${topFactors.join('; ') || 'none'}`;
+  let finalDecisionReason: string;
+  if (budgetExceeded) {
+    finalDecisionReason = `Collaboration would change outcome but BUDGET EXCEEDED (>${(INFLUENCE_BUDGET_FRACTION * 100).toFixed(0)}% daily flips). Reverting to baseline.`;
+  } else if (flipMarginInsufficient) {
+    finalDecisionReason = `Collaboration would change outcome but FLIP MARGIN insufficient (<${FLIP_MARGIN_MIN}). Reverting to baseline.`;
+  } else if (outcomeChanged) {
+    finalDecisionReason = `Collaboration changed outcome: baseline=${baselineVote.approved ? 'APPROVED' : 'BLOCKED'}, weighted=${weightedVote.approved ? 'APPROVED' : 'BLOCKED'}. Top factors: ${topFactors.join('; ')}`;
+  } else {
+    finalDecisionReason = `Collaboration confirmed outcome (${weightedVote.approved ? 'APPROVED' : 'BLOCKED'}). Top factors: ${topFactors.join('; ') || 'none'}`;
+  }
 
   return {
     timestamp: Date.now(),
@@ -422,6 +611,9 @@ export function createCollaborationDecisionLog(
     outcomeChanged,
     topCollaborationFactors: topFactors,
     finalDecisionReason,
+    influenceTierUsed,
+    budgetExceeded,
+    flipMarginInsufficient,
   };
 }
 

@@ -28,6 +28,7 @@ import {
   getCollaborationImpactStats,
   CollaborationSafetyState,
   CollaborationImpactStats,
+  InfluenceTier,
 } from '@/lib/agents/agentCollaborationRouter';
 
 // ─── Color helpers ───────────────────────────────────────────
@@ -178,7 +179,7 @@ export const AgentCollaborationDashboard = () => {
         <h3 className="text-xs font-display font-bold mb-3 flex items-center gap-1.5">
           <Activity className="w-3.5 h-3.5 text-primary" /> Collaboration Impact
         </h3>
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
           <div className="p-2.5 rounded-lg bg-muted/10 border border-border/20">
             <div className="text-[9px] text-muted-foreground mb-1">Pips Saved (Veto/Conflict)</div>
             <div className={cn('font-mono text-sm font-bold', impact.netPipsSavedByVeto >= 0 ? 'text-neural-green' : 'text-neural-red')}>
@@ -195,6 +196,22 @@ export const AgentCollaborationDashboard = () => {
             <div className="text-[9px] text-muted-foreground mb-1">Decisions Changed</div>
             <div className="font-mono text-sm font-bold text-foreground">
               {impact.decisionsChangedByCollaboration}
+            </div>
+          </div>
+          <div className="p-2.5 rounded-lg bg-muted/10 border border-border/20">
+            <div className="text-[9px] text-muted-foreground mb-1">Influence Tier</div>
+            <div className={cn('text-sm font-bold uppercase', 
+              impact.influenceTier === 'HARD' ? 'text-primary' : 
+              impact.influenceTier === 'SOFT' ? 'text-neural-orange' : 
+              'text-muted-foreground'
+            )}>
+              {impact.influenceTier}
+            </div>
+            <div className="text-[8px] text-muted-foreground mt-0.5">
+              Budget: {impact.budgetUsedToday}/{impact.budgetMaxToday} flips
+              {impact.softInfluenceDisabledUntil && (
+                <span className="text-neural-red ml-1">• Soft disabled</span>
+              )}
             </div>
           </div>
           <div className="p-2.5 rounded-lg bg-muted/10 border border-border/20">
