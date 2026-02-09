@@ -22,6 +22,7 @@ import { ShadowDataCard } from './health/ShadowDataCard';
 import { DirectionCacheCard } from './health/DirectionCacheCard';
 import { GateFrequencyCard } from './health/GateFrequencyCard';
 import { GovernanceAlertsCard } from './health/GovernanceAlertsCard';
+import { DataReadinessCard } from './health/DataReadinessCard';
 import { ExecutionPerformancePanel } from './ExecutionPerformancePanel';
 import { CompositeDecilePanel } from './CompositeDecilePanel';
 import { computeCompositeExpectancyCorrelation } from '@/lib/forex/governanceAnalytics';
@@ -60,10 +61,11 @@ export function GovernanceHealthDashboard({ trades = [] }: Props) {
       </div>
 
       {/* Row 1: Pass Rates + Shadow Mode + Data Availability */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
         <GovernancePassRateCard passStats={passStats} />
         <ShadowDataCard shadowIntegrity={shadowIntegrity} dataAvail={dataAvail} />
         <DirectionCacheCard neutralStats={neutralStats} cachePerf={cachePerf} />
+        <DataReadinessCard />
       </div>
 
       {/* Row 2: Gate Frequency + Decision Composite Correlation */}

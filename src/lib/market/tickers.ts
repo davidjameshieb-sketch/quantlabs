@@ -603,9 +603,16 @@ export const getTickersByType = (type: MarketType): TickerInfo[] => {
   return TICKERS.filter(t => t.type === type);
 };
 
-// Get ticker by symbol
+// Get ticker by symbol (exact match)
 export const getTickerBySymbol = (symbol: string): TickerInfo | undefined => {
   return TICKERS.find(t => t.symbol === symbol);
+};
+
+// Flexible forex ticker lookup — accepts any format: EURUSD, EUR/USD, EUR_USD
+export const findForexTicker = (symbol: string): TickerInfo | undefined => {
+  // Normalize to raw 6-char format for comparison
+  const cleaned = symbol.replace(/[/_]/g, '').toUpperCase();
+  return TICKERS.find(t => t.type === 'forex' && t.symbol === cleaned);
 };
 
 // Market type labels

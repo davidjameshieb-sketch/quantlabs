@@ -263,9 +263,10 @@ const evaluateRejectionGates = (ctx: GovernanceContext): GateEntry[] => {
 
   // Gate 10: Analysis unavailable (Fix #7) — HARD GATE
   if (!ctx.analysisAvailable) {
+    const details = ctx.atrValue === 0 ? 'missing candles for 1h/4h' : 'ticker not found';
     gates.push({
       id: 'G10_ANALYSIS_UNAVAILABLE',
-      message: 'Ticker analysis unavailable — cannot assess MTF alignment',
+      message: `ANALYSIS_UNAVAILABLE: ${details} — cannot assess MTF alignment`,
     });
   }
 

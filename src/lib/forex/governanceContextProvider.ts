@@ -13,9 +13,9 @@ import type { GovernanceContext } from './tradeGovernanceEngine';
 import type { VolatilityPhase, LiquiditySession } from './microstructureEngine';
 import type { Timeframe } from '@/lib/market/types';
 import { analyzeMultiTimeframe } from '@/lib/market/analysisEngine';
-import { getTickersByType } from '@/lib/market/tickers';
+import { findForexTicker } from '@/lib/market/tickers';
 import { getAllLivePrices } from './oandaPricingService';
-import { toDisplaySymbol } from './forexSymbolMap';
+import { toDisplaySymbol, toRawSymbol } from './forexSymbolMap';
 import {
   recordSlowCacheHit, recordSlowCacheMiss,
   recordFastCacheHit, recordFastCacheMiss,
@@ -263,7 +263,7 @@ function computeSlowContext(
   const isMajor = MAJOR_PAIRS.has(displaySymbol);
 
   // ── 1. MTF Alignment — from QuantLabs analysis engine ──
-  const ticker = getTickersByType('forex').find(t => t.symbol === displaySymbol);
+  const ticker = findForexTicker(displaySymbol);
   let htfSupports = false;
   let mtfConfirms = false;
   let ltfClean = false;
@@ -271,27 +271,46 @@ function computeSlowContext(
   let atrValue = 0;
   let atrAvg = 0;
   let analysisAvailable = false;
+  let analysisBlockReason: string | null = null;
 
-  if (ticker) {
-    const mtfAnalysis = analyzeMultiTimeframe(ticker, ['15m', '1h', '4h', '1d']);
-    const analyses = mtfAnalysis.analyses;
-    analysisAvailable = true;
+  if (!ticker) {
+    analysisBlockReason = `TICKER_NOT_FOUND for ${displaySymbol} (raw: ${toRawSymbol(displaySymbol)})`;
+    console.error(`[GovernanceContext] ${analysisBlockReason}`);
+  } else {
+    try {
+      const mtfAnalysis = analyzeMultiTimeframe(ticker, ['15m', '1h', '4h', '1d']);
+      const analyses = mtfAnalysis.analyses;
 
-    const htfBias4h = analyses['4h']?.bias;
-    const htfBias1d = analyses['1d']?.bias;
-    htfSupports = htfBias4h === htfBias1d && htfBias4h != null;
+      // Verify we got meaningful data (ATR > 0 indicates real candles)
+      const has1h = analyses['1h'] && analyses['1h'].atr > 0;
+      const has4h = analyses['4h'] && analyses['4h'].atr > 0;
 
-    const mtfBias = analyses['1h']?.bias;
-    mtfConfirms = mtfBias === htfBias4h;
+      if (!has1h && !has4h) {
+        analysisBlockReason = `CANDLES_MISSING: no valid 1h or 4h data for ${displaySymbol}`;
+        console.warn(`[GovernanceContext] ${analysisBlockReason}`);
+      } else {
+        analysisAvailable = true;
+      }
 
-    ltfClean = (analyses['15m']?.efficiency?.score ?? 0) > 0.4;
+      const htfBias4h = analyses['4h']?.bias;
+      const htfBias1d = analyses['1d']?.bias;
+      htfSupports = htfBias4h === htfBias1d && htfBias4h != null;
 
-    mtfAlignmentScore = mtfAnalysis.mtfAlignmentScore ?? (
-      (htfSupports ? 40 : 0) + (mtfConfirms ? 35 : 0) + (ltfClean ? 25 : 0)
-    );
+      const mtfBias = analyses['1h']?.bias;
+      mtfConfirms = mtfBias === htfBias4h;
 
-    atrValue = analyses['1h']?.atr ?? 0;
-    atrAvg = analyses['4h']?.atr ?? atrValue;
+      ltfClean = (analyses['15m']?.efficiency?.score ?? 0) > 0.4;
+
+      mtfAlignmentScore = mtfAnalysis.mtfAlignmentScore ?? (
+        (htfSupports ? 40 : 0) + (mtfConfirms ? 35 : 0) + (ltfClean ? 25 : 0)
+      );
+
+      atrValue = analyses['1h']?.atr ?? 0;
+      atrAvg = analyses['4h']?.atr ?? atrValue;
+    } catch (err) {
+      analysisBlockReason = `ANALYSIS_EXCEPTION: ${err}`;
+      console.error(`[GovernanceContext] ${analysisBlockReason}`);
+    }
   }
 
   // ── 2. Regime Phase ──
