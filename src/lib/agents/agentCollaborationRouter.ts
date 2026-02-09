@@ -8,6 +8,7 @@ import {
   AgentPairStats,
   CollaborationLabel,
   CollaborationSnapshot,
+  hasEnvironmentContext,
 } from './agentCollaborationEngine';
 
 // ─── Types ───────────────────────────────────────────────────
@@ -181,10 +182,12 @@ function applyVelocityClamp(agentId: AgentId, rawMultiplier: number): number {
   return clamped;
 }
 
-function isWeightingActive(): boolean {
+function isWeightingActive(snapshot?: CollaborationSnapshot | null): boolean {
   if (!safetyState.collaborationWeightingEnabled) return false;
   if (safetyState.independentRoutingMode) return false;
   if (isFallbackActive()) return false;
+  // If env context is missing, collaboration does nothing
+  if (snapshot?.independentDueToMissingContext) return false;
   return true;
 }
 
@@ -196,8 +199,10 @@ export function computeAuthorityAdjustments(
 ): AuthorityAdjustment[] {
   evaluationCount++;
 
-  if (!isWeightingActive()) {
-    const reason = safetyState.independentRoutingMode
+  if (!isWeightingActive(snapshot)) {
+    const reason = snapshot?.independentDueToMissingContext
+      ? 'Independent mode: insufficient environment context (missing environment/regime on >50% of orders)'
+      : safetyState.independentRoutingMode
       ? 'Independent routing mode'
       : isFallbackActive()
         ? `Automatic fallback active: ${safetyState.fallbackReason || 'performance degradation'}`

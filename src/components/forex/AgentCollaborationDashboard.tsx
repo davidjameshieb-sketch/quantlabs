@@ -55,6 +55,13 @@ const modeColors: Record<CollaborationImpactStats['currentMode'], string> = {
   independent: 'text-primary',
 };
 
+const modeDescriptions: Record<CollaborationImpactStats['currentMode'], string> = {
+  enabled: 'Active — influencing trade decisions',
+  disabled: 'Manually disabled',
+  fallback: 'Auto-disabled for 24h (performance safety)',
+  independent: 'Independent — insufficient env context',
+};
+
 // ─── Component ───────────────────────────────────────────────
 
 export const AgentCollaborationDashboard = () => {
@@ -195,9 +202,9 @@ export const AgentCollaborationDashboard = () => {
             <div className={cn('text-sm font-bold uppercase', modeColors[impact.currentMode])}>
               {impact.currentMode}
             </div>
-            {impact.currentMode === 'fallback' && (
-              <div className="text-[8px] text-neural-orange mt-0.5">Auto-disabled for 24h</div>
-            )}
+            <div className="text-[8px] text-muted-foreground mt-0.5">
+              {modeDescriptions[impact.currentMode]}
+            </div>
           </div>
         </div>
       </motion.div>

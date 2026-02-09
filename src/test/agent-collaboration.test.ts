@@ -47,9 +47,9 @@ describe('envKey consistency', () => {
 
 describe('filterOrdersByLearnMode', () => {
   const orders: OrderRecord[] = [
-    { agent_id: 'forex-macro', direction: 'long', currency_pair: 'EURUSD', entry_price: 1.1, exit_price: 1.101, status: 'closed', created_at: '2025-01-01', confidence_score: 0.8, session_label: 'ny-overlap', governance_composite: 0.85, environment: 'practice' },
-    { agent_id: 'forex-macro', direction: 'long', currency_pair: 'EURUSD', entry_price: 1.1, exit_price: 1.101, status: 'closed', created_at: '2025-01-01', confidence_score: 0.8, session_label: 'ny-overlap', governance_composite: 0.85, environment: 'backtest' },
-    { agent_id: 'forex-macro', direction: 'long', currency_pair: 'EURUSD', entry_price: 1.1, exit_price: 1.101, status: 'closed', created_at: '2025-01-01', confidence_score: 0.8, session_label: 'ny-overlap', governance_composite: 0.85, environment: 'live' },
+    { agent_id: 'forex-macro', direction: 'long', currency_pair: 'EURUSD', entry_price: 1.1, exit_price: 1.101, status: 'closed', created_at: '2025-01-01', confidence_score: 0.8, session_label: 'ny-overlap', governance_composite: 0.85, environment: 'practice', regime_label: 'expansion' },
+    { agent_id: 'forex-macro', direction: 'long', currency_pair: 'EURUSD', entry_price: 1.1, exit_price: 1.101, status: 'closed', created_at: '2025-01-01', confidence_score: 0.8, session_label: 'ny-overlap', governance_composite: 0.85, environment: 'backtest', regime_label: 'compression' },
+    { agent_id: 'forex-macro', direction: 'long', currency_pair: 'EURUSD', entry_price: 1.1, exit_price: 1.101, status: 'closed', created_at: '2025-01-01', confidence_score: 0.8, session_label: 'ny-overlap', governance_composite: 0.85, environment: 'live', regime_label: 'ignition' },
   ];
 
   it('filters to live+practice by default', () => {
