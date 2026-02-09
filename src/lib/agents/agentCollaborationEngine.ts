@@ -36,6 +36,8 @@ export interface AgentPairStats {
   coApprovalProfitFactor: number;
   label: CollaborationLabel;
   lastUpdated: number;
+  /** Per-pair time delta distribution in minutes */
+  pairTimeDeltaMinutes: number[];
   // envKey-level breakdowns
   envKeyBreakdown: Record<EnvironmentKey, { expectancy: number; trades: number }>;
 }
@@ -178,17 +180,21 @@ export function computeSingleAgentStats(
   return stats;
 }
 
+/** Pairing window in minutes — widened from 5 to 15 to detect more collaboration events */
+export const PAIR_WINDOW_MINUTES = 15;
+
 /**
- * Detect co-occurring trades: same pair, same 5-minute window
+ * Detect co-occurring trades: same pair, same 15-minute window.
+ * Returns paired groups plus time deltas for each group.
  */
-function findPairedTrades(orders: OrderRecord[]): Map<string, OrderRecord[][]> {
-  const pairs = new Map<string, OrderRecord[][]>();
+function findPairedTrades(orders: OrderRecord[]): Map<string, { groups: OrderRecord[][]; timeDeltas: number[] }> {
+  const pairs = new Map<string, { groups: OrderRecord[][]; timeDeltas: number[] }>();
   const closed = orders.filter(o => o.status === 'closed' && o.agent_id && o.entry_price && o.exit_price);
 
   const buckets = new Map<string, OrderRecord[]>();
   for (const o of closed) {
     const ts = new Date(o.created_at).getTime();
-    const bucket = Math.floor(ts / (5 * 60_000));
+    const bucket = Math.floor(ts / (PAIR_WINDOW_MINUTES * 60_000));
     const key = `${o.currency_pair}::${bucket}`;
     if (!buckets.has(key)) buckets.set(key, []);
     buckets.get(key)!.push(o);
@@ -202,10 +208,14 @@ function findPairedTrades(orders: OrderRecord[]): Map<string, OrderRecord[][]> {
     for (let i = 0; i < agentIds.length; i++) {
       for (let j = i + 1; j < agentIds.length; j++) {
         const pk = pairKey(agentIds[i] as AgentId, agentIds[j] as AgentId);
-        if (!pairs.has(pk)) pairs.set(pk, []);
+        if (!pairs.has(pk)) pairs.set(pk, { groups: [], timeDeltas: [] });
         const aOrders = group.filter(o => o.agent_id === agentIds[i]);
         const bOrders = group.filter(o => o.agent_id === agentIds[j]);
-        pairs.get(pk)!.push([...aOrders, ...bOrders]);
+        pairs.get(pk)!.groups.push([...aOrders, ...bOrders]);
+        // Calculate time delta between earliest orders of each agent
+        const aTs = Math.min(...aOrders.map(o => new Date(o.created_at).getTime()));
+        const bTs = Math.min(...bOrders.map(o => new Date(o.created_at).getTime()));
+        pairs.get(pk)!.timeDeltas.push(Math.abs(aTs - bTs) / 60_000);
       }
     }
   }
@@ -257,7 +267,8 @@ export function buildCollaborationMatrix(
   const pairedTrades = findPairedTrades(orders);
   const results: AgentPairStats[] = [];
 
-  for (const [pk, tradeGroups] of pairedTrades) {
+  for (const [pk, pairData] of pairedTrades) {
+    const { groups: tradeGroups, timeDeltas } = pairData;
     const [agentA, agentB] = pk.split('::') as [AgentId, AgentId];
     const allPnls: number[] = [];
     let conflicts = 0;
@@ -333,6 +344,7 @@ export function buildCollaborationMatrix(
       coApprovalProfitFactor: grossLoss > 0 ? Math.round((grossWin / grossLoss) * 100) / 100 : grossWin > 0 ? 99 : 0,
       label: 'NEUTRAL',
       lastUpdated: Date.now(),
+      pairTimeDeltaMinutes: timeDeltas.map(d => Math.round(d * 100) / 100),
       envKeyBreakdown,
     };
 
