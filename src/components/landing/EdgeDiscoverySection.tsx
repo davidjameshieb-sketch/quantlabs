@@ -19,7 +19,7 @@ const lockedFeatures = [
   {
     icon: Brain,
     title: 'Multi-Agent Scalp Consensus',
-    description: 'See how 10 scalping agents agree or diverge on each entry — and which agent leads in current market conditions.',
+    description: 'See how 18 scalping agents agree or diverge on each entry — and which agent leads in current market conditions.',
     feature: 'aiDecisionOverlays',
   },
   {

@@ -98,6 +98,72 @@ export const agentShowcaseData: Record<string, {
     winRate: 76,
     sparkline: [20, 24, 26, 30, 33, 36, 39, 42, 45, 48, 51, 54, 57, 60, 63],
   },
+  // FX Specialists
+  'session-momentum': {
+    inceptionDate: 'Jan 2026',
+    profitPct: 46.2,
+    lastTrade: { symbol: 'GBP/USD', pct: 0.38, time: '8:05 AM' },
+    totalTrades: 4_618,
+    winRate: 75,
+    sparkline: [12, 18, 24, 30, 36, 42, 46, 52, 56, 60, 64, 68, 72, 76, 80],
+  },
+  'carry-flow': {
+    inceptionDate: 'Jan 2026',
+    profitPct: 34.8,
+    lastTrade: { symbol: 'AUD/JPY', pct: 0.26, time: '9:42 AM' },
+    totalTrades: 3_547,
+    winRate: 73,
+    sparkline: [10, 14, 18, 22, 26, 28, 32, 35, 38, 42, 45, 48, 52, 55, 58],
+  },
+  'correlation-regime': {
+    inceptionDate: 'Jan 2026',
+    profitPct: 29.4,
+    lastTrade: { symbol: 'EUR/GBP', pct: 0.14, time: '10:18 AM' },
+    totalTrades: 3_215,
+    winRate: 72,
+    sparkline: [8, 12, 15, 18, 22, 24, 27, 30, 33, 36, 39, 42, 45, 48, 50],
+  },
+  'spread-microstructure': {
+    inceptionDate: 'Jan 2026',
+    profitPct: 42.5,
+    lastTrade: { symbol: 'EUR/USD', pct: 0.32, time: '10:55 AM' },
+    totalTrades: 5_234,
+    winRate: 74,
+    sparkline: [14, 20, 26, 32, 36, 40, 44, 48, 52, 56, 60, 64, 68, 72, 75],
+  },
+  'news-event-shield': {
+    inceptionDate: 'Feb 2026',
+    profitPct: 27.1,
+    lastTrade: { symbol: 'USD/JPY', pct: 0.18, time: '1:32 PM' },
+    totalTrades: 2_876,
+    winRate: 72,
+    sparkline: [6, 10, 14, 16, 20, 22, 25, 28, 30, 33, 36, 38, 41, 44, 46],
+  },
+  // Cross-Asset Intelligence
+  'cross-asset-sync': {
+    inceptionDate: 'Feb 2026',
+    profitPct: 25.3,
+    lastTrade: { symbol: 'NZD/USD', pct: 0.12, time: '11:07 AM' },
+    totalTrades: 2_643,
+    winRate: 71,
+    sparkline: [5, 8, 12, 15, 18, 20, 23, 25, 28, 30, 33, 35, 38, 40, 42],
+  },
+  'execution-optimizer': {
+    inceptionDate: 'Feb 2026',
+    profitPct: 37.9,
+    lastTrade: { symbol: 'USD/CHF', pct: 0.28, time: '10:39 AM' },
+    totalTrades: 4_321,
+    winRate: 74,
+    sparkline: [10, 16, 22, 28, 32, 36, 40, 44, 48, 52, 56, 60, 64, 67, 70],
+  },
+  'regime-transition': {
+    inceptionDate: 'Feb 2026',
+    profitPct: 31.2,
+    lastTrade: { symbol: 'EUR/JPY', pct: 0.21, time: '9:58 AM' },
+    totalTrades: 3_178,
+    winRate: 72,
+    sparkline: [8, 14, 18, 22, 26, 30, 33, 36, 40, 43, 46, 50, 53, 56, 58],
+  },
 };
 
 export const AIFleetShowcase = () => {
@@ -120,7 +186,7 @@ export const AIFleetShowcase = () => {
           className="text-center mb-10"
         >
           <span className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full border border-primary/30 bg-primary/10 text-xs font-medium text-primary mb-4">
-            10 Scalping Agents · OANDA Execution · Governance Filtered
+            18 Scalping Agents · FX Specialists · OANDA Execution · Governance Filtered
           </span>
           <h2 className="font-display text-3xl md:text-5xl font-bold mb-3">
             <span className="text-foreground">Scalping Fleet </span>

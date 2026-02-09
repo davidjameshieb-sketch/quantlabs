@@ -20,8 +20,8 @@ const features = [
   },
   {
     icon: Bot,
-    title: '10-Agent Scalping Fleet',
-    description: 'Every AI agent is tuned for FX scalping — from Macro Pulse momentum scalps to Range Navigator fade trades. Coordinated, specialized, relentless.',
+    title: '18-Agent Scalping Fleet',
+    description: 'Every AI agent is tuned for FX scalping — from Session Momentum breakouts to Spread Microstructure friction optimization. Coordinated, specialized, relentless.',
     gradient: 'from-neural-purple to-neural-magenta',
   },
   {
@@ -87,7 +87,7 @@ export const FeaturesSection = () => {
             <span className="text-gradient-neural">FX Scalping Intelligence</span>
           </h2>
           <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
-            10 specialized AI agents running high-frequency scalps on major forex pairs.
+            18 specialized AI agents running high-frequency scalps on major forex pairs.
             Governance-filtered. OANDA-executed. Fully transparent.
           </p>
         </motion.div>
