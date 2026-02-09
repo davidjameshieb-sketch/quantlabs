@@ -9,6 +9,7 @@
 
 import type { GovernanceMultipliers, GovernanceDecision, GateEntry, GateId } from './tradeGovernanceEngine';
 import type { DirectionalBias, QuantLabsSignalSnapshot } from './quantlabsDirectionProvider';
+import type { RiskLabel } from './discoveryRiskEngine';
 
 // ─── Decision Log Types ───
 
@@ -56,6 +57,13 @@ export interface GovernanceDecisionLog {
     liquidityShockProb: number;
     priceDataAvailable: boolean;
     analysisAvailable: boolean;
+  };
+
+  discoveryRisk?: {
+    environmentLabel: string;
+    riskLabel: RiskLabel;
+    positionMultiplier: number;
+    blockedByDiscoveryRisk: boolean;
   };
 }
 

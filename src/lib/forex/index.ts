@@ -34,3 +34,7 @@ export { governanceAlerts } from './governanceAlerts';
 export type { GovernanceAlert, GovernanceAlertType } from './governanceAlerts';
 export { computeExecutionAnalytics } from './executionPerformanceAnalytics';
 export type { ExecutionPerformanceMetrics, ExecutionAnalyticsReport, CompositeDecilePerformance, SessionPerformanceBreakdown, RegimePerformanceBreakdown } from './executionPerformanceAnalytics';
+
+// ─── Discovery Risk Mode ───
+export { evaluateDiscoveryRisk, classifyTradeEnvironment, applyDiscoveryRiskAllocation, getDiscoveryRiskConfig, setDiscoveryRiskConfig, resetDiscoveryRiskConfig, getDiscoveryRiskStats, logDiscoveryRiskDecision, clearDiscoveryRiskStats } from './discoveryRiskEngine';
+export type { DiscoveryRiskConfig, DiscoveryRiskDecision, DiscoveryRiskStats, RiskLabel, EnvironmentClassification, RiskAllocation } from './discoveryRiskEngine';
