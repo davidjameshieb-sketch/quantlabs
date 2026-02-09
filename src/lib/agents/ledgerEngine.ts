@@ -57,6 +57,16 @@ const PERSONALITY_TITLES: Record<AgentId, string> = {
   'sentiment-reactor': 'Behavioral Crowd Psychology Interpreter',
   'fractal-intelligence': 'Multi-Timeframe Pattern Symmetry Analyzer',
   'risk-sentinel': 'Portfolio Survival & Capital Preservation Guardian',
+  // FX Specialists
+  'session-momentum': 'Session Open Breakout & Momentum Ignition Specialist',
+  'carry-flow': 'Institutional Flow & Carry Trade Intelligence',
+  'correlation-regime': 'Cross-Pair Correlation & Cluster Risk Monitor',
+  'spread-microstructure': 'Bid-Ask Dynamics & Friction Minimization Engine',
+  'news-event-shield': 'Economic Event Impact & Pre-Release Shield',
+  // Cross-Asset Intelligence
+  'cross-asset-sync': 'Inter-Market Relationship & Macro Flow Synchronizer',
+  'execution-optimizer': 'Fill Quality & Adaptive Order Routing Engine',
+  'regime-transition': 'Market Phase Inflection & Regime Shift Detector',
 };
 
 // ─── Role Assignment Weights ───
@@ -72,6 +82,16 @@ const ROLE_AFFINITY: Record<AgentId, AgentTradeRole[]> = {
   'sentiment-reactor': ['environment-context', 'signal-validator'],
   'fractal-intelligence': ['signal-validator', 'trade-timing'],
   'risk-sentinel': ['risk-advisor', 'environment-context'],
+  // FX Specialists
+  'session-momentum': ['primary-initiator', 'trade-timing'],
+  'carry-flow': ['environment-context', 'signal-validator'],
+  'correlation-regime': ['risk-advisor', 'environment-context'],
+  'spread-microstructure': ['trade-timing', 'signal-validator'],
+  'news-event-shield': ['risk-advisor', 'environment-context'],
+  // Cross-Asset Intelligence
+  'cross-asset-sync': ['environment-context', 'signal-validator'],
+  'execution-optimizer': ['trade-timing', 'signal-validator'],
+  'regime-transition': ['environment-context', 'risk-advisor'],
 };
 
 // ─── Trade Reasoning Templates ───

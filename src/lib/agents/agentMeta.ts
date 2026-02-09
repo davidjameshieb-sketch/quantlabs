@@ -22,6 +22,16 @@ const SHORT_CODES: Record<AgentId, string> = {
   'sentiment-reactor': 'SR',
   'fractal-intelligence': 'FI',
   'risk-sentinel': 'RS',
+  // FX Specialists
+  'session-momentum': 'SM',
+  'carry-flow': 'CF',
+  'correlation-regime': 'CR',
+  'spread-microstructure': 'XM',
+  'news-event-shield': 'NS',
+  // Cross-Asset Intelligence
+  'cross-asset-sync': 'CA',
+  'execution-optimizer': 'EO',
+  'regime-transition': 'RT',
 };
 
 export const getAgentMeta = (id: AgentId): AgentMeta => {
