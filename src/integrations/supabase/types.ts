@@ -19,9 +19,12 @@ export type Database = {
           agent_id: string | null
           closed_at: string | null
           confidence_score: number | null
+          confirmation_tf_used: string | null
           created_at: string
           currency_pair: string
           direction: string
+          direction_engine: string
+          direction_tf_used: string | null
           entry_price: number | null
           environment: string
           error_message: string | null
@@ -31,11 +34,14 @@ export type Database = {
           friction_score: number | null
           gate_reasons: string[] | null
           gate_result: string | null
+          governance_composite: number | null
           governance_payload: Json | null
           id: string
           idempotency_key: string | null
           oanda_order_id: string | null
           oanda_trade_id: string | null
+          quantlabs_bias: string | null
+          quantlabs_confidence: number | null
           regime_label: string | null
           requested_price: number | null
           session_label: string | null
@@ -52,9 +58,12 @@ export type Database = {
           agent_id?: string | null
           closed_at?: string | null
           confidence_score?: number | null
+          confirmation_tf_used?: string | null
           created_at?: string
           currency_pair: string
           direction: string
+          direction_engine?: string
+          direction_tf_used?: string | null
           entry_price?: number | null
           environment?: string
           error_message?: string | null
@@ -64,11 +73,14 @@ export type Database = {
           friction_score?: number | null
           gate_reasons?: string[] | null
           gate_result?: string | null
+          governance_composite?: number | null
           governance_payload?: Json | null
           id?: string
           idempotency_key?: string | null
           oanda_order_id?: string | null
           oanda_trade_id?: string | null
+          quantlabs_bias?: string | null
+          quantlabs_confidence?: number | null
           regime_label?: string | null
           requested_price?: number | null
           session_label?: string | null
@@ -85,9 +97,12 @@ export type Database = {
           agent_id?: string | null
           closed_at?: string | null
           confidence_score?: number | null
+          confirmation_tf_used?: string | null
           created_at?: string
           currency_pair?: string
           direction?: string
+          direction_engine?: string
+          direction_tf_used?: string | null
           entry_price?: number | null
           environment?: string
           error_message?: string | null
@@ -97,11 +112,14 @@ export type Database = {
           friction_score?: number | null
           gate_reasons?: string[] | null
           gate_result?: string | null
+          governance_composite?: number | null
           governance_payload?: Json | null
           id?: string
           idempotency_key?: string | null
           oanda_order_id?: string | null
           oanda_trade_id?: string | null
+          quantlabs_bias?: string | null
+          quantlabs_confidence?: number | null
           regime_label?: string | null
           requested_price?: number | null
           session_label?: string | null

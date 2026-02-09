@@ -58,6 +58,9 @@ const ForexDashboard = () => {
     regime: 'all',
     pair: 'all',
     agent: 'all',
+    era: 'post-direction',
+    environment: 'all',
+    directionEngine: 'all',
   });
 
   const [livePricesReady, setLivePricesReady] = useState(hasLivePrices());
