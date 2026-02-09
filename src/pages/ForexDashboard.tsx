@@ -34,6 +34,7 @@ import { EdgeExtractionDashboard } from '@/components/forex/edge-extraction/Edge
 import { EdgeGoLivePanel } from '@/components/forex/edge-discovery/EdgeGoLivePanel';
 import { DiscoveryRiskPanel } from '@/components/forex/DiscoveryRiskPanel';
 import { AdaptiveEdgeDashboard } from '@/components/forex/AdaptiveEdgeDashboard';
+import { AgentWeightingTable } from '@/components/forex/AgentWeightingTable';
 import {
   generateForexTrades,
   filterForexTrades,
@@ -391,6 +392,9 @@ const ForexDashboard = () => {
           <TabsContent value="adaptive-edge" className="space-y-4">
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
               <AdaptiveEdgeDashboard trades={filteredTrades} />
+            </motion.div>
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}>
+              <AgentWeightingTable />
             </motion.div>
           </TabsContent>
         </Tabs>
