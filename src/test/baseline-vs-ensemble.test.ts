@@ -136,7 +136,52 @@ describe('BaselineVsEnsemble Engine', () => {
     }));
 
     const result = computeBaselineVsEnsemble(orders as any);
-    // 0.10 * 100 = 10 pips
+    // 0.10 * 100 = 10 pips, minus friction (slippage+spread default 0)
     expect(result.rolling50.ensembleExpectancy).toBe(10);
+  });
+
+  it('includes aggregate summary with total PnL', () => {
+    const baseline = Array.from({ length: 30 }, (_, i) => makeOrder({
+      variant_id: 'baseline',
+      exit_price: 1.1005,
+      created_at: new Date(Date.now() - i * 60000).toISOString(),
+    }));
+    const ensemble = Array.from({ length: 30 }, (_, i) => makeOrder({
+      variant_id: '',
+      exit_price: 1.1015,
+      created_at: new Date(Date.now() - i * 60000).toISOString(),
+    }));
+
+    const result = computeBaselineVsEnsemble([...baseline, ...ensemble] as any);
+    expect(result.aggregate).toBeDefined();
+    expect(result.aggregate.baselineTrades).toBe(30);
+    expect(result.aggregate.ensembleTrades).toBe(30);
+    expect(result.aggregate.deltaTotalPnL).toBeGreaterThan(0);
+  });
+
+  it('subtracts friction from PnL when slippage/spread provided', () => {
+    const orders = Array.from({ length: 50 }, (_, i) => makeOrder({
+      entry_price: 1.1000,
+      exit_price: 1.1010, // 10 pips raw
+      slippage_pips: 1.5,
+      spread_at_entry: 0.5,
+      created_at: new Date(Date.now() - i * 60000).toISOString(),
+    }));
+
+    const result = computeBaselineVsEnsemble(orders as any);
+    // 10 - 1.5 - 0.5 = 8 pips friction-adjusted
+    expect(result.rolling50.ensembleExpectancy).toBe(8);
+  });
+
+  it('computes drawdown slope in rolling comparisons', () => {
+    const orders = Array.from({ length: 50 }, (_, i) => makeOrder({
+      exit_price: i % 3 === 0 ? 1.0990 : 1.1010,
+      created_at: new Date(Date.now() - i * 60000).toISOString(),
+    }));
+
+    const result = computeBaselineVsEnsemble(orders as any);
+    expect(typeof result.rolling50.deltaDDSlope).toBe('number');
+    expect(typeof result.rolling50.baselineDDSlope).toBe('number');
+    expect(typeof result.rolling50.ensembleDDSlope).toBe('number');
   });
 });
