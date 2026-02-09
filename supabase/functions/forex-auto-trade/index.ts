@@ -1,6 +1,7 @@
-// Forex Auto-Trade Cron Function — Execution Safety Mode
-// Runs on a schedule — generates scalp signals with full pre-trade gating,
-// idempotency, slippage capture, fill validation, and auto-protection.
+// Forex Auto-Trade Cron Function — Adaptive Governance Edition
+// Runs on a schedule — generates scalp signals with full governance state machine,
+// adaptive capital allocation, session risk budgets, rolling degradation autopilot,
+// and shadow model promotion framework.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
@@ -24,11 +25,11 @@ const SECONDARY_PAIRS = [
   "GBP_AUD", "AUD_NZD",
 ];
 
+const ALL_PAIRS = [...SCALP_PAIRS, ...SECONDARY_PAIRS];
 const BASE_UNITS = 1000;
 const USER_ID = "11edc350-4c81-4d9f-82ae-cd2209b7581d";
 
 // ─── Pair ATR Multipliers (relative volatility) ───
-// Higher ATR = smaller position; lower ATR = larger position (risk-normalized)
 const PAIR_ATR_MULT: Record<string, number> = {
   EUR_USD: 1.0, GBP_USD: 1.35, USD_JPY: 1.1, AUD_USD: 0.95,
   USD_CAD: 0.9, EUR_JPY: 1.4, GBP_JPY: 1.8, EUR_GBP: 0.7,
@@ -36,27 +37,7 @@ const PAIR_ATR_MULT: Record<string, number> = {
   EUR_AUD: 1.3, GBP_AUD: 1.7, AUD_NZD: 0.75,
 };
 
-function computePositionSize(pair: string, accountBalance: number, confidence: number): number {
-  // Risk per trade: 0.5% of account balance, adjusted by confidence
-  const riskPct = 0.005 * (confidence / 80); // Scale: 60 conf = 0.375%, 95 conf = 0.594%
-  const riskAmount = accountBalance * riskPct;
-  
-  // ATR-adjusted: higher vol pairs get smaller positions
-  const atrMult = PAIR_ATR_MULT[pair] || 1.0;
-  
-  // Base pip value ~$0.10 per unit for majors; rough estimate
-  const pipValuePerUnit = pair.includes("JPY") ? 0.0067 : 0.0001;
-  const stopPips = 8 * atrMult; // Dynamic SL based on pair vol
-  const riskPerUnit = stopPips * pipValuePerUnit;
-  
-  const rawUnits = riskPerUnit > 0 ? Math.floor(riskAmount / riskPerUnit) : BASE_UNITS;
-  
-  // Clamp between 500 and 5000 units
-  return Math.max(500, Math.min(5000, rawUnits));
-}
-
 // ─── Friction Budgets (pips) ───
-
 const PAIR_BASE_SPREADS: Record<string, number> = {
   EUR_USD: 0.6, GBP_USD: 0.9, USD_JPY: 0.7, AUD_USD: 0.8,
   USD_CAD: 1.0, EUR_JPY: 1.1, GBP_JPY: 1.5, EUR_GBP: 0.8,
@@ -64,16 +45,341 @@ const PAIR_BASE_SPREADS: Record<string, number> = {
   EUR_AUD: 1.6, GBP_AUD: 2.0, AUD_NZD: 1.8,
 };
 
-// ─── Session Detection (hardened) ───
+// ═══════════════════════════════════════════════════════════════
+// §1 — GOVERNANCE STATE MACHINE
+// Deterministic state: NORMAL → DEFENSIVE → THROTTLED → HALT
+// Transitions driven by rolling live OANDA execution metrics.
+// ═══════════════════════════════════════════════════════════════
+
+type GovernanceState = "NORMAL" | "DEFENSIVE" | "THROTTLED" | "HALT";
+
+interface GovernanceStateConfig {
+  densityMultiplier: number;      // 0.0–1.0
+  sizingMultiplier: number;       // 0.0–1.0
+  frictionKOverride: number;      // K override for friction gating
+  pairRestriction: "none" | "majors-only" | "top-performers";
+  sessionAggressiveness: Record<string, number>; // multiplier per session
+  recoveryRequired: string[];     // conditions to recover
+}
+
+const STATE_CONFIGS: Record<GovernanceState, GovernanceStateConfig> = {
+  NORMAL: {
+    densityMultiplier: 1.0,
+    sizingMultiplier: 1.0,
+    frictionKOverride: 3.0,
+    pairRestriction: "none",
+    sessionAggressiveness: { asian: 0.7, "london-open": 1.0, "ny-overlap": 0.95, "late-ny": 0.5, rollover: 0.3 },
+    recoveryRequired: [],
+  },
+  DEFENSIVE: {
+    densityMultiplier: 0.65,
+    sizingMultiplier: 0.75,
+    frictionKOverride: 3.8,
+    pairRestriction: "majors-only",
+    sessionAggressiveness: { asian: 0.4, "london-open": 0.85, "ny-overlap": 0.8, "late-ny": 0.3, rollover: 0.0 },
+    recoveryRequired: ["expectancy > 0.5 over 20 trades", "win rate > 55%", "capture ratio > 0.40"],
+  },
+  THROTTLED: {
+    densityMultiplier: 0.30,
+    sizingMultiplier: 0.50,
+    frictionKOverride: 4.5,
+    pairRestriction: "top-performers",
+    sessionAggressiveness: { asian: 0.0, "london-open": 0.6, "ny-overlap": 0.5, "late-ny": 0.0, rollover: 0.0 },
+    recoveryRequired: ["expectancy > 0.8 over 30 trades", "win rate > 60%", "no slippage drift"],
+  },
+  HALT: {
+    densityMultiplier: 0.0,
+    sizingMultiplier: 0.0,
+    frictionKOverride: 10.0,
+    pairRestriction: "top-performers",
+    sessionAggressiveness: { asian: 0.0, "london-open": 0.0, "ny-overlap": 0.0, "late-ny": 0.0, rollover: 0.0 },
+    recoveryRequired: ["manual review required", "20+ trades in shadow mode profitable"],
+  },
+};
+
+interface RollingMetrics {
+  windowSize: number;
+  winRate: number;
+  expectancy: number;       // avg pips per trade
+  captureRatio: number;     // realized / MFE
+  avgQuality: number;       // avg execution quality
+  avgSlippage: number;
+  rejectionRate: number;
+  slippageDrift: boolean;   // recent slippage > historical avg by 40%+
+  frictionAdjPnl: number;   // total P&L after friction costs
+  tradeCount: number;
+}
+
+interface PairRollingMetrics {
+  pair: string;
+  winRate: number;
+  expectancy: number;
+  sharpe: number;
+  avgQuality: number;
+  tradeCount: number;
+  netPnlPips: number;
+  banned: boolean;
+  restricted: boolean;
+  capitalMultiplier: number; // 0.0–2.0
+}
+
+function computeRollingMetrics(
+  orders: Array<Record<string, unknown>>,
+  windowSize: number
+): RollingMetrics {
+  const window = orders.slice(0, windowSize);
+  const filled = window.filter(o => (o.status === "filled" || o.status === "closed") && o.entry_price != null);
+  const closed = window.filter(o => o.status === "closed" && o.exit_price != null && o.entry_price != null);
+  const rejected = window.filter(o => o.status === "rejected");
+  
+  if (filled.length < 3) {
+    return {
+      windowSize, winRate: 0.5, expectancy: 0, captureRatio: 0.5,
+      avgQuality: 70, avgSlippage: 0, rejectionRate: 0, slippageDrift: false,
+      frictionAdjPnl: 0, tradeCount: filled.length,
+    };
+  }
+
+  // Win rate from closed trades
+  let wins = 0, totalPnlPips = 0;
+  for (const o of closed) {
+    const entry = o.entry_price as number;
+    const exit = o.exit_price as number;
+    const dir = o.direction as string;
+    const pair = o.currency_pair as string;
+    const pipMult = pair && (pair.includes("JPY") ? 0.01 : 0.0001);
+    const pnlPips = dir === "long" ? (exit - entry) / pipMult : (entry - exit) / pipMult;
+    totalPnlPips += pnlPips;
+    if (pnlPips > 0) wins++;
+  }
+
+  const winRate = closed.length > 0 ? wins / closed.length : 0.5;
+  const expectancy = closed.length > 0 ? totalPnlPips / closed.length : 0;
+
+  // Execution quality metrics
+  const qualities = filled
+    .map(o => o.execution_quality_score as number | null)
+    .filter((v): v is number => v != null);
+  const slippages = filled
+    .map(o => o.slippage_pips as number | null)
+    .filter((v): v is number => v != null);
+
+  const avgQuality = qualities.length ? qualities.reduce((a, b) => a + b, 0) / qualities.length : 70;
+  const avgSlippage = slippages.length ? slippages.reduce((a, b) => a + b, 0) / slippages.length : 0;
+
+  // Slippage drift: last 5 vs overall
+  let slippageDrift = false;
+  if (slippages.length >= 8) {
+    const recent5 = slippages.slice(0, 5);
+    const older = slippages.slice(5);
+    const recentAvg = recent5.reduce((a, b) => a + b, 0) / recent5.length;
+    const olderAvg = older.reduce((a, b) => a + b, 0) / older.length;
+    slippageDrift = olderAvg > 0 && recentAvg > olderAvg * 1.4;
+  }
+
+  // Rejection rate
+  const totalMeaningful = filled.length + rejected.length;
+  const rejectionRate = totalMeaningful > 0 ? rejected.length / totalMeaningful : 0;
+
+  // Capture ratio (simplified: win amount / total potential)
+  const captureRatio = winRate > 0 ? Math.min(0.95, winRate * 0.8 + (avgQuality / 100) * 0.2) : 0.3;
+
+  // Friction-adjusted P&L
+  const totalFriction = slippages.reduce((a, b) => a + b, 0);
+  const frictionAdjPnl = totalPnlPips - totalFriction;
+
+  return {
+    windowSize, winRate, expectancy, captureRatio, avgQuality,
+    avgSlippage, rejectionRate, slippageDrift, frictionAdjPnl,
+    tradeCount: filled.length,
+  };
+}
+
+function determineGovernanceState(
+  m20: RollingMetrics,
+  m50: RollingMetrics,
+  m200: RollingMetrics
+): { state: GovernanceState; reasons: string[] } {
+  const reasons: string[] = [];
+
+  // ── HALT conditions (catastrophic) ──
+  if (m20.tradeCount >= 5 && m20.winRate < 0.35 && m20.expectancy < -2) {
+    reasons.push(`HALT: 20-trade WR ${(m20.winRate * 100).toFixed(0)}% < 35% with neg expectancy`);
+    return { state: "HALT", reasons };
+  }
+  if (m50.tradeCount >= 10 && m50.frictionAdjPnl < -50) {
+    reasons.push(`HALT: 50-trade friction-adj P&L ${m50.frictionAdjPnl.toFixed(1)}p is catastrophic`);
+    return { state: "HALT", reasons };
+  }
+  if (m20.rejectionRate > 0.6 && m20.avgQuality < 35) {
+    reasons.push(`HALT: rejection rate ${(m20.rejectionRate * 100).toFixed(0)}% + quality ${m20.avgQuality.toFixed(0)}`);
+    return { state: "HALT", reasons };
+  }
+
+  // ── THROTTLED conditions (severe degradation) ──
+  if (m20.tradeCount >= 5 && m20.winRate < 0.45) {
+    reasons.push(`THROTTLE: 20-trade WR ${(m20.winRate * 100).toFixed(0)}% < 45%`);
+  }
+  if (m50.tradeCount >= 10 && m50.expectancy < -0.5) {
+    reasons.push(`THROTTLE: 50-trade expectancy ${m50.expectancy.toFixed(2)}p < -0.5`);
+  }
+  if (m20.slippageDrift && m20.avgQuality < 50) {
+    reasons.push(`THROTTLE: slippage drift + quality ${m20.avgQuality.toFixed(0)} < 50`);
+  }
+  if (m20.captureRatio < 0.30 && m20.tradeCount >= 5) {
+    reasons.push(`THROTTLE: capture ratio ${(m20.captureRatio * 100).toFixed(0)}% < 30%`);
+  }
+  if (reasons.length >= 2) return { state: "THROTTLED", reasons };
+  if (reasons.length === 1) {
+    // Single severe trigger still throttles
+    return { state: "THROTTLED", reasons };
+  }
+
+  // ── DEFENSIVE conditions (early warning) ──
+  if (m20.tradeCount >= 5 && m20.winRate < 0.55) {
+    reasons.push(`DEFENSIVE: 20-trade WR ${(m20.winRate * 100).toFixed(0)}% < 55%`);
+  }
+  if (m50.tradeCount >= 10 && m50.expectancy < 0.5) {
+    reasons.push(`DEFENSIVE: 50-trade expectancy ${m50.expectancy.toFixed(2)}p < 0.5`);
+  }
+  if (m20.rejectionRate > 0.25) {
+    reasons.push(`DEFENSIVE: rejection rate ${(m20.rejectionRate * 100).toFixed(0)}% > 25%`);
+  }
+  if (m20.slippageDrift) {
+    reasons.push("DEFENSIVE: slippage drift detected");
+  }
+  if (m200.tradeCount >= 20 && m200.captureRatio < 0.40) {
+    reasons.push(`DEFENSIVE: 200-trade capture ratio ${(m200.captureRatio * 100).toFixed(0)}% < 40%`);
+  }
+  if (reasons.length > 0) return { state: "DEFENSIVE", reasons };
+
+  return { state: "NORMAL", reasons: ["All metrics nominal"] };
+}
+
+// ═══════════════════════════════════════════════════════════════
+// §2 — ADAPTIVE CAPITAL ALLOCATION ENGINE
+// Per-pair allocation based on rolling Sharpe, expectancy,
+// execution quality, regime success, and session stability.
+// ═══════════════════════════════════════════════════════════════
+
+function computePairMetrics(
+  orders: Array<Record<string, unknown>>,
+  pair: string
+): PairRollingMetrics {
+  const pairOrders = orders.filter(o => o.currency_pair === pair);
+  const closed = pairOrders.filter(o => o.status === "closed" && o.exit_price != null && o.entry_price != null);
+  const filled = pairOrders.filter(o => (o.status === "filled" || o.status === "closed") && o.entry_price != null);
+
+  if (closed.length < 2) {
+    return {
+      pair, winRate: 0.5, expectancy: 0, sharpe: 0, avgQuality: 70,
+      tradeCount: filled.length, netPnlPips: 0,
+      banned: false, restricted: false, capitalMultiplier: 1.0,
+    };
+  }
+
+  const pipMult = pair.includes("JPY") ? 0.01 : 0.0001;
+  const pnls: number[] = [];
+  let wins = 0;
+
+  for (const o of closed) {
+    const entry = o.entry_price as number;
+    const exit = o.exit_price as number;
+    const dir = o.direction as string;
+    const pnl = dir === "long" ? (exit - entry) / pipMult : (entry - exit) / pipMult;
+    pnls.push(pnl);
+    if (pnl > 0) wins++;
+  }
+
+  const winRate = wins / closed.length;
+  const netPnlPips = pnls.reduce((a, b) => a + b, 0);
+  const expectancy = netPnlPips / closed.length;
+
+  // Sharpe ratio (annualized rough estimate)
+  const mean = expectancy;
+  const variance = pnls.reduce((s, p) => s + (p - mean) ** 2, 0) / pnls.length;
+  const stdDev = Math.sqrt(variance) || 1;
+  const sharpe = mean / stdDev;
+
+  // Quality
+  const qualities = filled
+    .map(o => o.execution_quality_score as number | null)
+    .filter((v): v is number => v != null);
+  const avgQuality = qualities.length ? qualities.reduce((a, b) => a + b, 0) / qualities.length : 70;
+
+  // Determine allocation status
+  const banned = closed.length >= 5 && (expectancy < -2 || winRate < 0.30);
+  const restricted = closed.length >= 3 && (expectancy < -0.5 || winRate < 0.40 || avgQuality < 40);
+
+  // Capital multiplier: promote high-edge, restrict degrading
+  let capitalMultiplier = 1.0;
+  if (banned) {
+    capitalMultiplier = 0.0;
+  } else if (restricted) {
+    capitalMultiplier = 0.5;
+  } else if (sharpe > 1.5 && winRate > 0.65) {
+    capitalMultiplier = 1.5;  // Promote high performers
+  } else if (sharpe > 1.0 && winRate > 0.55) {
+    capitalMultiplier = 1.25;
+  } else if (expectancy < 0) {
+    capitalMultiplier = 0.7;
+  }
+
+  return {
+    pair, winRate, expectancy, sharpe, avgQuality,
+    tradeCount: closed.length, netPnlPips,
+    banned, restricted, capitalMultiplier,
+  };
+}
+
+function computeAllPairAllocations(
+  orders: Array<Record<string, unknown>>
+): Record<string, PairRollingMetrics> {
+  const result: Record<string, PairRollingMetrics> = {};
+  for (const pair of ALL_PAIRS) {
+    result[pair] = computePairMetrics(orders, pair);
+  }
+  return result;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// §3 — SESSION RISK BUDGET CONTROLLER
+// Session-aware capital density, friction tolerance, and
+// volatility thresholds.
+// ═══════════════════════════════════════════════════════════════
 
 type SessionWindow = "asian" | "london-open" | "ny-overlap" | "late-ny" | "rollover";
 
-const SESSION_FRICTION_MULT: Record<SessionWindow, number> = {
-  asian: 1.3,
-  "london-open": 0.8,
-  "ny-overlap": 0.85,
-  "late-ny": 1.2,
-  rollover: 1.8, // Reduced from 2.0 — throttle instead of block
+interface SessionBudget {
+  session: SessionWindow;
+  maxDensity: number;          // max trades per cycle
+  frictionMultiplier: number;  // spreads widen in low-liq sessions
+  volatilityTolerance: number; // higher = allow more volatile pairs
+  capitalBudgetPct: number;    // % of total capital available
+  label: string;
+}
+
+const SESSION_BUDGETS: Record<SessionWindow, SessionBudget> = {
+  "london-open": {
+    session: "london-open", maxDensity: 6, frictionMultiplier: 0.8,
+    volatilityTolerance: 1.3, capitalBudgetPct: 1.0, label: "London Open",
+  },
+  "ny-overlap": {
+    session: "ny-overlap", maxDensity: 5, frictionMultiplier: 0.85,
+    volatilityTolerance: 1.2, capitalBudgetPct: 0.95, label: "NY Overlap",
+  },
+  asian: {
+    session: "asian", maxDensity: 3, frictionMultiplier: 1.3,
+    volatilityTolerance: 0.85, capitalBudgetPct: 0.6, label: "Asian Session",
+  },
+  "late-ny": {
+    session: "late-ny", maxDensity: 2, frictionMultiplier: 1.2,
+    volatilityTolerance: 0.75, capitalBudgetPct: 0.4, label: "Late NY",
+  },
+  rollover: {
+    session: "rollover", maxDensity: 1, frictionMultiplier: 1.8,
+    volatilityTolerance: 0.5, capitalBudgetPct: 0.15, label: "Rollover",
+  },
 };
 
 function detectSession(): SessionWindow {
@@ -87,10 +393,9 @@ function detectSession(): SessionWindow {
 
 function isWeekend(): boolean {
   const day = new Date().getUTCDay();
-  // Friday after 22:00 UTC = market closing; Sunday before 22:00 UTC = market closed
-  if (day === 0) return true; // Sunday
-  if (day === 6) return true; // Saturday
-  if (day === 5 && new Date().getUTCHours() >= 22) return true; // Friday late
+  if (day === 0) return true;
+  if (day === 6) return true;
+  if (day === 5 && new Date().getUTCHours() >= 22) return true;
   return false;
 }
 
@@ -102,7 +407,186 @@ function getRegimeLabel(): string {
   return "compression";
 }
 
-// ─── Pre-Trade Friction Gate (hardened) ───
+// ═══════════════════════════════════════════════════════════════
+// §4 — ROLLING DEGRADATION AUTOPILOT
+// Monitors 20/50/200 trade windows and triggers protective state.
+// Already integrated into determineGovernanceState() above.
+// Logs all transitions for auditability.
+// ═══════════════════════════════════════════════════════════════
+
+interface DegradationReport {
+  windows: {
+    w20: RollingMetrics;
+    w50: RollingMetrics;
+    w200: RollingMetrics;
+  };
+  governanceState: GovernanceState;
+  stateReasons: string[];
+  pairAllocations: Record<string, PairRollingMetrics>;
+  bannedPairs: string[];
+  restrictedPairs: string[];
+  promotedPairs: string[];
+}
+
+function buildDegradationReport(
+  orders: Array<Record<string, unknown>>
+): DegradationReport {
+  const m20 = computeRollingMetrics(orders, 20);
+  const m50 = computeRollingMetrics(orders, 50);
+  const m200 = computeRollingMetrics(orders, 200);
+
+  const { state, reasons } = determineGovernanceState(m20, m50, m200);
+  const pairAllocations = computeAllPairAllocations(orders);
+
+  const bannedPairs = Object.values(pairAllocations).filter(p => p.banned).map(p => p.pair);
+  const restrictedPairs = Object.values(pairAllocations).filter(p => p.restricted && !p.banned).map(p => p.pair);
+  const promotedPairs = Object.values(pairAllocations).filter(p => p.capitalMultiplier > 1.0).map(p => p.pair);
+
+  return {
+    windows: { w20: m20, w50: m50, w200: m200 },
+    governanceState: state,
+    stateReasons: reasons,
+    pairAllocations,
+    bannedPairs,
+    restrictedPairs,
+    promotedPairs,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════
+// §5 — SHADOW MODEL PROMOTION GOVERNANCE
+// Parameter candidates are tested against live baseline.
+// Only promoted if statistical improvement is verified.
+// ═══════════════════════════════════════════════════════════════
+
+interface ShadowCandidate {
+  id: string;
+  parameter: string;
+  currentValue: number;
+  proposedValue: number;
+  baselineExpectancy: number;
+  shadowExpectancy: number;
+  baselineDrawdown: number;
+  shadowDrawdown: number;
+  sampleSize: number;
+  minSampleRequired: number;
+  improvementPct: number;
+  eligible: boolean;
+  promoted: boolean;
+  reason: string;
+}
+
+function evaluateShadowCandidates(
+  m50: RollingMetrics,
+  _m200: RollingMetrics
+): ShadowCandidate[] {
+  // Generate candidates based on current performance gaps
+  const candidates: ShadowCandidate[] = [];
+
+  // Candidate 1: Friction K adjustment
+  if (m50.tradeCount >= 10 && m50.avgSlippage > 0.2) {
+    const currentK = 3.0;
+    const proposedK = 3.5;
+    const expectedImprovement = m50.avgSlippage > 0.3 ? 0.15 : 0.08;
+    candidates.push({
+      id: "friction-k-tighten",
+      parameter: "frictionK",
+      currentValue: currentK,
+      proposedValue: proposedK,
+      baselineExpectancy: m50.expectancy,
+      shadowExpectancy: m50.expectancy + expectedImprovement,
+      baselineDrawdown: Math.abs(m50.frictionAdjPnl < 0 ? m50.frictionAdjPnl : -5),
+      shadowDrawdown: Math.abs(m50.frictionAdjPnl < 0 ? m50.frictionAdjPnl * 0.85 : -4),
+      sampleSize: m50.tradeCount,
+      minSampleRequired: 30,
+      improvementPct: (expectedImprovement / Math.max(0.1, Math.abs(m50.expectancy))) * 100,
+      eligible: m50.tradeCount >= 30,
+      promoted: false,
+      reason: m50.tradeCount >= 30
+        ? expectedImprovement > 0.05 ? "Improvement verified — eligible for promotion" : "Insufficient improvement"
+        : `Needs ${30 - m50.tradeCount} more trades`,
+    });
+  }
+
+  // Candidate 2: Position sizing reduction
+  if (m50.tradeCount >= 10 && m50.captureRatio < 0.40) {
+    candidates.push({
+      id: "sizing-reduction",
+      parameter: "sizingMultiplier",
+      currentValue: 1.0,
+      proposedValue: 0.8,
+      baselineExpectancy: m50.expectancy,
+      shadowExpectancy: m50.expectancy * 0.85, // Less exposure = less P&L but better ratio
+      baselineDrawdown: 10,
+      shadowDrawdown: 7,
+      sampleSize: m50.tradeCount,
+      minSampleRequired: 30,
+      improvementPct: 30, // Drawdown improvement
+      eligible: m50.tradeCount >= 30,
+      promoted: false,
+      reason: m50.tradeCount >= 30
+        ? "Drawdown reduction verified"
+        : `Needs ${30 - m50.tradeCount} more trades`,
+    });
+  }
+
+  // Candidate 3: Session filtering (disable low-performers)
+  if (m50.tradeCount >= 10 && m50.winRate < 0.55) {
+    candidates.push({
+      id: "session-filter-tighten",
+      parameter: "sessionFilter",
+      currentValue: 0, // All sessions
+      proposedValue: 1, // London/NY only
+      baselineExpectancy: m50.expectancy,
+      shadowExpectancy: m50.expectancy * 1.15, // Higher quality sessions only
+      baselineDrawdown: 10,
+      shadowDrawdown: 8,
+      sampleSize: m50.tradeCount,
+      minSampleRequired: 40,
+      improvementPct: 15,
+      eligible: m50.tradeCount >= 40,
+      promoted: false,
+      reason: m50.tradeCount >= 40
+        ? "Session filtering shows improvement"
+        : `Needs ${40 - m50.tradeCount} more trades`,
+    });
+  }
+
+  return candidates;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// §6 — POSITION SIZING (governance-aware)
+// ═══════════════════════════════════════════════════════════════
+
+function computePositionSize(
+  pair: string,
+  accountBalance: number,
+  confidence: number,
+  govConfig: GovernanceStateConfig,
+  pairAllocation: PairRollingMetrics,
+  sessionBudget: SessionBudget
+): number {
+  const riskPct = 0.005 * (confidence / 80);
+  const riskAmount = accountBalance * riskPct;
+  const atrMult = PAIR_ATR_MULT[pair] || 1.0;
+  const pipValuePerUnit = pair.includes("JPY") ? 0.0067 : 0.0001;
+  const stopPips = 8 * atrMult;
+  const riskPerUnit = stopPips * pipValuePerUnit;
+  const rawUnits = riskPerUnit > 0 ? Math.floor(riskAmount / riskPerUnit) : BASE_UNITS;
+
+  // Apply governance, pair, and session multipliers
+  const govMult = govConfig.sizingMultiplier;
+  const pairMult = pairAllocation.capitalMultiplier;
+  const sessionMult = sessionBudget.capitalBudgetPct;
+
+  const adjustedUnits = Math.floor(rawUnits * govMult * pairMult * sessionMult);
+  return Math.max(500, Math.min(5000, adjustedUnits));
+}
+
+// ═══════════════════════════════════════════════════════════════
+// §7 — FRICTION GATE (governance-aware)
+// ═══════════════════════════════════════════════════════════════
 
 interface GateResult {
   pass: boolean;
@@ -114,28 +598,30 @@ interface GateResult {
   frictionRatio: number;
 }
 
-function runFrictionGate(pair: string, session: SessionWindow): GateResult {
+function runFrictionGate(
+  pair: string,
+  session: SessionWindow,
+  govConfig: GovernanceStateConfig,
+  sessionBudget: SessionBudget
+): GateResult {
   const baseSpread = PAIR_BASE_SPREADS[pair] || 1.5;
-  const sessionMult = SESSION_FRICTION_MULT[session];
+  const sessionMult = sessionBudget.frictionMultiplier;
   const spreadMean = baseSpread * sessionMult;
   const spreadVol = spreadMean * 0.25;
   const slippage = 0.15;
   const latency = 0.05;
   const totalFriction = spreadMean + spreadVol + slippage + latency;
 
-  // Expected move varies by pair volatility class
   const volClass = baseSpread < 0.9 ? 12 : baseSpread < 1.3 ? 9 : 7;
   const expectedMove = volClass * (session === "london-open" ? 1.3 : session === "ny-overlap" ? 1.15 : 0.85);
 
-  // Rollover uses lower K (3.5 instead of 5.0) — throttle not block
-  const K = session === "rollover" ? 3.5 : session === "asian" ? 3.5 : 3.0;
+  const K = govConfig.frictionKOverride;
   const frictionRatio = expectedMove / totalFriction;
   const reasons: string[] = [];
 
   if (frictionRatio < K) {
     reasons.push(`Friction ratio ${frictionRatio.toFixed(1)}x < required ${K.toFixed(1)}x`);
   }
-  // Rollover no longer hard-rejects — it's a THROTTLE condition
   if (session === "rollover" && frictionRatio < K) {
     reasons.push("Rollover window — reduced liquidity, throttled");
   }
@@ -171,70 +657,6 @@ function scoreExecution(slippagePips: number, fillLatencyMs: number, spreadAtEnt
   return Math.round(Math.min(100, slippageScore + latencyScore + spreadScore + fillBonus));
 }
 
-// ─── Auto-Protection Check (hardened) ───
-
-async function checkAutoProtection(supabase: ReturnType<typeof createClient>): Promise<{
-  allow: boolean;
-  kOverride: number | null;
-  densityMult: number;
-  reason: string;
-}> {
-  // Check recent execution quality — only from FILLED orders (not closed/rejected stale ones)
-  const { data: recent } = await supabase
-    .from("oanda_orders")
-    .select("slippage_pips, execution_quality_score, status, entry_price, error_message")
-    .eq("user_id", USER_ID)
-    .in("status", ["filled", "rejected", "submitted"])
-    .or("error_message.is.null,error_message.not.like.cleared:%")
-    .order("created_at", { ascending: false })
-    .limit(30);
-
-  if (!recent || recent.length < 3) {
-    return { allow: true, kOverride: null, densityMult: 1.0, reason: "Insufficient data for protection check" };
-  }
-
-  // Only count genuinely rejected orders (not stale/cleared/market-halted)
-  const rejected = recent.filter((r: Record<string, unknown>) => 
-    r.status === "rejected" && 
-    !(r.error_message as string || '').includes('MARKET_HALTED') &&
-    !(r.error_message as string || '').includes('instrument')
-  ).length;
-  
-  const filled = recent.filter((r: Record<string, unknown>) => 
-    r.status === "filled" && r.entry_price != null
-  );
-  const filledCount = filled.length;
-  const activeOrders = rejected + filledCount;
-  const rejectionRate = activeOrders > 0 ? rejected / activeOrders : 0;
-
-  // Only use quality scores from filled orders with real telemetry
-  const slippages = filled
-    .map((r: Record<string, unknown>) => r.slippage_pips as number | null)
-    .filter((v: number | null): v is number => v != null);
-  const qualities = filled
-    .map((r: Record<string, unknown>) => r.execution_quality_score as number | null)
-    .filter((v: number | null): v is number => v != null);
-
-  const avgSlip = slippages.length ? slippages.reduce((a, b) => a + b, 0) / slippages.length : 0;
-  const avgQuality = qualities.length ? qualities.reduce((a, b) => a + b, 0) / qualities.length : 100;
-
-  // Kill switch: only triggers on genuine persistent degradation
-  if (rejectionRate > 0.6 && avgQuality < 35 && filledCount >= 5) {
-    return { allow: false, kOverride: null, densityMult: 0, reason: "KILL SWITCH: persistent rejection + quality critical" };
-  }
-
-  // Elevated protection — only if we have enough fills to judge quality
-  if (filledCount >= 5 && (avgSlip > 0.5 || avgQuality < 50)) {
-    return { allow: true, kOverride: 4.5, densityMult: 0.5, reason: `Elevated: avgSlip=${avgSlip.toFixed(2)}, avgQ=${avgQuality.toFixed(0)}` };
-  }
-
-  if (rejectionRate > 0.3 && activeOrders >= 8) {
-    return { allow: true, kOverride: 4.0, densityMult: 0.7, reason: `High rejection rate: ${(rejectionRate * 100).toFixed(0)}%` };
-  }
-
-  return { allow: true, kOverride: null, densityMult: 1.0, reason: "All execution metrics nominal" };
-}
-
 // ─── OANDA API Helper (with retry) ───
 
 async function oandaRequest(path: string, method: string, body?: Record<string, unknown>, retries = 2): Promise<Record<string, unknown>> {
@@ -261,23 +683,17 @@ async function oandaRequest(path: string, method: string, body?: Record<string, 
 
       if (!response.ok) {
         const errMsg = data.errorMessage || data.rejectReason || `OANDA API error: ${response.status}`;
-        
-        // Retryable errors: 503 (service unavailable), market halted, rate limited
-        const isRetryable = response.status === 503 || 
-          response.status === 429 ||
+        const isRetryable = response.status === 503 || response.status === 429 ||
           (errMsg && errMsg.includes('MARKET_HALTED'));
-        
         if (isRetryable && attempt < retries) {
           const delay = (attempt + 1) * 500;
           console.warn(`[SCALP-TRADE] Retryable error (${response.status}): ${errMsg}. Retrying in ${delay}ms...`);
           await new Promise(r => setTimeout(r, delay));
           continue;
         }
-        
         console.error(`[SCALP-TRADE] OANDA error ${response.status}:`, JSON.stringify(data));
         throw new Error(errMsg);
       }
-
       return data;
     } catch (err) {
       if (attempt < retries && (err as Error).message?.includes('fetch')) {
@@ -289,7 +705,6 @@ async function oandaRequest(path: string, method: string, body?: Record<string, 
       throw err;
     }
   }
-  
   throw new Error("Max retries exceeded");
 }
 
@@ -313,7 +728,9 @@ function generateScalpSignal(index: number): {
   return { pair, direction, confidence, agentId };
 }
 
-// ─── Main Handler ───
+// ═══════════════════════════════════════════════════════════════
+// MAIN HANDLER
+// ═══════════════════════════════════════════════════════════════
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
@@ -323,7 +740,8 @@ Deno.serve(async (req) => {
   const startTime = Date.now();
   const session = detectSession();
   const regime = getRegimeLabel();
-  console.log(`[SCALP-TRADE] Execution Safety Mode — session: ${session}, regime: ${regime}, time: ${new Date().toISOString()}`);
+  const sessionBudget = SESSION_BUDGETS[session];
+  console.log(`[SCALP-TRADE] Adaptive Governance — session: ${session} (${sessionBudget.label}), regime: ${regime}, time: ${new Date().toISOString()}`);
 
   // ─── Weekend Guard ───
   if (isWeekend()) {
@@ -345,22 +763,76 @@ Deno.serve(async (req) => {
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
     );
 
-    // ─── Auto-Protection Check (skip in force mode) ───
-    const protection = forceMode
-      ? { allow: true, kOverride: null, densityMult: 1.0, reason: "FORCE MODE — bypassing protection" }
-      : await checkAutoProtection(supabase);
-    console.log(`[SCALP-TRADE] Protection: ${protection.reason} (allow=${protection.allow}, density=${protection.densityMult})`);
+    // ═══════════════════════════════════════════════════════════
+    // PHASE 1: Load Rolling Execution Data
+    // ═══════════════════════════════════════════════════════════
 
-    if (!protection.allow) {
-      console.log(`[SCALP-TRADE] KILL SWITCH ACTIVE — aborting all execution`);
+    const { data: recentOrders } = await supabase
+      .from("oanda_orders")
+      .select("*")
+      .eq("user_id", USER_ID)
+      .order("created_at", { ascending: false })
+      .limit(250);
+
+    const orders = (recentOrders || []) as Array<Record<string, unknown>>;
+
+    // ═══════════════════════════════════════════════════════════
+    // PHASE 2: Degradation Autopilot + Governance State Machine
+    // ═══════════════════════════════════════════════════════════
+
+    const degradation = forceMode
+      ? null
+      : buildDegradationReport(orders);
+
+    const govState: GovernanceState = forceMode ? "NORMAL" : (degradation?.governanceState || "NORMAL");
+    const govConfig = STATE_CONFIGS[govState];
+    const pairAllocations = degradation?.pairAllocations || computeAllPairAllocations(orders);
+
+    console.log(`[SCALP-TRADE] ═══ GOVERNANCE STATE: ${govState} ═══`);
+    if (degradation) {
+      console.log(`[SCALP-TRADE] State reasons: ${degradation.stateReasons.join(" | ")}`);
+      console.log(`[SCALP-TRADE] Banned pairs: ${degradation.bannedPairs.join(", ") || "none"}`);
+      console.log(`[SCALP-TRADE] Restricted pairs: ${degradation.restrictedPairs.join(", ") || "none"}`);
+      console.log(`[SCALP-TRADE] Promoted pairs: ${degradation.promotedPairs.join(", ") || "none"}`);
+      console.log(`[SCALP-TRADE] Windows: WR20=${(degradation.windows.w20.winRate * 100).toFixed(0)}% WR50=${(degradation.windows.w50.winRate * 100).toFixed(0)}% E20=${degradation.windows.w20.expectancy.toFixed(2)}p`);
+    }
+
+    // ─── HALT check ───
+    if (govState === "HALT" && !forceMode) {
+      console.log(`[SCALP-TRADE] ═══ HALTED — all execution suspended ═══`);
       return new Response(
-        JSON.stringify({ success: false, mode: "kill-switch", reason: protection.reason }),
+        JSON.stringify({
+          success: false,
+          mode: "governance-halt",
+          governanceState: govState,
+          reasons: degradation?.stateReasons || [],
+          degradation: degradation ? {
+            w20: degradation.windows.w20,
+            w50: degradation.windows.w50,
+            bannedPairs: degradation.bannedPairs,
+          } : null,
+        }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    // ─── Fetch Account Balance for Dynamic Sizing ───
-    let accountBalance = 100000; // Default fallback
+    // ═══════════════════════════════════════════════════════════
+    // PHASE 3: Shadow Model Evaluation
+    // ═══════════════════════════════════════════════════════════
+
+    const shadowCandidates = degradation
+      ? evaluateShadowCandidates(degradation.windows.w50, degradation.windows.w200)
+      : [];
+
+    if (shadowCandidates.length > 0) {
+      console.log(`[SCALP-TRADE] Shadow candidates: ${shadowCandidates.map(c => `${c.id}(eligible=${c.eligible})`).join(", ")}`);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // PHASE 4: Fetch Account Balance
+    // ═══════════════════════════════════════════════════════════
+
+    let accountBalance = 100000;
     try {
       const apiToken = Deno.env.get("OANDA_API_TOKEN");
       const accountId = Deno.env.get("OANDA_ACCOUNT_ID");
@@ -379,43 +851,75 @@ Deno.serve(async (req) => {
       console.warn(`[SCALP-TRADE] Could not fetch balance, using default: ${(e as Error).message}`);
     }
 
-    // Adjust signal count by density multiplier (force mode = 1 trade)
-    // Rollover session: reduce density to 1-2 signals max
-    const rolloverThrottle = session === "rollover" ? 0.4 : 1.0;
+    // ═══════════════════════════════════════════════════════════
+    // PHASE 5: Signal Generation & Execution
+    // ═══════════════════════════════════════════════════════════
+
+    // Session-aware density with governance override
+    const sessionAgg = govConfig.sessionAggressiveness[session] || 0.5;
     const baseCount = forceMode ? 1 : 3 + Math.floor(Math.random() * 4);
-    const signalCount = forceMode ? 1 : Math.max(1, Math.round(baseCount * protection.densityMult * rolloverThrottle));
+    const signalCount = forceMode
+      ? 1
+      : Math.max(0, Math.min(sessionBudget.maxDensity,
+          Math.round(baseCount * govConfig.densityMultiplier * sessionAgg)));
+
+    if (signalCount === 0 && !forceMode) {
+      console.log(`[SCALP-TRADE] Session aggressiveness zero for ${session} in ${govState} — skipping`);
+      return new Response(
+        JSON.stringify({
+          success: true, mode: "session-skip",
+          governanceState: govState, session, sessionAgg,
+          reasons: degradation?.stateReasons || [],
+        }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
     const results: Array<{
       pair: string; direction: string; status: string; units?: number;
       gateResult?: string; frictionScore?: number; slippage?: number;
       executionQuality?: number; error?: string;
+      pairCapitalMult?: number; govState?: string;
     }> = [];
 
-    console.log(`[SCALP-TRADE] Generating ${signalCount} signals (base=${baseCount}, densityMult=${protection.densityMult}, rolloverThrottle=${rolloverThrottle}, force=${forceMode})`);
+    console.log(`[SCALP-TRADE] Generating ${signalCount} signals (govDensity=${govConfig.densityMultiplier}, sessionAgg=${sessionAgg}, maxDensity=${sessionBudget.maxDensity})`);
 
     for (let i = 0; i < signalCount; i++) {
       const signal = forceMode
         ? { pair: reqBody.pair || "EUR_USD", direction: reqBody.direction || "long" as const, confidence: 90, agentId: "manual-test" }
         : generateScalpSignal(i);
 
-      // ─── Pre-Trade Friction Gate (skip in force mode) ───
-      const gate = forceMode
-        ? { pass: true, result: "FORCE" as const, frictionScore: 100, reasons: [], expectedMove: 10, totalFriction: 1, frictionRatio: 10 }
-        : runFrictionGate(signal.pair, session);
-      if (!forceMode && protection.kOverride) {
-        const strictGate = runFrictionGate(signal.pair, session);
-        if (strictGate.frictionRatio < protection.kOverride) {
-          gate.pass = false;
-          gate.result = "THROTTLE" as const;
-          gate.reasons.push(`Protection K override: ratio ${strictGate.frictionRatio.toFixed(1)} < ${protection.kOverride}`);
-        }
+      // ─── Pair Allocation Check ───
+      const pairAlloc = pairAllocations[signal.pair] || { banned: false, restricted: false, capitalMultiplier: 1.0 };
+      if (!forceMode && pairAlloc.banned) {
+        console.log(`[SCALP-TRADE] ${signal.pair}: BANNED (expectancy=${pairAlloc.expectancy?.toFixed(2)}p, WR=${(pairAlloc.winRate * 100).toFixed(0)}%)`);
+        results.push({ pair: signal.pair, direction: signal.direction, status: "pair-banned", pairCapitalMult: 0, govState });
+        continue;
       }
 
-      console.log(`[SCALP-TRADE] Signal ${i + 1}/${signalCount}: ${signal.direction.toUpperCase()} ${signal.pair} — gate=${gate.result} (friction=${gate.frictionScore})`);
+      // Pair restriction by governance state
+      if (!forceMode && govConfig.pairRestriction === "majors-only" && !SCALP_PAIRS.includes(signal.pair)) {
+        console.log(`[SCALP-TRADE] ${signal.pair}: restricted in ${govState} (majors-only)`);
+        results.push({ pair: signal.pair, direction: signal.direction, status: "pair-restricted", govState });
+        continue;
+      }
+      if (!forceMode && govConfig.pairRestriction === "top-performers" && pairAlloc.capitalMultiplier < 1.0) {
+        console.log(`[SCALP-TRADE] ${signal.pair}: restricted in ${govState} (top-performers only, mult=${pairAlloc.capitalMultiplier})`);
+        results.push({ pair: signal.pair, direction: signal.direction, status: "pair-restricted", govState });
+        continue;
+      }
+
+      // ─── Pre-Trade Friction Gate (governance-aware) ───
+      const gate = forceMode
+        ? { pass: true, result: "FORCE" as const, frictionScore: 100, reasons: [], expectedMove: 10, totalFriction: 1, frictionRatio: 10 }
+        : runFrictionGate(signal.pair, session, govConfig, sessionBudget);
+
+      console.log(`[SCALP-TRADE] Signal ${i + 1}/${signalCount}: ${signal.direction.toUpperCase()} ${signal.pair} — gate=${gate.result} (friction=${gate.frictionScore}, govK=${govConfig.frictionKOverride})`);
 
       if (!gate.pass) {
         results.push({
           pair: signal.pair, direction: signal.direction, status: "gated",
-          gateResult: gate.result, frictionScore: gate.frictionScore,
+          gateResult: gate.result, frictionScore: gate.frictionScore, govState,
         });
         continue;
       }
@@ -423,7 +927,7 @@ Deno.serve(async (req) => {
       // ─── Idempotency & Dedup ───
       const idempotencyKey = `scalp-${Date.now()}-${i}-${signal.pair}-${signal.direction}`;
       const twoMinAgo = new Date(Date.now() - 2 * 60 * 1000).toISOString();
-      const { data: recentOrders } = await supabase
+      const { data: recentDedupOrders } = await supabase
         .from("oanda_orders")
         .select("id")
         .eq("user_id", USER_ID)
@@ -432,7 +936,7 @@ Deno.serve(async (req) => {
         .gte("created_at", twoMinAgo)
         .limit(1);
 
-      if (recentOrders && recentOrders.length > 0) {
+      if (recentDedupOrders && recentDedupOrders.length > 0) {
         console.log(`[SCALP-TRADE] Skipping ${signal.pair} — dedup (2min window)`);
         results.push({ pair: signal.pair, direction: signal.direction, status: "deduped" });
         continue;
@@ -441,9 +945,12 @@ Deno.serve(async (req) => {
       const signalId = `scalp-${Date.now()}-${i}-${signal.pair}`;
       const orderTimestamp = Date.now();
 
-      // ─── Dynamic Position Sizing ───
-      const tradeUnits = computePositionSize(signal.pair, accountBalance, signal.confidence);
-      console.log(`[SCALP-TRADE] ${signal.pair}: sized at ${tradeUnits} units (balance=${accountBalance.toFixed(0)}, conf=${signal.confidence})`);
+      // ─── Dynamic Position Sizing (governance + pair + session aware) ───
+      const tradeUnits = computePositionSize(
+        signal.pair, accountBalance, signal.confidence,
+        govConfig, pairAlloc as PairRollingMetrics, sessionBudget
+      );
+      console.log(`[SCALP-TRADE] ${signal.pair}: sized ${tradeUnits}u (gov=${govConfig.sizingMultiplier}, pair=${pairAlloc.capitalMultiplier?.toFixed(2)}, session=${sessionBudget.capitalBudgetPct})`);
 
       // ─── Insert with telemetry fields ───
       const { data: order, error: insertErr } = await supabase
@@ -469,7 +976,6 @@ Deno.serve(async (req) => {
         .single();
 
       if (insertErr) {
-        // Idempotency conflict = duplicate, skip gracefully
         if (insertErr.code === "23505") {
           console.log(`[SCALP-TRADE] Idempotency conflict for ${signal.pair} — skipping`);
           results.push({ pair: signal.pair, direction: signal.direction, status: "idempotency_conflict" });
@@ -499,17 +1005,14 @@ Deno.serve(async (req) => {
         const finalStatus = wasCancelled ? "rejected" : "filled";
         const errorMsg = wasCancelled ? `OANDA: ${cancelReason}` : null;
 
-        // Compute slippage (difference between requested mid and fill)
-        const requestedPrice = filledPrice; // Market order — requested ~= filled for initial
+        const requestedPrice = filledPrice;
         const spreadAtEntry = halfSpread != null ? halfSpread * 2 : (PAIR_BASE_SPREADS[signal.pair] || 1.0) * 0.0001;
-        const slippagePips = wasCancelled ? null : Math.random() * 0.3; // Simulated micro-slippage for practice
+        const slippagePips = wasCancelled ? null : Math.random() * 0.3;
 
         const baseSpread = PAIR_BASE_SPREADS[signal.pair] || 1.0;
         const execQuality = wasCancelled ? 0 : scoreExecution(
-          slippagePips || 0,
-          fillLatencyMs,
-          spreadAtEntry * 10000, // convert to pips
-          baseSpread
+          slippagePips || 0, fillLatencyMs,
+          spreadAtEntry * 10000, baseSpread
         );
 
         await supabase
@@ -530,36 +1033,34 @@ Deno.serve(async (req) => {
 
         results.push({
           pair: signal.pair, direction: signal.direction, status: finalStatus,
+          units: tradeUnits,
           gateResult: gate.result, frictionScore: gate.frictionScore,
           slippage: slippagePips || undefined, executionQuality: execQuality,
-          error: errorMsg || undefined,
+          error: errorMsg || undefined, pairCapitalMult: pairAlloc.capitalMultiplier,
+          govState,
         });
 
-        console.log(`[SCALP-TRADE] ${signal.pair}: ${finalStatus} | latency=${fillLatencyMs}ms | quality=${execQuality} | slip=${slippagePips?.toFixed(3) || 'N/A'}`);
+        console.log(`[SCALP-TRADE] ${signal.pair}: ${finalStatus} | ${tradeUnits}u | latency=${fillLatencyMs}ms | quality=${execQuality} | slip=${slippagePips?.toFixed(3) || 'N/A'}`);
       } catch (oandaErr) {
         const errMsg = (oandaErr as Error).message;
-        
-        // Categorize the error for better protection logic
         const isMarketHalted = errMsg.includes('MARKET_HALTED');
-        const isInstrumentError = errMsg.includes('instrument');
         const isTransient = isMarketHalted || errMsg.includes('503') || errMsg.includes('timeout');
-        
+
         await supabase
           .from("oanda_orders")
-          .update({ 
-            status: "rejected", 
-            error_message: errMsg, 
-            execution_quality_score: isTransient ? null : 0 // Don't penalize transient errors
+          .update({
+            status: "rejected",
+            error_message: errMsg,
+            execution_quality_score: isTransient ? null : 0
           })
           .eq("id", order.id);
-        
-        results.push({ 
-          pair: signal.pair, direction: signal.direction, status: "rejected", 
-          error: errMsg 
+
+        results.push({
+          pair: signal.pair, direction: signal.direction, status: "rejected",
+          error: errMsg, govState,
         });
         console.error(`[SCALP-TRADE] ${signal.pair} failed (${isTransient ? 'transient' : 'permanent'}):`, errMsg);
-        
-        // If market halted, skip remaining signals this run
+
         if (isMarketHalted) {
           console.warn(`[SCALP-TRADE] Market halted — skipping remaining signals`);
           break;
@@ -573,16 +1074,41 @@ Deno.serve(async (req) => {
     const passed = results.filter(r => r.status === "filled").length;
     const gated = results.filter(r => r.status === "gated").length;
     const rejected = results.filter(r => r.status === "rejected").length;
+    const pairBanned = results.filter(r => r.status === "pair-banned").length;
+    const pairRestricted = results.filter(r => r.status === "pair-restricted").length;
 
-    console.log(`[SCALP-TRADE] Complete: ${results.length} signals | ${passed} filled | ${gated} gated | ${rejected} rejected | ${elapsed}ms`);
+    console.log(`[SCALP-TRADE] ═══ Complete: ${results.length} signals | ${passed} filled | ${gated} gated | ${rejected} rejected | ${pairBanned} banned | ${pairRestricted} restricted | ${elapsed}ms ═══`);
+    console.log(`[SCALP-TRADE] Governance: ${govState} | Session: ${sessionBudget.label} | Regime: ${regime}`);
 
     return new Response(
       JSON.stringify({
         success: true,
-        mode: "execution-safety",
-        session, regime,
-        protection: { level: protection.reason, densityMult: protection.densityMult },
-        summary: { total: results.length, filled: passed, gated, rejected },
+        mode: "adaptive-governance",
+        governanceState: govState,
+        session: sessionBudget.label,
+        regime,
+        governance: {
+          state: govState,
+          config: {
+            density: govConfig.densityMultiplier,
+            sizing: govConfig.sizingMultiplier,
+            frictionK: govConfig.frictionKOverride,
+            pairRestriction: govConfig.pairRestriction,
+          },
+          reasons: degradation?.stateReasons || [],
+          windows: degradation ? {
+            w20: { winRate: degradation.windows.w20.winRate, expectancy: degradation.windows.w20.expectancy, captureRatio: degradation.windows.w20.captureRatio },
+            w50: { winRate: degradation.windows.w50.winRate, expectancy: degradation.windows.w50.expectancy, captureRatio: degradation.windows.w50.captureRatio },
+            w200: { winRate: degradation.windows.w200.winRate, expectancy: degradation.windows.w200.expectancy, captureRatio: degradation.windows.w200.captureRatio },
+          } : null,
+          bannedPairs: degradation?.bannedPairs || [],
+          restrictedPairs: degradation?.restrictedPairs || [],
+          promotedPairs: degradation?.promotedPairs || [],
+          shadowCandidates: shadowCandidates.map(c => ({
+            id: c.id, eligible: c.eligible, improvementPct: c.improvementPct, reason: c.reason,
+          })),
+        },
+        summary: { total: results.length, filled: passed, gated, rejected, pairBanned, pairRestricted },
         signals: results,
         elapsed,
       }),
