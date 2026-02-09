@@ -36,6 +36,7 @@ import { DiscoveryRiskPanel } from '@/components/forex/DiscoveryRiskPanel';
 import { AdaptiveEdgeDashboard } from '@/components/forex/AdaptiveEdgeDashboard';
 import { AgentWeightingTable } from '@/components/forex/AgentWeightingTable';
 import { AgentCollaborationDashboard } from '@/components/forex/AgentCollaborationDashboard';
+import { EnsembleHealthDashboard } from '@/components/forex/EnsembleHealthDashboard';
 import {
   generateForexTrades,
   filterForexTrades,
@@ -195,6 +196,9 @@ const ForexDashboard = () => {
             </TabsTrigger>
             <TabsTrigger value="collaboration" className="text-xs gap-1.5">
               <GitBranch className="w-3.5 h-3.5" />Collaboration
+            </TabsTrigger>
+            <TabsTrigger value="ensemble" className="text-xs gap-1.5">
+              <HeartPulse className="w-3.5 h-3.5" />Ensemble
             </TabsTrigger>
           </TabsList>
 
@@ -404,6 +408,11 @@ const ForexDashboard = () => {
           <TabsContent value="collaboration" className="space-y-4">
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
               <AgentCollaborationDashboard />
+            </motion.div>
+          </TabsContent>
+          <TabsContent value="ensemble" className="space-y-4">
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+              <EnsembleHealthDashboard />
             </motion.div>
           </TabsContent>
         </Tabs>
