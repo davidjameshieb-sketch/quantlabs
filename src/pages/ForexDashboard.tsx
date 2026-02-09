@@ -3,7 +3,7 @@
 
 import { useState, useMemo, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Globe, TrendingUp, Crosshair, BarChart3, FlaskConical, ShieldCheck, SplitSquareHorizontal, PieChart, Shield, HeartPulse, Radar, Filter } from 'lucide-react';
+import { Globe, TrendingUp, Crosshair, BarChart3, FlaskConical, ShieldCheck, SplitSquareHorizontal, PieChart, Shield, HeartPulse, Radar, Filter, Rocket } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { DashboardLayout } from '@/components/dashboard/DashboardLayout';
 import { ForexPerformanceOverview } from '@/components/forex/ForexPerformanceOverview';
@@ -31,6 +31,7 @@ import { AgentAccountabilityPanel } from '@/components/forex/AgentAccountability
 import { GovernanceHealthDashboard } from '@/components/forex/GovernanceHealthDashboard';
 import { EdgeDiscoveryDashboard } from '@/components/forex/edge-discovery/EdgeDiscoveryDashboard';
 import { EdgeExtractionDashboard } from '@/components/forex/edge-extraction/EdgeExtractionDashboard';
+import { EdgeGoLivePanel } from '@/components/forex/edge-discovery/EdgeGoLivePanel';
 import {
   generateForexTrades,
   filterForexTrades,
@@ -178,6 +179,9 @@ const ForexDashboard = () => {
             </TabsTrigger>
             <TabsTrigger value="edge-extraction" className="text-xs gap-1.5">
               <Filter className="w-3.5 h-3.5" />Edge Extraction
+            </TabsTrigger>
+            <TabsTrigger value="edge-golive" className="text-xs gap-1.5">
+              <Rocket className="w-3.5 h-3.5" />Go-Live
             </TabsTrigger>
           </TabsList>
 
@@ -364,6 +368,11 @@ const ForexDashboard = () => {
           <TabsContent value="edge-extraction" className="space-y-4">
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
               <EdgeExtractionDashboard />
+            </motion.div>
+          </TabsContent>
+          <TabsContent value="edge-golive" className="space-y-4">
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+              <EdgeGoLivePanel />
             </motion.div>
           </TabsContent>
         </Tabs>
