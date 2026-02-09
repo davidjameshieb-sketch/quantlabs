@@ -12,4 +12,6 @@ export { computeShadowModeState } from './shadowModeValidator';
 export type { ShadowModeState, ShadowTestResult, ParameterDelta } from './shadowModeValidator';
 export { runPreTradeGate, computeExecutionHealth, createSimulatedExecutionHealth, evaluateExecutionProtection, scoreExecutionQuality, generateIdempotencyKey, computeFrictionBudget } from './executionSafetyEngine';
 export type { PreTradeGateResult, ExecutionTelemetry, ExecutionHealthMetrics, PairExecutionHealth, ExecutionAutoProtection, FrictionBudget, GateResult } from './executionSafetyEngine';
+export { computeGovernanceDashboard, GOVERNANCE_STATE_CONFIGS } from './adaptiveGovernanceEngine';
+export type { GovernanceDashboardData, GovernanceState, GovernanceStateConfig, RollingWindow, PairAllocation, SessionBudget, ShadowCandidate } from './adaptiveGovernanceEngine';
 
