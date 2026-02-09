@@ -37,7 +37,7 @@ export const HeroSection = () => {
           <h1 className="font-display text-3xl md:text-4xl lg:text-5xl font-bold tracking-tight leading-tight">
             <span className="text-foreground">High-Volume FX Scalping Intelligence</span>
             <br />
-            <span className="text-gradient-neural">10 AI Agents. Sub-15min Trades. OANDA Execution.</span>
+            <span className="text-gradient-neural">18 AI Agents. Sub-15min Trades. OANDA Execution.</span>
           </h1>
           <p className="font-display text-xs md:text-sm text-muted-foreground mt-3 max-w-2xl mx-auto leading-relaxed">
             500+ daily trade proposals. 72%+ win rate. Ultra-tight stops. Governance-filtered scalping across major forex pairs.

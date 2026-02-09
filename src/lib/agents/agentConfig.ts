@@ -1,5 +1,5 @@
 // Agent configuration registry
-// Centralized definitions for all 10 AI agent models
+// Centralized definitions for all 18 AI trading agents
 
 import { AgentId, StrategyBlockType } from './types';
 import { MarketType } from '@/lib/market/types';

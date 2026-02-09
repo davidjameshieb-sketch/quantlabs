@@ -6,7 +6,7 @@ const fleetMetrics = [
   { icon: BarChart3, value: '24,500+', label: 'Total Scalps Executed', color: 'text-neural-cyan' },
   { icon: TrendingUp, value: '+41.2%', label: 'Scalping Profitability (Net)', color: 'text-neural-green' },
   { icon: Shield, value: '1.87', label: 'Profit Factor', color: 'text-neural-purple' },
-  { icon: Brain, value: '10', label: 'FX Scalping Agents', color: 'text-primary' },
+  { icon: Brain, value: '18', label: 'FX Scalping Agents', color: 'text-primary' },
   { icon: Globe, value: '8', label: 'Major Pairs Traded', color: 'text-neural-orange' },
 ];
 
