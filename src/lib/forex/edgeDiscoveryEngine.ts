@@ -1,5 +1,6 @@
-// Edge Discovery & Failure Mapping Engine
+// Edge Discovery & Failure Mapping Engine v1
 // Identifies conditional edge and capital destruction across all environments
+// Includes environment-level stats, filter simulation support, and OOS validation
 
 // ─── Types ────────────────────────────────────────────────────────────
 
@@ -35,7 +36,7 @@ export interface DimensionStats {
   profitFactor: number;
   ciLower: number;
   ciUpper: number;
-  isWeak: boolean; // <30 trades
+  isWeak: boolean;
   edgeClass: 'strong-positive' | 'neutral' | 'strong-negative';
   totalPnl: number;
   sharpe: number;
@@ -87,8 +88,8 @@ export interface GovernanceQuality {
   throttledTrades: number;
   throttledExpectancy: number;
   throttledWinRate: number;
-  falsePositives: number; // approved but lost
-  falseNegatives: number; // rejected but would've won
+  falsePositives: number;
+  falseNegatives: number;
   governanceAccuracy: number;
 }
 
@@ -102,7 +103,6 @@ export interface EnvironmentComparison {
 }
 
 export interface EdgeDiscoveryResult {
-  // Section 1: Global summary
   globalSummary: {
     totalTrades: number;
     winRate: number;
@@ -113,24 +113,56 @@ export interface EdgeDiscoveryResult {
     avgFriction: number;
     avgComposite: number;
   };
-  // Section 2: Edge heatmap
   heatmap: Record<string, DimensionStats[]>;
-  // Section 3: Failures
   failures: FailureEntry[];
-  // Section 4: Clusters
   clusters: EdgeCluster[];
-  // Section 5: Predictive validation
   predictiveChecks: PredictiveCheck[];
   overallScoringVerdict: 'SCORING PREDICTIVE' | 'SCORING NON-PREDICTIVE' | 'INSUFFICIENT DATA';
-  // Section 6: Decay
   decay: DecayPoint[];
   edgeDecayStatus: 'STABLE' | 'DEGRADING' | 'CRITICAL' | 'INSUFFICIENT DATA';
-  // Section 7: RNG comparison
   rngComparison: EnvironmentComparison[] | null;
-  // Section 8: Governance quality
   governanceQuality: GovernanceQuality;
-  // Section 9: confidence badges per section
   sectionConfidence: Record<string, { sampleSize: number; ciWidth: number; reliable: boolean }>;
+}
+
+// ─── Environment Stats (Step A) ───────────────────────────────────
+
+export interface EnvironmentStatsEntry {
+  envKey: string;
+  session: string;
+  regime: string;
+  symbol: string;
+  direction: string;
+  trades: number;
+  winRate: number;
+  expectancyPips: number;
+  profitFactor: number;
+  sharpe: number;
+  maxDDPips: number;
+  avgDuration: number;
+  avgSpread: number;
+  avgFriction: number;
+  avgComposite: number;
+  avgQLConfidence: number;
+  ciLower: number;
+  ciUpper: number;
+  edgeLabel: 'EDGE' | 'NEUTRAL' | '-EDGE';
+  score: number;
+}
+
+export interface EnvironmentStatsOptions {
+  minTrades?: number;
+  useExtendedKey?: boolean;
+}
+
+export interface FailureDriver {
+  dimension: string;
+  key: string;
+  trades: number;
+  totalPnl: number;
+  expectancy: number;
+  maxDDContribution: number;
+  suggestion: string;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────
@@ -140,24 +172,24 @@ function getPipMultiplier(pair: string): number {
   return jpyPairs.includes(pair) ? 100 : 10000;
 }
 
-function avg(arr: number[]): number {
+export function avg(arr: number[]): number {
   return arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
 }
 
-function stddev(arr: number[]): number {
+export function stddev(arr: number[]): number {
   if (arr.length < 2) return 0;
   const m = avg(arr);
   return Math.sqrt(arr.reduce((s, v) => s + (v - m) ** 2, 0) / (arr.length - 1));
 }
 
-function sharpe(returns: number[]): number {
+function calcSharpe(returns: number[]): number {
   if (returns.length < 5) return 0;
   const m = avg(returns);
   const s = stddev(returns);
   return s === 0 ? 0 : (m / s) * Math.sqrt(Math.min(returns.length, 252));
 }
 
-function confidenceInterval(returns: number[]): [number, number] {
+export function confidenceInterval(returns: number[]): [number, number] {
   if (returns.length < 2) return [0, 0];
   const m = avg(returns);
   const se = stddev(returns) / Math.sqrt(returns.length);
@@ -187,7 +219,7 @@ function computeDimensionStats(key: string, pnls: number[]): DimensionStats {
     isWeak: pnls.length < 30,
     edgeClass: classifyEdge(exp, ciLower, ciUpper),
     totalPnl: Math.round(pnls.reduce((s, p) => s + p, 0) * 10) / 10,
-    sharpe: Math.round(sharpe(pnls) * 100) / 100,
+    sharpe: Math.round(calcSharpe(pnls) * 100) / 100,
   };
 }
 
@@ -210,6 +242,36 @@ function bucketize(value: number, breakpoints: number[], labels: string[]): stri
 function decile(value: number): string {
   const d = Math.min(Math.floor(value * 10), 9);
   return `D${d + 1} (${(d * 10)}-${(d + 1) * 10}%)`;
+}
+
+export function computeMaxDD(pnls: number[]): number {
+  let peak = 0, maxDD = 0, cum = 0;
+  for (const p of pnls) {
+    cum += p;
+    if (cum > peak) peak = cum;
+    const dd = peak - cum;
+    if (dd > maxDD) maxDD = dd;
+  }
+  return Math.round(maxDD * 10) / 10;
+}
+
+export function computeMetricsSummary(trades: NormalizedTrade[]) {
+  const pnls = trades.map(t => t.pnlPips);
+  const wins = pnls.filter(p => p > 0);
+  const grossProfit = wins.reduce((s, p) => s + p, 0);
+  const grossLoss = Math.abs(pnls.filter(p => p <= 0).reduce((s, p) => s + p, 0));
+  const [ciL, ciU] = confidenceInterval(pnls);
+  return {
+    trades: trades.length,
+    netPnl: Math.round(pnls.reduce((s, p) => s + p, 0) * 10) / 10,
+    winRate: trades.length ? wins.length / trades.length : 0,
+    expectancy: Math.round(avg(pnls) * 100) / 100,
+    profitFactor: grossLoss > 0 ? Math.round((grossProfit / grossLoss) * 100) / 100 : grossProfit > 0 ? 99 : 0,
+    sharpe: Math.round(calcSharpe(pnls) * 100) / 100,
+    maxDrawdown: computeMaxDD(pnls),
+    ciLower: Math.round(ciL * 100) / 100,
+    ciUpper: Math.round(ciU * 100) / 100,
+  };
 }
 
 // ─── Normalizer ───────────────────────────────────────────────────────
@@ -252,38 +314,188 @@ export function normalizeOandaOrders(orders: any[]): NormalizedTrade[] {
     });
 }
 
+// ─── Step A: Environment Stats ───────────────────────────────────────
+
+function makeEnvKey(t: NormalizedTrade, extended?: boolean): string {
+  const base = `${t.session}|${t.regime}|${t.symbol}|${t.direction}`;
+  if (!extended) return base;
+  const spreadBucket = bucketize(t.spreadAtEntry * 10000, [5, 10, 15, 25], ['<0.5p', '0.5-1p', '1-1.5p', '1.5-2.5p', '>2.5p']);
+  const compDecile = decile(Math.min(t.compositeScore, 1));
+  return `${base}|${t.agentId}|${spreadBucket}|${compDecile}`;
+}
+
+export function buildEnvironmentStats(
+  trades: NormalizedTrade[],
+  options: EnvironmentStatsOptions = {}
+): EnvironmentStatsEntry[] {
+  const minTrades = options.minTrades ?? 50;
+  const groups = groupBy(trades, t => makeEnvKey(t, options.useExtendedKey));
+
+  return Object.entries(groups)
+    .filter(([, ts]) => ts.length >= minTrades)
+    .map(([key, ts]) => {
+      const pnls = ts.map(t => t.pnlPips);
+      const wins = pnls.filter(p => p > 0);
+      const grossProfit = wins.reduce((s, p) => s + p, 0);
+      const grossLoss = Math.abs(pnls.filter(p => p <= 0).reduce((s, p) => s + p, 0));
+      const exp = avg(pnls);
+      const [ciL, ciU] = confidenceInterval(pnls);
+      const pf = grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? 99 : 0;
+      const parts = key.split('|');
+
+      const edgeLabel: EnvironmentStatsEntry['edgeLabel'] =
+        ciL > 0 ? 'EDGE' : ciU < 0 ? '-EDGE' : 'NEUTRAL';
+
+      const score = exp * Math.sqrt(ts.length) * (pf > 1 ? 1 : pf > 0 ? pf : 0.1);
+
+      return {
+        envKey: key,
+        session: parts[0] || 'unknown',
+        regime: parts[1] || 'unknown',
+        symbol: parts[2] || 'unknown',
+        direction: parts[3] || 'unknown',
+        trades: ts.length,
+        winRate: wins.length / ts.length,
+        expectancyPips: Math.round(exp * 100) / 100,
+        profitFactor: Math.round(pf * 100) / 100,
+        sharpe: Math.round(calcSharpe(pnls) * 100) / 100,
+        maxDDPips: computeMaxDD(pnls),
+        avgDuration: Math.round(avg(ts.map(t => t.durationMinutes)) * 10) / 10,
+        avgSpread: Math.round(avg(ts.map(t => t.spreadAtEntry)) * 100000) / 100000,
+        avgFriction: Math.round(avg(ts.map(t => t.frictionRatio)) * 100) / 100,
+        avgComposite: Math.round(avg(ts.map(t => t.compositeScore)) * 100) / 100,
+        avgQLConfidence: Math.round(avg(ts.map(t => t.confidenceScore)) * 100) / 100,
+        ciLower: Math.round(ciL * 100) / 100,
+        ciUpper: Math.round(ciU * 100) / 100,
+        edgeLabel,
+        score: Math.round(score * 100) / 100,
+      };
+    })
+    .sort((a, b) => b.score - a.score);
+}
+
+export function findTopEdgeEnvironments(
+  stats: EnvironmentStatsEntry[],
+  topN = 10
+): { top: EnvironmentStatsEntry[]; bestSessions: string[]; bestPairs: string[]; bestRegimes: string[]; bestDirections: string[] } {
+  const top = stats.filter(s => s.expectancyPips > 0).slice(0, topN);
+  const bestSessions = [...new Set(top.map(s => s.session))];
+  const bestPairs = [...new Set(top.map(s => s.symbol))];
+  const bestRegimes = [...new Set(top.map(s => s.regime))];
+  const bestDirections = [...new Set(top.map(s => s.direction))];
+  return { top, bestSessions, bestPairs, bestRegimes, bestDirections };
+}
+
+export function findWorstEnvironments(
+  stats: EnvironmentStatsEntry[],
+  bottomN = 10
+): EnvironmentStatsEntry[] {
+  return [...stats].sort((a, b) => a.score - b.score).filter(s => s.expectancyPips < 0).slice(0, bottomN);
+}
+
+export function failureAttribution(
+  trades: NormalizedTrade[]
+): FailureDriver[] {
+  const dims: { name: string; fn: (t: NormalizedTrade) => string }[] = [
+    { name: 'Session', fn: t => t.session },
+    { name: 'Regime', fn: t => t.regime },
+    { name: 'Symbol', fn: t => t.symbol },
+    { name: 'Direction', fn: t => t.direction },
+    { name: 'Agent', fn: t => t.agentId },
+    { name: 'Spread Bucket', fn: t => bucketize(t.spreadAtEntry * 10000, [5, 10, 15, 25], ['<0.5p', '0.5-1p', '1-1.5p', '1.5-2.5p', '>2.5p']) },
+    { name: 'Composite Decile', fn: t => decile(Math.min(t.compositeScore, 1)) },
+  ];
+
+  const drivers: FailureDriver[] = [];
+
+  for (const { name, fn } of dims) {
+    const groups = groupBy(trades, fn);
+    for (const [key, ts] of Object.entries(groups)) {
+      const pnls = ts.map(t => t.pnlPips);
+      const totalPnl = pnls.reduce((s, p) => s + p, 0);
+      if (totalPnl >= 0) continue;
+      drivers.push({
+        dimension: name,
+        key,
+        trades: ts.length,
+        totalPnl: Math.round(totalPnl * 10) / 10,
+        expectancy: Math.round(avg(pnls) * 100) / 100,
+        maxDDContribution: computeMaxDD(pnls),
+        suggestion: `Review and consider blocking ${name}: ${key}`,
+      });
+    }
+  }
+
+  return drivers.sort((a, b) => a.totalPnl - b.totalPnl);
+}
+
+// ─── OOS Validation ──────────────────────────────────────────────────
+
+export interface OOSValidation {
+  inSampleTrades: number;
+  outOfSampleTrades: number;
+  inSampleExpectancy: number;
+  outOfSampleExpectancy: number;
+  edgeHolds: boolean;
+  topEnvsInSample: EnvironmentStatsEntry[];
+  topEnvsOOS: EnvironmentStatsEntry[];
+}
+
+export function validateOutOfSample(
+  trades: NormalizedTrade[],
+  splitRatio = 0.7,
+  minTrades = 30
+): OOSValidation {
+  const sorted = [...trades].sort((a, b) => a.entryTs - b.entryTs);
+  const splitIdx = Math.floor(sorted.length * splitRatio);
+  const inSample = sorted.slice(0, splitIdx);
+  const oos = sorted.slice(splitIdx);
+
+  const isStats = buildEnvironmentStats(inSample, { minTrades });
+  const isTop = findTopEdgeEnvironments(isStats, 10);
+  const topKeys = new Set(isTop.top.map(e => e.envKey));
+
+  // Evaluate those same keys in OOS
+  const oosInTopEnvs = oos.filter(t => topKeys.has(makeEnvKey(t)));
+  const oosStats = buildEnvironmentStats(oosInTopEnvs, { minTrades: 1 });
+
+  const isExp = avg(inSample.map(t => t.pnlPips));
+  const oosExp = avg(oos.map(t => t.pnlPips));
+
+  return {
+    inSampleTrades: inSample.length,
+    outOfSampleTrades: oos.length,
+    inSampleExpectancy: Math.round(isExp * 100) / 100,
+    outOfSampleExpectancy: Math.round(oosExp * 100) / 100,
+    edgeHolds: oosExp > 0 && oosExp > isExp * 0.3,
+    topEnvsInSample: isTop.top,
+    topEnvsOOS: oosStats,
+  };
+}
+
 // ─── Main Engine ──────────────────────────────────────────────────────
 
 export function computeEdgeDiscovery(trades: NormalizedTrade[]): EdgeDiscoveryResult {
   const pnls = trades.map(t => t.pnlPips);
 
-  // ─── Section 1: Global Summary ────────────────────────────────
+  // Section 1: Global Summary
   const wins = pnls.filter(p => p > 0);
   const losses = pnls.filter(p => p <= 0);
   const grossProfit = wins.reduce((s, p) => s + p, 0);
   const grossLoss = Math.abs(losses.reduce((s, p) => s + p, 0));
-
-  // Max drawdown
-  let peak = 0, maxDD = 0, cumPnl = 0;
-  for (const p of pnls) {
-    cumPnl += p;
-    if (cumPnl > peak) peak = cumPnl;
-    const dd = peak - cumPnl;
-    if (dd > maxDD) maxDD = dd;
-  }
 
   const globalSummary = {
     totalTrades: trades.length,
     winRate: trades.length ? wins.length / trades.length : 0,
     expectancy: Math.round(avg(pnls) * 100) / 100,
     profitFactor: grossLoss > 0 ? Math.round((grossProfit / grossLoss) * 100) / 100 : 0,
-    sharpe: Math.round(sharpe(pnls) * 100) / 100,
-    maxDrawdown: Math.round(maxDD * 10) / 10,
+    sharpe: Math.round(calcSharpe(pnls) * 100) / 100,
+    maxDrawdown: computeMaxDD(pnls),
     avgFriction: Math.round(avg(trades.map(t => t.frictionRatio)) * 100) / 100,
     avgComposite: Math.round(avg(trades.map(t => t.compositeScore)) * 100) / 100,
   };
 
-  // ─── Section 2: Edge Heatmap ──────────────────────────────────
+  // Section 2: Edge Heatmap
   const dimensions: Record<string, (t: NormalizedTrade) => string> = {
     'Session': t => t.session,
     'Regime': t => t.regime,
@@ -307,7 +519,7 @@ export function computeEdgeDiscovery(trades: NormalizedTrade[]): EdgeDiscoveryRe
       .sort((a, b) => b.expectancy - a.expectancy);
   }
 
-  // ─── Section 3: Failure Detection ─────────────────────────────
+  // Section 3: Failure Detection
   const failures: FailureEntry[] = [];
   const failureDims = ['Session', 'Symbol', 'Regime', 'Agent', 'Direction', 'Spread Bucket', 'Composite Decile', 'Duration'];
   for (const dim of failureDims) {
@@ -337,20 +549,15 @@ export function computeEdgeDiscovery(trades: NormalizedTrade[]): EdgeDiscoveryRe
     }
   }
 
-  // ─── Section 4: Edge Cluster Discovery ────────────────────────
+  // Section 4: Edge Cluster Discovery
   const clusterDims: ((t: NormalizedTrade) => string)[] = [
-    t => t.session,
-    t => t.symbol,
-    t => t.regime,
-    t => t.direction,
+    t => t.session, t => t.symbol, t => t.regime, t => t.direction,
   ];
-
   const clusterMap: Record<string, NormalizedTrade[]> = {};
   for (const t of trades) {
     const key = clusterDims.map(fn => fn(t)).join(' | ');
     (clusterMap[key] ??= []).push(t);
   }
-
   const clusters: EdgeCluster[] = Object.entries(clusterMap)
     .filter(([, ts]) => ts.length >= 5)
     .map(([label, ts]) => {
@@ -373,84 +580,38 @@ export function computeEdgeDiscovery(trades: NormalizedTrade[]): EdgeDiscoveryRe
     })
     .sort((a, b) => b.expectancy - a.expectancy);
 
-  // ─── Section 5: Predictive Validation ─────────────────────────
+  // Section 5: Predictive Validation
   const predictiveChecks: PredictiveCheck[] = [];
-
-  // Composite score monotonicity
-  const compositeDeciles = heatmap['Composite Decile'] || [];
-  if (compositeDeciles.length >= 3) {
-    const expectations = compositeDeciles.map(d => d.expectancy);
+  const buildPredCheck = (dim: string, stats: DimensionStats[]) => {
+    if (stats.length < 3) return;
+    const exp = stats.map(d => d.expectancy);
     let monotonic = true;
-    for (let i = 1; i < expectations.length; i++) {
-      if (expectations[i] < expectations[i - 1] - 0.1) { monotonic = false; break; }
+    for (let i = 1; i < exp.length; i++) {
+      if (exp[i] < exp[i - 1] - 0.1) { monotonic = false; break; }
     }
-    const n = expectations.length;
-    const xBar = (n - 1) / 2;
-    const yBar = avg(expectations);
-    let num = 0, denX = 0, denY = 0;
-    for (let i = 0; i < n; i++) {
-      num += (i - xBar) * (expectations[i] - yBar);
-      denX += (i - xBar) ** 2;
-      denY += (expectations[i] - yBar) ** 2;
-    }
-    const corr = (denX * denY) > 0 ? num / Math.sqrt(denX * denY) : 0;
+    const n = exp.length;
+    const xBar = (n - 1) / 2, yBar = avg(exp);
+    let num = 0, dX = 0, dY = 0;
+    for (let i = 0; i < n; i++) { num += (i - xBar) * (exp[i] - yBar); dX += (i - xBar) ** 2; dY += (exp[i] - yBar) ** 2; }
+    const corr = (dX * dY) > 0 ? num / Math.sqrt(dX * dY) : 0;
     predictiveChecks.push({
-      dimension: 'Composite Score',
+      dimension: dim,
       isMonotonic: monotonic,
       correlation: Math.round(corr * 100) / 100,
       verdict: corr > 0.5 ? 'PREDICTIVE' : corr < -0.2 ? 'NON-PREDICTIVE' : 'INSUFFICIENT_DATA',
-      buckets: compositeDeciles.map(d => ({ label: d.key, expectancy: d.expectancy, trades: d.trades })),
+      buckets: stats.map(d => ({ label: d.key, expectancy: d.expectancy, trades: d.trades })),
     });
-  }
-
-  // MTF alignment
-  const mtfBuckets = heatmap['MTF Alignment'] || [];
-  if (mtfBuckets.length >= 3) {
-    const exp = mtfBuckets.map(d => d.expectancy);
-    const corr = (() => {
-      const n = exp.length;
-      const xBar = (n - 1) / 2, yBar = avg(exp);
-      let num = 0, dX = 0, dY = 0;
-      for (let i = 0; i < n; i++) { num += (i - xBar) * (exp[i] - yBar); dX += (i - xBar) ** 2; dY += (exp[i] - yBar) ** 2; }
-      return (dX * dY) > 0 ? num / Math.sqrt(dX * dY) : 0;
-    })();
-    predictiveChecks.push({
-      dimension: 'MTF Alignment',
-      isMonotonic: false,
-      correlation: Math.round(corr * 100) / 100,
-      verdict: corr > 0.5 ? 'PREDICTIVE' : corr < -0.2 ? 'NON-PREDICTIVE' : 'INSUFFICIENT_DATA',
-      buckets: mtfBuckets.map(d => ({ label: d.key, expectancy: d.expectancy, trades: d.trades })),
-    });
-  }
-
-  // Friction ratio
-  const frictionBuckets = heatmap['Friction Ratio'] || [];
-  if (frictionBuckets.length >= 3) {
-    const exp = frictionBuckets.map(d => d.expectancy);
-    const corr = (() => {
-      const n = exp.length;
-      const xBar = (n - 1) / 2, yBar = avg(exp);
-      let num = 0, dX = 0, dY = 0;
-      for (let i = 0; i < n; i++) { num += (i - xBar) * (exp[i] - yBar); dX += (i - xBar) ** 2; dY += (exp[i] - yBar) ** 2; }
-      return (dX * dY) > 0 ? num / Math.sqrt(dX * dY) : 0;
-    })();
-    predictiveChecks.push({
-      dimension: 'Friction Ratio',
-      isMonotonic: false,
-      correlation: Math.round(corr * 100) / 100,
-      verdict: Math.abs(corr) > 0.5 ? 'PREDICTIVE' : 'INSUFFICIENT_DATA',
-      buckets: frictionBuckets.map(d => ({ label: d.key, expectancy: d.expectancy, trades: d.trades })),
-    });
-  }
+  };
+  buildPredCheck('Composite Score', heatmap['Composite Decile'] || []);
+  buildPredCheck('MTF Alignment', heatmap['MTF Alignment'] || []);
+  buildPredCheck('Friction Ratio', heatmap['Friction Ratio'] || []);
 
   const predictiveCount = predictiveChecks.filter(c => c.verdict === 'PREDICTIVE').length;
   const overallScoringVerdict = predictiveChecks.length === 0
     ? 'INSUFFICIENT DATA' as const
-    : predictiveCount >= 2
-      ? 'SCORING PREDICTIVE' as const
-      : 'SCORING NON-PREDICTIVE' as const;
+    : predictiveCount >= 2 ? 'SCORING PREDICTIVE' as const : 'SCORING NON-PREDICTIVE' as const;
 
-  // ─── Section 6: Edge Decay ────────────────────────────────────
+  // Section 6: Edge Decay
   const windowSize = 50;
   const sortedTrades = [...trades].sort((a, b) => a.entryTs - b.entryTs);
   const decay: DecayPoint[] = [];
@@ -460,11 +621,10 @@ export function computeEdgeDiscovery(trades: NormalizedTrade[]): EdgeDiscoveryRe
     decay.push({
       index: i,
       expectancy: Math.round(avg(window) * 100) / 100,
-      sharpe: Math.round(sharpe(window) * 100) / 100,
+      sharpe: Math.round(calcSharpe(window) * 100) / 100,
       winRate: w / window.length,
     });
   }
-
   let edgeDecayStatus: EdgeDiscoveryResult['edgeDecayStatus'] = 'INSUFFICIENT DATA';
   if (decay.length >= 5) {
     const recent = decay.slice(-5);
@@ -476,7 +636,7 @@ export function computeEdgeDiscovery(trades: NormalizedTrade[]): EdgeDiscoveryRe
     else edgeDecayStatus = 'STABLE';
   }
 
-  // ─── Section 7: RNG Comparison ────────────────────────────────
+  // Section 7: RNG Comparison
   const rngTrades = trades.filter(t => t.directionSource === 'rng' || t.directionSource === 'random');
   const qlTrades = trades.filter(t => t.directionSource === 'quantlabs');
   let rngComparison: EnvironmentComparison[] | null = null;
@@ -486,22 +646,20 @@ export function computeEdgeDiscovery(trades: NormalizedTrade[]): EdgeDiscoveryRe
       const gp = p.filter(x => x > 0).reduce((s, x) => s + x, 0);
       const gl = Math.abs(p.filter(x => x <= 0).reduce((s, x) => s + x, 0));
       return {
-        label,
-        trades: ts.length,
+        label, trades: ts.length,
         expectancy: Math.round(avg(p) * 100) / 100,
         winRate: p.filter(x => x > 0).length / p.length,
         profitFactor: gl > 0 ? Math.round((gp / gl) * 100) / 100 : 0,
-        sharpe: Math.round(sharpe(p) * 100) / 100,
+        sharpe: Math.round(calcSharpe(p) * 100) / 100,
       };
     };
     rngComparison = [makeEnv('QuantLabs', qlTrades), makeEnv('RNG Baseline', rngTrades)];
   }
 
-  // ─── Section 8: Governance Quality ────────────────────────────
+  // Section 8: Governance Quality
   const approved = trades.filter(t => t.governanceDecision === 'approved');
   const rejected = trades.filter(t => t.governanceDecision === 'rejected');
   const throttled = trades.filter(t => t.governanceDecision === 'throttled');
-
   const approvedPnls = approved.map(t => t.pnlPips);
   const rejectedPnls = rejected.map(t => t.pnlPips);
   const throttledPnls = throttled.map(t => t.pnlPips);
@@ -524,7 +682,7 @@ export function computeEdgeDiscovery(trades: NormalizedTrade[]): EdgeDiscoveryRe
       : 0,
   };
 
-  // ─── Section 9: Confidence per section ────────────────────────
+  // Section 9: Confidence per section
   const makeSectionConf = (n: number, pnlArr: number[]) => {
     const [ciL, ciU] = confidenceInterval(pnlArr);
     return { sampleSize: n, ciWidth: Math.round((ciU - ciL) * 100) / 100, reliable: n >= 30 };
@@ -536,16 +694,8 @@ export function computeEdgeDiscovery(trades: NormalizedTrade[]): EdgeDiscoveryRe
   };
 
   return {
-    globalSummary,
-    heatmap,
-    failures,
-    clusters,
-    predictiveChecks,
-    overallScoringVerdict,
-    decay,
-    edgeDecayStatus,
-    rngComparison,
-    governanceQuality,
-    sectionConfidence,
+    globalSummary, heatmap, failures, clusters,
+    predictiveChecks, overallScoringVerdict,
+    decay, edgeDecayStatus, rngComparison, governanceQuality, sectionConfidence,
   };
 }
