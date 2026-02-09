@@ -10,7 +10,7 @@
 
 import type { Timeframe, BiasDirection } from '@/lib/market/types';
 import { analyzeMultiTimeframe } from '@/lib/market/analysisEngine';
-import { getTickersByType } from '@/lib/market/tickers';
+import { findForexTicker } from '@/lib/market/tickers';
 import { toDisplaySymbol } from './forexSymbolMap';
 
 // ─── Output Types ───
@@ -75,7 +75,7 @@ export function getQuantLabsDirection(
 ): QuantLabsDirectionResult | null {
   try {
     const displayPair = toDisplaySymbol(symbol);
-    const ticker = getTickersByType('forex').find(t => t.symbol === displayPair);
+    const ticker = findForexTicker(symbol);
 
     if (!ticker) {
       return null; // Failsafe: signal unavailable → SKIP
