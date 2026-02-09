@@ -3,7 +3,7 @@
 
 import { useState, useMemo, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Globe, TrendingUp, Crosshair, BarChart3, FlaskConical, ShieldCheck, SplitSquareHorizontal, PieChart, Shield, HeartPulse, Radar, Filter, Rocket, ShieldAlert, Brain } from 'lucide-react';
+import { Globe, TrendingUp, Crosshair, BarChart3, FlaskConical, ShieldCheck, SplitSquareHorizontal, PieChart, Shield, HeartPulse, Radar, Filter, Rocket, ShieldAlert, Brain, GitBranch } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { DashboardLayout } from '@/components/dashboard/DashboardLayout';
 import { ForexPerformanceOverview } from '@/components/forex/ForexPerformanceOverview';
@@ -35,6 +35,7 @@ import { EdgeGoLivePanel } from '@/components/forex/edge-discovery/EdgeGoLivePan
 import { DiscoveryRiskPanel } from '@/components/forex/DiscoveryRiskPanel';
 import { AdaptiveEdgeDashboard } from '@/components/forex/AdaptiveEdgeDashboard';
 import { AgentWeightingTable } from '@/components/forex/AgentWeightingTable';
+import { AgentCollaborationDashboard } from '@/components/forex/AgentCollaborationDashboard';
 import {
   generateForexTrades,
   filterForexTrades,
@@ -191,6 +192,9 @@ const ForexDashboard = () => {
             </TabsTrigger>
             <TabsTrigger value="adaptive-edge" className="text-xs gap-1.5">
               <Brain className="w-3.5 h-3.5" />Adaptive Edge
+            </TabsTrigger>
+            <TabsTrigger value="collaboration" className="text-xs gap-1.5">
+              <GitBranch className="w-3.5 h-3.5" />Collaboration
             </TabsTrigger>
           </TabsList>
 
@@ -395,6 +399,11 @@ const ForexDashboard = () => {
             </motion.div>
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}>
               <AgentWeightingTable />
+            </motion.div>
+          </TabsContent>
+          <TabsContent value="collaboration" className="space-y-4">
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+              <AgentCollaborationDashboard />
             </motion.div>
           </TabsContent>
         </Tabs>
