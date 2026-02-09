@@ -945,12 +945,101 @@ Deno.serve(async (req) => {
       const signalId = `scalp-${Date.now()}-${i}-${signal.pair}`;
       const orderTimestamp = Date.now();
 
-      // ─── Dynamic Position Sizing (governance + pair + session aware) ───
-      const tradeUnits = computePositionSize(
+      // ═══════════════════════════════════════════════════════════
+      // DISCOVERY RISK MODE — Environment classification overlay
+      // Does NOT change governance gates/multipliers. Only blocks
+      // historically destructive environments and adjusts sizing.
+      // ═══════════════════════════════════════════════════════════
+      const DISCOVERY_RISK_MODE = true;
+      const EDGE_BOOST_MULTIPLIER = 1.35;
+      const BASELINE_REDUCTION_MULTIPLIER = 0.55;
+      const SPREAD_BLOCK_THRESHOLD = 1.0; // pips
+      const IGNITION_MIN_COMPOSITE = 0.75;
+
+      let discoveryRiskLabel = "NORMAL";
+      let discoveryMultiplier = 1.0;
+      let discoveryBlocked = false;
+
+      if (DISCOVERY_RISK_MODE && !forceMode) {
+        const sym = signal.pair.toUpperCase();
+        const dir = signal.direction;
+        const baseSpread = PAIR_BASE_SPREADS[signal.pair] || 1.5;
+        const spreadPips = baseSpread * (SESSION_BUDGETS[session]?.frictionMultiplier || 1.0);
+        // Approximate composite from gate friction score
+        const approxComposite = (gate.frictionScore || 50) / 100;
+
+        // ── AUD crosses ──
+        const AUD_CROSSES = ["AUD_JPY", "AUD_USD", "AUD_NZD", "AUD_CAD", "AUD_CHF", "EUR_AUD", "GBP_AUD"];
+        const isAudCross = AUD_CROSSES.includes(sym);
+
+        // ── Historically destructive checks ──
+        const isDestructive =
+          isAudCross ||
+          sym === "GBP_USD" ||
+          sym === "GBP_JPY" ||
+          signal.agentId === "sentiment-reactor" ||
+          signal.agentId === "range-navigator" ||
+          (session === "rollover" && dir === "short") ||
+          spreadPips > SPREAD_BLOCK_THRESHOLD ||
+          (regime === "ignition" && approxComposite < IGNITION_MIN_COMPOSITE);
+
+        // ── Edge candidate checks ──
+        const isEdge =
+          (session === "ny-overlap" && regime === "expansion" && dir === "long") ||
+          (session === "asian" && sym === "USD_CAD" && regime === "expansion" && dir === "long") ||
+          (session === "london-open" && sym === "AUD_USD" && regime === "expansion" && dir === "long") ||
+          (sym === "EUR_GBP" && dir === "long") ||
+          (sym === "USD_JPY" && regime === "compression");
+
+        if (isDestructive) {
+          discoveryRiskLabel = "BLOCKED";
+          discoveryMultiplier = 0;
+          discoveryBlocked = true;
+        } else if (isEdge) {
+          discoveryRiskLabel = "EDGE_BOOST";
+          discoveryMultiplier = EDGE_BOOST_MULTIPLIER;
+        } else {
+          discoveryRiskLabel = "REDUCED";
+          discoveryMultiplier = BASELINE_REDUCTION_MULTIPLIER;
+        }
+
+        console.log(`[SCALP-TRADE] Discovery Risk: ${signal.pair} ${dir} → ${discoveryRiskLabel} (mult=${discoveryMultiplier})`);
+
+        if (discoveryBlocked) {
+          // Log shadow evaluation even for blocked trades
+          await supabase.from("oanda_orders").insert({
+            user_id: USER_ID,
+            signal_id: signalId,
+            currency_pair: signal.pair,
+            direction: signal.direction,
+            units: 0,
+            confidence_score: signal.confidence,
+            agent_id: signal.agentId,
+            environment: "practice",
+            status: "discovery_blocked",
+            session_label: session,
+            regime_label: regime,
+            gate_result: `DISCOVERY_BLOCKED:${discoveryRiskLabel}`,
+            gate_reasons: [`Discovery Risk: ${discoveryRiskLabel}`],
+            friction_score: gate.frictionScore,
+          });
+
+          results.push({
+            pair: signal.pair, direction: signal.direction,
+            status: "discovery_blocked", govState,
+            gateResult: `DISCOVERY_BLOCKED`, frictionScore: gate.frictionScore,
+          });
+          continue;
+        }
+      }
+
+      // ─── Dynamic Position Sizing (governance + pair + session + discovery aware) ───
+      const baseTradeUnits = computePositionSize(
         signal.pair, accountBalance, signal.confidence,
         govConfig, pairAlloc as PairRollingMetrics, sessionBudget
       );
-      console.log(`[SCALP-TRADE] ${signal.pair}: sized ${tradeUnits}u (gov=${govConfig.sizingMultiplier}, pair=${pairAlloc.capitalMultiplier?.toFixed(2)}, session=${sessionBudget.capitalBudgetPct})`);
+      const tradeUnits = Math.max(500, Math.round(baseTradeUnits * discoveryMultiplier));
+      console.log(`[SCALP-TRADE] ${signal.pair}: sized ${tradeUnits}u (gov=${govConfig.sizingMultiplier}, pair=${pairAlloc.capitalMultiplier?.toFixed(2)}, session=${sessionBudget.capitalBudgetPct}, discovery=${discoveryMultiplier})`);
 
       // ─── Insert with telemetry fields ───
       const { data: order, error: insertErr } = await supabase

@@ -17,6 +17,12 @@ import {
   type GovernanceDecisionLog,
   type FinalDecision,
 } from './governanceDecisionLogger';
+import {
+  evaluateDiscoveryRisk,
+  logDiscoveryRiskDecision,
+  getDiscoveryRiskConfig,
+  type DiscoveryRiskDecision,
+} from './discoveryRiskEngine';
 import type { Timeframe } from '@/lib/market/types';
 
 // ─── Re-export from microstructureEngine for convenience ───
@@ -145,6 +151,7 @@ export interface FullGovernanceDecisionResult {
   governanceResult: GovernanceResult;
   quantlabsResult: QuantLabsDirectionResult | null;
   shadowMode: boolean;
+  discoveryRisk: DiscoveryRiskDecision | null;
 }
 
 // ─── Aggregate Governance Stats ───
@@ -500,6 +507,7 @@ export const evaluateFullDecision = (
       },
       quantlabsResult: null,
       shadowMode: SHADOW_MODE,
+      discoveryRisk: null,
     };
   }
 
@@ -536,7 +544,46 @@ export const evaluateFullDecision = (
     finalDecisionReason = `Governance rejected: ${govResult.rejectionReasons.join(', ')}`;
   }
 
-  // ── Step 3: Log decision ──
+  // ── Step 3: Discovery Risk Mode overlay (AFTER governance + direction) ──
+  let discoveryRiskResult: DiscoveryRiskDecision | null = null;
+
+  if (finalDecision !== 'SKIP' && getDiscoveryRiskConfig().enabled) {
+    const directionStr = directionalBias === 'LONG' ? 'long' : 'short';
+    const spreadPips = ctx.currentSpread > 0 ? ctx.currentSpread * 10000 : 0;
+
+    discoveryRiskResult = evaluateDiscoveryRisk(
+      proposal.pair,
+      ctx.currentSession,
+      ctx.volatilityPhase,
+      directionStr,
+      govResult.multipliers.composite,
+      spreadPips,
+      '', // agentId not available in client-side simulation
+    );
+
+    // Log for stats tracking (shadow logging continues regardless)
+    logDiscoveryRiskDecision(discoveryRiskResult);
+
+    if (discoveryRiskResult.blockedByDiscoveryRisk) {
+      finalDecision = 'SKIP';
+      finalDecisionReason = `Discovery Risk BLOCKED: ${discoveryRiskResult.environmentLabel} (${discoveryRiskResult.isHistoricallyDestructive ? 'historically destructive' : 'blocked'})`;
+    }
+  } else if (getDiscoveryRiskConfig().enabled && govResult.decision === 'approved' && finalDecision === 'SKIP') {
+    // Still log shadow classification even for skipped trades
+    const spreadPips = ctx.currentSpread > 0 ? ctx.currentSpread * 10000 : 0;
+    discoveryRiskResult = evaluateDiscoveryRisk(
+      proposal.pair,
+      ctx.currentSession,
+      ctx.volatilityPhase,
+      proposal.direction,
+      govResult.multipliers.composite,
+      spreadPips,
+      '',
+    );
+    logDiscoveryRiskDecision(discoveryRiskResult);
+  }
+
+  // ── Step 4: Log decision ──
   const decisionLog: GovernanceDecisionLog = {
     timestamp: Date.now(),
     symbol: proposal.pair,
@@ -577,6 +624,12 @@ export const evaluateFullDecision = (
       priceDataAvailable: ctx.priceDataAvailable,
       analysisAvailable: ctx.analysisAvailable,
     },
+    discoveryRisk: discoveryRiskResult ? {
+      environmentLabel: discoveryRiskResult.environmentLabel,
+      riskLabel: discoveryRiskResult.riskLabel,
+      positionMultiplier: discoveryRiskResult.multiplierApplied,
+      blockedByDiscoveryRisk: discoveryRiskResult.blockedByDiscoveryRisk,
+    } : undefined,
   };
 
   logGovernanceDecision(decisionLog);
@@ -592,6 +645,7 @@ export const evaluateFullDecision = (
     governanceResult: govResult,
     quantlabsResult,
     shadowMode: SHADOW_MODE,
+    discoveryRisk: discoveryRiskResult,
   };
 };
 

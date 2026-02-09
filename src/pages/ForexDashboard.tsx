@@ -3,7 +3,7 @@
 
 import { useState, useMemo, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Globe, TrendingUp, Crosshair, BarChart3, FlaskConical, ShieldCheck, SplitSquareHorizontal, PieChart, Shield, HeartPulse, Radar, Filter, Rocket } from 'lucide-react';
+import { Globe, TrendingUp, Crosshair, BarChart3, FlaskConical, ShieldCheck, SplitSquareHorizontal, PieChart, Shield, HeartPulse, Radar, Filter, Rocket, ShieldAlert } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { DashboardLayout } from '@/components/dashboard/DashboardLayout';
 import { ForexPerformanceOverview } from '@/components/forex/ForexPerformanceOverview';
@@ -32,6 +32,7 @@ import { GovernanceHealthDashboard } from '@/components/forex/GovernanceHealthDa
 import { EdgeDiscoveryDashboard } from '@/components/forex/edge-discovery/EdgeDiscoveryDashboard';
 import { EdgeExtractionDashboard } from '@/components/forex/edge-extraction/EdgeExtractionDashboard';
 import { EdgeGoLivePanel } from '@/components/forex/edge-discovery/EdgeGoLivePanel';
+import { DiscoveryRiskPanel } from '@/components/forex/DiscoveryRiskPanel';
 import {
   generateForexTrades,
   filterForexTrades,
@@ -182,6 +183,9 @@ const ForexDashboard = () => {
             </TabsTrigger>
             <TabsTrigger value="edge-golive" className="text-xs gap-1.5">
               <Rocket className="w-3.5 h-3.5" />Go-Live
+            </TabsTrigger>
+            <TabsTrigger value="discovery-risk" className="text-xs gap-1.5">
+              <ShieldAlert className="w-3.5 h-3.5" />Discovery Risk
             </TabsTrigger>
           </TabsList>
 
@@ -373,6 +377,11 @@ const ForexDashboard = () => {
           <TabsContent value="edge-golive" className="space-y-4">
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
               <EdgeGoLivePanel />
+            </motion.div>
+          </TabsContent>
+          <TabsContent value="discovery-risk" className="space-y-4">
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+              <DiscoveryRiskPanel trades={filteredTrades} />
             </motion.div>
           </TabsContent>
         </Tabs>
