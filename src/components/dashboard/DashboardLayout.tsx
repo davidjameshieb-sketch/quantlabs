@@ -16,6 +16,7 @@ import { cn } from '@/lib/utils';
 import { useAuth } from '@/contexts/AuthContext';
 import { isFoundersEventActive } from '@/lib/foundersEvent';
 import { FoundersWelcomeOverlay } from '@/components/founders/FoundersWelcomeOverlay';
+import { EdgeHealthSidebar } from '@/components/dashboard/EdgeHealthSidebar';
 
 interface DashboardLayoutProps {
   children: React.ReactNode;
@@ -180,6 +181,11 @@ export const DashboardLayout = ({ children }: DashboardLayoutProps) => {
           </Link>
         </div>
       </nav>
+
+      {/* Edge Health Panel */}
+      <div className="border-t border-border/30">
+        <EdgeHealthSidebar />
+      </div>
 
       {/* User section */}
       <div className="p-4 border-t border-border/50">
