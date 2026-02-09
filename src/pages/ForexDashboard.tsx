@@ -3,7 +3,7 @@
 
 import { useState, useMemo, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Globe, TrendingUp, Crosshair, BarChart3, FlaskConical, ShieldCheck, SplitSquareHorizontal, PieChart, Shield } from 'lucide-react';
+import { Globe, TrendingUp, Crosshair, BarChart3, FlaskConical, ShieldCheck, SplitSquareHorizontal, PieChart, Shield, HeartPulse } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { DashboardLayout } from '@/components/dashboard/DashboardLayout';
 import { ForexPerformanceOverview } from '@/components/forex/ForexPerformanceOverview';
@@ -28,6 +28,7 @@ import { AdaptiveGovernancePanel } from '@/components/forex/AdaptiveGovernancePa
 import { ShadowModePanel } from '@/components/forex/ShadowModePanel';
 import { EquityCurveChart } from '@/components/forex/EquityCurveChart';
 import { AgentAccountabilityPanel } from '@/components/forex/AgentAccountabilityPanel';
+import { GovernanceHealthDashboard } from '@/components/forex/GovernanceHealthDashboard';
 import {
   generateForexTrades,
   filterForexTrades,
@@ -163,6 +164,9 @@ const ForexDashboard = () => {
             </TabsTrigger>
             <TabsTrigger value="analytics" className="text-xs gap-1.5">
               <PieChart className="w-3.5 h-3.5" />Deep Analytics
+            </TabsTrigger>
+            <TabsTrigger value="health" className="text-xs gap-1.5">
+              <HeartPulse className="w-3.5 h-3.5" />Health
             </TabsTrigger>
           </TabsList>
 
@@ -331,6 +335,12 @@ const ForexDashboard = () => {
 
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.15 }}>
               <PairPnLBreakdown pairs={tradeAnalytics.pairAnalytics} />
+            </motion.div>
+          </TabsContent>
+
+          <TabsContent value="health" className="space-y-4">
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+              <GovernanceHealthDashboard />
             </motion.div>
           </TabsContent>
         </Tabs>

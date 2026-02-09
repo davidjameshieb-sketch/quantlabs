@@ -22,3 +22,13 @@ export { runPreTradeGate, computeExecutionHealth, createSimulatedExecutionHealth
 export type { PreTradeGateResult, ExecutionTelemetry, ExecutionHealthMetrics, PairExecutionHealth, ExecutionAutoProtection, FrictionBudget, GateResult } from './executionSafetyEngine';
 export { computeGovernanceDashboard, GOVERNANCE_STATE_CONFIGS } from './adaptiveGovernanceEngine';
 export type { GovernanceDashboardData, GovernanceState, GovernanceStateConfig, RollingWindow, PairAllocation, SessionBudget, ShadowCandidate } from './adaptiveGovernanceEngine';
+
+// ─── Post-Refactor Validation, Analytics & Safety ───
+export { computeGovernancePassStats, computeGateFrequency, computeNeutralDirectionRate, computeCompositeExpectancyCorrelation, computeDataAvailability, setNeutralRateThreshold, setDataAvailabilityThreshold } from './governanceAnalytics';
+export type { GovernancePassStats, SessionBreakdown, GateFrequencyEntry, NeutralDirectionStats, CompositeDecile, DataAvailabilityStats } from './governanceAnalytics';
+export { validateUnitConsistency, verifyShadowModeIntegrity, assertNotShadowMode, verifySymbolMapping, reportShadowModeViolation, resetShadowViolationCount } from './governanceValidation';
+export type { UnitValidationResult, ShadowModeIntegrity, SymbolMappingResult } from './governanceValidation';
+export { computeCachePerformance, resetCacheMetrics, setStaleFastCacheThreshold } from './governanceCacheMonitor';
+export type { CachePerformanceStats } from './governanceCacheMonitor';
+export { governanceAlerts } from './governanceAlerts';
+export type { GovernanceAlert, GovernanceAlertType } from './governanceAlerts';
