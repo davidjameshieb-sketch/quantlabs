@@ -131,6 +131,42 @@ export interface ForexTradeEntry {
   frictionCost: number;  // Spread + slippage cost estimate (%)
 }
 
+// ─── Direction Engine ───
+
+export type DirectionEngineType = 'quantlabs' | 'fallback' | 'random' | 'manual' | 'auto-governance';
+
+export const DIRECTION_ENGINE_LABELS: Record<DirectionEngineType, string> = {
+  'quantlabs': 'QuantLabs',
+  'fallback': 'Fallback',
+  'random': 'Random',
+  'manual': 'Manual',
+  'auto-governance': 'Auto-Governance',
+};
+
+// ─── Era Segmentation ───
+
+export type EraFilter = 'all' | 'pre-direction' | 'post-direction';
+
+export const ERA_LABELS: Record<EraFilter, string> = {
+  all: 'All Eras',
+  'pre-direction': 'Pre-Direction',
+  'post-direction': 'Post-Direction',
+};
+
+// QuantLabs direction system enabled date
+export const QUANTLABS_DIRECTION_ENABLED_AT = new Date('2025-01-15T00:00:00Z');
+
+// ─── Environment Filter ───
+
+export type EnvironmentFilter = 'all' | 'live' | 'backtest' | 'shadow';
+
+export const ENVIRONMENT_LABELS: Record<EnvironmentFilter, string> = {
+  all: 'All',
+  live: 'Live',
+  backtest: 'Backtest',
+  shadow: 'Shadow',
+};
+
 // ─── Forex Dashboard State ───
 
 export interface ForexDashboardFilters {
@@ -139,4 +175,7 @@ export interface ForexDashboardFilters {
   regime: 'all' | ForexRegime;
   pair: 'all' | string;
   agent: 'all' | AgentId;
+  era: EraFilter;
+  environment: EnvironmentFilter;
+  directionEngine: 'all' | DirectionEngineType;
 }
