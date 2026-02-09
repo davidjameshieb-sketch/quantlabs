@@ -31,6 +31,7 @@ export type Database = {
           friction_score: number | null
           gate_reasons: string[] | null
           gate_result: string | null
+          governance_payload: Json | null
           id: string
           idempotency_key: string | null
           oanda_order_id: string | null
@@ -45,6 +46,7 @@ export type Database = {
           units: number
           updated_at: string
           user_id: string
+          variant_id: string
         }
         Insert: {
           agent_id?: string | null
@@ -62,6 +64,7 @@ export type Database = {
           friction_score?: number | null
           gate_reasons?: string[] | null
           gate_result?: string | null
+          governance_payload?: Json | null
           id?: string
           idempotency_key?: string | null
           oanda_order_id?: string | null
@@ -76,6 +79,7 @@ export type Database = {
           units: number
           updated_at?: string
           user_id: string
+          variant_id?: string
         }
         Update: {
           agent_id?: string | null
@@ -93,6 +97,7 @@ export type Database = {
           friction_score?: number | null
           gate_reasons?: string[] | null
           gate_result?: string | null
+          governance_payload?: Json | null
           id?: string
           idempotency_key?: string | null
           oanda_order_id?: string | null
@@ -107,6 +112,7 @@ export type Database = {
           units?: number
           updated_at?: string
           user_id?: string
+          variant_id?: string
         }
         Relationships: []
       }
