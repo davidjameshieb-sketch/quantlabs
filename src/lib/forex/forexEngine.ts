@@ -21,12 +21,12 @@ import {
 import { getLivePrice } from './oandaPricingService';
 import {
   evaluateTradeProposal,
-  generateGovernanceContext,
   computeGovernanceStats,
   GovernanceResult,
   GovernanceStats,
   TradeProposal,
 } from './tradeGovernanceEngine';
+import { getGovernanceContextCached } from './governanceContextProvider';
 
 // ─── Seeded RNG ───
 
@@ -197,8 +197,8 @@ export const generateForexTrades = (agents: Record<AgentId, AIAgent>): ForexTrad
       ],
     };
 
-    // ── Step 2: Generate governance context for this specific trade ──
-    const govContext = generateGovernanceContext(pair.symbol, i);
+    // ── Step 2: Get real governance context for this specific trade ──
+    const govContext = getGovernanceContextCached(pair.symbol, '15m');
 
     // ── Step 3: Evaluate through governance layer ──
     const govResult = evaluateTradeProposal(proposal, govContext);
