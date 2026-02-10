@@ -177,6 +177,10 @@ export function AgentOptimizationDashboard() {
   const fetchTrades = useCallback(async () => {
     setLoading(true);
     try {
+      // Debug: check auth state
+      const { data: sessionData } = await supabase.auth.getSession();
+      console.log('[AgentOpt] Auth session:', sessionData?.session?.user?.id ?? 'NO SESSION');
+
       const allTrades: TradeRecord[] = [];
       let offset = 0;
       const pageSize = 1000;
@@ -193,6 +197,7 @@ export function AgentOptimizationDashboard() {
           .order('created_at', { ascending: true })
           .range(offset, offset + pageSize - 1);
 
+        console.log('[AgentOpt] Page offset:', offset, 'rows:', data?.length ?? 0, 'error:', error?.message ?? 'none');
         if (error) { console.error('Fetch error:', error); break; }
         if (!data || data.length === 0) { hasMore = false; break; }
         
