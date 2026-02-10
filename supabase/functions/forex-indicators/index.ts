@@ -252,7 +252,8 @@ function computeTrendEfficiency(closes: number[], period = 14) {
 }
 
 // ── OANDA candle fetcher ──
-async function fetchCandles(instrument: string, granularity: string, count = 200): Promise<Candle[]> {
+// Supports optional from/to ISO date params for historical (backtest) mode
+async function fetchCandles(instrument: string, granularity: string, count = 200, from?: string, to?: string): Promise<Candle[]> {
   const env = Deno.env.get("OANDA_ENV") || "practice";
   const apiToken = env === "live"
     ? (Deno.env.get("OANDA_LIVE_API_TOKEN") || Deno.env.get("OANDA_API_TOKEN"))
@@ -264,7 +265,16 @@ async function fetchCandles(instrument: string, granularity: string, count = 200
   if (!apiToken || !accountId) throw new Error("OANDA credentials not configured");
 
   const host = OANDA_HOSTS[env] || OANDA_HOSTS.practice;
-  const url = `${host}/v3/instruments/${instrument}/candles?granularity=${granularity}&count=${count}&price=MBA`;
+
+  // Build URL: if from/to provided, use date range (backtest mode); otherwise use count (live mode)
+  let url: string;
+  if (from && to) {
+    url = `${host}/v3/instruments/${instrument}/candles?granularity=${granularity}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&price=MBA`;
+  } else if (from) {
+    url = `${host}/v3/instruments/${instrument}/candles?granularity=${granularity}&from=${encodeURIComponent(from)}&count=${count}&price=MBA`;
+  } else {
+    url = `${host}/v3/instruments/${instrument}/candles?granularity=${granularity}&count=${count}&price=MBA`;
+  }
 
   const res = await fetch(url, {
     headers: { Authorization: `Bearer ${apiToken}`, Accept: "application/json" },
@@ -299,10 +309,13 @@ Deno.serve(async (req) => {
     const instrument = url.searchParams.get("instrument") || "USD_CAD";
     const timeframe = url.searchParams.get("timeframe") || "5m";
     const granularity = GRANULARITY_MAP[timeframe] || "M5";
+    const from = url.searchParams.get("from") || undefined; // ISO date for backtest start
+    const to = url.searchParams.get("to") || undefined;     // ISO date for backtest end
+    const mode = from ? "backtest" : "live";
 
-    console.log(`[FOREX-INDICATORS] Computing indicators for ${instrument} @ ${timeframe}`);
+    console.log(`[FOREX-INDICATORS] ${mode} mode — ${instrument} @ ${timeframe}${from ? ` from=${from}` : ''}${to ? ` to=${to}` : ''}`);
 
-    const candles = await fetchCandles(instrument, granularity, 200);
+    const candles = await fetchCandles(instrument, granularity, 200, from, to);
     if (candles.length < 60) {
       return new Response(JSON.stringify({ error: "Insufficient candle data", count: candles.length }), {
         status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -351,8 +364,10 @@ Deno.serve(async (req) => {
     return new Response(JSON.stringify({
       instrument,
       timeframe,
+      mode,
       lastPrice: lastCandle.c,
       lastTime: lastCandle.t,
+      firstTime: candles[0]?.t,
       candleCount: candles.length,
       indicators,
       consensus: {
