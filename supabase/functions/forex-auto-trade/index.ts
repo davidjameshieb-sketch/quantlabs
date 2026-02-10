@@ -566,8 +566,10 @@ function computePairMetrics(
     .filter((v): v is number => v != null);
   const avgQuality = qualities.length ? qualities.reduce((a, b) => a + b, 0) / qualities.length : 70;
 
-  const banned = closed.length >= 5 && (expectancy < -2 || winRate < 0.30);
-  const restricted = closed.length >= 3 && (expectancy < -0.5 || winRate < 0.40 || avgQuality < 40);
+  // PRIMARY_PAIR (USD_CAD) is NEVER banned or restricted — always trades
+  const isPrimary = pair === PRIMARY_PAIR;
+  const banned = !isPrimary && closed.length >= 5 && (expectancy < -2 || winRate < 0.30);
+  const restricted = !isPrimary && closed.length >= 3 && (expectancy < -0.5 || winRate < 0.40 || avgQuality < 40);
 
   let capitalMultiplier = 1.0;
   if (banned) capitalMultiplier = 0.0;
