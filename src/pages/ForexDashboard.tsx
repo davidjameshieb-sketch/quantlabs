@@ -294,12 +294,14 @@ const ForexDashboard = () => {
           </TabsContent>
 
           <TabsContent value="scalp-vs-swing" className="space-y-4">
+            <LongOnlyBanner />
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
               <ScalpVsSwingView trades={filteredTrades} />
             </motion.div>
           </TabsContent>
 
           <TabsContent value="scalping-trades" className="space-y-4">
+            <LongOnlyBanner />
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
               <ScalpingTradesDashboard
                 trades={filteredTrades}
@@ -311,12 +313,14 @@ const ForexDashboard = () => {
           </TabsContent>
 
           <TabsContent value="scalping" className="space-y-4">
+            <LongOnlyBanner />
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
               <ForexScalpingIntelligence />
             </motion.div>
           </TabsContent>
 
           <TabsContent value="reanalysis" className="space-y-4">
+            <LongOnlyBanner />
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
               <PerformanceReanalysisDashboard
                 trades={filteredTrades}
@@ -328,6 +332,7 @@ const ForexDashboard = () => {
           </TabsContent>
 
           <TabsContent value="audit" className="space-y-4">
+            <LongOnlyBanner />
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
               <DailyAuditPanel
                 trades={filteredTrades}
@@ -351,6 +356,7 @@ const ForexDashboard = () => {
           </TabsContent>
 
           <TabsContent value="analytics" className="space-y-6">
+            <LongOnlyBanner />
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
               <div className="flex items-center gap-2 mb-1">
                 <PieChart className="w-4 h-4 text-primary" />
@@ -397,27 +403,32 @@ const ForexDashboard = () => {
           </TabsContent>
 
           <TabsContent value="edge-discovery" className="space-y-4">
+            <LongOnlyBanner />
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
               <EdgeDiscoveryDashboard />
             </motion.div>
           </TabsContent>
 
           <TabsContent value="edge-extraction" className="space-y-4">
+            <LongOnlyBanner />
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
               <EdgeExtractionDashboard />
             </motion.div>
           </TabsContent>
           <TabsContent value="edge-golive" className="space-y-4">
+            <LongOnlyBanner />
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
               <EdgeGoLivePanel />
             </motion.div>
           </TabsContent>
           <TabsContent value="discovery-risk" className="space-y-4">
+            <LongOnlyBanner />
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
               <DiscoveryRiskPanel trades={filteredTrades} />
             </motion.div>
           </TabsContent>
           <TabsContent value="adaptive-edge" className="space-y-4">
+            <LongOnlyBanner />
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
               <AdaptiveEdgeDashboard trades={filteredTrades} />
             </motion.div>
@@ -429,6 +440,7 @@ const ForexDashboard = () => {
             </motion.div>
           </TabsContent>
           <TabsContent value="collaboration" className="space-y-4">
+            <LongOnlyBanner />
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
               <AgentCollaborationDashboard />
             </motion.div>
@@ -437,6 +449,7 @@ const ForexDashboard = () => {
             </motion.div>
           </TabsContent>
           <TabsContent value="ensemble" className="space-y-4">
+            <LongOnlyBanner />
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
               <BaselineVsEnsembleCard />
             </motion.div>
@@ -445,11 +458,13 @@ const ForexDashboard = () => {
             </motion.div>
           </TabsContent>
           <TabsContent value="agent-simulator" className="space-y-4">
+            <LongOnlyBanner />
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
               <AgentExclusionSimulator />
             </motion.div>
           </TabsContent>
           <TabsContent value="agent-optimization" className="space-y-4">
+            <LongOnlyBanner />
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
               <AgentOptimizationDashboard />
             </motion.div>
