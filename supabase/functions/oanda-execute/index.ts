@@ -39,7 +39,9 @@ async function oandaRequest(
   body?: Record<string, unknown>,
   environment: "practice" | "live" = "practice"
 ) {
-  const apiToken = Deno.env.get("OANDA_API_TOKEN");
+  const apiToken = environment === "live"
+    ? (Deno.env.get("OANDA_LIVE_API_TOKEN") || Deno.env.get("OANDA_API_TOKEN"))
+    : Deno.env.get("OANDA_API_TOKEN");
   const accountId = environment === "live"
     ? (Deno.env.get("OANDA_LIVE_ACCOUNT_ID") || Deno.env.get("OANDA_ACCOUNT_ID"))
     : Deno.env.get("OANDA_ACCOUNT_ID");
