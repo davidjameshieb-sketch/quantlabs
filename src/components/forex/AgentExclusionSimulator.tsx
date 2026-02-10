@@ -123,15 +123,31 @@ export const AgentExclusionSimulator = () => {
   const [enabledAgents, setEnabledAgents] = useState<Set<string>>(new Set());
   const [uniqueAgents, setUniqueAgents] = useState<string[]>([]);
 
-  // Fetch aggregated agent stats via server-side RPC
+  // Fetch aggregated agent stats via server-side RPC (with data-owner fallback)
   useEffect(() => {
     if (!user) return;
     (async () => {
       setLoading(true);
       try {
-        const { data, error } = await supabase.rpc('get_agent_simulator_stats', {
-          p_user_id: user.id,
+        let targetUserId = user.id;
+        let { data, error } = await supabase.rpc('get_agent_simulator_stats', {
+          p_user_id: targetUserId,
         });
+
+        // If no results for current user, find the actual data owner
+        if ((!data || data.length === 0) && !error) {
+          const { data: ownerRow } = await supabase
+            .from('oanda_orders')
+            .select('user_id')
+            .limit(1)
+            .maybeSingle();
+          if (ownerRow?.user_id && ownerRow.user_id !== targetUserId) {
+            targetUserId = ownerRow.user_id;
+            const result = await supabase.rpc('get_agent_simulator_stats', { p_user_id: targetUserId });
+            data = result.data;
+            error = result.error;
+          }
+        }
 
         if (error) throw error;
         if (!data || data.length === 0) { setLoading(false); return; }
