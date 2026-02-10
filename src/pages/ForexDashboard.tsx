@@ -24,6 +24,8 @@ import { SessionHeatmap } from '@/components/forex/SessionHeatmap';
 import { RollingSharpeChart } from '@/components/forex/RollingSharpeChart';
 import { IntelligenceModeBadge } from '@/components/dashboard/IntelligenceModeBadge';
 import { GovernanceStateBanner } from '@/components/forex/GovernanceStateBanner';
+import { LongOnlyBanner, LongOnlyBadge } from '@/components/forex/LongOnlyBanner';
+import { LongOnlySettingsPanel } from '@/components/forex/LongOnlySettingsPanel';
 import { AdaptiveGovernancePanel } from '@/components/forex/AdaptiveGovernancePanel';
 import { ShadowModePanel } from '@/components/forex/ShadowModePanel';
 import { EquityCurveChart } from '@/components/forex/EquityCurveChart';
@@ -213,6 +215,9 @@ const ForexDashboard = () => {
           </TabsList>
 
           <TabsContent value="performance" className="space-y-6">
+            {/* Long-Only Mode Banner */}
+            <LongOnlyBanner />
+
             {/* Governance State Banner */}
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.01 }}>
               <GovernanceStateBanner
