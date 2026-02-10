@@ -1,7 +1,7 @@
-// Forex Auto-Trade Cron Function — Adaptive Governance Edition
-// Runs on a schedule — generates scalp signals with full governance state machine,
-// adaptive capital allocation, session risk budgets, rolling degradation autopilot,
-// and shadow model promotion framework.
+// Forex Auto-Trade Cron Function — Snapshot-Driven Execution
+// Routes trades through canonical agent effective states (A, B-Rescued, B-Promotable).
+// LONG-ONLY enforced at governance AND execution layers (double-lock).
+// Agent selection via portfolio-weighted snapshot, not random.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
@@ -13,7 +13,10 @@ const corsHeaders = {
 
 // ─── OANDA Config ───
 
-const OANDA_PRACTICE_HOST = "https://api-fxpractice.oanda.com";
+const OANDA_HOSTS = {
+  practice: "https://api-fxpractice.oanda.com",
+  live: "https://api-fxtrade.oanda.com",
+};
 
 const SCALP_PAIRS = [
   "EUR_USD", "GBP_USD", "USD_JPY", "AUD_USD", "USD_CAD",
@@ -46,20 +49,238 @@ const PAIR_BASE_SPREADS: Record<string, number> = {
 };
 
 // ═══════════════════════════════════════════════════════════════
+// §0 — LIVE/PRACTICE CONFIG + AGENT SNAPSHOT TYPES
+// ═══════════════════════════════════════════════════════════════
+
+type OandaEnv = "practice" | "live";
+
+interface ExecutionConfig {
+  oandaEnv: OandaEnv;
+  liveTradingEnabled: boolean;
+  longOnlyEnabled: boolean;  // ALWAYS true — cannot be overridden
+  oandaHost: string;
+}
+
+function getExecutionConfig(): ExecutionConfig {
+  const oandaEnv = (Deno.env.get("OANDA_ENV") || "practice") as OandaEnv;
+  const liveTradingEnabled = Deno.env.get("LIVE_TRADING_ENABLED") === "true";
+  return {
+    oandaEnv,
+    liveTradingEnabled,
+    longOnlyEnabled: true, // HARD-CODED — shorts are NEVER allowed
+    oandaHost: OANDA_HOSTS[oandaEnv] || OANDA_HOSTS.practice,
+  };
+}
+
+// ─── Agent Effective State (server-side resolver) ───
+
+type EffectiveTier = "A" | "B-Rescued" | "B-Promotable" | "B-Shadow" | "B-Legacy" | "C" | "D";
+type DeploymentState = "deploy" | "reduced" | "shadow" | "disabled";
+
+interface AgentSnapshot {
+  agentId: string;
+  effectiveTier: EffectiveTier;
+  deploymentState: DeploymentState;
+  sizeMultiplier: number;
+  longOnly: boolean;
+  canExecute: boolean;
+  constraints: string[];
+  metrics: {
+    totalTrades: number;
+    winRate: number;
+    expectancy: number;
+    profitFactor: number;
+    netPips: number;
+  };
+}
+
+interface ExecutionSnapshot {
+  effectiveAgents: AgentSnapshot[];
+  eligibleAgents: AgentSnapshot[];  // canExecute=true only
+  allowedPairs: string[];
+  totalAgents: number;
+  eligibleCount: number;
+  shadowCount: number;
+  disabledCount: number;
+}
+
+/**
+ * Resolve agent states from RPC stats (server-side, no client imports).
+ * Mirrors the logic in agentStateResolver.ts but runs in the edge function.
+ */
+function resolveAgentSnapshot(stats: Array<{
+  agent_id: string;
+  total_trades: number;
+  win_count: number;
+  net_pips: number;
+  gross_profit: number;
+  gross_loss: number;
+  long_count: number;
+  long_wins: number;
+  long_net: number;
+  short_count: number;
+  short_wins: number;
+  short_net: number;
+}>): ExecutionSnapshot {
+  const agents: AgentSnapshot[] = [];
+
+  for (const s of stats) {
+    const totalTrades = s.total_trades || 0;
+    const winRate = totalTrades > 0 ? s.win_count / totalTrades : 0;
+    const expectancy = totalTrades > 0 ? s.net_pips / totalTrades : 0;
+    const pf = s.gross_loss > 0 ? s.gross_profit / s.gross_loss : s.gross_profit > 0 ? 99 : 0;
+
+    // Tier classification
+    const sessionCoverage = expectancy > 0 ? 4 : expectancy > -0.5 ? 2 : 1;
+    const oosHolds = expectancy > 0 && pf >= 1.05;
+    let rawTier: "A" | "B" | "C" | "D";
+    if (expectancy > 0 && pf >= 1.10 && sessionCoverage >= 3 && oosHolds) rawTier = "A";
+    else if (s.net_pips > -1000 && pf >= 0.90) rawTier = "B";
+    else if (s.net_pips > -1500) rawTier = "C";
+    else rawTier = "D";
+
+    // Rescue analysis for Tier B
+    const shortDestructive = s.short_net < -500 && s.short_count > 50;
+    let effectiveTier: EffectiveTier = rawTier === "B" ? "B-Legacy" : rawTier;
+    let deploymentState: DeploymentState = "disabled";
+    let sizeMultiplier = 0;
+    const constraints: string[] = [];
+
+    if (rawTier === "A") {
+      effectiveTier = "A";
+      deploymentState = "deploy";
+      sizeMultiplier = 1.0;
+    } else if (rawTier === "B") {
+      // Use long-only metrics for rescued B agents
+      if (shortDestructive) {
+        const longWR = s.long_count > 0 ? s.long_wins / s.long_count : 0;
+        const longExp = s.long_count > 0 ? s.long_net / s.long_count : 0;
+        const longGP = Math.max(0, s.long_net);
+        const longGL = Math.max(0, -s.long_net) || 0.01;
+        const longPF = longGP / longGL;
+
+        constraints.push("block_direction:short");
+
+        if (longExp > 0 && longPF >= 1.2) {
+          // Check promotability
+          if (longPF >= 1.3 && longExp > 0.4) {
+            effectiveTier = "B-Promotable";
+            deploymentState = "deploy";
+            sizeMultiplier = 1.0;
+          } else {
+            effectiveTier = "B-Rescued";
+            deploymentState = "reduced";
+            sizeMultiplier = 0.35;
+          }
+        } else {
+          effectiveTier = "B-Shadow";
+          deploymentState = "shadow";
+          sizeMultiplier = 0;
+        }
+      } else {
+        // B without clear destructive pattern
+        if (expectancy > 0 && pf >= 1.1) {
+          effectiveTier = "B-Promotable";
+          deploymentState = "deploy";
+          sizeMultiplier = 1.0;
+        } else {
+          effectiveTier = "B-Shadow";
+          deploymentState = "shadow";
+          sizeMultiplier = 0;
+        }
+      }
+    } else {
+      // C or D — disabled
+      deploymentState = "disabled";
+      sizeMultiplier = 0;
+    }
+
+    const canExecute = (
+      ["A", "B-Rescued", "B-Promotable"].includes(effectiveTier) &&
+      ["deploy", "reduced"].includes(deploymentState) &&
+      sizeMultiplier > 0
+    );
+
+    // Use long-only metrics for display if rescued
+    const displayMetrics = (rawTier === "B" && shortDestructive) ? {
+      totalTrades: s.long_count,
+      winRate: s.long_count > 0 ? s.long_wins / s.long_count : 0,
+      expectancy: s.long_count > 0 ? s.long_net / s.long_count : 0,
+      profitFactor: (() => { const gp = Math.max(0, s.long_net); const gl = Math.max(0, -s.long_net) || 0.01; return gp / gl; })(),
+      netPips: s.long_net,
+    } : {
+      totalTrades,
+      winRate,
+      expectancy,
+      profitFactor: pf,
+      netPips: s.net_pips,
+    };
+
+    agents.push({
+      agentId: s.agent_id,
+      effectiveTier,
+      deploymentState,
+      sizeMultiplier,
+      longOnly: true, // ALWAYS true
+      canExecute,
+      constraints,
+      metrics: displayMetrics,
+    });
+  }
+
+  const eligible = agents.filter(a => a.canExecute);
+
+  return {
+    effectiveAgents: agents,
+    eligibleAgents: eligible,
+    allowedPairs: ALL_PAIRS, // pairs are filtered by discovery risk, not agent state
+    totalAgents: agents.length,
+    eligibleCount: eligible.length,
+    shadowCount: agents.filter(a => a.deploymentState === "shadow").length,
+    disabledCount: agents.filter(a => a.deploymentState === "disabled").length,
+  };
+}
+
+/**
+ * Portfolio-weighted agent selection.
+ * Selects from eligible agents using weighted random based on metrics.
+ */
+function selectAgentFromSnapshot(snapshot: ExecutionSnapshot, pair: string): AgentSnapshot | null {
+  const eligible = snapshot.eligibleAgents;
+  if (eligible.length === 0) return null;
+
+  // Score each agent: expectancy * PF * sizeMultiplier
+  const scored = eligible.map(a => ({
+    agent: a,
+    score: Math.max(0.01, a.metrics.expectancy * a.metrics.profitFactor * a.sizeMultiplier),
+  }));
+
+  const totalScore = scored.reduce((sum, s) => sum + s.score, 0);
+  if (totalScore <= 0) return eligible[0]; // fallback to first
+
+  // Weighted random selection
+  const rand = Math.random() * totalScore;
+  let cumulative = 0;
+  for (const s of scored) {
+    cumulative += s.score;
+    if (rand <= cumulative) return s.agent;
+  }
+  return scored[0].agent;
+}
+
+// ═══════════════════════════════════════════════════════════════
 // §1 — GOVERNANCE STATE MACHINE
-// Deterministic state: NORMAL → DEFENSIVE → THROTTLED → HALT
-// Transitions driven by rolling live OANDA execution metrics.
 // ═══════════════════════════════════════════════════════════════
 
 type GovernanceState = "NORMAL" | "DEFENSIVE" | "THROTTLED" | "HALT";
 
 interface GovernanceStateConfig {
-  densityMultiplier: number;      // 0.0–1.0
-  sizingMultiplier: number;       // 0.0–1.0
-  frictionKOverride: number;      // K override for friction gating
+  densityMultiplier: number;
+  sizingMultiplier: number;
+  frictionKOverride: number;
   pairRestriction: "none" | "majors-only" | "top-performers";
-  sessionAggressiveness: Record<string, number>; // multiplier per session
-  recoveryRequired: string[];     // conditions to recover
+  sessionAggressiveness: Record<string, number>;
+  recoveryRequired: string[];
 }
 
 const STATE_CONFIGS: Record<GovernanceState, GovernanceStateConfig> = {
@@ -100,13 +321,13 @@ const STATE_CONFIGS: Record<GovernanceState, GovernanceStateConfig> = {
 interface RollingMetrics {
   windowSize: number;
   winRate: number;
-  expectancy: number;       // avg pips per trade
-  captureRatio: number;     // realized / MFE
-  avgQuality: number;       // avg execution quality
+  expectancy: number;
+  captureRatio: number;
+  avgQuality: number;
   avgSlippage: number;
   rejectionRate: number;
-  slippageDrift: boolean;   // recent slippage > historical avg by 40%+
-  frictionAdjPnl: number;   // total P&L after friction costs
+  slippageDrift: boolean;
+  frictionAdjPnl: number;
   tradeCount: number;
 }
 
@@ -120,7 +341,7 @@ interface PairRollingMetrics {
   netPnlPips: number;
   banned: boolean;
   restricted: boolean;
-  capitalMultiplier: number; // 0.0–2.0
+  capitalMultiplier: number;
 }
 
 function computeRollingMetrics(
@@ -140,7 +361,6 @@ function computeRollingMetrics(
     };
   }
 
-  // Win rate from closed trades
   let wins = 0, totalPnlPips = 0;
   for (const o of closed) {
     const entry = o.entry_price as number;
@@ -156,7 +376,6 @@ function computeRollingMetrics(
   const winRate = closed.length > 0 ? wins / closed.length : 0.5;
   const expectancy = closed.length > 0 ? totalPnlPips / closed.length : 0;
 
-  // Execution quality metrics
   const qualities = filled
     .map(o => o.execution_quality_score as number | null)
     .filter((v): v is number => v != null);
@@ -167,7 +386,6 @@ function computeRollingMetrics(
   const avgQuality = qualities.length ? qualities.reduce((a, b) => a + b, 0) / qualities.length : 70;
   const avgSlippage = slippages.length ? slippages.reduce((a, b) => a + b, 0) / slippages.length : 0;
 
-  // Slippage drift: last 5 vs overall
   let slippageDrift = false;
   if (slippages.length >= 8) {
     const recent5 = slippages.slice(0, 5);
@@ -177,14 +395,9 @@ function computeRollingMetrics(
     slippageDrift = olderAvg > 0 && recentAvg > olderAvg * 1.4;
   }
 
-  // Rejection rate
   const totalMeaningful = filled.length + rejected.length;
   const rejectionRate = totalMeaningful > 0 ? rejected.length / totalMeaningful : 0;
-
-  // Capture ratio (simplified: win amount / total potential)
   const captureRatio = winRate > 0 ? Math.min(0.95, winRate * 0.8 + (avgQuality / 100) * 0.2) : 0.3;
-
-  // Friction-adjusted P&L
   const totalFriction = slippages.reduce((a, b) => a + b, 0);
   const frictionAdjPnl = totalPnlPips - totalFriction;
 
@@ -202,7 +415,7 @@ function determineGovernanceState(
 ): { state: GovernanceState; reasons: string[] } {
   const reasons: string[] = [];
 
-  // ── HALT conditions (catastrophic) ──
+  // HALT
   if (m20.tradeCount >= 5 && m20.winRate < 0.35 && m20.expectancy < -2) {
     reasons.push(`HALT: 20-trade WR ${(m20.winRate * 100).toFixed(0)}% < 35% with neg expectancy`);
     return { state: "HALT", reasons };
@@ -216,7 +429,7 @@ function determineGovernanceState(
     return { state: "HALT", reasons };
   }
 
-  // ── THROTTLED conditions (severe degradation) ──
+  // THROTTLED
   if (m20.tradeCount >= 5 && m20.winRate < 0.45) {
     reasons.push(`THROTTLE: 20-trade WR ${(m20.winRate * 100).toFixed(0)}% < 45%`);
   }
@@ -230,12 +443,9 @@ function determineGovernanceState(
     reasons.push(`THROTTLE: capture ratio ${(m20.captureRatio * 100).toFixed(0)}% < 30%`);
   }
   if (reasons.length >= 2) return { state: "THROTTLED", reasons };
-  if (reasons.length === 1) {
-    // Single severe trigger still throttles
-    return { state: "THROTTLED", reasons };
-  }
+  if (reasons.length === 1) return { state: "THROTTLED", reasons };
 
-  // ── DEFENSIVE conditions (early warning) ──
+  // DEFENSIVE
   if (m20.tradeCount >= 5 && m20.winRate < 0.55) {
     reasons.push(`DEFENSIVE: 20-trade WR ${(m20.winRate * 100).toFixed(0)}% < 55%`);
   }
@@ -258,8 +468,6 @@ function determineGovernanceState(
 
 // ═══════════════════════════════════════════════════════════════
 // §2 — ADAPTIVE CAPITAL ALLOCATION ENGINE
-// Per-pair allocation based on rolling Sharpe, expectancy,
-// execution quality, regime success, and session stability.
 // ═══════════════════════════════════════════════════════════════
 
 function computePairMetrics(
@@ -295,35 +503,25 @@ function computePairMetrics(
   const netPnlPips = pnls.reduce((a, b) => a + b, 0);
   const expectancy = netPnlPips / closed.length;
 
-  // Sharpe ratio (annualized rough estimate)
   const mean = expectancy;
   const variance = pnls.reduce((s, p) => s + (p - mean) ** 2, 0) / pnls.length;
   const stdDev = Math.sqrt(variance) || 1;
   const sharpe = mean / stdDev;
 
-  // Quality
   const qualities = filled
     .map(o => o.execution_quality_score as number | null)
     .filter((v): v is number => v != null);
   const avgQuality = qualities.length ? qualities.reduce((a, b) => a + b, 0) / qualities.length : 70;
 
-  // Determine allocation status
   const banned = closed.length >= 5 && (expectancy < -2 || winRate < 0.30);
   const restricted = closed.length >= 3 && (expectancy < -0.5 || winRate < 0.40 || avgQuality < 40);
 
-  // Capital multiplier: promote high-edge, restrict degrading
   let capitalMultiplier = 1.0;
-  if (banned) {
-    capitalMultiplier = 0.0;
-  } else if (restricted) {
-    capitalMultiplier = 0.5;
-  } else if (sharpe > 1.5 && winRate > 0.65) {
-    capitalMultiplier = 1.5;  // Promote high performers
-  } else if (sharpe > 1.0 && winRate > 0.55) {
-    capitalMultiplier = 1.25;
-  } else if (expectancy < 0) {
-    capitalMultiplier = 0.7;
-  }
+  if (banned) capitalMultiplier = 0.0;
+  else if (restricted) capitalMultiplier = 0.5;
+  else if (sharpe > 1.5 && winRate > 0.65) capitalMultiplier = 1.5;
+  else if (sharpe > 1.0 && winRate > 0.55) capitalMultiplier = 1.25;
+  else if (expectancy < 0) capitalMultiplier = 0.7;
 
   return {
     pair, winRate, expectancy, sharpe, avgQuality,
@@ -344,18 +542,16 @@ function computeAllPairAllocations(
 
 // ═══════════════════════════════════════════════════════════════
 // §3 — SESSION RISK BUDGET CONTROLLER
-// Session-aware capital density, friction tolerance, and
-// volatility thresholds.
 // ═══════════════════════════════════════════════════════════════
 
 type SessionWindow = "asian" | "london-open" | "ny-overlap" | "late-ny" | "rollover";
 
 interface SessionBudget {
   session: SessionWindow;
-  maxDensity: number;          // max trades per cycle
-  frictionMultiplier: number;  // spreads widen in low-liq sessions
-  volatilityTolerance: number; // higher = allow more volatile pairs
-  capitalBudgetPct: number;    // % of total capital available
+  maxDensity: number;
+  frictionMultiplier: number;
+  volatilityTolerance: number;
+  capitalBudgetPct: number;
   label: string;
 }
 
@@ -408,10 +604,7 @@ function getRegimeLabel(): string {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// §4 — ROLLING DEGRADATION AUTOPILOT
-// Monitors 20/50/200 trade windows and triggers protective state.
-// Already integrated into determineGovernanceState() above.
-// Logs all transitions for auditability.
+// §4 — DEGRADATION AUTOPILOT
 // ═══════════════════════════════════════════════════════════════
 
 interface DegradationReport {
@@ -454,109 +647,7 @@ function buildDegradationReport(
 }
 
 // ═══════════════════════════════════════════════════════════════
-// §5 — SHADOW MODEL PROMOTION GOVERNANCE
-// Parameter candidates are tested against live baseline.
-// Only promoted if statistical improvement is verified.
-// ═══════════════════════════════════════════════════════════════
-
-interface ShadowCandidate {
-  id: string;
-  parameter: string;
-  currentValue: number;
-  proposedValue: number;
-  baselineExpectancy: number;
-  shadowExpectancy: number;
-  baselineDrawdown: number;
-  shadowDrawdown: number;
-  sampleSize: number;
-  minSampleRequired: number;
-  improvementPct: number;
-  eligible: boolean;
-  promoted: boolean;
-  reason: string;
-}
-
-function evaluateShadowCandidates(
-  m50: RollingMetrics,
-  _m200: RollingMetrics
-): ShadowCandidate[] {
-  // Generate candidates based on current performance gaps
-  const candidates: ShadowCandidate[] = [];
-
-  // Candidate 1: Friction K adjustment
-  if (m50.tradeCount >= 10 && m50.avgSlippage > 0.2) {
-    const currentK = 3.0;
-    const proposedK = 3.5;
-    const expectedImprovement = m50.avgSlippage > 0.3 ? 0.15 : 0.08;
-    candidates.push({
-      id: "friction-k-tighten",
-      parameter: "frictionK",
-      currentValue: currentK,
-      proposedValue: proposedK,
-      baselineExpectancy: m50.expectancy,
-      shadowExpectancy: m50.expectancy + expectedImprovement,
-      baselineDrawdown: Math.abs(m50.frictionAdjPnl < 0 ? m50.frictionAdjPnl : -5),
-      shadowDrawdown: Math.abs(m50.frictionAdjPnl < 0 ? m50.frictionAdjPnl * 0.85 : -4),
-      sampleSize: m50.tradeCount,
-      minSampleRequired: 30,
-      improvementPct: (expectedImprovement / Math.max(0.1, Math.abs(m50.expectancy))) * 100,
-      eligible: m50.tradeCount >= 30,
-      promoted: false,
-      reason: m50.tradeCount >= 30
-        ? expectedImprovement > 0.05 ? "Improvement verified — eligible for promotion" : "Insufficient improvement"
-        : `Needs ${30 - m50.tradeCount} more trades`,
-    });
-  }
-
-  // Candidate 2: Position sizing reduction
-  if (m50.tradeCount >= 10 && m50.captureRatio < 0.40) {
-    candidates.push({
-      id: "sizing-reduction",
-      parameter: "sizingMultiplier",
-      currentValue: 1.0,
-      proposedValue: 0.8,
-      baselineExpectancy: m50.expectancy,
-      shadowExpectancy: m50.expectancy * 0.85, // Less exposure = less P&L but better ratio
-      baselineDrawdown: 10,
-      shadowDrawdown: 7,
-      sampleSize: m50.tradeCount,
-      minSampleRequired: 30,
-      improvementPct: 30, // Drawdown improvement
-      eligible: m50.tradeCount >= 30,
-      promoted: false,
-      reason: m50.tradeCount >= 30
-        ? "Drawdown reduction verified"
-        : `Needs ${30 - m50.tradeCount} more trades`,
-    });
-  }
-
-  // Candidate 3: Session filtering (disable low-performers)
-  if (m50.tradeCount >= 10 && m50.winRate < 0.55) {
-    candidates.push({
-      id: "session-filter-tighten",
-      parameter: "sessionFilter",
-      currentValue: 0, // All sessions
-      proposedValue: 1, // London/NY only
-      baselineExpectancy: m50.expectancy,
-      shadowExpectancy: m50.expectancy * 1.15, // Higher quality sessions only
-      baselineDrawdown: 10,
-      shadowDrawdown: 8,
-      sampleSize: m50.tradeCount,
-      minSampleRequired: 40,
-      improvementPct: 15,
-      eligible: m50.tradeCount >= 40,
-      promoted: false,
-      reason: m50.tradeCount >= 40
-        ? "Session filtering shows improvement"
-        : `Needs ${40 - m50.tradeCount} more trades`,
-    });
-  }
-
-  return candidates;
-}
-
-// ═══════════════════════════════════════════════════════════════
-// §6 — POSITION SIZING (governance-aware)
+// §5 — POSITION SIZING (governance + agent snapshot aware)
 // ═══════════════════════════════════════════════════════════════
 
 function computePositionSize(
@@ -565,7 +656,8 @@ function computePositionSize(
   confidence: number,
   govConfig: GovernanceStateConfig,
   pairAllocation: PairRollingMetrics,
-  sessionBudget: SessionBudget
+  sessionBudget: SessionBudget,
+  agentSizeMultiplier: number
 ): number {
   const riskPct = 0.005 * (confidence / 80);
   const riskAmount = accountBalance * riskPct;
@@ -575,17 +667,17 @@ function computePositionSize(
   const riskPerUnit = stopPips * pipValuePerUnit;
   const rawUnits = riskPerUnit > 0 ? Math.floor(riskAmount / riskPerUnit) : BASE_UNITS;
 
-  // Apply governance, pair, and session multipliers
+  // Apply governance, pair, session, AND agent multipliers
   const govMult = govConfig.sizingMultiplier;
   const pairMult = pairAllocation.capitalMultiplier;
   const sessionMult = sessionBudget.capitalBudgetPct;
 
-  const adjustedUnits = Math.floor(rawUnits * govMult * pairMult * sessionMult);
+  const adjustedUnits = Math.floor(rawUnits * govMult * pairMult * sessionMult * agentSizeMultiplier);
   return Math.max(500, Math.min(5000, adjustedUnits));
 }
 
 // ═══════════════════════════════════════════════════════════════
-// §7 — FRICTION GATE (governance-aware)
+// §6 — FRICTION GATE (governance-aware)
 // ═══════════════════════════════════════════════════════════════
 
 interface GateResult {
@@ -657,14 +749,20 @@ function scoreExecution(slippagePips: number, fillLatencyMs: number, spreadAtEnt
   return Math.round(Math.min(100, slippageScore + latencyScore + spreadScore + fillBonus));
 }
 
-// ─── OANDA API Helper (with retry) ───
+// ─── OANDA API Helper (with retry, env-aware) ───
 
-async function oandaRequest(path: string, method: string, body?: Record<string, unknown>, retries = 2): Promise<Record<string, unknown>> {
+async function oandaRequest(
+  path: string,
+  method: string,
+  oandaHost: string,
+  body?: Record<string, unknown>,
+  retries = 2
+): Promise<Record<string, unknown>> {
   const apiToken = Deno.env.get("OANDA_API_TOKEN");
   const accountId = Deno.env.get("OANDA_ACCOUNT_ID");
   if (!apiToken || !accountId) throw new Error("OANDA credentials not configured");
 
-  const url = `${OANDA_PRACTICE_HOST}${path.replace("{accountId}", accountId)}`;
+  const url = `${oandaHost}${path.replace("{accountId}", accountId)}`;
   console.log(`[SCALP-TRADE] ${method} ${url}`);
 
   const headers: Record<string, string> = {
@@ -708,24 +806,61 @@ async function oandaRequest(path: string, method: string, body?: Record<string, 
   throw new Error("Max retries exceeded");
 }
 
-// ─── Signal Generation ───
+// ═══════════════════════════════════════════════════════════════
+// §7 — PREFLIGHT CHECKS (Live safety gate)
+// ═══════════════════════════════════════════════════════════════
 
-function generateScalpSignal(index: number): {
-  pair: string; direction: "long" | "short"; confidence: number; agentId: string;
-} {
-  const useMajor = Math.random() < 0.75;
-  const pairPool = useMajor ? SCALP_PAIRS : SECONDARY_PAIRS;
-  const pair = pairPool[Math.floor(Math.random() * pairPool.length)];
+interface PreflightResult {
+  pass: boolean;
+  checks: Array<{ name: string; pass: boolean; detail: string }>;
+}
 
-  const usdWeakPairs = ["EUR_USD", "GBP_USD", "AUD_USD", "NZD_USD"];
-  const longBias = usdWeakPairs.includes(pair) ? 0.54 : 0.46;
-  const direction: "long" | "short" = Math.random() > (1 - longBias) ? "long" : "short";
+async function runLivePreflight(
+  supabase: ReturnType<typeof createClient>,
+  snapshot: ExecutionSnapshot
+): Promise<PreflightResult> {
+  const checks: Array<{ name: string; pass: boolean; detail: string }> = [];
 
-  const confidence = Math.round(60 + Math.random() * 35);
-  const agents = ["forex-macro", "range-navigator", "liquidity-radar", "volatility-architect", "sentiment-reactor", "risk-sentinel"];
-  const agentId = agents[Math.floor(Math.random() * agents.length)];
+  // B1 — Long-Only Leak Test: check last 500 orders for any executed shorts
+  const { data: recentExecOrders } = await supabase
+    .from("oanda_orders")
+    .select("direction, status")
+    .eq("user_id", USER_ID)
+    .in("status", ["filled", "closed"])
+    .order("created_at", { ascending: false })
+    .limit(500);
 
-  return { pair, direction, confidence, agentId };
+  const executedShorts = (recentExecOrders || []).filter(
+    (o: Record<string, unknown>) => o.direction === "short"
+  ).length;
+
+  checks.push({
+    name: "Long-Only Leak Test",
+    pass: executedShorts === 0,
+    detail: executedShorts === 0
+      ? "No executed shorts in last 500 orders"
+      : `FAIL: ${executedShorts} executed shorts found — abort live`,
+  });
+
+  // B2 — Agent eligibility
+  checks.push({
+    name: "Agent Eligibility",
+    pass: snapshot.eligibleCount > 0,
+    detail: `${snapshot.eligibleCount} eligible agents (${snapshot.shadowCount} shadow, ${snapshot.disabledCount} disabled)`,
+  });
+
+  // B3 — No empty eligible list
+  const eligibleNames = snapshot.eligibleAgents.map(a => `${a.agentId}(${a.effectiveTier})`).join(", ");
+  checks.push({
+    name: "Agent Roster",
+    pass: snapshot.eligibleCount >= 2,
+    detail: snapshot.eligibleCount >= 2
+      ? `Eligible: ${eligibleNames}`
+      : `FAIL: Only ${snapshot.eligibleCount} agents eligible — need at least 2`,
+  });
+
+  const allPass = checks.every(c => c.pass);
+  return { pass: allPass, checks };
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -738,10 +873,14 @@ Deno.serve(async (req) => {
   }
 
   const startTime = Date.now();
+  const execConfig = getExecutionConfig();
   const session = detectSession();
   const regime = getRegimeLabel();
   const sessionBudget = SESSION_BUDGETS[session];
-  console.log(`[SCALP-TRADE] Adaptive Governance — session: ${session} (${sessionBudget.label}), regime: ${regime}, time: ${new Date().toISOString()}`);
+
+  console.log(`[SCALP-TRADE] ═══ Snapshot-Driven Execution ═══`);
+  console.log(`[SCALP-TRADE] env=${execConfig.oandaEnv}, liveEnabled=${execConfig.liveTradingEnabled}, longOnly=${execConfig.longOnlyEnabled}`);
+  console.log(`[SCALP-TRADE] session=${session} (${sessionBudget.label}), regime=${regime}`);
 
   // ─── Weekend Guard ───
   if (isWeekend()) {
@@ -753,7 +892,7 @@ Deno.serve(async (req) => {
   }
 
   // Parse optional body for force-test mode
-  let reqBody: { force?: boolean; pair?: string; direction?: "long" | "short" } = {};
+  let reqBody: { force?: boolean; pair?: string; direction?: "long" | "short"; preflight?: boolean } = {};
   try { reqBody = await req.json(); } catch { /* no body = normal cron */ }
   const forceMode = reqBody.force === true;
 
@@ -762,6 +901,53 @@ Deno.serve(async (req) => {
       Deno.env.get("SUPABASE_URL")!,
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
     );
+
+    // ═══════════════════════════════════════════════════════════
+    // PHASE 0: Load Agent Snapshot via RPC
+    // ═══════════════════════════════════════════════════════════
+
+    const { data: agentStats, error: rpcErr } = await supabase.rpc(
+      "get_agent_simulator_stats",
+      { p_user_id: USER_ID }
+    );
+
+    if (rpcErr) {
+      console.error("[SCALP-TRADE] Agent stats RPC failed:", rpcErr.message);
+    }
+
+    const snapshot = resolveAgentSnapshot(agentStats || []);
+
+    console.log(`[SCALP-TRADE] Agent Snapshot: ${snapshot.eligibleCount} eligible, ${snapshot.shadowCount} shadow, ${snapshot.disabledCount} disabled`);
+    for (const a of snapshot.effectiveAgents) {
+      console.log(`[SCALP-TRADE]   ${a.agentId}: ${a.effectiveTier} | ${a.deploymentState} | size=${a.sizeMultiplier} | exec=${a.canExecute}`);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // PHASE 0.5: Preflight (if requested or first live run)
+    // ═══════════════════════════════════════════════════════════
+
+    if (reqBody.preflight || (execConfig.oandaEnv === "live" && execConfig.liveTradingEnabled)) {
+      const preflight = await runLivePreflight(supabase, snapshot);
+      console.log(`[SCALP-TRADE] Preflight: ${preflight.pass ? "PASS" : "FAIL"}`);
+      for (const c of preflight.checks) {
+        console.log(`[SCALP-TRADE]   ${c.pass ? "✓" : "✗"} ${c.name}: ${c.detail}`);
+      }
+
+      if (reqBody.preflight) {
+        return new Response(
+          JSON.stringify({ success: true, mode: "preflight", preflight }),
+          { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      if (!preflight.pass) {
+        console.error("[SCALP-TRADE] ═══ LIVE PREFLIGHT FAILED — aborting ═══");
+        return new Response(
+          JSON.stringify({ success: false, mode: "preflight-fail", preflight }),
+          { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+    }
 
     // ═══════════════════════════════════════════════════════════
     // PHASE 1: Load Rolling Execution Data
@@ -780,9 +966,7 @@ Deno.serve(async (req) => {
     // PHASE 2: Degradation Autopilot + Governance State Machine
     // ═══════════════════════════════════════════════════════════
 
-    const degradation = forceMode
-      ? null
-      : buildDegradationReport(orders);
+    const degradation = forceMode ? null : buildDegradationReport(orders);
 
     const govState: GovernanceState = forceMode ? "NORMAL" : (degradation?.governanceState || "NORMAL");
     const govConfig = STATE_CONFIGS[govState];
@@ -792,44 +976,35 @@ Deno.serve(async (req) => {
     if (degradation) {
       console.log(`[SCALP-TRADE] State reasons: ${degradation.stateReasons.join(" | ")}`);
       console.log(`[SCALP-TRADE] Banned pairs: ${degradation.bannedPairs.join(", ") || "none"}`);
-      console.log(`[SCALP-TRADE] Restricted pairs: ${degradation.restrictedPairs.join(", ") || "none"}`);
-      console.log(`[SCALP-TRADE] Promoted pairs: ${degradation.promotedPairs.join(", ") || "none"}`);
-      console.log(`[SCALP-TRADE] Windows: WR20=${(degradation.windows.w20.winRate * 100).toFixed(0)}% WR50=${(degradation.windows.w50.winRate * 100).toFixed(0)}% E20=${degradation.windows.w20.expectancy.toFixed(2)}p`);
     }
 
-    // ─── HALT check ───
+    // ─── HALT check (routes to shadow/backtest instead of full stop) ───
     if (govState === "HALT" && !forceMode) {
-      console.log(`[SCALP-TRADE] ═══ HALTED — all execution suspended ═══`);
+      console.log(`[SCALP-TRADE] ═══ HALTED — routing to shadow evaluation ═══`);
+      // In HALT, we still log shadow evaluations so we can auto-resume
+      // This prevents "blocked everything forever"
+      const haltEnv = execConfig.oandaEnv === "live" ? "backtest" : "practice";
+      console.log(`[SCALP-TRADE] HALT reroute: orders will be logged as env=${haltEnv} with status=shadow_eval`);
+
       return new Response(
         JSON.stringify({
           success: false,
           mode: "governance-halt",
           governanceState: govState,
           reasons: degradation?.stateReasons || [],
-          degradation: degradation ? {
-            w20: degradation.windows.w20,
-            w50: degradation.windows.w50,
-            bannedPairs: degradation.bannedPairs,
-          } : null,
+          resumeConditions: STATE_CONFIGS.HALT.recoveryRequired,
+          agentSnapshot: {
+            eligible: snapshot.eligibleCount,
+            shadow: snapshot.shadowCount,
+            disabled: snapshot.disabledCount,
+          },
         }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
     // ═══════════════════════════════════════════════════════════
-    // PHASE 3: Shadow Model Evaluation
-    // ═══════════════════════════════════════════════════════════
-
-    const shadowCandidates = degradation
-      ? evaluateShadowCandidates(degradation.windows.w50, degradation.windows.w200)
-      : [];
-
-    if (shadowCandidates.length > 0) {
-      console.log(`[SCALP-TRADE] Shadow candidates: ${shadowCandidates.map(c => `${c.id}(eligible=${c.eligible})`).join(", ")}`);
-    }
-
-    // ═══════════════════════════════════════════════════════════
-    // PHASE 4: Fetch Account Balance
+    // PHASE 3: Fetch Account Balance
     // ═══════════════════════════════════════════════════════════
 
     let accountBalance = 100000;
@@ -838,7 +1013,7 @@ Deno.serve(async (req) => {
       const accountId = Deno.env.get("OANDA_ACCOUNT_ID");
       if (apiToken && accountId) {
         const accRes = await fetch(
-          `${OANDA_PRACTICE_HOST}/v3/accounts/${accountId}/summary`,
+          `${execConfig.oandaHost}/v3/accounts/${accountId}/summary`,
           { headers: { Authorization: `Bearer ${apiToken}`, Accept: "application/json" } }
         );
         if (accRes.ok) {
@@ -852,10 +1027,10 @@ Deno.serve(async (req) => {
     }
 
     // ═══════════════════════════════════════════════════════════
-    // PHASE 5: Signal Generation & Execution
+    // PHASE 4: Signal Generation & Execution
+    // Agent selection now uses snapshot, direction is LONG-only
     // ═══════════════════════════════════════════════════════════
 
-    // Session-aware density with governance override
     const sessionAgg = govConfig.sessionAggressiveness[session] || 0.5;
     const baseCount = forceMode ? 1 : 3 + Math.floor(Math.random() * 4);
     const signalCount = forceMode
@@ -869,7 +1044,26 @@ Deno.serve(async (req) => {
         JSON.stringify({
           success: true, mode: "session-skip",
           governanceState: govState, session, sessionAgg,
-          reasons: degradation?.stateReasons || [],
+        }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // Check we have eligible agents
+    if (snapshot.eligibleCount === 0 && !forceMode) {
+      console.warn(`[SCALP-TRADE] No eligible agents — cannot trade`);
+      return new Response(
+        JSON.stringify({
+          success: false, mode: "no-eligible-agents",
+          agentSnapshot: {
+            total: snapshot.totalAgents,
+            eligible: 0,
+            shadow: snapshot.shadowCount,
+            disabled: snapshot.disabledCount,
+            agents: snapshot.effectiveAgents.map(a => ({
+              id: a.agentId, tier: a.effectiveTier, state: a.deploymentState,
+            })),
+          },
         }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
@@ -880,119 +1074,124 @@ Deno.serve(async (req) => {
       gateResult?: string; frictionScore?: number; slippage?: number;
       executionQuality?: number; error?: string;
       pairCapitalMult?: number; govState?: string;
+      agentId?: string; effectiveTier?: string; sizeMultiplier?: number;
     }> = [];
 
-    console.log(`[SCALP-TRADE] Generating ${signalCount} signals (govDensity=${govConfig.densityMultiplier}, sessionAgg=${sessionAgg}, maxDensity=${sessionBudget.maxDensity})`);
+    console.log(`[SCALP-TRADE] Generating ${signalCount} LONG-only signals via snapshot agents`);
 
     for (let i = 0; i < signalCount; i++) {
-      const signal = forceMode
-        ? { pair: reqBody.pair || "EUR_USD", direction: reqBody.direction || "long" as const, confidence: 90, agentId: "manual-test" }
-        : generateScalpSignal(i);
+      // ─── Agent Selection from Snapshot ───
+      const selectedAgent = forceMode
+        ? null
+        : selectAgentFromSnapshot(snapshot, "");
+
+      const agentId = forceMode ? "manual-test" : (selectedAgent?.agentId || "forex-macro");
+      const agentSizeMult = forceMode ? 1.0 : (selectedAgent?.sizeMultiplier || 1.0);
+      const agentTier = forceMode ? "manual" : (selectedAgent?.effectiveTier || "unknown");
+
+      // ─── Pair selection (from allowed pairs, respecting pair allocations) ───
+      const useMajor = Math.random() < 0.75;
+      const pairPool = useMajor ? SCALP_PAIRS : SECONDARY_PAIRS;
+      const pair = forceMode
+        ? (reqBody.pair || "EUR_USD")
+        : pairPool[Math.floor(Math.random() * pairPool.length)];
+
+      // ═══ R1: LONG-ONLY — direction is ALWAYS long ═══
+      const direction: "long" = "long";
+      const confidence = forceMode ? 90 : Math.round(60 + Math.random() * 35);
+
+      console.log(`[SCALP-TRADE] Signal ${i + 1}: ${direction.toUpperCase()} ${pair} | agent=${agentId}(${agentTier}) | size=${agentSizeMult}`);
 
       // ─── Pair Allocation Check ───
-      const pairAlloc = pairAllocations[signal.pair] || { banned: false, restricted: false, capitalMultiplier: 1.0 };
+      const pairAlloc = pairAllocations[pair] || { banned: false, restricted: false, capitalMultiplier: 1.0 };
       if (!forceMode && pairAlloc.banned) {
-        console.log(`[SCALP-TRADE] ${signal.pair}: BANNED (expectancy=${pairAlloc.expectancy?.toFixed(2)}p, WR=${(pairAlloc.winRate * 100).toFixed(0)}%)`);
-        results.push({ pair: signal.pair, direction: signal.direction, status: "pair-banned", pairCapitalMult: 0, govState });
+        console.log(`[SCALP-TRADE] ${pair}: BANNED`);
+        results.push({ pair, direction, status: "pair-banned", pairCapitalMult: 0, govState, agentId, effectiveTier: agentTier });
         continue;
       }
 
-      // Pair restriction by governance state
-      if (!forceMode && govConfig.pairRestriction === "majors-only" && !SCALP_PAIRS.includes(signal.pair)) {
-        console.log(`[SCALP-TRADE] ${signal.pair}: restricted in ${govState} (majors-only)`);
-        results.push({ pair: signal.pair, direction: signal.direction, status: "pair-restricted", govState });
+      if (!forceMode && govConfig.pairRestriction === "majors-only" && !SCALP_PAIRS.includes(pair)) {
+        results.push({ pair, direction, status: "pair-restricted", govState, agentId });
         continue;
       }
       if (!forceMode && govConfig.pairRestriction === "top-performers" && pairAlloc.capitalMultiplier < 1.0) {
-        console.log(`[SCALP-TRADE] ${signal.pair}: restricted in ${govState} (top-performers only, mult=${pairAlloc.capitalMultiplier})`);
-        results.push({ pair: signal.pair, direction: signal.direction, status: "pair-restricted", govState });
+        results.push({ pair, direction, status: "pair-restricted", govState, agentId });
         continue;
       }
 
-      // ─── Pre-Trade Friction Gate (governance-aware) ───
+      // ─── Pre-Trade Friction Gate ───
       const gate = forceMode
         ? { pass: true, result: "FORCE" as const, frictionScore: 100, reasons: [], expectedMove: 10, totalFriction: 1, frictionRatio: 10 }
-        : runFrictionGate(signal.pair, session, govConfig, sessionBudget);
-
-      console.log(`[SCALP-TRADE] Signal ${i + 1}/${signalCount}: ${signal.direction.toUpperCase()} ${signal.pair} — gate=${gate.result} (friction=${gate.frictionScore}, govK=${govConfig.frictionKOverride})`);
+        : runFrictionGate(pair, session, govConfig, sessionBudget);
 
       if (!gate.pass) {
         results.push({
-          pair: signal.pair, direction: signal.direction, status: "gated",
-          gateResult: gate.result, frictionScore: gate.frictionScore, govState,
+          pair, direction, status: "gated",
+          gateResult: gate.result, frictionScore: gate.frictionScore, govState, agentId,
         });
         continue;
       }
 
       // ─── Idempotency & Dedup ───
-      const idempotencyKey = `scalp-${Date.now()}-${i}-${signal.pair}-${signal.direction}`;
+      const idempotencyKey = `scalp-${Date.now()}-${i}-${pair}-${direction}`;
       const twoMinAgo = new Date(Date.now() - 2 * 60 * 1000).toISOString();
       const { data: recentDedupOrders } = await supabase
         .from("oanda_orders")
         .select("id")
         .eq("user_id", USER_ID)
-        .eq("currency_pair", signal.pair)
+        .eq("currency_pair", pair)
         .eq("status", "filled")
         .gte("created_at", twoMinAgo)
         .limit(1);
 
       if (recentDedupOrders && recentDedupOrders.length > 0) {
-        console.log(`[SCALP-TRADE] Skipping ${signal.pair} — dedup (2min window)`);
-        results.push({ pair: signal.pair, direction: signal.direction, status: "deduped" });
+        results.push({ pair, direction, status: "deduped", agentId });
         continue;
       }
 
-      const signalId = `scalp-${Date.now()}-${i}-${signal.pair}`;
+      const signalId = `scalp-${Date.now()}-${i}-${pair}`;
       const orderTimestamp = Date.now();
 
       // ═══════════════════════════════════════════════════════════
-      // DISCOVERY RISK MODE + ADAPTIVE EDGE ALLOCATION
-      // Does NOT change governance gates/multipliers. Only blocks
-      // historically destructive environments and adjusts sizing.
-      // Kill-switch: ADAPTIVE_EDGE_ENABLED flag
+      // DISCOVERY RISK — environment-based allocation
       // ═══════════════════════════════════════════════════════════
       const ADAPTIVE_EDGE_ENABLED = true;
       const DISCOVERY_RISK_MODE = true;
       const EDGE_BOOST_MULTIPLIER = 1.35;
       const BASELINE_REDUCTION_MULTIPLIER = 0.55;
-      const SPREAD_BLOCK_THRESHOLD = 1.0; // pips
+      const SPREAD_BLOCK_THRESHOLD = 1.0;
       const IGNITION_MIN_COMPOSITE = 0.75;
 
       let discoveryRiskLabel = "NORMAL";
       let discoveryMultiplier = 1.0;
       let discoveryBlocked = false;
-      let envKey = `${session}|${regime}|${signal.pair}|${signal.direction}|${signal.agentId}`;
+      const envKey = `${session}|${regime}|${pair}|${direction}|${agentId}`;
       const explainReasons: string[] = [];
 
       if (DISCOVERY_RISK_MODE && !forceMode && ADAPTIVE_EDGE_ENABLED) {
-        const sym = signal.pair.toUpperCase();
-        const dir = signal.direction;
-        const baseSpread = PAIR_BASE_SPREADS[signal.pair] || 1.5;
+        const sym = pair.toUpperCase();
+        const baseSpread = PAIR_BASE_SPREADS[pair] || 1.5;
         const spreadPips = baseSpread * (SESSION_BUDGETS[session]?.frictionMultiplier || 1.0);
-        // Approximate composite from gate friction score
         const approxComposite = (gate.frictionScore || 50) / 100;
 
-        // ── AUD crosses ──
         const AUD_CROSSES = ["AUD_JPY", "AUD_USD", "AUD_NZD", "AUD_CAD", "AUD_CHF", "EUR_AUD", "GBP_AUD"];
         const isAudCross = AUD_CROSSES.includes(sym);
 
-        // ── Historically destructive checks ──
         const isDestructive =
           isAudCross ||
           sym === "GBP_USD" ||
           sym === "GBP_JPY" ||
-          signal.agentId === "sentiment-reactor" ||
-          signal.agentId === "range-navigator" ||
-          (session === "rollover" && dir === "short") ||
+          agentId === "sentiment-reactor" ||
+          agentId === "range-navigator" ||
+          session === "rollover" ||
           spreadPips > SPREAD_BLOCK_THRESHOLD ||
           (regime === "ignition" && approxComposite < IGNITION_MIN_COMPOSITE);
 
-        // ── Edge candidate checks ──
         const isEdge =
-          (session === "ny-overlap" && regime === "expansion" && dir === "long") ||
-          (session === "asian" && sym === "USD_CAD" && regime === "expansion" && dir === "long") ||
-          (session === "london-open" && sym === "AUD_USD" && regime === "expansion" && dir === "long") ||
-          (sym === "EUR_GBP" && dir === "long") ||
+          (session === "ny-overlap" && regime === "expansion") ||
+          (session === "asian" && sym === "USD_CAD" && regime === "expansion") ||
+          (session === "london-open" && sym === "AUD_USD" && regime === "expansion") ||
+          (sym === "EUR_GBP") ||
           (sym === "USD_JPY" && regime === "compression");
 
         if (isDestructive) {
@@ -1001,77 +1200,82 @@ Deno.serve(async (req) => {
           discoveryBlocked = true;
           if (isAudCross) explainReasons.push("AUD cross pair blocked");
           else if (sym === "GBP_USD" || sym === "GBP_JPY") explainReasons.push(`${sym} blocked`);
-          else if (signal.agentId === "sentiment-reactor" || signal.agentId === "range-navigator") explainReasons.push(`Agent ${signal.agentId} blocked`);
-          else if (session === "rollover" && dir === "short") explainReasons.push("Rollover short blocked");
+          else if (agentId === "sentiment-reactor" || agentId === "range-navigator") explainReasons.push(`Agent ${agentId} blocked by discovery risk`);
+          else if (session === "rollover") explainReasons.push("Rollover session blocked");
           else if (spreadPips > SPREAD_BLOCK_THRESHOLD) explainReasons.push(`Spread ${spreadPips.toFixed(1)}p > ${SPREAD_BLOCK_THRESHOLD}p`);
           else explainReasons.push("Ignition + low composite");
         } else if (isEdge) {
           discoveryRiskLabel = "EDGE_BOOST";
           discoveryMultiplier = EDGE_BOOST_MULTIPLIER;
-          explainReasons.push(`Edge candidate: ${session} ${regime} ${dir}`);
+          explainReasons.push(`Edge candidate: ${session} ${regime} long`);
         } else {
           discoveryRiskLabel = "REDUCED";
           discoveryMultiplier = BASELINE_REDUCTION_MULTIPLIER;
           explainReasons.push("Baseline reduction — not in edge environment");
         }
 
-        console.log(`[SCALP-TRADE] Discovery Risk: ${signal.pair} ${dir} → ${discoveryRiskLabel} (mult=${discoveryMultiplier}) env=${envKey}`);
-
         if (discoveryBlocked) {
-          // Log shadow evaluation even for blocked trades
           await supabase.from("oanda_orders").insert({
             user_id: USER_ID,
             signal_id: signalId,
-            currency_pair: signal.pair,
-            direction: signal.direction,
+            currency_pair: pair,
+            direction,
             units: 0,
-            confidence_score: signal.confidence,
-            agent_id: signal.agentId,
-            environment: "practice",
+            confidence_score: confidence,
+            agent_id: agentId,
+            environment: execConfig.oandaEnv,
             status: "discovery_blocked",
             session_label: session,
             regime_label: regime,
             gate_result: `DISCOVERY_BLOCKED:${discoveryRiskLabel}`,
-            gate_reasons: explainReasons.length > 0 ? explainReasons : [`Discovery Risk: ${discoveryRiskLabel}`],
+            gate_reasons: explainReasons,
             friction_score: gate.frictionScore,
-            governance_payload: { envKey, discoveryRiskLabel, adaptiveEdgeEnabled: ADAPTIVE_EDGE_ENABLED, explainReasons },
+            governance_payload: {
+              envKey, discoveryRiskLabel,
+              adaptiveEdgeEnabled: ADAPTIVE_EDGE_ENABLED,
+              explainReasons,
+              agentTier: agentTier,
+              agentSizeMultiplier: agentSizeMult,
+              longOnly: true,
+            },
           });
 
           results.push({
-            pair: signal.pair, direction: signal.direction,
-            status: "discovery_blocked", govState,
-            gateResult: `DISCOVERY_BLOCKED`, frictionScore: gate.frictionScore,
+            pair, direction, status: "discovery_blocked", govState,
+            gateResult: "DISCOVERY_BLOCKED", frictionScore: gate.frictionScore,
+            agentId, effectiveTier: agentTier,
           });
           continue;
         }
-      } else if (!ADAPTIVE_EDGE_ENABLED && !forceMode) {
-        // Kill-switch active — force multiplier to 1.0
-        discoveryMultiplier = 1.0;
-        discoveryRiskLabel = "NORMAL";
-        explainReasons.push("Adaptive Edge disabled (kill-switch)");
       }
 
-      // ─── Dynamic Position Sizing (governance + pair + session + discovery aware) ───
+      // ─── Dynamic Position Sizing (governance + pair + session + agent snapshot) ───
       const baseTradeUnits = computePositionSize(
-        signal.pair, accountBalance, signal.confidence,
-        govConfig, pairAlloc as PairRollingMetrics, sessionBudget
+        pair, accountBalance, confidence,
+        govConfig, pairAlloc as PairRollingMetrics, sessionBudget,
+        agentSizeMult
       );
       const tradeUnits = Math.max(500, Math.round(baseTradeUnits * discoveryMultiplier));
-      console.log(`[SCALP-TRADE] ${signal.pair}: sized ${tradeUnits}u (gov=${govConfig.sizingMultiplier}, pair=${pairAlloc.capitalMultiplier?.toFixed(2)}, session=${sessionBudget.capitalBudgetPct}, discovery=${discoveryMultiplier})`);
 
-      // ─── Insert with telemetry fields ───
+      console.log(`[SCALP-TRADE] ${pair}: sized ${tradeUnits}u (gov=${govConfig.sizingMultiplier}, pair=${(pairAlloc as PairRollingMetrics).capitalMultiplier?.toFixed(2)}, session=${sessionBudget.capitalBudgetPct}, agent=${agentSizeMult}, discovery=${discoveryMultiplier})`);
+
+      // ─── Determine execution environment ───
+      const executionEnv = execConfig.oandaEnv;
+      const shouldExecute = execConfig.oandaEnv === "practice" || execConfig.liveTradingEnabled;
+
+      // ─── Insert order record ───
       const { data: order, error: insertErr } = await supabase
         .from("oanda_orders")
         .insert({
           user_id: USER_ID,
           signal_id: signalId,
-          currency_pair: signal.pair,
-          direction: signal.direction,
+          currency_pair: pair,
+          direction, // ALWAYS "long"
           units: tradeUnits,
-          confidence_score: signal.confidence,
-          agent_id: signal.agentId,
-          environment: "practice",
-          status: "submitted",
+          confidence_score: confidence,
+          agent_id: agentId,
+          environment: executionEnv,
+          status: shouldExecute ? "submitted" : "shadow_eval",
           idempotency_key: idempotencyKey,
           session_label: session,
           regime_label: regime,
@@ -1086,6 +1290,12 @@ Deno.serve(async (req) => {
             explainReasons,
             baseUnits: baseTradeUnits,
             finalUnits: tradeUnits,
+            agentTier: agentTier,
+            agentSizeMultiplier: agentSizeMult,
+            longOnly: true,
+            effectiveTier: agentTier,
+            deploymentState: selectedAgent?.deploymentState || "unknown",
+            constraints: selectedAgent?.constraints || [],
           },
         })
         .select()
@@ -1093,48 +1303,47 @@ Deno.serve(async (req) => {
 
       if (insertErr) {
         if (insertErr.code === "23505") {
-          console.log(`[SCALP-TRADE] Idempotency conflict for ${signal.pair} — skipping`);
-          results.push({ pair: signal.pair, direction: signal.direction, status: "idempotency_conflict" });
+          results.push({ pair, direction, status: "idempotency_conflict", agentId });
           continue;
         }
         console.error(`[SCALP-TRADE] DB insert error:`, insertErr);
-        results.push({ pair: signal.pair, direction: signal.direction, status: "db_error", error: insertErr.message });
+        results.push({ pair, direction, status: "db_error", error: insertErr.message, agentId });
         continue;
       }
 
-      // ═══ HARD SAFETY: Long-Only execution block (belt + suspenders) ═══
-      const LONG_ONLY_ENABLED = Deno.env.get("FOREX_LONG_ONLY") === "true";
-      if (LONG_ONLY_ENABLED && signal.direction === "short") {
-        console.warn(`[SCALP-TRADE] HARD BLOCK: Long-Only mode — refusing short on ${signal.pair}`);
+      // ═══ R1 DOUBLE-LOCK: Final long-only hard block at OANDA submission ═══
+      // This should NEVER trigger because direction is always "long" above,
+      // but exists as an absolute safety net.
+      if (direction !== "long") {
+        console.error(`[SCALP-TRADE] CRITICAL: Non-long direction detected at submission layer: ${direction}`);
         await supabase
           .from("oanda_orders")
           .update({
             status: "blocked",
-            error_message: "long_only_block: short trade blocked at execution layer",
-            gate_result: "LONG_ONLY_BLOCK",
-            gate_reasons: ["Long-only mode enabled: short trades blocked at execution (hard safety)"],
-            governance_payload: {
-              ...(order.governance_payload as Record<string, unknown> || {}),
-              longOnlyBlock: true,
-              blockedDirection: "short",
-              mode: "LONG_ONLY",
-            },
+            error_message: "long_only_hard_block: impossible short at submission layer",
+            gate_result: "LONG_ONLY_HARD_BLOCK",
+            gate_reasons: ["CRITICAL: Long-only hard block — short trade blocked at final submission layer"],
           })
           .eq("id", order.id);
+        results.push({ pair, direction, status: "blocked", error: "long_only_hard_block", agentId });
+        continue;
+      }
 
+      if (!shouldExecute) {
+        console.log(`[SCALP-TRADE] ${pair}: shadow_eval (live trading disabled)`);
         results.push({
-          pair: signal.pair, direction: signal.direction,
-          status: "blocked", govState,
-          error: "long_only_block",
+          pair, direction, status: "shadow_eval", units: tradeUnits,
+          agentId, effectiveTier: agentTier, sizeMultiplier: agentSizeMult,
         });
         continue;
       }
 
       try {
-        const signedUnits = signal.direction === "short" ? -tradeUnits : tradeUnits;
+        const signedUnits = tradeUnits; // Always positive because always long
         const oandaResult = await oandaRequest(
           "/v3/accounts/{accountId}/orders", "POST",
-          { order: { type: "MARKET", instrument: signal.pair, units: signedUnits.toString(), timeInForce: "FOK", positionFill: "DEFAULT" } }
+          execConfig.oandaHost,
+          { order: { type: "MARKET", instrument: pair, units: signedUnits.toString(), timeInForce: "FOK", positionFill: "DEFAULT" } }
         ) as Record<string, Record<string, string>>;
 
         const fillLatencyMs = Date.now() - orderTimestamp;
@@ -1150,10 +1359,10 @@ Deno.serve(async (req) => {
         const errorMsg = wasCancelled ? `OANDA: ${cancelReason}` : null;
 
         const requestedPrice = filledPrice;
-        const spreadAtEntry = halfSpread != null ? halfSpread * 2 : (PAIR_BASE_SPREADS[signal.pair] || 1.0) * 0.0001;
+        const spreadAtEntry = halfSpread != null ? halfSpread * 2 : (PAIR_BASE_SPREADS[pair] || 1.0) * 0.0001;
         const slippagePips = wasCancelled ? null : Math.random() * 0.3;
 
-        const baseSpread = PAIR_BASE_SPREADS[signal.pair] || 1.0;
+        const baseSpread = PAIR_BASE_SPREADS[pair] || 1.0;
         const execQuality = wasCancelled ? 0 : scoreExecution(
           slippagePips || 0, fillLatencyMs,
           spreadAtEntry * 10000, baseSpread
@@ -1176,15 +1385,15 @@ Deno.serve(async (req) => {
           .eq("id", order.id);
 
         results.push({
-          pair: signal.pair, direction: signal.direction, status: finalStatus,
+          pair, direction, status: finalStatus,
           units: tradeUnits,
           gateResult: gate.result, frictionScore: gate.frictionScore,
           slippage: slippagePips || undefined, executionQuality: execQuality,
-          error: errorMsg || undefined, pairCapitalMult: pairAlloc.capitalMultiplier,
-          govState,
+          error: errorMsg || undefined, pairCapitalMult: (pairAlloc as PairRollingMetrics).capitalMultiplier,
+          govState, agentId, effectiveTier: agentTier, sizeMultiplier: agentSizeMult,
         });
 
-        console.log(`[SCALP-TRADE] ${signal.pair}: ${finalStatus} | ${tradeUnits}u | latency=${fillLatencyMs}ms | quality=${execQuality} | slip=${slippagePips?.toFixed(3) || 'N/A'}`);
+        console.log(`[SCALP-TRADE] ${pair}: ${finalStatus} | ${tradeUnits}u | agent=${agentId}(${agentTier}) | quality=${execQuality}`);
       } catch (oandaErr) {
         const errMsg = (oandaErr as Error).message;
         const isMarketHalted = errMsg.includes('MARKET_HALTED');
@@ -1200,10 +1409,10 @@ Deno.serve(async (req) => {
           .eq("id", order.id);
 
         results.push({
-          pair: signal.pair, direction: signal.direction, status: "rejected",
-          error: errMsg, govState,
+          pair, direction, status: "rejected",
+          error: errMsg, govState, agentId,
         });
-        console.error(`[SCALP-TRADE] ${signal.pair} failed (${isTransient ? 'transient' : 'permanent'}):`, errMsg);
+        console.error(`[SCALP-TRADE] ${pair} failed (${isTransient ? 'transient' : 'permanent'}):`, errMsg);
 
         if (isMarketHalted) {
           console.warn(`[SCALP-TRADE] Market halted — skipping remaining signals`);
@@ -1219,18 +1428,35 @@ Deno.serve(async (req) => {
     const gated = results.filter(r => r.status === "gated").length;
     const rejected = results.filter(r => r.status === "rejected").length;
     const pairBanned = results.filter(r => r.status === "pair-banned").length;
-    const pairRestricted = results.filter(r => r.status === "pair-restricted").length;
+    const discoveryBlocked = results.filter(r => r.status === "discovery_blocked").length;
+    const shadowEvals = results.filter(r => r.status === "shadow_eval").length;
 
-    console.log(`[SCALP-TRADE] ═══ Complete: ${results.length} signals | ${passed} filled | ${gated} gated | ${rejected} rejected | ${pairBanned} banned | ${pairRestricted} restricted | ${elapsed}ms ═══`);
-    console.log(`[SCALP-TRADE] Governance: ${govState} | Session: ${sessionBudget.label} | Regime: ${regime}`);
+    console.log(`[SCALP-TRADE] ═══ Complete: ${results.length} signals | ${passed} filled | ${gated} gated | ${rejected} rejected | ${pairBanned} banned | ${discoveryBlocked} disc_blocked | ${shadowEvals} shadow | ${elapsed}ms ═══`);
 
     return new Response(
       JSON.stringify({
         success: true,
-        mode: "adaptive-governance",
+        mode: "snapshot-driven",
+        executionConfig: {
+          oandaEnv: execConfig.oandaEnv,
+          liveTradingEnabled: execConfig.liveTradingEnabled,
+          longOnly: true,
+        },
         governanceState: govState,
         session: sessionBudget.label,
         regime,
+        agentSnapshot: {
+          total: snapshot.totalAgents,
+          eligible: snapshot.eligibleCount,
+          shadow: snapshot.shadowCount,
+          disabled: snapshot.disabledCount,
+          agents: snapshot.eligibleAgents.map(a => ({
+            id: a.agentId,
+            tier: a.effectiveTier,
+            state: a.deploymentState,
+            size: a.sizeMultiplier,
+          })),
+        },
         governance: {
           state: govState,
           config: {
@@ -1240,19 +1466,11 @@ Deno.serve(async (req) => {
             pairRestriction: govConfig.pairRestriction,
           },
           reasons: degradation?.stateReasons || [],
-          windows: degradation ? {
-            w20: { winRate: degradation.windows.w20.winRate, expectancy: degradation.windows.w20.expectancy, captureRatio: degradation.windows.w20.captureRatio },
-            w50: { winRate: degradation.windows.w50.winRate, expectancy: degradation.windows.w50.expectancy, captureRatio: degradation.windows.w50.captureRatio },
-            w200: { winRate: degradation.windows.w200.winRate, expectancy: degradation.windows.w200.expectancy, captureRatio: degradation.windows.w200.captureRatio },
-          } : null,
           bannedPairs: degradation?.bannedPairs || [],
           restrictedPairs: degradation?.restrictedPairs || [],
           promotedPairs: degradation?.promotedPairs || [],
-          shadowCandidates: shadowCandidates.map(c => ({
-            id: c.id, eligible: c.eligible, improvementPct: c.improvementPct, reason: c.reason,
-          })),
         },
-        summary: { total: results.length, filled: passed, gated, rejected, pairBanned, pairRestricted },
+        summary: { total: results.length, filled: passed, gated, rejected, pairBanned, discoveryBlocked, shadowEvals },
         signals: results,
         elapsed,
       }),
