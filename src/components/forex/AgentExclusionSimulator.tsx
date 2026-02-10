@@ -1,11 +1,14 @@
 // Agent Exclusion Simulator — "What-if" dashboard
 // Toggle agents on/off to see how edge health metrics would change
+// Uses canonical agentStateResolver for effective tier display
 import { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/integrations/supabase/client';
 import { ALL_AGENT_IDS, AGENT_DEFINITIONS } from '@/lib/agents/agentConfig';
 import type { AgentId } from '@/lib/agents/types';
 import type { HealthColor } from '@/hooks/useEdgeHealthStats';
+import { resolveAgentStatesFromStats, type AgentEffectiveState } from '@/lib/agents/agentStateResolver';
+import { EffectiveTierBadge, PostRescueMetricsNote } from './AgentStateBadges';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Badge } from '@/components/ui/badge';

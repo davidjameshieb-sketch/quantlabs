@@ -1,5 +1,6 @@
 // Agent Optimization Dashboard
 // Displays AgentScorecards, retune proposals, and edge portfolio status.
+// Uses canonical agentStateResolver as single source of truth.
 
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { motion } from 'framer-motion';
@@ -22,6 +23,14 @@ import {
   buildEdgePortfolio, type EdgePortfolio, type AgentEdgeProfile
 } from '@/lib/forex/portfolioAllocator';
 import { TierBRescueDashboard } from './TierBRescueDashboard';
+import {
+  resolveAgentStatesFromStats, getAllAgentStates,
+  type AgentEffectiveState, type EffectiveTier,
+} from '@/lib/agents/agentStateResolver';
+import {
+  EffectiveTierBadge, AgentBadgeRow, DeploymentStateIcon,
+  StabilityScoreBar, PostRescueMetricsNote, LegacyStateWarningBanner,
+} from './AgentStateBadges';
 
 // ─── Tier Badge ──────────────────────────────────────────────────────
 
@@ -170,6 +179,7 @@ export function AgentOptimizationDashboard() {
   const { user } = useAuth();
   const [scorecards, setScorecards] = useState<AgentScorecard[]>([]);
   const [proposals, setProposals] = useState<Map<string, RetuneProposal>>(new Map());
+  const [agentStates, setAgentStates] = useState<AgentEffectiveState[]>([]);
   const [loading, setLoading] = useState(true);
   const [tradeCount, setTradeCount] = useState(0);
   const [expandedAgent, setExpandedAgent] = useState<string | null>(null);
@@ -329,12 +339,23 @@ export function AgentOptimizationDashboard() {
       }
       setProposals(propMap);
 
-      // Initialize deployment ladder
-      const tierA = cards.filter(c => c.tier === 'A').map(c => c.agentId);
-      const tierB = cards.filter(c => c.tier === 'B').map(c => c.agentId);
-      const tierC = cards.filter(c => c.tier === 'C').map(c => c.agentId);
-      const tierD = cards.filter(c => c.tier === 'D').map(c => c.agentId);
-      initializeDeployments(tierA, tierB, tierC, tierD);
+      // ═══ Resolve effective states via canonical resolver ═══
+      const rpcStats = (stats as any[]).map((s: any) => ({
+        agent_id: s.agent_id,
+        total_trades: Number(s.total_trades) || 0,
+        win_count: Number(s.win_count) || 0,
+        net_pips: Number(s.net_pips) || 0,
+        gross_profit: Number(s.gross_profit) || 0,
+        gross_loss: Number(s.gross_loss) || 0,
+        long_count: Number(s.long_count) || 0,
+        long_wins: Number(s.long_wins) || 0,
+        long_net: Number(s.long_net) || 0,
+        short_count: Number(s.short_count) || 0,
+        short_wins: Number(s.short_wins) || 0,
+        short_net: Number(s.short_net) || 0,
+      }));
+      const resolved = resolveAgentStatesFromStats(rpcStats);
+      setAgentStates(resolved);
 
     } catch (err) {
       console.error('Agent optimization error:', err);
@@ -360,11 +381,24 @@ export function AgentOptimizationDashboard() {
     return buildEdgePortfolio(profiles);
   }, [scorecards]);
 
-  const tierCounts = useMemo(() => {
-    const counts = { A: 0, B: 0, C: 0, D: 0 };
-    for (const sc of scorecards) counts[sc.tier]++;
+  const effectiveTierCounts = useMemo(() => {
+    const counts = { A: 0, 'B-Rescued': 0, 'B-Shadow': 0, 'B-Promotable': 0, C: 0, D: 0 };
+    for (const s of agentStates) {
+      if (s.effectiveTier === 'A') counts.A++;
+      else if (s.effectiveTier === 'B-Rescued') counts['B-Rescued']++;
+      else if (s.effectiveTier === 'B-Shadow') counts['B-Shadow']++;
+      else if (s.effectiveTier === 'B-Promotable') counts['B-Promotable']++;
+      else if (s.effectiveTier === 'C') counts.C++;
+      else counts.D++;
+    }
     return counts;
-  }, [scorecards]);
+  }, [agentStates]);
+
+  const stateMap = useMemo(() => {
+    const m = new Map<string, AgentEffectiveState>();
+    for (const s of agentStates) m.set(s.agentId, s);
+    return m;
+  }, [agentStates]);
 
   if (loading) {
     return (
@@ -386,31 +420,35 @@ export function AgentOptimizationDashboard() {
             <Shield className="w-4 h-4 text-primary" />
             Agent Optimization Director
             <span className="text-[10px] text-muted-foreground font-normal ml-2">
-              {tradeCount.toLocaleString()} trades · {scorecards.length} agents analyzed
+              {tradeCount.toLocaleString()} trades · {scorecards.length} agents · Effective State
             </span>
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+          <div className="grid grid-cols-3 md:grid-cols-6 gap-3">
             <div className="text-center">
-              <div className="text-lg font-bold text-emerald-400">{tierCounts.A}</div>
+              <div className="text-lg font-bold text-emerald-400">{effectiveTierCounts.A}</div>
               <div className="text-[10px] text-muted-foreground">Tier A — Deploy</div>
             </div>
             <div className="text-center">
-              <div className="text-lg font-bold text-amber-400">{tierCounts.B}</div>
-              <div className="text-[10px] text-muted-foreground">Tier B — Shadow</div>
+              <div className="text-lg font-bold text-lime-400">{effectiveTierCounts['B-Rescued']}</div>
+              <div className="text-[10px] text-muted-foreground">B-Rescued</div>
             </div>
             <div className="text-center">
-              <div className="text-lg font-bold text-orange-400">{tierCounts.C}</div>
-              <div className="text-[10px] text-muted-foreground">Tier C — Restrict</div>
+              <div className="text-lg font-bold text-emerald-400">{effectiveTierCounts['B-Promotable']}</div>
+              <div className="text-[10px] text-muted-foreground">B-Promotable</div>
             </div>
             <div className="text-center">
-              <div className="text-lg font-bold text-red-400">{tierCounts.D}</div>
-              <div className="text-[10px] text-muted-foreground">Tier D — Disable</div>
+              <div className="text-lg font-bold text-yellow-400">{effectiveTierCounts['B-Shadow']}</div>
+              <div className="text-[10px] text-muted-foreground">B-Shadow</div>
             </div>
             <div className="text-center">
-              {portfolio && <HealthBadge status={portfolio.healthStatus} reason={portfolio.healthReason} />}
-              <div className="text-[10px] text-muted-foreground mt-1">Portfolio Health</div>
+              <div className="text-lg font-bold text-orange-400">{effectiveTierCounts.C}</div>
+              <div className="text-[10px] text-muted-foreground">Tier C</div>
+            </div>
+            <div className="text-center">
+              <div className="text-lg font-bold text-red-400">{effectiveTierCounts.D}</div>
+              <div className="text-[10px] text-muted-foreground">Tier D</div>
             </div>
           </div>
         </CardContent>
@@ -440,21 +478,22 @@ export function AgentOptimizationDashboard() {
                 <TableHeader>
                   <TableRow>
                     <TableHead className="text-[10px]">Agent</TableHead>
-                    <TableHead className="text-[10px]">Tier</TableHead>
+                    <TableHead className="text-[10px]">Effective State</TableHead>
                     <TableHead className="text-[10px] text-right">Trades</TableHead>
                     <TableHead className="text-[10px] text-right">Net Pips</TableHead>
                     <TableHead className="text-[10px] text-right">WR</TableHead>
                     <TableHead className="text-[10px] text-right">Exp</TableHead>
                     <TableHead className="text-[10px] text-right">PF</TableHead>
-                    <TableHead className="text-[10px] text-right">Sharpe</TableHead>
-                    <TableHead className="text-[10px] text-right">MaxDD</TableHead>
-                    <TableHead className="text-[10px] text-right">Sessions</TableHead>
-                    <TableHead className="text-[10px] text-right">OOS</TableHead>
+                    <TableHead className="text-[10px] text-right">Stability</TableHead>
+                    <TableHead className="text-[10px] text-right">Deploy</TableHead>
                     <TableHead className="text-[10px]"></TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {scorecards.map(sc => (
+                  {scorecards.map(sc => {
+                    const es = stateMap.get(sc.agentId);
+                    const m = es?.effectiveMetrics || { winRate: sc.winRate, expectancy: sc.expectancy, profitFactor: sc.profitFactor, netPips: sc.netPips, eligibleTrades: sc.totalTrades };
+                    return (
                     <>
                       <TableRow
                         key={sc.agentId}
@@ -462,27 +501,20 @@ export function AgentOptimizationDashboard() {
                         onClick={() => setExpandedAgent(expandedAgent === sc.agentId ? null : sc.agentId)}
                       >
                         <TableCell className="text-xs font-mono">{sc.agentId}</TableCell>
-                        <TableCell><TierBadge tier={sc.tier} /></TableCell>
-                        <TableCell className="text-right text-xs">{sc.totalTrades.toLocaleString()}</TableCell>
-                        <TableCell className={`text-right text-xs font-mono ${sc.netPips > 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                          {sc.netPips > 0 ? '+' : ''}{sc.netPips.toFixed(0)}
+                        <TableCell>{es ? <AgentBadgeRow state={es} maxBadges={2} /> : <TierBadge tier={sc.tier} />}</TableCell>
+                        <TableCell className="text-right text-xs">{m.eligibleTrades.toLocaleString()}{es?.rescued && <span className="text-[8px] text-muted-foreground ml-1">/{sc.totalTrades}</span>}</TableCell>
+                        <TableCell className={`text-right text-xs font-mono ${m.netPips > 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                          {m.netPips > 0 ? '+' : ''}{m.netPips.toFixed(0)}
                         </TableCell>
-                        <TableCell className="text-right text-xs">{(sc.winRate * 100).toFixed(1)}%</TableCell>
-                        <TableCell className={`text-right text-xs font-mono ${sc.expectancy > 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                          {sc.expectancy.toFixed(3)}
+                        <TableCell className="text-right text-xs">{(m.winRate * 100).toFixed(1)}%</TableCell>
+                        <TableCell className={`text-right text-xs font-mono ${m.expectancy > 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                          {m.expectancy.toFixed(3)}{es?.rescued && <PostRescueMetricsNote state={es} />}
                         </TableCell>
-                        <TableCell className={`text-right text-xs font-mono ${sc.profitFactor >= 1.1 ? 'text-emerald-400' : 'text-red-400'}`}>
-                          {sc.profitFactor.toFixed(2)}
+                        <TableCell className={`text-right text-xs font-mono ${m.profitFactor >= 1.1 ? 'text-emerald-400' : 'text-red-400'}`}>
+                          {m.profitFactor.toFixed(2)}
                         </TableCell>
-                        <TableCell className="text-right text-xs font-mono">{sc.sharpe.toFixed(2)}</TableCell>
-                        <TableCell className="text-right text-xs font-mono">{sc.maxDrawdown.toFixed(0)}</TableCell>
-                        <TableCell className="text-right text-xs">{sc.sessionCoverage}/5</TableCell>
-                        <TableCell className="text-right">
-                          {sc.oosHolds
-                            ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 inline" />
-                            : <XCircle className="w-3.5 h-3.5 text-red-400 inline" />
-                          }
-                        </TableCell>
+                        <TableCell className="text-right">{es ? <StabilityScoreBar score={es.stabilityScore} /> : '—'}</TableCell>
+                        <TableCell className="text-right">{es ? <DeploymentStateIcon state={es} /> : '—'}</TableCell>
                         <TableCell>
                           {expandedAgent === sc.agentId
                             ? <ChevronUp className="w-3.5 h-3.5" />
@@ -492,13 +524,14 @@ export function AgentOptimizationDashboard() {
                       </TableRow>
                       {expandedAgent === sc.agentId && (
                         <TableRow key={`${sc.agentId}-detail`}>
-                          <TableCell colSpan={12} className="p-0">
+                          <TableCell colSpan={10} className="p-0">
                             <ScorecardDetail sc={sc} proposal={proposals.get(sc.agentId) || null} />
                           </TableCell>
                         </TableRow>
                       )}
                     </>
-                  ))}
+                    );
+                  })}
                 </TableBody>
               </Table>
             </CardContent>
