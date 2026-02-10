@@ -4,7 +4,7 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
 import { LongOnlyFilterProvider } from '@/contexts/LongOnlyFilterContext';
 import { motion } from 'framer-motion';
-import { Globe, TrendingUp, Crosshair, BarChart3, FlaskConical, ShieldCheck, SplitSquareHorizontal, PieChart, Shield, HeartPulse, Radar, Filter, Rocket, ShieldAlert, Brain, GitBranch, UserX, Wrench, Target, Beaker, Crown, Users, Zap, GraduationCap } from 'lucide-react';
+import { Globe, TrendingUp, Crosshair, BarChart3, FlaskConical, ShieldCheck, SplitSquareHorizontal, PieChart, Shield, HeartPulse, Radar, Filter, Rocket, ShieldAlert, Brain, GitBranch, UserX, Wrench, Target, Beaker, Crown, Users, Zap, GraduationCap, Activity } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { DashboardLayout } from '@/components/dashboard/DashboardLayout';
 import { ForexPerformanceOverview } from '@/components/forex/ForexPerformanceOverview';
@@ -50,6 +50,7 @@ import { AgentLiveOptimizationDashboard } from '@/components/forex/AgentLiveOpti
 import { CoalitionsDashboard } from '@/components/forex/CoalitionsDashboard';
 import { ExplosiveGrowthDashboard } from '@/components/forex/ExplosiveGrowthDashboard';
 import { UsdCadLearningDashboard } from '@/components/forex/UsdCadLearningDashboard';
+import { IndicatorComparisonDashboard } from '@/components/forex/indicators/IndicatorComparisonDashboard';
 import { LiveTradingProofPanel } from '@/components/forex/EnvironmentGuards';
 import { LazyTabContent } from '@/components/forex/LazyTabContent';
 import {
@@ -194,6 +195,7 @@ const ForexDashboard = () => {
             <TabsTrigger value="coalitions" className="text-xs gap-1.5"><Users className="w-3.5 h-3.5" />Coalitions</TabsTrigger>
             <TabsTrigger value="explosive" className="text-xs gap-1.5"><Zap className="w-3.5 h-3.5" />Explosive Growth</TabsTrigger>
             <TabsTrigger value="usdcad-learning" className="text-xs gap-1.5"><GraduationCap className="w-3.5 h-3.5" />USD/CAD Learning</TabsTrigger>
+            <TabsTrigger value="indicators" className="text-xs gap-1.5"><Activity className="w-3.5 h-3.5" />Indicators</TabsTrigger>
           </TabsList>
 
           {/* Focus Pairs — loads immediately */}
@@ -374,6 +376,12 @@ const ForexDashboard = () => {
           <TabsContent value="usdcad-learning" className="space-y-4">
             <LazyTabContent label="USD/CAD Learning">
               <UsdCadLearningDashboard />
+            </LazyTabContent>
+          </TabsContent>
+
+          <TabsContent value="indicators" className="space-y-4">
+            <LazyTabContent label="Indicators">
+              <IndicatorComparisonDashboard />
             </LazyTabContent>
           </TabsContent>
         </Tabs>

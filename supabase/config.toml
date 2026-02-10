@@ -38,3 +38,6 @@ verify_jwt = false
 
 [functions.compute-snapshot]
 verify_jwt = false
+
+[functions.forex-indicators]
+verify_jwt = false
