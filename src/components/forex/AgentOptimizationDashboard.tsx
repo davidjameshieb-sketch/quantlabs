@@ -175,7 +175,6 @@ export function AgentOptimizationDashboard() {
 
   // Fetch all trades via paginated queries
   const fetchTrades = useCallback(async () => {
-    if (!user) return;
     setLoading(true);
     try {
       const allTrades: TradeRecord[] = [];
@@ -187,7 +186,6 @@ export function AgentOptimizationDashboard() {
         const { data, error } = await supabase
           .from('oanda_orders')
           .select('agent_id, direction, currency_pair, entry_price, exit_price, session_label, regime_label, spread_at_entry, governance_composite, confidence_score, created_at')
-          .eq('user_id', user.id)
           .in('status', ['filled', 'closed'])
           .not('entry_price', 'is', null)
           .not('exit_price', 'is', null)
@@ -231,7 +229,7 @@ export function AgentOptimizationDashboard() {
     } finally {
       setLoading(false);
     }
-  }, [user]);
+  }, []);
 
   useEffect(() => { fetchTrades(); }, [fetchTrades]);
 
