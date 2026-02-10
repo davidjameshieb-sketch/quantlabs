@@ -143,6 +143,7 @@ const ForexDashboard = () => {
                   Forex Trade Intelligence
                 </h1>
                 <IntelligenceModeBadge />
+                <LongOnlyBadge />
               </div>
               <p className="text-muted-foreground text-sm">
                 Isolated forex-only performance tracking — OANDA-aligned execution intelligence.
@@ -339,6 +340,9 @@ const ForexDashboard = () => {
 
           <TabsContent value="governance" className="space-y-4">
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+              <LongOnlySettingsPanel />
+            </motion.div>
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 }}>
               <AdaptiveGovernancePanel data={governanceDashboard} />
             </motion.div>
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}>
@@ -386,6 +390,7 @@ const ForexDashboard = () => {
           </TabsContent>
 
           <TabsContent value="health" className="space-y-4">
+            <LongOnlyBanner />
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
               <GovernanceHealthDashboard trades={filteredTrades} />
             </motion.div>
