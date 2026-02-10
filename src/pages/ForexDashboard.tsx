@@ -3,7 +3,7 @@
 
 import { useState, useMemo, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Globe, TrendingUp, Crosshair, BarChart3, FlaskConical, ShieldCheck, SplitSquareHorizontal, PieChart, Shield, HeartPulse, Radar, Filter, Rocket, ShieldAlert, Brain, GitBranch } from 'lucide-react';
+import { Globe, TrendingUp, Crosshair, BarChart3, FlaskConical, ShieldCheck, SplitSquareHorizontal, PieChart, Shield, HeartPulse, Radar, Filter, Rocket, ShieldAlert, Brain, GitBranch, UserX } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { DashboardLayout } from '@/components/dashboard/DashboardLayout';
 import { ForexPerformanceOverview } from '@/components/forex/ForexPerformanceOverview';
@@ -39,6 +39,7 @@ import { AgentPriorityReasoningPanel } from '@/components/forex/AgentPriorityRea
 import { AgentCollaborationDashboard } from '@/components/forex/AgentCollaborationDashboard';
 import { EnsembleHealthDashboard } from '@/components/forex/EnsembleHealthDashboard';
 import { BaselineVsEnsembleCard } from '@/components/forex/BaselineVsEnsembleCard';
+import { AgentExclusionSimulator } from '@/components/forex/AgentExclusionSimulator';
 import {
   generateForexTrades,
   filterForexTrades,
@@ -201,6 +202,9 @@ const ForexDashboard = () => {
             </TabsTrigger>
             <TabsTrigger value="ensemble" className="text-xs gap-1.5">
               <HeartPulse className="w-3.5 h-3.5" />Ensemble
+            </TabsTrigger>
+            <TabsTrigger value="agent-simulator" className="text-xs gap-1.5">
+              <UserX className="w-3.5 h-3.5" />Agent Simulator
             </TabsTrigger>
           </TabsList>
 
@@ -424,6 +428,11 @@ const ForexDashboard = () => {
             </motion.div>
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 }}>
               <EnsembleHealthDashboard />
+            </motion.div>
+          </TabsContent>
+          <TabsContent value="agent-simulator" className="space-y-4">
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+              <AgentExclusionSimulator />
             </motion.div>
           </TabsContent>
         </Tabs>
