@@ -309,12 +309,12 @@ const STATE_CONFIGS: Record<GovernanceState, GovernanceStateConfig> = {
     recoveryRequired: ["expectancy > 0.8 over 30 trades", "win rate > 60%", "no slippage drift"],
   },
   HALT: {
-    densityMultiplier: 0.0,
-    sizingMultiplier: 0.0,
-    frictionKOverride: 10.0,
+    densityMultiplier: 0.15,
+    sizingMultiplier: 0.35,
+    frictionKOverride: 5.5,
     pairRestriction: "top-performers",
-    sessionAggressiveness: { asian: 0.0, "london-open": 0.0, "ny-overlap": 0.0, "late-ny": 0.0, rollover: 0.0 },
-    recoveryRequired: ["manual review required", "20+ trades in shadow mode profitable"],
+    sessionAggressiveness: { asian: 0.0, "london-open": 0.3, "ny-overlap": 0.25, "late-ny": 0.0, rollover: 0.0 },
+    recoveryRequired: ["15-minute cooldown then auto-resume at reduced sizing"],
   },
 };
 
@@ -1002,10 +1002,13 @@ Deno.serve(async (req) => {
     // PHASE 1: Load Rolling Execution Data
     // ═══════════════════════════════════════════════════════════
 
+    const govEnv = execConfig.oandaEnv; // Only use orders from current environment for governance
     const { data: recentOrders } = await supabase
       .from("oanda_orders")
       .select("*")
       .eq("user_id", USER_ID)
+      .eq("environment", govEnv)
+      .neq("status", "system") // exclude cooldown markers
       .order("created_at", { ascending: false })
       .limit(250);
 
@@ -1027,29 +1030,60 @@ Deno.serve(async (req) => {
       console.log(`[SCALP-TRADE] Banned pairs: ${degradation.bannedPairs.join(", ") || "none"}`);
     }
 
-    // ─── HALT check (routes to shadow/backtest instead of full stop) ───
+    // ─── HALT check: 15-minute cooldown then auto-resume at reduced sizing ───
     if (govState === "HALT" && !forceMode) {
-      console.log(`[SCALP-TRADE] ═══ HALTED — routing to shadow evaluation ═══`);
-      // In HALT, we still log shadow evaluations so we can auto-resume
-      // This prevents "blocked everything forever"
-      const haltEnv = execConfig.oandaEnv === "live" ? "backtest" : "practice";
-      console.log(`[SCALP-TRADE] HALT reroute: orders will be logged as env=${haltEnv} with status=shadow_eval`);
+      // Check if we're within a 15-minute cooldown period
+      const HALT_COOLDOWN_MS = 15 * 60 * 1000; // 15 minutes
+      const { data: lastHaltOrder } = await supabase
+        .from("oanda_orders")
+        .select("created_at")
+        .eq("user_id", USER_ID)
+        .eq("gate_result", "HALT_COOLDOWN")
+        .order("created_at", { ascending: false })
+        .limit(1);
 
-      return new Response(
-        JSON.stringify({
-          success: false,
-          mode: "governance-halt",
-          governanceState: govState,
-          reasons: degradation?.stateReasons || [],
-          resumeConditions: STATE_CONFIGS.HALT.recoveryRequired,
-          agentSnapshot: {
-            eligible: snapshot.eligibleCount,
-            shadow: snapshot.shadowCount,
-            disabled: snapshot.disabledCount,
-          },
-        }),
-        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      const lastHaltTs = lastHaltOrder?.[0]?.created_at
+        ? new Date(lastHaltOrder[0].created_at).getTime()
+        : 0;
+      const timeSinceLastHalt = Date.now() - lastHaltTs;
+      const cooldownActive = timeSinceLastHalt < HALT_COOLDOWN_MS;
+
+      if (cooldownActive) {
+        const remainingMin = Math.ceil((HALT_COOLDOWN_MS - timeSinceLastHalt) / 60000);
+        console.log(`[SCALP-TRADE] ═══ HALT COOLDOWN: ${remainingMin}min remaining — skipping this cycle ═══`);
+        return new Response(
+          JSON.stringify({
+            success: true,
+            mode: "halt-cooldown",
+            governanceState: govState,
+            cooldownRemainingMin: remainingMin,
+            reasons: degradation?.stateReasons || [],
+          }),
+          { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      // Cooldown expired or first HALT occurrence — log cooldown marker and continue with reduced params
+      console.log(`[SCALP-TRADE] ═══ HALT RECALIBRATION: cooldown expired, resuming at reduced sizing (0.35x) ═══`);
+      console.log(`[SCALP-TRADE] State reasons: ${degradation?.stateReasons?.join(" | ")}`);
+
+      // Insert a cooldown marker so next invocations within 15 min will pause
+      await supabase.from("oanda_orders").insert({
+        user_id: USER_ID,
+        signal_id: `halt-cooldown-${Date.now()}`,
+        currency_pair: "SYSTEM",
+        direction: "long",
+        units: 0,
+        environment: execConfig.oandaEnv,
+        status: "system",
+        gate_result: "HALT_COOLDOWN",
+        gate_reasons: degradation?.stateReasons || [],
+        session_label: session,
+        regime_label: regime,
+      });
+
+      // Don't return — fall through to execute with HALT's reduced config (0.15x density, 0.35x sizing)
+      console.log(`[SCALP-TRADE] Proceeding with HALT-reduced parameters: density=${govConfig.densityMultiplier}, sizing=${govConfig.sizingMultiplier}`);
     }
 
     // ═══════════════════════════════════════════════════════════

@@ -85,16 +85,18 @@ function computeTrailingStop(
 
 // ─── OANDA API Helper ───
 
-async function oandaRequest(path: string, method: string, body?: Record<string, unknown>, environment = "practice"): Promise<Record<string, unknown>> {
-  const apiToken = environment === "live"
+async function oandaRequest(path: string, method: string, body?: Record<string, unknown>, environment = "live"): Promise<Record<string, unknown>> {
+  const env = Deno.env.get("OANDA_ENV") || "live";
+  const effectiveEnv = environment === "practice" ? env : environment; // always route through OANDA_ENV
+  const apiToken = effectiveEnv === "live"
     ? (Deno.env.get("OANDA_LIVE_API_TOKEN") || Deno.env.get("OANDA_API_TOKEN"))
     : Deno.env.get("OANDA_API_TOKEN");
-  const accountId = environment === "live"
+  const accountId = effectiveEnv === "live"
     ? (Deno.env.get("OANDA_LIVE_ACCOUNT_ID") || Deno.env.get("OANDA_ACCOUNT_ID"))
     : Deno.env.get("OANDA_ACCOUNT_ID");
   if (!apiToken || !accountId) throw new Error("OANDA credentials not configured");
 
-  const host = OANDA_HOSTS[environment] || OANDA_HOSTS.practice;
+  const host = OANDA_HOSTS[effectiveEnv] || OANDA_HOSTS.live;
   const url = `${host}${path.replace("{accountId}", accountId)}`;
   
   const headers: Record<string, string> = {

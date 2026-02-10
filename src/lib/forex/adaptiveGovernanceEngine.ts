@@ -34,10 +34,10 @@ export const GOVERNANCE_STATE_CONFIGS: Record<GovernanceState, GovernanceStateCo
     recoveryConditions: ["Expectancy > 0.8p over 30 trades", "Win rate > 60%", "No slippage drift"],
   },
   HALT: {
-    state: "HALT", label: "HALTED", color: "red",
-    densityMultiplier: 0.0, sizingMultiplier: 0.0, frictionK: 10.0,
+    state: "HALT", label: "Recalibrating", color: "orange",
+    densityMultiplier: 0.15, sizingMultiplier: 0.35, frictionK: 5.5,
     pairRestriction: "top-performers",
-    recoveryConditions: ["Manual review required", "20+ profitable shadow mode trades"],
+    recoveryConditions: ["15-min cooldown then auto-resume at 0.35x sizing", "Top-performers only"],
   },
 };
 
