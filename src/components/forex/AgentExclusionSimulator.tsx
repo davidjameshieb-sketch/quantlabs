@@ -1,8 +1,8 @@
 // Agent Exclusion Simulator — "What-if" dashboard
 // Toggle agents on/off to see how edge health metrics would change
-import { useState, useEffect, useCallback, useMemo } from 'react';
-import { supabase } from '@/integrations/supabase/client';
+import { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
+import { fetchAllOrders } from '@/lib/forex/fetchAllOrders';
 import { ALL_AGENT_IDS, AGENT_DEFINITIONS } from '@/lib/agents/agentConfig';
 import type { AgentId } from '@/lib/agents/types';
 import type { HealthColor } from '@/hooks/useEdgeHealthStats';
@@ -158,22 +158,18 @@ export const AgentExclusionSimulator = () => {
   const [enabledAgents, setEnabledAgents] = useState<Set<string>>(new Set());
   const [uniqueAgents, setUniqueAgents] = useState<string[]>([]);
 
-  // Fetch trades once
+  // Fetch trades once (paginated — no row limit)
   useEffect(() => {
     if (!user) return;
     (async () => {
       setLoading(true);
-      const { data, error } = await supabase
-        .from('oanda_orders')
-        .select('agent_id,currency_pair,direction,entry_price,exit_price,session_label,status')
-        .in('status', ['filled', 'closed'])
-        .not('entry_price', 'is', null)
-        .not('exit_price', 'is', null)
-        .eq('user_id', user.id)
-        .order('created_at', { ascending: false })
-        .limit(1000);
+      try {
+        const data = await fetchAllOrders({
+          userId: user.id,
+          select: 'agent_id,currency_pair,direction,entry_price,exit_price,session_label,status',
+        });
 
-      if (error || !data) { setLoading(false); return; }
+        if (!data || data.length === 0) { setLoading(false); return; }
 
       const rows: TradeRow[] = data
         .filter((o: any) => !EXCLUDED_AGENT_IDS.has(o.agent_id || 'unknown'))
@@ -193,7 +189,11 @@ export const AgentExclusionSimulator = () => {
       const agents = [...new Set([...registeredIds, ...dataIds])];
       setUniqueAgents(agents);
       setEnabledAgents(new Set(agents));
-      setLoading(false);
+      } catch (err) {
+        console.error('[AgentSim] Fetch error:', err);
+      } finally {
+        setLoading(false);
+      }
     })();
   }, [user]);
 

@@ -16,6 +16,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Progress } from '@/components/ui/progress';
 import { cn } from '@/lib/utils';
 import { supabase } from '@/integrations/supabase/client';
+import { useAuth } from '@/contexts/AuthContext';
+import { fetchAllOrders } from '@/lib/forex/fetchAllOrders';
 import { AGENT_DEFINITIONS } from '@/lib/agents/agentConfig';
 import { LearnMode } from '@/lib/agents/agentCollaborationEngine';
 import {
@@ -86,6 +88,7 @@ const MetricRow = ({ label, metrics }: { label: string; metrics: RollingMetrics 
 // ─── Main Component ──────────────────────────────────────────
 
 export const EnsembleHealthDashboard = () => {
+  const { user } = useAuth();
   const [health, setHealth] = useState<EnsembleHealthSnapshot | null>(null);
   const [contributions, setContributions] = useState<AgentContribution[]>([]);
   const [loading, setLoading] = useState(true);
@@ -93,20 +96,22 @@ export const EnsembleHealthDashboard = () => {
   const [showEnvBreakdown, setShowEnvBreakdown] = useState<string | null>(null);
 
   const fetchData = useCallback(async () => {
+    if (!user) return;
     setLoading(true);
     try {
-      const { data } = await supabase
-        .from('oanda_orders')
-        .select('agent_id, direction, currency_pair, entry_price, exit_price, status, created_at, confidence_score, session_label, governance_composite, environment, regime_label')
-        .eq('status', 'closed')
-        .not('agent_id', 'is', null)
-        .order('created_at', { ascending: false })
-        .limit(1000);
+      const data = await fetchAllOrders({
+        userId: user.id,
+        select: 'agent_id, direction, currency_pair, entry_price, exit_price, status, created_at, confidence_score, session_label, governance_composite, environment, regime_label',
+        statuses: ['closed'],
+      });
 
-      if (data && data.length > 0) {
-        const h = computeEnsembleHealth(data as any, learnMode);
+      // Filter out null agent_id rows
+      const filtered = data.filter((d: any) => d.agent_id != null);
+
+      if (filtered.length > 0) {
+        const h = computeEnsembleHealth(filtered as any, learnMode);
         setHealth(h);
-        const c = computeAgentContributions(data as any);
+        const c = computeAgentContributions(filtered as any);
         setContributions(c);
       }
     } catch (err) {
@@ -114,7 +119,7 @@ export const EnsembleHealthDashboard = () => {
     } finally {
       setLoading(false);
     }
-  }, [learnMode]);
+  }, [learnMode, user]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
