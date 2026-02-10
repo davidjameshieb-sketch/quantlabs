@@ -2,6 +2,7 @@
 // Agent Collaboration Dashboard — Execution Grade
 // Section 6 — Network Graph, Heatmap, Leaderboard, Veto Ranking
 // + Collaboration Impact Card (Section 6 addition)
+// Uses canonical agentStateResolver for effective tier display
 // ═══════════════════════════════════════════════════════════════
 
 import { useState, useEffect, useMemo, useCallback } from 'react';
@@ -33,6 +34,8 @@ import {
 } from '@/lib/agents/agentCollaborationRouter';
 import { CollaborationMaturityPanel } from './CollaborationMaturityPanel';
 import { AgentRelationshipPanel } from './AgentRelationshipPanel';
+import { getAllAgentStates, type AgentEffectiveState } from '@/lib/agents/agentStateResolver';
+import { EffectiveTierBadge } from './AgentStateBadges';
 
 // ─── Color helpers ───────────────────────────────────────────
 
@@ -119,6 +122,12 @@ export const AgentCollaborationDashboard = () => {
 
   const agentName = (id: string) => AGENT_DEFINITIONS[id as keyof typeof AGENT_DEFINITIONS]?.name || id;
   const agentIcon = (id: string) => AGENT_DEFINITIONS[id as keyof typeof AGENT_DEFINITIONS]?.icon || '🤖';
+  const agentStates = useMemo(() => {
+    const map = new Map<string, AgentEffectiveState>();
+    for (const s of getAllAgentStates()) map.set(s.agentId, s);
+    return map;
+  }, [snapshot]);
+  const getEffState = (id: string) => agentStates.get(id);
 
   const handleToggleWeighting = () => {
     const newVal = !safety.collaborationWeightingEnabled;
@@ -318,9 +327,11 @@ export const AgentCollaborationDashboard = () => {
               >
                 <span className="shrink-0">{agentIcon(pair.agentA)}</span>
                 <span className="font-medium w-24 truncate">{agentName(pair.agentA)}</span>
+                {getEffState(pair.agentA) && <EffectiveTierBadge tier={getEffState(pair.agentA)!.effectiveTier} />}
                 <span className="text-muted-foreground/50">↔</span>
                 <span className="shrink-0">{agentIcon(pair.agentB)}</span>
                 <span className="font-medium w-24 truncate">{agentName(pair.agentB)}</span>
+                {getEffState(pair.agentB) && <EffectiveTierBadge tier={getEffState(pair.agentB)!.effectiveTier} />}
                 <Badge variant="outline" className={cn('text-[8px] px-1.5 py-0', labelColor[pair.label])}>
                   {pair.label}
                 </Badge>

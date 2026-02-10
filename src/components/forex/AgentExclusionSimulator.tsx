@@ -304,6 +304,10 @@ export const AgentExclusionSimulator = () => {
           {agentImpacts.map(agent => {
             const enabled = enabledAgents.has(agent.id);
             const isHarming = agent.netPips < 0;
+            const stats = agentStatsMap.get(agent.id);
+            const allStatsArr = [...agentStatsMap.values()];
+            const resolved = stats ? resolveAgentStatesFromStats(allStatsArr) : [];
+            const es = resolved.find(s => s.agentId === agent.id);
             return (
               <label
                 key={agent.id}
@@ -326,14 +330,16 @@ export const AgentExclusionSimulator = () => {
                       style={{ backgroundColor: agent.color }}
                     />
                     <span className="text-[11px] font-medium truncate">{agent.name}</span>
+                    {es && <EffectiveTierBadge tier={es.effectiveTier} />}
                   </div>
                   <div className="flex items-center gap-2 mt-0.5 text-[9px] text-muted-foreground">
-                    <span>{agent.trades} trades</span>
-                    <span>WR {agent.winRate}%</span>
+                    <span>{es?.rescued ? `${es.effectiveMetrics.eligibleTrades}/${agent.trades}` : agent.trades} trades</span>
+                    <span>WR {es?.rescued ? (es.effectiveMetrics.winRate * 100).toFixed(1) : agent.winRate}%</span>
                     <span className={cn('font-mono font-bold', isHarming ? 'text-neural-red' : 'text-neural-green')}>
-                      {agent.netPips >= 0 ? '+' : ''}{agent.netPips}p
+                      {agent.netPips >= 0 ? '+' : ''}{es?.rescued ? es.effectiveMetrics.netPips.toFixed(0) : agent.netPips}p
                     </span>
-                    <span className="font-mono">PF {agent.pf}</span>
+                    <span className="font-mono">PF {es?.rescued ? es.effectiveMetrics.profitFactor.toFixed(2) : agent.pf}</span>
+                    {es?.rescued && <PostRescueMetricsNote state={es} />}
                   </div>
                 </div>
               </label>
