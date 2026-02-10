@@ -18,8 +18,18 @@ const OANDA_HOSTS = {
   live: "https://api-fxtrade.oanda.com",
 };
 
-// ─── FOCUS PAIRS: Only trade these until profitability is proven ───
-const FOCUS_PAIRS = ["EUR_USD", "USD_CAD"];
+// ─── CAPITAL DEPLOYMENT DIRECTIVE ───
+// Primary pair: full deployment, highest execution priority
+const PRIMARY_PAIR = "USD_CAD";
+// Secondary pairs: reduced allocation, conditional execution only
+const SECONDARY_PAIRS_ALLOWED = ["AUD_USD", "EUR_USD", "EUR_GBP"];
+// Combined focus list for pair selection
+const FOCUS_PAIRS = [PRIMARY_PAIR, ...SECONDARY_PAIRS_ALLOWED];
+// Sessions allowed for secondary pairs (London Open → NY Overlap ONLY)
+const SECONDARY_ALLOWED_SESSIONS: SessionWindow[] = ["london-open", "ny-overlap"];
+// Secondary pair multiplier range
+const SECONDARY_MULTIPLIER_MIN = 0.6;
+const SECONDARY_MULTIPLIER_MAX = 0.8;
 
 const SCALP_PAIRS = [
   "EUR_USD", "GBP_USD", "USD_JPY", "AUD_USD", "USD_CAD",
@@ -1270,16 +1280,28 @@ Deno.serve(async (req) => {
       const agentSizeMult = forceMode ? 1.0 : (selectedAgent?.sizeMultiplier || 1.0);
       const agentTier = forceMode ? "manual" : (selectedAgent?.effectiveTier || "unknown");
 
-      // ─── Pair selection: FOCUS PAIRS ONLY until profitability proven ───
-      const pair = forceMode
-        ? (reqBody.pair || "EUR_USD")
-        : FOCUS_PAIRS[Math.floor(Math.random() * FOCUS_PAIRS.length)];
+      // ─── Pair selection: weighted toward PRIMARY_PAIR ───
+      // Primary pair gets ~50% of signals, secondary pairs split remainder
+      let pair: string;
+      if (forceMode) {
+        pair = reqBody.pair || "USD_CAD";
+      } else {
+        const roll = Math.random();
+        if (roll < 0.50) {
+          pair = PRIMARY_PAIR; // 50% of signals → USD_CAD
+        } else {
+          pair = SECONDARY_PAIRS_ALLOWED[Math.floor(Math.random() * SECONDARY_PAIRS_ALLOWED.length)];
+        }
+      }
+
+      const isPrimaryPair = pair === PRIMARY_PAIR;
+      const isSecondaryPair = SECONDARY_PAIRS_ALLOWED.includes(pair);
 
       // ═══ R1: LONG-ONLY — direction is ALWAYS long ═══
       const direction: "long" = "long";
       const confidence = forceMode ? 90 : Math.round(60 + Math.random() * 35);
 
-      console.log(`[SCALP-TRADE] Signal ${i + 1}: ${direction.toUpperCase()} ${pair} | agent=${agentId}(${agentTier}) | size=${agentSizeMult}`);
+      console.log(`[SCALP-TRADE] Signal ${i + 1}: ${direction.toUpperCase()} ${pair} (${isPrimaryPair ? 'PRIMARY' : 'SECONDARY'}) | agent=${agentId}(${agentTier}) | size=${agentSizeMult}`);
 
       // ─── Pair Allocation Check ───
       const pairAlloc = pairAllocations[pair] || { banned: false, restricted: false, capitalMultiplier: 1.0 };
@@ -1287,6 +1309,61 @@ Deno.serve(async (req) => {
         console.log(`[SCALP-TRADE] ${pair}: BANNED`);
         results.push({ pair, direction, status: "pair-banned", pairCapitalMult: 0, govState, agentId, effectiveTier: agentTier });
         continue;
+      }
+
+      // ═══ SECONDARY PAIR GATES (Capital Deployment Directive §2) ═══
+      if (!forceMode && isSecondaryPair) {
+        // Gate 1: Session filter — London Open + NY Overlap ONLY
+        if (!SECONDARY_ALLOWED_SESSIONS.includes(session)) {
+          console.log(`[SCALP-TRADE] ${pair}: SECONDARY blocked — session ${session} not in [london-open, ny-overlap]`);
+          await supabase.from("oanda_orders").insert({
+            user_id: USER_ID,
+            signal_id: `secondary-session-block-${Date.now()}-${i}-${pair}`,
+            currency_pair: pair, direction, units: 0,
+            confidence_score: confidence, agent_id: agentId,
+            environment: execConfig.oandaEnv,
+            status: "secondary_blocked",
+            session_label: session, regime_label: regime,
+            gate_result: "SECONDARY_SESSION_BLOCK",
+            gate_reasons: [`Secondary pair ${pair} blocked: session ${session} not allowed (require london-open or ny-overlap)`],
+          });
+          results.push({ pair, direction, status: "secondary_session_blocked", govState, agentId });
+          continue;
+        }
+
+        // Gate 2: Pair performance check — auto-disable on degradation
+        const pm = pairAlloc as PairRollingMetrics;
+        const secondaryAutoDisable =
+          (pm.tradeCount >= 5 && pm.expectancy < 0) ||      // Negative expectancy
+          (pm.tradeCount >= 5 && pm.winRate < 0.40) ||       // Win rate collapsed
+          (pm.tradeCount >= 8 && (pm.netPnlPips / pm.tradeCount) < -1.0); // Severe P&L bleed
+
+        // Compute pair-level PF for auto-disable check
+        const pmGrossProfit = pm.netPnlPips > 0 ? pm.netPnlPips : 0;
+        const pmGrossLoss = pm.netPnlPips < 0 ? Math.abs(pm.netPnlPips) : 0.01;
+        const pmPF = pmGrossProfit / pmGrossLoss;
+
+        if (secondaryAutoDisable || (pm.tradeCount >= 5 && pmPF < 1.0)) {
+          console.log(`[SCALP-TRADE] ${pair}: SECONDARY auto-disabled — exp=${pm.expectancy.toFixed(2)}, WR=${(pm.winRate*100).toFixed(0)}%, PF=${pmPF.toFixed(2)}`);
+          await supabase.from("oanda_orders").insert({
+            user_id: USER_ID,
+            signal_id: `secondary-degrade-block-${Date.now()}-${i}-${pair}`,
+            currency_pair: pair, direction, units: 0,
+            confidence_score: confidence, agent_id: agentId,
+            environment: execConfig.oandaEnv,
+            status: "secondary_degraded",
+            session_label: session, regime_label: regime,
+            gate_result: "SECONDARY_DEGRADATION_BLOCK",
+            gate_reasons: [
+              `Secondary pair ${pair} auto-disabled: exp=${pm.expectancy.toFixed(2)}p, WR=${(pm.winRate*100).toFixed(0)}%, PF=${pmPF.toFixed(2)}`,
+              secondaryAutoDisable ? "Performance below minimum thresholds" : "Profit Factor < 1.0",
+            ],
+          });
+          results.push({ pair, direction, status: "secondary_degraded", govState, agentId });
+          continue;
+        }
+
+        // Gate 3: Cap multiplier applied later in position sizing
       }
 
       if (!forceMode && govConfig.pairRestriction === "majors-only" && !SCALP_PAIRS.includes(pair)) {
@@ -1434,9 +1511,23 @@ Deno.serve(async (req) => {
         govConfig, pairAlloc as PairRollingMetrics, sessionBudget,
         agentSizeMult
       );
-      const tradeUnits = Math.max(500, Math.round(baseTradeUnits * discoveryMultiplier));
 
-      console.log(`[SCALP-TRADE] ${pair}: sized ${tradeUnits}u (gov=${govConfig.sizingMultiplier}, pair=${(pairAlloc as PairRollingMetrics).capitalMultiplier?.toFixed(2)}, session=${sessionBudget.capitalBudgetPct}, agent=${agentSizeMult}, discovery=${discoveryMultiplier})`);
+      // ═══ CAPITAL DEPLOYMENT DIRECTIVE: Secondary pair multiplier cap (§2) ═══
+      // Primary pair: full discovery multiplier (no cap)
+      // Secondary pairs: clamped to 0.6–0.8× regardless of other multipliers
+      let deploymentMultiplier = discoveryMultiplier;
+      if (!forceMode && isSecondaryPair) {
+        // Secondary pairs get a random multiplier within the reduced range
+        const secondaryCap = SECONDARY_MULTIPLIER_MIN + Math.random() * (SECONDARY_MULTIPLIER_MAX - SECONDARY_MULTIPLIER_MIN);
+        // Take the LOWER of discovery multiplier and secondary cap — never exceed ceiling
+        deploymentMultiplier = Math.min(discoveryMultiplier, secondaryCap);
+        // Floor at 0 if discovery blocked it
+        if (discoveryMultiplier === 0) deploymentMultiplier = 0;
+      }
+
+      const tradeUnits = Math.max(500, Math.round(baseTradeUnits * deploymentMultiplier));
+
+      console.log(`[SCALP-TRADE] ${pair} (${isPrimaryPair ? 'PRIMARY' : 'SECONDARY'}): sized ${tradeUnits}u (gov=${govConfig.sizingMultiplier}, pair=${(pairAlloc as PairRollingMetrics).capitalMultiplier?.toFixed(2)}, session=${sessionBudget.capitalBudgetPct}, agent=${agentSizeMult}, discovery=${discoveryMultiplier}, deployment=${deploymentMultiplier.toFixed(2)})`);
 
       // ─── Determine execution environment ───
       const executionEnv = execConfig.oandaEnv;
@@ -1465,6 +1556,8 @@ Deno.serve(async (req) => {
             envKey,
             discoveryRiskLabel,
             discoveryMultiplier,
+            deploymentMultiplier,
+            pairClassification: isPrimaryPair ? "PRIMARY" : "SECONDARY",
             adaptiveEdgeEnabled: ADAPTIVE_EDGE_ENABLED,
             explainReasons,
             baseUnits: baseTradeUnits,
@@ -1609,8 +1702,10 @@ Deno.serve(async (req) => {
     const pairBanned = results.filter(r => r.status === "pair-banned").length;
     const discoveryBlocked = results.filter(r => r.status === "discovery_blocked").length;
     const shadowEvals = results.filter(r => r.status === "shadow_eval").length;
+    const secondarySessionBlocked = results.filter(r => r.status === "secondary_session_blocked").length;
+    const secondaryDegraded = results.filter(r => r.status === "secondary_degraded").length;
 
-    console.log(`[SCALP-TRADE] ═══ Complete: ${results.length} signals | ${passed} filled | ${gated} gated | ${rejected} rejected | ${pairBanned} banned | ${discoveryBlocked} disc_blocked | ${shadowEvals} shadow | ${elapsed}ms ═══`);
+    console.log(`[SCALP-TRADE] ═══ Complete: ${results.length} signals | ${passed} filled | ${gated} gated | ${rejected} rejected | ${pairBanned} banned | ${discoveryBlocked} disc_blocked | ${secondarySessionBlocked} sec_session | ${secondaryDegraded} sec_degraded | ${shadowEvals} shadow | ${elapsed}ms ═══`);
 
     return new Response(
       JSON.stringify({
@@ -1649,7 +1744,15 @@ Deno.serve(async (req) => {
           restrictedPairs: degradation?.restrictedPairs || [],
           promotedPairs: degradation?.promotedPairs || [],
         },
-        summary: { total: results.length, filled: passed, gated, rejected, pairBanned, discoveryBlocked, shadowEvals },
+        capitalDeployment: {
+          primaryPair: PRIMARY_PAIR,
+          secondaryPairs: SECONDARY_PAIRS_ALLOWED,
+          secondaryAllowedSessions: SECONDARY_ALLOWED_SESSIONS,
+          secondaryMultiplierRange: [SECONDARY_MULTIPLIER_MIN, SECONDARY_MULTIPLIER_MAX],
+          secondarySessionBlocked,
+          secondaryDegraded,
+        },
+        summary: { total: results.length, filled: passed, gated, rejected, pairBanned, discoveryBlocked, secondarySessionBlocked, secondaryDegraded, shadowEvals },
         signals: results,
         elapsed,
       }),
