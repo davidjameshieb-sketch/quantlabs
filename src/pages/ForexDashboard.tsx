@@ -45,6 +45,7 @@ import { BaselineVsEnsembleCard } from '@/components/forex/BaselineVsEnsembleCar
 import { AgentExclusionSimulator } from '@/components/forex/AgentExclusionSimulator';
 import { AgentOptimizationDashboard } from '@/components/forex/AgentOptimizationDashboard';
 import { FocusPairsEdgeDashboard } from '@/components/forex/FocusPairsEdgeDashboard';
+import { LazyTabContent } from '@/components/forex/LazyTabContent';
 import {
   generateForexTrades,
   filterForexTrades,
@@ -92,7 +93,6 @@ const ForexDashboard = () => {
   const { connected, account, openTrades, fetchAccountSummary } = useOandaExecution();
   const { metrics: executionMetrics } = useOandaPerformance();
   const tradeAnalytics = useTradeAnalytics(executionMetrics);
-  // Realtime alerts for fills, closes, and rejections
   useRealtimeOrders({
     onOrderChange: () => fetchAccountSummary('practice'),
     enableAlerts: true,
@@ -118,9 +118,7 @@ const ForexDashboard = () => {
   const rollingHealth = useMemo(() => computeRollingHealth(allTrades), [allTrades]);
   const shadowMode = useMemo(() => computeShadowModeState(allTrades), [allTrades]);
 
-  // Adaptive governance data from live OANDA orders
   const governanceDashboard = useMemo(() => {
-    // Convert forex trades to the OrderRecord format the governance engine expects
     const orderRecords = filteredTrades
       .filter(t => t.outcome !== 'avoided')
       .map(t => ({
@@ -141,10 +139,7 @@ const ForexDashboard = () => {
     <DashboardLayout>
       <div className="space-y-6">
         {/* Header */}
-        <motion.div
-          initial={{ opacity: 0, y: -10 }}
-          animate={{ opacity: 1, y: 0 }}
-        >
+        <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }}>
           <div className="flex items-center justify-between">
             <div>
               <div className="flex items-center gap-3 mb-1">
@@ -169,214 +164,96 @@ const ForexDashboard = () => {
         {/* Master Tabs */}
         <Tabs defaultValue="focus-pairs" className="space-y-4">
           <TabsList className="bg-card/50 border border-border/30 h-auto gap-1 p-1 flex-wrap">
-            <TabsTrigger value="focus-pairs" className="text-xs gap-1.5">
-              <Target className="w-3.5 h-3.5" />Focus Pairs
-            </TabsTrigger>
-            <TabsTrigger value="performance" className="text-xs gap-1.5">
-              <TrendingUp className="w-3.5 h-3.5" />Performance
-            </TabsTrigger>
-            <TabsTrigger value="scalp-vs-swing" className="text-xs gap-1.5">
-              <SplitSquareHorizontal className="w-3.5 h-3.5" />Scalp vs Swing
-            </TabsTrigger>
-            <TabsTrigger value="scalping-trades" className="text-xs gap-1.5">
-              <BarChart3 className="w-3.5 h-3.5" />Scalping Trades
-            </TabsTrigger>
-            <TabsTrigger value="scalping" className="text-xs gap-1.5">
-              <Crosshair className="w-3.5 h-3.5" />Scalping Intelligence
-            </TabsTrigger>
-            <TabsTrigger value="reanalysis" className="text-xs gap-1.5">
-              <FlaskConical className="w-3.5 h-3.5" />Reanalysis
-            </TabsTrigger>
-            <TabsTrigger value="audit" className="text-xs gap-1.5">
-              <ShieldCheck className="w-3.5 h-3.5" />Daily Audit
-            </TabsTrigger>
-            <TabsTrigger value="governance" className="text-xs gap-1.5">
-              <Shield className="w-3.5 h-3.5" />Governance
-            </TabsTrigger>
-            <TabsTrigger value="analytics" className="text-xs gap-1.5">
-              <PieChart className="w-3.5 h-3.5" />Deep Analytics
-            </TabsTrigger>
-            <TabsTrigger value="health" className="text-xs gap-1.5">
-              <HeartPulse className="w-3.5 h-3.5" />Health
-            </TabsTrigger>
-            <TabsTrigger value="edge-discovery" className="text-xs gap-1.5">
-              <Radar className="w-3.5 h-3.5" />Edge Discovery
-            </TabsTrigger>
-            <TabsTrigger value="edge-extraction" className="text-xs gap-1.5">
-              <Filter className="w-3.5 h-3.5" />Edge Extraction
-            </TabsTrigger>
-            <TabsTrigger value="edge-golive" className="text-xs gap-1.5">
-              <Rocket className="w-3.5 h-3.5" />Go-Live
-            </TabsTrigger>
-            <TabsTrigger value="discovery-risk" className="text-xs gap-1.5">
-              <ShieldAlert className="w-3.5 h-3.5" />Discovery Risk
-            </TabsTrigger>
-            <TabsTrigger value="adaptive-edge" className="text-xs gap-1.5">
-              <Brain className="w-3.5 h-3.5" />Adaptive Edge
-            </TabsTrigger>
-            <TabsTrigger value="collaboration" className="text-xs gap-1.5">
-              <GitBranch className="w-3.5 h-3.5" />Collaboration
-            </TabsTrigger>
-            <TabsTrigger value="ensemble" className="text-xs gap-1.5">
-              <HeartPulse className="w-3.5 h-3.5" />Ensemble
-            </TabsTrigger>
-            <TabsTrigger value="agent-simulator" className="text-xs gap-1.5">
-              <UserX className="w-3.5 h-3.5" />Agent Simulator
-            </TabsTrigger>
-            <TabsTrigger value="agent-optimization" className="text-xs gap-1.5">
-              <Wrench className="w-3.5 h-3.5" />Agent Optimization
-            </TabsTrigger>
+            <TabsTrigger value="focus-pairs" className="text-xs gap-1.5"><Target className="w-3.5 h-3.5" />Focus Pairs</TabsTrigger>
+            <TabsTrigger value="performance" className="text-xs gap-1.5"><TrendingUp className="w-3.5 h-3.5" />Performance</TabsTrigger>
+            <TabsTrigger value="scalp-vs-swing" className="text-xs gap-1.5"><SplitSquareHorizontal className="w-3.5 h-3.5" />Scalp vs Swing</TabsTrigger>
+            <TabsTrigger value="scalping-trades" className="text-xs gap-1.5"><BarChart3 className="w-3.5 h-3.5" />Scalping Trades</TabsTrigger>
+            <TabsTrigger value="scalping" className="text-xs gap-1.5"><Crosshair className="w-3.5 h-3.5" />Scalping Intelligence</TabsTrigger>
+            <TabsTrigger value="reanalysis" className="text-xs gap-1.5"><FlaskConical className="w-3.5 h-3.5" />Reanalysis</TabsTrigger>
+            <TabsTrigger value="audit" className="text-xs gap-1.5"><ShieldCheck className="w-3.5 h-3.5" />Daily Audit</TabsTrigger>
+            <TabsTrigger value="governance" className="text-xs gap-1.5"><Shield className="w-3.5 h-3.5" />Governance</TabsTrigger>
+            <TabsTrigger value="analytics" className="text-xs gap-1.5"><PieChart className="w-3.5 h-3.5" />Deep Analytics</TabsTrigger>
+            <TabsTrigger value="health" className="text-xs gap-1.5"><HeartPulse className="w-3.5 h-3.5" />Health</TabsTrigger>
+            <TabsTrigger value="edge-discovery" className="text-xs gap-1.5"><Radar className="w-3.5 h-3.5" />Edge Discovery</TabsTrigger>
+            <TabsTrigger value="edge-extraction" className="text-xs gap-1.5"><Filter className="w-3.5 h-3.5" />Edge Extraction</TabsTrigger>
+            <TabsTrigger value="edge-golive" className="text-xs gap-1.5"><Rocket className="w-3.5 h-3.5" />Go-Live</TabsTrigger>
+            <TabsTrigger value="discovery-risk" className="text-xs gap-1.5"><ShieldAlert className="w-3.5 h-3.5" />Discovery Risk</TabsTrigger>
+            <TabsTrigger value="adaptive-edge" className="text-xs gap-1.5"><Brain className="w-3.5 h-3.5" />Adaptive Edge</TabsTrigger>
+            <TabsTrigger value="collaboration" className="text-xs gap-1.5"><GitBranch className="w-3.5 h-3.5" />Collaboration</TabsTrigger>
+            <TabsTrigger value="ensemble" className="text-xs gap-1.5"><HeartPulse className="w-3.5 h-3.5" />Ensemble</TabsTrigger>
+            <TabsTrigger value="agent-simulator" className="text-xs gap-1.5"><UserX className="w-3.5 h-3.5" />Agent Simulator</TabsTrigger>
+            <TabsTrigger value="agent-optimization" className="text-xs gap-1.5"><Wrench className="w-3.5 h-3.5" />Agent Optimization</TabsTrigger>
           </TabsList>
 
+          {/* Focus Pairs — loads immediately */}
           <TabsContent value="focus-pairs" className="space-y-4">
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
               <FocusPairsEdgeDashboard />
             </motion.div>
           </TabsContent>
 
+          {/* All other tabs — click "Load" to render */}
           <TabsContent value="performance" className="space-y-6">
-            {/* Long-Only Mode Banner */}
-            <LongOnlyBanner longOnlyFilter={longOnlyFilter} onToggleFilter={handleLongOnlyFilterToggle} />
-
-            {/* Governance State Banner */}
-            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.01 }}>
-              <GovernanceStateBanner
-                state={governanceDashboard.currentState}
-                reasons={governanceDashboard.stateReasons}
-                promotedPairs={governanceDashboard.promotedPairs}
-                restrictedPairs={governanceDashboard.restrictedPairs}
-                bannedPairs={governanceDashboard.bannedPairs}
-                sessionBudgets={governanceDashboard.sessionBudgets}
-              />
-            </motion.div>
-
-            {/* Live Execution Hero — Real OANDA Data */}
-            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.03 }}>
-              <LiveExecutionHero
-                account={account}
-                connected={connected}
-                openTradeCount={openTrades.length}
-                executionMetrics={executionMetrics}
-              />
-            </motion.div>
-
-            {/* Filters */}
-            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 }}>
-              <ForexFilterBar
-                filters={filters}
-                onFiltersChange={setFilters}
-                totalCount={allTrades.length}
-                filteredCount={filteredTrades.length}
-              />
-            </motion.div>
-
-            {/* Performance Overview */}
-            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}>
+            <LazyTabContent label="Performance">
+              <LongOnlyBanner longOnlyFilter={longOnlyFilter} onToggleFilter={handleLongOnlyFilterToggle} />
+              <GovernanceStateBanner state={governanceDashboard.currentState} reasons={governanceDashboard.stateReasons} promotedPairs={governanceDashboard.promotedPairs} restrictedPairs={governanceDashboard.restrictedPairs} bannedPairs={governanceDashboard.bannedPairs} sessionBudgets={governanceDashboard.sessionBudgets} />
+              <LiveExecutionHero account={account} connected={connected} openTradeCount={openTrades.length} executionMetrics={executionMetrics} />
+              <ForexFilterBar filters={filters} onFiltersChange={setFilters} totalCount={allTrades.length} filteredCount={filteredTrades.length} />
               <ForexPerformanceOverview metrics={performance} governanceStats={governanceStats} trades={filteredTrades} />
-            </motion.div>
-
-            {/* Live OANDA Trades */}
-            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.13 }}>
               <LiveForexTradesPanel />
-            </motion.div>
-
-            {/* Execution Status */}
-            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.16 }}>
               <ForexExecutionStatus trades={filteredTrades} />
-            </motion.div>
-
-            {/* Quality, Risk, Regime, Cross-Asset */}
-            <motion.div
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.2 }}
-              className="grid grid-cols-1 lg:grid-cols-2 gap-4"
-            >
-              <ForexQualityPanel quality={quality} />
-              <ForexRiskGovernancePanel risk={risk} />
-            </motion.div>
-
-            <motion.div
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.25 }}
-              className="grid grid-cols-1 lg:grid-cols-2 gap-4"
-            >
-              <ForexRegimeTimeline trades={filteredTrades} />
-              <CrossAssetInfluencePanel influence={influence} />
-            </motion.div>
-
-            {/* Trade History Table */}
-            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.32 }}>
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <ForexQualityPanel quality={quality} />
+                <ForexRiskGovernancePanel risk={risk} />
+              </div>
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <ForexRegimeTimeline trades={filteredTrades} />
+                <CrossAssetInfluencePanel influence={influence} />
+              </div>
               <ForexTradeHistoryTable trades={filteredTrades} />
-            </motion.div>
+            </LazyTabContent>
           </TabsContent>
 
           <TabsContent value="scalp-vs-swing" className="space-y-4">
-            <LongOnlyBanner longOnlyFilter={longOnlyFilter} onToggleFilter={handleLongOnlyFilterToggle} />
-            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+            <LazyTabContent label="Scalp vs Swing">
               <ScalpVsSwingView trades={filteredTrades} />
-            </motion.div>
+            </LazyTabContent>
           </TabsContent>
 
           <TabsContent value="scalping-trades" className="space-y-4">
-            <LongOnlyBanner longOnlyFilter={longOnlyFilter} onToggleFilter={handleLongOnlyFilterToggle} />
-            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
-              <ScalpingTradesDashboard
-                trades={filteredTrades}
-                performance={performance}
-                governanceStats={governanceStats}
-                governanceResults={governanceResults}
-              />
-            </motion.div>
+            <LazyTabContent label="Scalping Trades">
+              <ScalpingTradesDashboard trades={filteredTrades} performance={performance} governanceStats={governanceStats} governanceResults={governanceResults} />
+            </LazyTabContent>
           </TabsContent>
 
           <TabsContent value="scalping" className="space-y-4">
-            <LongOnlyBanner longOnlyFilter={longOnlyFilter} onToggleFilter={handleLongOnlyFilterToggle} />
-            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+            <LazyTabContent label="Scalping Intelligence">
               <ForexScalpingIntelligence />
-            </motion.div>
+            </LazyTabContent>
           </TabsContent>
 
           <TabsContent value="reanalysis" className="space-y-4">
-            <LongOnlyBanner longOnlyFilter={longOnlyFilter} onToggleFilter={handleLongOnlyFilterToggle} />
-            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
-              <PerformanceReanalysisDashboard
-                trades={filteredTrades}
-                performance={performance}
-                governanceStats={governanceStats}
-                governanceResults={governanceResults}
-              />
-            </motion.div>
+            <LazyTabContent label="Reanalysis">
+              <PerformanceReanalysisDashboard trades={filteredTrades} performance={performance} governanceStats={governanceStats} governanceResults={governanceResults} />
+            </LazyTabContent>
           </TabsContent>
 
           <TabsContent value="audit" className="space-y-4">
-            <LongOnlyBanner longOnlyFilter={longOnlyFilter} onToggleFilter={handleLongOnlyFilterToggle} />
-            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
-              <DailyAuditPanel
-                trades={filteredTrades}
-                performance={performance}
-                rollingHealth={rollingHealth}
-                shadowMode={shadowMode}
-              />
-            </motion.div>
+            <LazyTabContent label="Daily Audit">
+              <DailyAuditPanel trades={filteredTrades} performance={performance} rollingHealth={rollingHealth} shadowMode={shadowMode} />
+            </LazyTabContent>
           </TabsContent>
 
           <TabsContent value="governance" className="space-y-4">
-            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+            <LazyTabContent label="Governance">
               <LongOnlySettingsPanel />
-            </motion.div>
-            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 }}>
               <AdaptiveGovernancePanel data={governanceDashboard} />
-            </motion.div>
-            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}>
               <ShadowModePanel state={shadowMode} />
-            </motion.div>
+            </LazyTabContent>
           </TabsContent>
 
           <TabsContent value="analytics" className="space-y-6">
-            <LongOnlyBanner longOnlyFilter={longOnlyFilter} onToggleFilter={handleLongOnlyFilterToggle} />
-            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+            <LazyTabContent label="Deep Analytics">
               <div className="flex items-center gap-2 mb-1">
                 <PieChart className="w-4 h-4 text-primary" />
                 <h2 className="text-sm font-display font-bold">Deep Trade Analytics</h2>
@@ -384,109 +261,76 @@ const ForexDashboard = () => {
                   {tradeAnalytics.totalClosedTrades} closed trades · {tradeAnalytics.totalPnlPips >= 0 ? '+' : ''}{tradeAnalytics.totalPnlPips}p net
                 </span>
               </div>
-            </motion.div>
-
-            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.03 }}>
-              <EquityCurveChart
-                data={tradeAnalytics.rollingSharpe}
-                totalPnlPips={tradeAnalytics.totalPnlPips}
-                totalTrades={tradeAnalytics.totalClosedTrades}
-              />
-            </motion.div>
-
-            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.06 }}>
+              <EquityCurveChart data={tradeAnalytics.rollingSharpe} totalPnlPips={tradeAnalytics.totalPnlPips} totalTrades={tradeAnalytics.totalClosedTrades} />
               <AgentAccountabilityPanel metrics={executionMetrics} />
-            </motion.div>
-
-            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.09 }}>
-              <RollingSharpeChart
-                data={tradeAnalytics.rollingSharpe}
-                overallSharpe={tradeAnalytics.overallSharpe}
-              />
-            </motion.div>
-
-            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.12 }}>
+              <RollingSharpeChart data={tradeAnalytics.rollingSharpe} overallSharpe={tradeAnalytics.overallSharpe} />
               <SessionHeatmap sessions={tradeAnalytics.sessionAnalytics} />
-            </motion.div>
-
-            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.15 }}>
               <PairPnLBreakdown pairs={tradeAnalytics.pairAnalytics} />
-            </motion.div>
+            </LazyTabContent>
           </TabsContent>
 
           <TabsContent value="health" className="space-y-4">
-            <LongOnlyBanner longOnlyFilter={longOnlyFilter} onToggleFilter={handleLongOnlyFilterToggle} />
-            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+            <LazyTabContent label="Health">
               <GovernanceHealthDashboard trades={filteredTrades} />
-            </motion.div>
+            </LazyTabContent>
           </TabsContent>
 
           <TabsContent value="edge-discovery" className="space-y-4">
-            <LongOnlyBanner longOnlyFilter={longOnlyFilter} onToggleFilter={handleLongOnlyFilterToggle} />
-            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+            <LazyTabContent label="Edge Discovery">
               <EdgeDiscoveryDashboard />
-            </motion.div>
+            </LazyTabContent>
           </TabsContent>
 
           <TabsContent value="edge-extraction" className="space-y-4">
-            <LongOnlyBanner longOnlyFilter={longOnlyFilter} onToggleFilter={handleLongOnlyFilterToggle} />
-            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+            <LazyTabContent label="Edge Extraction">
               <EdgeExtractionDashboard />
-            </motion.div>
+            </LazyTabContent>
           </TabsContent>
+
           <TabsContent value="edge-golive" className="space-y-4">
-            <LongOnlyBanner longOnlyFilter={longOnlyFilter} onToggleFilter={handleLongOnlyFilterToggle} />
-            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+            <LazyTabContent label="Go-Live">
               <EdgeGoLivePanel />
-            </motion.div>
+            </LazyTabContent>
           </TabsContent>
+
           <TabsContent value="discovery-risk" className="space-y-4">
-            <LongOnlyBanner longOnlyFilter={longOnlyFilter} onToggleFilter={handleLongOnlyFilterToggle} />
-            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+            <LazyTabContent label="Discovery Risk">
               <DiscoveryRiskPanel trades={filteredTrades} />
-            </motion.div>
+            </LazyTabContent>
           </TabsContent>
+
           <TabsContent value="adaptive-edge" className="space-y-4">
-            <LongOnlyBanner longOnlyFilter={longOnlyFilter} onToggleFilter={handleLongOnlyFilterToggle} />
-            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+            <LazyTabContent label="Adaptive Edge">
               <AdaptiveEdgeDashboard trades={filteredTrades} />
-            </motion.div>
-            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}>
               <AgentWeightingTable />
-            </motion.div>
-            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}>
               <AgentPriorityReasoningPanel />
-            </motion.div>
+            </LazyTabContent>
           </TabsContent>
+
           <TabsContent value="collaboration" className="space-y-4">
-            <LongOnlyBanner longOnlyFilter={longOnlyFilter} onToggleFilter={handleLongOnlyFilterToggle} />
-            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+            <LazyTabContent label="Collaboration">
               <AgentCollaborationDashboard />
-            </motion.div>
-            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 }}>
               <BaselineVsEnsembleCard mode="full" />
-            </motion.div>
+            </LazyTabContent>
           </TabsContent>
+
           <TabsContent value="ensemble" className="space-y-4">
-            <LongOnlyBanner longOnlyFilter={longOnlyFilter} onToggleFilter={handleLongOnlyFilterToggle} />
-            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+            <LazyTabContent label="Ensemble">
               <BaselineVsEnsembleCard />
-            </motion.div>
-            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 }}>
               <EnsembleHealthDashboard />
-            </motion.div>
+            </LazyTabContent>
           </TabsContent>
+
           <TabsContent value="agent-simulator" className="space-y-4">
-            <LongOnlyBanner longOnlyFilter={longOnlyFilter} onToggleFilter={handleLongOnlyFilterToggle} />
-            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+            <LazyTabContent label="Agent Simulator">
               <AgentExclusionSimulator longOnlyFilter={longOnlyFilter} />
-            </motion.div>
+            </LazyTabContent>
           </TabsContent>
+
           <TabsContent value="agent-optimization" className="space-y-4">
-            <LongOnlyBanner longOnlyFilter={longOnlyFilter} onToggleFilter={handleLongOnlyFilterToggle} />
-            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+            <LazyTabContent label="Agent Optimization">
               <AgentOptimizationDashboard longOnlyFilter={longOnlyFilter} />
-            </motion.div>
+            </LazyTabContent>
           </TabsContent>
         </Tabs>
       </div>
