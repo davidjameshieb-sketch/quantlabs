@@ -146,6 +146,9 @@ const statusText: Record<HealthColor, string> = {
   red: 'text-neural-red',
 };
 
+// Non-agent IDs to exclude from the simulator (backtests, manual tests, etc.)
+const EXCLUDED_AGENT_IDS = new Set(['backtest-engine', 'manual-test', 'unknown']);
+
 // ─── Component ──────────────────────────────────────────────────────
 
 export const AgentExclusionSimulator = () => {
@@ -172,17 +175,19 @@ export const AgentExclusionSimulator = () => {
 
       if (error || !data) { setLoading(false); return; }
 
-      const rows: TradeRow[] = data.map((o: any) => {
-        const mult = pipMult(o.currency_pair);
-        const pnl = o.direction === 'long'
-          ? (o.exit_price - o.entry_price) * mult
-          : (o.entry_price - o.exit_price) * mult;
-        return { ...o, pips: Math.round(pnl * 10) / 10 };
-      });
+      const rows: TradeRow[] = data
+        .filter((o: any) => !EXCLUDED_AGENT_IDS.has(o.agent_id || 'unknown'))
+        .map((o: any) => {
+          const mult = pipMult(o.currency_pair);
+          const pnl = o.direction === 'long'
+            ? (o.exit_price - o.entry_price) * mult
+            : (o.entry_price - o.exit_price) * mult;
+          return { ...o, pips: Math.round(pnl * 10) / 10 };
+        });
 
       setAllTrades(rows);
 
-      // Discover unique agent IDs
+      // Discover unique agent IDs (real agents only)
       const agents = [...new Set(rows.map(r => r.agent_id || 'unknown'))].sort();
       setUniqueAgents(agents);
       setEnabledAgents(new Set(agents));
