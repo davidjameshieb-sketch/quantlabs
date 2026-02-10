@@ -3,42 +3,70 @@ import { useState, useCallback } from 'react';
 import { FlaskConical, Loader2, CheckCircle2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
-import { runBacktest, persistBacktestTrades, clearBacktestTrades, DEFAULT_BACKTEST_CONFIG } from '@/lib/forex/backtest';
+import { runBacktest, persistBacktestTrades, DEFAULT_BACKTEST_CONFIG } from '@/lib/forex/backtest';
 import { ALL_AGENT_IDS } from '@/lib/agents/agentConfig';
+import { supabase } from '@/integrations/supabase/client';
+import { useAuth } from '@/contexts/AuthContext';
 import { toast } from 'sonner';
 
 export const BacktestRunnerButton = () => {
+  const { user } = useAuth();
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [currentAgent, setCurrentAgent] = useState('');
   const [result, setResult] = useState<{ trades: number; inserted: number } | null>(null);
 
   const handleRun = useCallback(async () => {
-    if (running) return;
+    if (running || !user) return;
     setRunning(true);
     setProgress(5);
     setResult(null);
 
     try {
-      // Step 1: Clear all previous backtest trades
-      toast.info('Clearing previous backtest data…');
-      await clearBacktestTrades('baseline');
+      // Step 1: Check which agents already have backtest data
+      toast.info('Checking existing backtest data…');
+      const { data: existing } = await supabase
+        .from('oanda_orders')
+        .select('agent_id')
+        .eq('user_id', user.id)
+        .eq('environment', 'backtest')
+        .in('status', ['filled', 'closed'])
+        .not('entry_price', 'is', null)
+        .not('exit_price', 'is', null);
+
+      const existingAgents = new Set(
+        (existing || []).map((r: any) => r.agent_id).filter(Boolean)
+      );
+
+      const agents = (ALL_AGENT_IDS as string[]).filter(
+        id => !existingAgents.has(id)
+      );
+
+      if (agents.length === 0) {
+        toast.success('All 18 agents already have backtest data!');
+        setResult({ trades: 0, inserted: 0 });
+        setRunning(false);
+        return;
+      }
+
+      toast.info(`Running backtest for ${agents.length} missing agent(s)…`);
       setProgress(10);
 
-      const agents = ALL_AGENT_IDS as string[];
       let totalTrades = 0;
       let totalInserted = 0;
       let totalErrors = 0;
 
-      // Step 2: Run backtest per agent
+      // Step 2: Run backtest per missing agent
       for (let a = 0; a < agents.length; a++) {
         const agentId = agents[a];
-        const pct = 10 + Math.round((a / agents.length) * 75);
+        const pct = 10 + Math.round(((a + 1) / agents.length) * 85);
         setProgress(pct);
+        setCurrentAgent(agentId);
 
-        toast.info(`Backtesting agent ${a + 1}/${agents.length}: ${agentId}…`);
+        toast.info(`Backtesting ${a + 1}/${agents.length}: ${agentId}…`);
 
         // Let UI breathe between agents
-        await new Promise(r => requestAnimationFrame(r));
+        await new Promise(r => setTimeout(r, 50));
 
         const config = {
           ...DEFAULT_BACKTEST_CONFIG,
@@ -60,20 +88,22 @@ export const BacktestRunnerButton = () => {
       }
 
       setProgress(100);
+      setCurrentAgent('');
       setResult({ trades: totalTrades, inserted: totalInserted });
 
       if (totalErrors > 0) {
-        toast.warning(`Backtest complete: ${totalInserted}/${totalTrades} persisted across ${agents.length} agents (${totalErrors} errors)`);
+        toast.warning(`Done: ${totalInserted}/${totalTrades} persisted across ${agents.length} agents (${totalErrors} errors)`);
       } else {
-        toast.success(`Backtest complete: ${totalTrades} trades across ${agents.length} agents — all persisted`);
+        toast.success(`Done: ${totalTrades} trades across ${agents.length} agents — all persisted`);
       }
     } catch (err: any) {
       console.error('[BacktestRunner]', err);
       toast.error(`Backtest failed: ${err.message}`);
     } finally {
       setRunning(false);
+      setCurrentAgent('');
     }
-  }, [running]);
+  }, [running, user]);
 
   return (
     <div className="flex items-center gap-3">
@@ -91,7 +121,7 @@ export const BacktestRunnerButton = () => {
         ) : (
           <FlaskConical className="w-3 h-3" />
         )}
-        {running ? 'Running…' : result ? `${result.inserted} trades stored` : 'Run Per-Agent Backtest (90d)'}
+        {running ? `${currentAgent}…` : result ? `${result.inserted} trades stored` : 'Run Missing Agent Backtests'}
       </Button>
       {running && (
         <div className="flex items-center gap-2">
