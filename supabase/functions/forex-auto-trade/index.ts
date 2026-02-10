@@ -314,7 +314,7 @@ const STATE_CONFIGS: Record<GovernanceState, GovernanceStateConfig> = {
     frictionKOverride: 5.5,
     pairRestriction: "top-performers",
     sessionAggressiveness: { asian: 0.0, "london-open": 0.3, "ny-overlap": 0.25, "late-ny": 0.0, rollover: 0.0 },
-    recoveryRequired: ["15-minute cooldown then auto-resume at reduced sizing"],
+    recoveryRequired: ["15-min cooldown → 3-stage ramp-up (15min each) if profitable → normal"],
   },
 };
 
@@ -1030,60 +1030,149 @@ Deno.serve(async (req) => {
       console.log(`[SCALP-TRADE] Banned pairs: ${degradation.bannedPairs.join(", ") || "none"}`);
     }
 
-    // ─── HALT check: 15-minute cooldown then auto-resume at reduced sizing ───
+    // ─── HALT check: 15-minute cooldown + graduated ramp-up ───
+    // After HALT triggers: 15-min pause, then resume in stages.
+    // Each stage lasts 15 min. Advance to next stage only if trades were profitable.
+    // Stage 1: 0.15x density, 0.35x sizing
+    // Stage 2: 0.35x density, 0.55x sizing
+    // Stage 3: 0.65x density, 0.75x sizing
+    // Stage 4: 1.0x (normal) — fully recovered
+    const RAMP_STAGES = [
+      { density: 0.15, sizing: 0.35, label: "RAMP-1" },
+      { density: 0.35, sizing: 0.55, label: "RAMP-2" },
+      { density: 0.65, sizing: 0.75, label: "RAMP-3" },
+    ];
+    const RAMP_INTERVAL_MS = 15 * 60 * 1000; // 15 minutes per stage
+
     if (govState === "HALT" && !forceMode) {
-      // Check if we're within a 15-minute cooldown period
-      const HALT_COOLDOWN_MS = 15 * 60 * 1000; // 15 minutes
+      // Find the most recent HALT cooldown marker
       const { data: lastHaltOrder } = await supabase
         .from("oanda_orders")
-        .select("created_at")
+        .select("created_at, gate_result")
         .eq("user_id", USER_ID)
-        .eq("gate_result", "HALT_COOLDOWN")
+        .in("gate_result", ["HALT_COOLDOWN", "HALT_RAMP-1", "HALT_RAMP-2", "HALT_RAMP-3"])
         .order("created_at", { ascending: false })
         .limit(1);
 
-      const lastHaltTs = lastHaltOrder?.[0]?.created_at
-        ? new Date(lastHaltOrder[0].created_at).getTime()
-        : 0;
-      const timeSinceLastHalt = Date.now() - lastHaltTs;
-      const cooldownActive = timeSinceLastHalt < HALT_COOLDOWN_MS;
+      const lastMarker = lastHaltOrder?.[0];
+      const lastMarkerTs = lastMarker?.created_at ? new Date(lastMarker.created_at).getTime() : 0;
+      const timeSinceMarker = Date.now() - lastMarkerTs;
+      const lastGateResult = lastMarker?.gate_result || "";
 
-      if (cooldownActive) {
-        const remainingMin = Math.ceil((HALT_COOLDOWN_MS - timeSinceLastHalt) / 60000);
-        console.log(`[SCALP-TRADE] ═══ HALT COOLDOWN: ${remainingMin}min remaining — skipping this cycle ═══`);
-        return new Response(
-          JSON.stringify({
-            success: true,
-            mode: "halt-cooldown",
-            governanceState: govState,
-            cooldownRemainingMin: remainingMin,
-            reasons: degradation?.stateReasons || [],
-          }),
-          { headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
+      // Determine current ramp stage
+      let currentStageIndex = -1; // -1 = initial cooldown (no ramp yet)
+      if (lastGateResult === "HALT_RAMP-1") currentStageIndex = 0;
+      else if (lastGateResult === "HALT_RAMP-2") currentStageIndex = 1;
+      else if (lastGateResult === "HALT_RAMP-3") currentStageIndex = 2;
+      else if (lastGateResult === "HALT_COOLDOWN") currentStageIndex = -1;
+
+      // If within 15 min of last marker, stay in cooldown/current stage
+      if (lastMarkerTs > 0 && timeSinceMarker < RAMP_INTERVAL_MS) {
+        // If we're in a ramp stage (not initial cooldown), execute with that stage's params
+        if (currentStageIndex >= 0) {
+          const stage = RAMP_STAGES[currentStageIndex];
+          govConfig.densityMultiplier = stage.density;
+          govConfig.sizingMultiplier = stage.sizing;
+          console.log(`[SCALP-TRADE] ═══ HALT ${stage.label}: continuing at density=${stage.density}, sizing=${stage.sizing} (${Math.ceil((RAMP_INTERVAL_MS - timeSinceMarker) / 60000)}min left) ═══`);
+          // Fall through to execute with these params
+        } else {
+          // Initial cooldown — skip
+          const remainingMin = Math.ceil((RAMP_INTERVAL_MS - timeSinceMarker) / 60000);
+          console.log(`[SCALP-TRADE] ═══ HALT COOLDOWN: ${remainingMin}min remaining — skipping this cycle ═══`);
+          return new Response(
+            JSON.stringify({
+              success: true,
+              mode: "halt-cooldown",
+              governanceState: govState,
+              cooldownRemainingMin: remainingMin,
+              reasons: degradation?.stateReasons || [],
+            }),
+            { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
+      } else {
+        // 15 min elapsed — time to advance (or start) ramp
+        let nextStageIndex = 0; // default: start at Stage 1
+
+        if (currentStageIndex >= 0) {
+          // Check if trades since last marker were profitable
+          const { data: recentTrades } = await supabase
+            .from("oanda_orders")
+            .select("entry_price, exit_price, direction, currency_pair")
+            .eq("user_id", USER_ID)
+            .eq("environment", execConfig.oandaEnv)
+            .eq("status", "closed")
+            .neq("currency_pair", "SYSTEM")
+            .gte("created_at", lastMarker!.created_at)
+            .not("exit_price", "is", null)
+            .not("entry_price", "is", null);
+
+          const trades = recentTrades || [];
+          let netPips = 0;
+          for (const t of trades) {
+            const pipMult = ["USD_JPY", "EUR_JPY", "GBP_JPY", "AUD_JPY"].includes(t.currency_pair) ? 0.01 : 0.0001;
+            const pnl = t.direction === "long"
+              ? (t.exit_price! - t.entry_price!) / pipMult
+              : (t.entry_price! - t.exit_price!) / pipMult;
+            netPips += pnl;
+          }
+
+          const profitable = trades.length === 0 || netPips >= 0; // No trades = OK to advance
+          if (profitable && currentStageIndex < 2) {
+            nextStageIndex = currentStageIndex + 1;
+            console.log(`[SCALP-TRADE] ═══ HALT RAMP-UP: Stage ${currentStageIndex + 1} was profitable (${netPips.toFixed(1)}p / ${trades.length} trades) → advancing to Stage ${nextStageIndex + 1} ═══`);
+          } else if (profitable && currentStageIndex === 2) {
+            // Stage 3 profitable → fully recovered, use NORMAL params
+            console.log(`[SCALP-TRADE] ═══ HALT RECOVERY COMPLETE: All stages profitable → returning to NORMAL parameters ═══`);
+            govConfig.densityMultiplier = GOV_STATE_CONFIGS.NORMAL.densityMultiplier;
+            govConfig.sizingMultiplier = GOV_STATE_CONFIGS.NORMAL.sizingMultiplier;
+            govConfig.frictionKOverride = GOV_STATE_CONFIGS.NORMAL.frictionKOverride;
+            // Insert recovery marker
+            await supabase.from("oanda_orders").insert({
+              user_id: USER_ID,
+              signal_id: `halt-recovered-${Date.now()}`,
+              currency_pair: "SYSTEM",
+              direction: "long",
+              units: 0,
+              environment: execConfig.oandaEnv,
+              status: "system",
+              gate_result: "HALT_RECOVERED",
+              gate_reasons: [`Graduated ramp-up complete after ${trades.length} profitable trades`],
+              session_label: session,
+              regime_label: regime,
+            });
+            // Skip the ramp marker insertion below — override govState to NORMAL
+            govState = "NORMAL";
+          } else {
+            // Not profitable — restart at Stage 1
+            nextStageIndex = 0;
+            console.log(`[SCALP-TRADE] ═══ HALT RAMP RESET: Stage ${currentStageIndex + 1} unprofitable (${netPips.toFixed(1)}p) → restarting at Stage 1 ═══`);
+          }
+        }
+
+        if (govState === "HALT") {
+          const stage = RAMP_STAGES[nextStageIndex];
+          govConfig.densityMultiplier = stage.density;
+          govConfig.sizingMultiplier = stage.sizing;
+
+          // Insert ramp marker
+          await supabase.from("oanda_orders").insert({
+            user_id: USER_ID,
+            signal_id: `halt-ramp-${Date.now()}`,
+            currency_pair: "SYSTEM",
+            direction: "long",
+            units: 0,
+            environment: execConfig.oandaEnv,
+            status: "system",
+            gate_result: `HALT_${stage.label}`,
+            gate_reasons: degradation?.stateReasons || [],
+            session_label: session,
+            regime_label: regime,
+          });
+
+          console.log(`[SCALP-TRADE] ═══ HALT ${stage.label}: resuming at density=${stage.density}, sizing=${stage.sizing} ═══`);
+        }
       }
-
-      // Cooldown expired or first HALT occurrence — log cooldown marker and continue with reduced params
-      console.log(`[SCALP-TRADE] ═══ HALT RECALIBRATION: cooldown expired, resuming at reduced sizing (0.35x) ═══`);
-      console.log(`[SCALP-TRADE] State reasons: ${degradation?.stateReasons?.join(" | ")}`);
-
-      // Insert a cooldown marker so next invocations within 15 min will pause
-      await supabase.from("oanda_orders").insert({
-        user_id: USER_ID,
-        signal_id: `halt-cooldown-${Date.now()}`,
-        currency_pair: "SYSTEM",
-        direction: "long",
-        units: 0,
-        environment: execConfig.oandaEnv,
-        status: "system",
-        gate_result: "HALT_COOLDOWN",
-        gate_reasons: degradation?.stateReasons || [],
-        session_label: session,
-        regime_label: regime,
-      });
-
-      // Don't return — fall through to execute with HALT's reduced config (0.15x density, 0.35x sizing)
-      console.log(`[SCALP-TRADE] Proceeding with HALT-reduced parameters: density=${govConfig.densityMultiplier}, sizing=${govConfig.sizingMultiplier}`);
     }
 
     // ═══════════════════════════════════════════════════════════
