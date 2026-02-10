@@ -3,7 +3,7 @@
 
 import { useState, useMemo, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Globe, TrendingUp, Crosshair, BarChart3, FlaskConical, ShieldCheck, SplitSquareHorizontal, PieChart, Shield, HeartPulse, Radar, Filter, Rocket, ShieldAlert, Brain, GitBranch, UserX } from 'lucide-react';
+import { Globe, TrendingUp, Crosshair, BarChart3, FlaskConical, ShieldCheck, SplitSquareHorizontal, PieChart, Shield, HeartPulse, Radar, Filter, Rocket, ShieldAlert, Brain, GitBranch, UserX, Wrench } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { DashboardLayout } from '@/components/dashboard/DashboardLayout';
 import { ForexPerformanceOverview } from '@/components/forex/ForexPerformanceOverview';
@@ -40,6 +40,7 @@ import { AgentCollaborationDashboard } from '@/components/forex/AgentCollaborati
 import { EnsembleHealthDashboard } from '@/components/forex/EnsembleHealthDashboard';
 import { BaselineVsEnsembleCard } from '@/components/forex/BaselineVsEnsembleCard';
 import { AgentExclusionSimulator } from '@/components/forex/AgentExclusionSimulator';
+import { AgentOptimizationDashboard } from '@/components/forex/AgentOptimizationDashboard';
 import {
   generateForexTrades,
   filterForexTrades,
@@ -205,6 +206,9 @@ const ForexDashboard = () => {
             </TabsTrigger>
             <TabsTrigger value="agent-simulator" className="text-xs gap-1.5">
               <UserX className="w-3.5 h-3.5" />Agent Simulator
+            </TabsTrigger>
+            <TabsTrigger value="agent-optimization" className="text-xs gap-1.5">
+              <Wrench className="w-3.5 h-3.5" />Agent Optimization
             </TabsTrigger>
           </TabsList>
 
@@ -433,6 +437,11 @@ const ForexDashboard = () => {
           <TabsContent value="agent-simulator" className="space-y-4">
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
               <AgentExclusionSimulator />
+            </motion.div>
+          </TabsContent>
+          <TabsContent value="agent-optimization" className="space-y-4">
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+              <AgentOptimizationDashboard />
             </motion.div>
           </TabsContent>
         </Tabs>
