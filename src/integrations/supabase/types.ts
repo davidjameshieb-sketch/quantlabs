@@ -14,6 +14,69 @@ export type Database = {
   }
   public: {
     Tables: {
+      analytics_snapshot_runs: {
+        Row: {
+          created_at: string
+          error: string | null
+          finished_at: string | null
+          run_id: string
+          scope_key: string
+          snapshot_type: string
+          started_at: string
+          status: string
+        }
+        Insert: {
+          created_at?: string
+          error?: string | null
+          finished_at?: string | null
+          run_id?: string
+          scope_key: string
+          snapshot_type: string
+          started_at?: string
+          status?: string
+        }
+        Update: {
+          created_at?: string
+          error?: string | null
+          finished_at?: string | null
+          run_id?: string
+          scope_key?: string
+          snapshot_type?: string
+          started_at?: string
+          status?: string
+        }
+        Relationships: []
+      }
+      analytics_snapshots: {
+        Row: {
+          as_of_ts: string
+          created_at: string
+          payload: Json
+          scope_key: string
+          snapshot_type: string
+          status: string
+          updated_at: string
+        }
+        Insert: {
+          as_of_ts?: string
+          created_at?: string
+          payload?: Json
+          scope_key: string
+          snapshot_type: string
+          status?: string
+          updated_at?: string
+        }
+        Update: {
+          as_of_ts?: string
+          created_at?: string
+          payload?: Json
+          scope_key?: string
+          snapshot_type?: string
+          status?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
       oanda_orders: {
         Row: {
           agent_id: string | null
@@ -131,6 +194,66 @@ export type Database = {
           updated_at?: string
           user_id?: string
           variant_id?: string
+        }
+        Relationships: []
+      }
+      oanda_orders_daily_rollup: {
+        Row: {
+          agent_id: string
+          avg_slippage: number
+          avg_spread: number
+          created_at: string
+          currency_pair: string
+          direction: string
+          environment: string
+          gross_loss_pips: number
+          gross_profit_pips: number
+          losses: number
+          max_dd_pips: number
+          net_pips: number
+          regime_label: string
+          rollup_date: string
+          session_label: string
+          trades: number
+          wins: number
+        }
+        Insert: {
+          agent_id: string
+          avg_slippage?: number
+          avg_spread?: number
+          created_at?: string
+          currency_pair: string
+          direction: string
+          environment: string
+          gross_loss_pips?: number
+          gross_profit_pips?: number
+          losses?: number
+          max_dd_pips?: number
+          net_pips?: number
+          regime_label?: string
+          rollup_date: string
+          session_label?: string
+          trades?: number
+          wins?: number
+        }
+        Update: {
+          agent_id?: string
+          avg_slippage?: number
+          avg_spread?: number
+          created_at?: string
+          currency_pair?: string
+          direction?: string
+          environment?: string
+          gross_loss_pips?: number
+          gross_profit_pips?: number
+          losses?: number
+          max_dd_pips?: number
+          net_pips?: number
+          regime_label?: string
+          rollup_date?: string
+          session_label?: string
+          trades?: number
+          wins?: number
         }
         Relationships: []
       }
