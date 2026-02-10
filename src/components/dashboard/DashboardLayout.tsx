@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
+import { SnapshotStatusBar } from '@/components/dashboard/SnapshotStatusBar';
 import { Activity, Home, BarChart3, Settings, LogOut, Search, ChevronDown, ChevronRight, Menu, BookOpen, Bot, LogIn, Shield, Globe, Wifi } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -228,6 +229,10 @@ export const DashboardLayout = ({ children }: DashboardLayoutProps) => {
         {/* Top bar */}
         <header className="sticky top-0 z-40 border-b border-border/50 bg-background/80 backdrop-blur-xl">
           <div className="flex items-center justify-between h-16 px-4">
+            {/* Data Status Bar */}
+            <div className="hidden xl:block absolute top-1 right-4">
+              <SnapshotStatusBar />
+            </div>
             {/* Mobile menu */}
             <Sheet>
               <SheetTrigger asChild>

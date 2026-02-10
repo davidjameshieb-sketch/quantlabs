@@ -1,11 +1,10 @@
-// Hook to fetch real OANDA execution performance from oanda_orders table
-// Provides actual win rates, P&L, slippage, and execution quality from broker data
+// Hook to fetch real OANDA execution performance
+// Now uses snapshot layer for heavy analytics, with lightweight recent-orders fetch for live data
 
 import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRealtimeOrders } from '@/hooks/useRealtimeOrders';
-import { fetchAllOrders } from '@/lib/forex/fetchAllOrders';
 
 export interface RealExecutionMetrics {
   totalFilled: number;
@@ -72,25 +71,29 @@ export function useOandaPerformance() {
     setLoading(true);
 
     try {
-      // Fetch all orders with real execution telemetry (paginated — no row limit)
-      const orders = await fetchAllOrders({
-        userId: user.id,
-        requirePrices: false,
-        statuses: ['filled', 'closed', 'rejected', 'submitted', 'pending'],
-      });
+      // Only fetch last 30 days with LIMIT — no full table scan
+      const cutoff = new Date(Date.now() - 30 * 86400000).toISOString();
+      const { data: orders, error } = await supabase
+        .from('oanda_orders')
+        .select('*')
+        .eq('user_id', user.id)
+        .in('status', ['filled', 'closed', 'rejected', 'submitted', 'pending'])
+        .gte('created_at', cutoff)
+        .order('created_at', { ascending: false })
+        .limit(1000);
+
+      if (error) throw error;
 
       const allOrders = (orders || []).filter(
         (o: any) => !o.error_message || !o.error_message.startsWith('cleared:')
       ) as RealOrder[];
       
-      // Only count orders with actual fills
       const filled = allOrders.filter(o => 
         (o.status === 'filled' || o.status === 'closed') && o.entry_price != null
       );
       const rejected = allOrders.filter(o => o.status === 'rejected');
       const submitted = allOrders.filter(o => o.status === 'submitted');
 
-      // Win/loss: if exit_price exists, compare with entry; otherwise check unrealized
       const wins = filled.filter(o => {
         if (o.exit_price != null && o.entry_price != null) {
           const pnl = o.direction === 'long' 
@@ -98,7 +101,6 @@ export function useOandaPerformance() {
             : o.entry_price - o.exit_price;
           return pnl > 0;
         }
-        // Open trades — count as neutral (not win/loss yet)
         return false;
       });
       const losses = filled.filter(o => {
@@ -114,7 +116,6 @@ export function useOandaPerformance() {
       const closedTrades = wins.length + losses.length;
       const winRate = closedTrades > 0 ? wins.length / closedTrades : 0;
 
-      // Realized P&L (from closed trades with exit_price)
       const realizedPnl = filled
         .filter(o => o.exit_price != null && o.entry_price != null)
         .reduce((sum, o) => {
@@ -124,7 +125,6 @@ export function useOandaPerformance() {
           return sum + pnl;
         }, 0);
 
-      // Execution telemetry averages
       const slippages = filled.map(o => o.slippage_pips).filter((v): v is number => v != null);
       const qualities = filled.map(o => o.execution_quality_score).filter((v): v is number => v != null);
       const latencies = filled.map(o => o.fill_latency_ms).filter((v): v is number => v != null);
@@ -132,7 +132,6 @@ export function useOandaPerformance() {
 
       const avg = (arr: number[]) => arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
 
-      // Pair breakdown
       const pairBreakdown: RealExecutionMetrics['pairBreakdown'] = {};
       for (const o of filled) {
         const p = o.currency_pair;
@@ -150,7 +149,6 @@ export function useOandaPerformance() {
         }
       }
 
-      // Agent breakdown
       const agentBreakdown: RealExecutionMetrics['agentBreakdown'] = {};
       for (const o of filled) {
         const a = o.agent_id || 'unknown';
@@ -191,7 +189,6 @@ export function useOandaPerformance() {
     }
   }, [user]);
 
-  // Realtime: auto-refresh when orders change
   useRealtimeOrders({ onOrderChange: fetchPerformance });
 
   useEffect(() => {

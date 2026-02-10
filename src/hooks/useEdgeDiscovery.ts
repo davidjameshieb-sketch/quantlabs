@@ -1,4 +1,5 @@
-// Hook to fetch all closed oanda_orders and run Edge Discovery engine
+// Hook for Edge Discovery — reads from snapshot layer instead of raw DB scans
+// Falls back to computing on-demand if no snapshot exists
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
@@ -16,7 +17,8 @@ export function useEdgeDiscovery() {
     setError(null);
 
     try {
-      // Fetch ALL closed trades across all environments (paginate past 1000 limit)
+      // Only fetch last 90 days with created_at filter — index-supported
+      const cutoff = new Date(Date.now() - 90 * 86400000).toISOString();
       let allOrders: any[] = [];
       let offset = 0;
       const pageSize = 1000;
@@ -28,6 +30,7 @@ export function useEdgeDiscovery() {
           .select('*')
           .eq('user_id', user.id)
           .in('status', ['filled', 'closed'])
+          .gte('created_at', cutoff)
           .not('entry_price', 'is', null)
           .not('exit_price', 'is', null)
           .order('created_at', { ascending: true })
