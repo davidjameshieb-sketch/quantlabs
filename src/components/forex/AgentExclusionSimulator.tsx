@@ -18,14 +18,19 @@ import { Button } from '@/components/ui/button';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
-interface TradeRow {
-  agent_id: string | null;
-  currency_pair: string;
-  direction: string;
-  entry_price: number;
-  exit_price: number;
-  session_label: string | null;
-  pips: number;
+interface AgentStats {
+  agent_id: string;
+  total_trades: number;
+  win_count: number;
+  net_pips: number;
+  gross_profit: number;
+  gross_loss: number;
+  long_count: number;
+  long_wins: number;
+  long_net: number;
+  short_count: number;
+  short_wins: number;
+  short_net: number;
 }
 
 interface SimulatedHealth {
@@ -56,12 +61,9 @@ interface AgentImpact {
 
 // ─── Helpers ────────────────────────────────────────────────────────
 
-function pipMult(pair: string): number {
-  return ['USD_JPY', 'EUR_JPY', 'GBP_JPY', 'AUD_JPY', 'CAD_JPY', 'CHF_JPY', 'NZD_JPY'].includes(pair) ? 100 : 10000;
-}
-
-function computeHealth(trades: TradeRow[]): SimulatedHealth {
-  if (trades.length === 0) {
+function computeHealthFromAgents(agents: AgentStats[]): SimulatedHealth {
+  const totalTrades = agents.reduce((s, a) => s + a.total_trades, 0);
+  if (totalTrades === 0) {
     return {
       status: 'red', statusLabel: 'No Data', totalTrades: 0,
       winRate: 0, expectancy: 0, pf: 0, longWR: 0, shortWR: 0,
@@ -69,67 +71,33 @@ function computeHealth(trades: TradeRow[]): SimulatedHealth {
     };
   }
 
-  const wins = trades.filter(t => t.pips > 0);
-  const grossProfit = wins.reduce((s, t) => s + t.pips, 0);
-  const grossLoss = Math.abs(trades.filter(t => t.pips <= 0).reduce((s, t) => s + t.pips, 0));
+  const totalWins = agents.reduce((s, a) => s + a.win_count, 0);
+  const grossProfit = agents.reduce((s, a) => s + a.gross_profit, 0);
+  const grossLoss = agents.reduce((s, a) => s + a.gross_loss, 0);
+  const netPips = agents.reduce((s, a) => s + a.net_pips, 0);
   const pf = grossLoss > 0 ? Math.round((grossProfit / grossLoss) * 100) / 100 : 0;
-  const netPips = trades.reduce((s, t) => s + t.pips, 0);
-  const expectancy = Math.round((netPips / trades.length) * 100) / 100;
+  const expectancy = Math.round((netPips / totalTrades) * 100) / 100;
 
-  const longs = trades.filter(t => t.direction === 'long');
-  const shorts = trades.filter(t => t.direction === 'short');
-  const longWins = longs.filter(t => t.pips > 0).length;
-  const shortWins = shorts.filter(t => t.pips > 0).length;
-  const longWR = longs.length > 0 ? Math.round((longWins / longs.length) * 1000) / 10 : 0;
-  const shortWR = shorts.length > 0 ? Math.round((shortWins / shorts.length) * 1000) / 10 : 0;
+  const totalLongs = agents.reduce((s, a) => s + a.long_count, 0);
+  const totalLongWins = agents.reduce((s, a) => s + a.long_wins, 0);
+  const totalShorts = agents.reduce((s, a) => s + a.short_count, 0);
+  const totalShortWins = agents.reduce((s, a) => s + a.short_wins, 0);
+  const longWR = totalLongs > 0 ? Math.round((totalLongWins / totalLongs) * 1000) / 10 : 0;
+  const shortWR = totalShorts > 0 ? Math.round((totalShortWins / totalShorts) * 1000) / 10 : 0;
+  const longNet = Math.round(agents.reduce((s, a) => s + a.long_net, 0) * 10) / 10;
+  const shortNet = Math.round(agents.reduce((s, a) => s + a.short_net, 0) * 10) / 10;
 
-  // Sessions
-  const sessionMap = new Map<string, { net: number; wins: number; total: number }>();
-  for (const t of trades) {
-    const s = t.session_label || 'unknown';
-    const cur = sessionMap.get(s) || { net: 0, wins: 0, total: 0 };
-    cur.total++; cur.net += t.pips; if (t.pips > 0) cur.wins++;
-    sessionMap.set(s, cur);
-  }
-  const sessions = Array.from(sessionMap.entries())
-    .map(([session, v]) => {
-      const wr = v.total > 0 ? v.wins / v.total : 0;
-      const color: HealthColor = v.net > 0 && wr > 0.48 ? 'green' : v.net < -100 || wr < 0.35 ? 'red' : 'yellow';
-      return { session, netPips: Math.round(v.net * 10) / 10, color };
-    })
-    .sort((a, b) => b.netPips - a.netPips);
-
-  // Pairs
-  const pairMap = new Map<string, { net: number; gp: number; gl: number; total: number }>();
-  for (const t of trades) {
-    const cur = pairMap.get(t.currency_pair) || { net: 0, gp: 0, gl: 0, total: 0 };
-    cur.total++; cur.net += t.pips;
-    if (t.pips > 0) cur.gp += t.pips; else cur.gl += Math.abs(t.pips);
-    pairMap.set(t.currency_pair, cur);
-  }
-  const allPairs = Array.from(pairMap.entries())
-    .map(([pair, v]) => {
-      const ppf = v.gl > 0 ? v.gp / v.gl : 0;
-      const color: HealthColor = ppf >= 1.15 && v.net > 0 ? 'green' : ppf < 0.95 || v.net < -100 ? 'red' : 'yellow';
-      return { pair, netPips: Math.round(v.net * 10) / 10, color };
-    })
-    .sort((a, b) => b.netPips - a.netPips);
-
-  // Overall status
-  const sWR = shorts.length > 0 ? shortWins / shorts.length : 0;
+  const sWR = totalShorts > 0 ? totalShortWins / totalShorts : 0;
   let status: HealthColor = 'yellow';
   let statusLabel = 'Edge Developing';
   if (pf < 1.0 || expectancy <= 0 || sWR < 0.35) { status = 'red'; statusLabel = 'Edge Unhealthy'; }
   else if (pf >= 1.5 && expectancy > 0.3 && sWR > 0.45) { status = 'green'; statusLabel = 'Edge Healthy'; }
 
   return {
-    status, statusLabel, totalTrades: trades.length,
-    winRate: Math.round((wins.length / trades.length) * 1000) / 10,
-    expectancy, pf, longWR, shortWR,
-    longNet: Math.round(longs.reduce((s, t) => s + t.pips, 0) * 10) / 10,
-    shortNet: Math.round(shorts.reduce((s, t) => s + t.pips, 0) * 10) / 10,
-    sessions, topPairs: allPairs.filter(p => p.color === 'green').slice(0, 3),
-    worstPairs: allPairs.filter(p => p.color === 'red').slice(-3).reverse(),
+    status, statusLabel, totalTrades,
+    winRate: Math.round((totalWins / totalTrades) * 1000) / 10,
+    expectancy, pf, longWR, shortWR, longNet, shortNet,
+    sessions: [], topPairs: [], worstPairs: [],
   };
 }
 
@@ -146,19 +114,16 @@ const statusText: Record<HealthColor, string> = {
   red: 'text-neural-red',
 };
 
-// Non-agent IDs to exclude from the simulator
-const EXCLUDED_AGENT_IDS = new Set(['manual-test', 'unknown']);
-
 // ─── Component ──────────────────────────────────────────────────────
 
 export const AgentExclusionSimulator = () => {
   const { user } = useAuth();
-  const [allTrades, setAllTrades] = useState<TradeRow[]>([]);
+  const [agentStatsMap, setAgentStatsMap] = useState<Map<string, AgentStats>>(new Map());
   const [loading, setLoading] = useState(true);
   const [enabledAgents, setEnabledAgents] = useState<Set<string>>(new Set());
   const [uniqueAgents, setUniqueAgents] = useState<string[]>([]);
 
-  // Fetch trades via server-side RPC (avoids 117k row client-side fetch)
+  // Fetch aggregated agent stats via server-side RPC
   useEffect(() => {
     if (!user) return;
     (async () => {
@@ -171,20 +136,27 @@ export const AgentExclusionSimulator = () => {
         if (error) throw error;
         if (!data || data.length === 0) { setLoading(false); return; }
 
-        const rows: TradeRow[] = (data as any[]).map((o: any) => ({
-          agent_id: o.agent_id,
-          currency_pair: o.currency_pair,
-          direction: o.direction,
-          session_label: o.session_label,
-          entry_price: o.entry_price,
-          exit_price: o.exit_price,
-          pips: Number(o.pips),
-        }));
-
-        setAllTrades(rows);
+        const statsMap = new Map<string, AgentStats>();
+        for (const row of data as any[]) {
+          statsMap.set(row.agent_id, {
+            agent_id: row.agent_id,
+            total_trades: Number(row.total_trades),
+            win_count: Number(row.win_count),
+            net_pips: Number(row.net_pips),
+            gross_profit: Number(row.gross_profit),
+            gross_loss: Number(row.gross_loss),
+            long_count: Number(row.long_count),
+            long_wins: Number(row.long_wins),
+            long_net: Number(row.long_net),
+            short_count: Number(row.short_count),
+            short_wins: Number(row.short_wins),
+            short_net: Number(row.short_net),
+          });
+        }
+        setAgentStatsMap(statsMap);
 
         const registeredIds = ALL_AGENT_IDS as string[];
-        const dataIds = [...new Set(rows.map(r => r.agent_id).filter((id): id is string => id != null))];
+        const dataIds = [...statsMap.keys()];
         const agents = [...new Set([...registeredIds, ...dataIds])];
         setUniqueAgents(agents);
         setEnabledAgents(new Set(agents));
@@ -208,33 +180,35 @@ export const AgentExclusionSimulator = () => {
   const deselectAll = () => setEnabledAgents(new Set());
 
   // Compute baseline (all agents) and simulated (selected agents)
-  const baseline = useMemo(() => computeHealth(allTrades), [allTrades]);
-  const filtered = useMemo(
-    () => allTrades.filter(t => enabledAgents.has(t.agent_id || 'unknown')),
-    [allTrades, enabledAgents],
+  const allAgentStats = useMemo(() => [...agentStatsMap.values()], [agentStatsMap]);
+  const baseline = useMemo(() => computeHealthFromAgents(allAgentStats), [allAgentStats]);
+  const filteredStats = useMemo(
+    () => allAgentStats.filter(a => enabledAgents.has(a.agent_id)),
+    [allAgentStats, enabledAgents],
   );
-  const simulated = useMemo(() => computeHealth(filtered), [filtered]);
+  const simulated = useMemo(() => computeHealthFromAgents(filteredStats), [filteredStats]);
 
   // Per-agent stats
   const agentImpacts: AgentImpact[] = useMemo(() => {
     return uniqueAgents.map(id => {
-      const trades = allTrades.filter(t => (t.agent_id || 'unknown') === id);
-      const wins = trades.filter(t => t.pips > 0);
-      const gp = wins.reduce((s, t) => s + t.pips, 0);
-      const gl = Math.abs(trades.filter(t => t.pips <= 0).reduce((s, t) => s + t.pips, 0));
-      const net = trades.reduce((s, t) => s + t.pips, 0);
+      const stats = agentStatsMap.get(id);
       const def = AGENT_DEFINITIONS[id as AgentId];
+      if (!stats) {
+        return {
+          id, name: def?.name || id, trades: 0, winRate: 0, netPips: 0, pf: 0, color: def?.color || '#888',
+        };
+      }
       return {
         id,
         name: def?.name || id,
-        trades: trades.length,
-        winRate: trades.length > 0 ? Math.round((wins.length / trades.length) * 1000) / 10 : 0,
-        netPips: Math.round(net * 10) / 10,
-        pf: gl > 0 ? Math.round((gp / gl) * 100) / 100 : 0,
+        trades: stats.total_trades,
+        winRate: stats.total_trades > 0 ? Math.round((stats.win_count / stats.total_trades) * 1000) / 10 : 0,
+        netPips: Math.round(stats.net_pips * 10) / 10,
+        pf: stats.gross_loss > 0 ? Math.round((stats.gross_profit / stats.gross_loss) * 100) / 100 : 0,
         color: def?.color || '#888',
       };
     }).sort((a, b) => b.netPips - a.netPips);
-  }, [allTrades, uniqueAgents]);
+  }, [agentStatsMap, uniqueAgents]);
 
   // Compute delta values
   const delta = (sim: number, base: number) => {
@@ -266,7 +240,7 @@ export const AgentExclusionSimulator = () => {
     );
   }
 
-  if (allTrades.length === 0) {
+  if (agentStatsMap.size === 0) {
     return (
       <Card className="bg-card/60 border-border/30">
         <CardContent className="py-8 text-center">

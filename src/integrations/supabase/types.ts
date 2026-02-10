@@ -290,22 +290,12 @@ export type Database = {
         Args: { p_user_id: string }
         Returns: {
           agent_id: string
-          currency_pair: string
           gross_loss: number
           gross_profit: number
           long_count: number
           long_net: number
           long_wins: number
-          loss_count: number
           net_pips: number
-          pair_gl: number
-          pair_gp: number
-          pair_net: number
-          pair_total: number
-          session_label: string
-          session_net: number
-          session_total: number
-          session_wins: number
           short_count: number
           short_net: number
           short_wins: number
