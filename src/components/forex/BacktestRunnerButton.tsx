@@ -70,7 +70,7 @@ export const BacktestRunnerButton = () => {
 
         const config = {
           ...DEFAULT_BACKTEST_CONFIG,
-          startDate: new Date(Date.now() - 90 * 24 * 60 * 60 * 1000),
+          startDate: new Date(Date.now() - 21 * 24 * 60 * 60 * 1000),
           endDate: new Date(),
           variantId: 'baseline',
           agentId,
