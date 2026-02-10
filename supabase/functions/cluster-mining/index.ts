@@ -260,7 +260,7 @@ async function fetchCandlesPaginated(instrument: string, granularity: string, fr
   const toTs = new Date(to).getTime();
 
   while (new Date(currentFrom).getTime() < toTs) {
-    const url = `${host}/v3/instruments/${instrument}/candles?granularity=${granularity}&from=${encodeURIComponent(currentFrom)}&to=${encodeURIComponent(to)}&count=5000&price=MBA`;
+    const url = `${host}/v3/instruments/${instrument}/candles?granularity=${granularity}&from=${encodeURIComponent(currentFrom)}&to=${encodeURIComponent(to)}&price=MBA`;
     const res = await fetch(url, {
       headers: { Authorization: `Bearer ${apiToken}`, Accept: "application/json" },
     });
