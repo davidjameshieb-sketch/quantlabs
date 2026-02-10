@@ -31,6 +31,7 @@ import { runDriftMonitor, type DriftMonitorState, type DriftAlert } from '@/lib/
 import type { ForexTradeEntry } from '@/lib/forex/forexTypes';
 import { buildEnvironmentSignature } from '@/lib/forex/edgeLearningState';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
+import { EnvironmentBadge } from '@/components/forex/EnvironmentGuards';
 
 interface AdaptiveEdgeDashboardProps {
   trades: ForexTradeEntry[];
@@ -144,6 +145,7 @@ export function AdaptiveEdgeDashboard({ trades }: AdaptiveEdgeDashboardProps) {
             <div className="flex items-center gap-2">
               <Brain className="w-5 h-5 text-primary" />
               <CardTitle className="text-sm font-display">Adaptive Edge Governance</CardTitle>
+              <EnvironmentBadge env="live" />
               <Badge variant="outline" className={`text-[9px] ${modeInfo.color}`}>
                 <ModeIcon className="w-3 h-3 mr-1" />
                 {modeInfo.label}

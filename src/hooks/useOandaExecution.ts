@@ -3,6 +3,7 @@ import { useState, useCallback } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
 import { toast } from 'sonner';
+import { validateLiveExecution, type AccountType } from '@/components/forex/EnvironmentGuards';
 
 export interface OandaAccountSummary {
   balance: string;
@@ -148,10 +149,23 @@ export function useOandaExecution() {
   }) => {
     setLoading(true);
     try {
+      // Router hard guard: validate environment alignment
+      const env = params.environment || 'practice';
+      const guardResult = validateLiveExecution({
+        accountType: env as AccountType,
+        brokerEnvironment: env === 'live' ? 'live' : 'practice',
+        executionEnabled: true,
+      });
+
+      if (!guardResult.allowed) {
+        toast.error(guardResult.reason || 'Execution blocked by router guard');
+        throw new Error(guardResult.reason || 'Blocked by router guard');
+      }
+
       const data = await callOanda({
         action: 'execute',
         ...params,
-        environment: params.environment || 'practice',
+        environment: env,
       });
 
       if (data.success) {

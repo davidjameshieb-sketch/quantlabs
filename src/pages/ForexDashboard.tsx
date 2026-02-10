@@ -49,6 +49,7 @@ import { EdgeGovernanceSimulatorDashboard } from '@/components/forex/EdgeGoverna
 import { AgentLiveOptimizationDashboard } from '@/components/forex/AgentLiveOptimizationDashboard';
 import { CoalitionsDashboard } from '@/components/forex/CoalitionsDashboard';
 import { ExplosiveGrowthDashboard } from '@/components/forex/ExplosiveGrowthDashboard';
+import { LiveTradingProofPanel } from '@/components/forex/EnvironmentGuards';
 import { LazyTabContent } from '@/components/forex/LazyTabContent';
 import {
   generateForexTrades,
@@ -196,7 +197,10 @@ const ForexDashboard = () => {
           {/* Focus Pairs — loads immediately */}
           <TabsContent value="focus-pairs" className="space-y-4">
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
-              <FocusPairsEdgeDashboard />
+              <LiveTradingProofPanel />
+              <div className="mt-4">
+                <FocusPairsEdgeDashboard />
+              </div>
             </motion.div>
           </TabsContent>
 

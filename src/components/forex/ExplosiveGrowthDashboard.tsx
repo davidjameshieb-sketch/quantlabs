@@ -13,6 +13,7 @@ import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { useExplosiveGrowth } from '@/hooks/useExplosiveGrowth';
+import { EnvironmentBadge, EnvironmentFilter, type EnvFilterValue } from '@/components/forex/EnvironmentGuards';
 import type {
   ExplosiveLiveConfig, EdgeDominanceCluster, AgentClassification,
   PairAllocation, SessionDensityRule, EnvKeyBoost, SafetyTrigger,
@@ -69,7 +70,8 @@ function PFDisplay({ pf, valid }: { pf: number | null; valid: boolean }) {
 // ─── Filter State ───
 function useFilter() {
   const [pair, setPair] = useState<string>('all');
-  return { pair, setPair };
+  const [envFilter, setEnvFilter] = useState<EnvFilterValue>('live+practice');
+  return { pair, setPair, envFilter, setEnvFilter };
 }
 
 // ─── Control Panel ───
@@ -384,7 +386,7 @@ function SafetyPanel({ config }: { config: ExplosiveLiveConfig }) {
 // ─── Main Dashboard ───
 export function ExplosiveGrowthDashboard() {
   const { config, loading, error, refresh } = useExplosiveGrowth();
-  const { pair, setPair } = useFilter();
+  const { pair, setPair, envFilter, setEnvFilter } = useFilter();
 
   if (loading) {
     return (
@@ -418,9 +420,11 @@ export function ExplosiveGrowthDashboard() {
       animate={{ opacity: 1, y: 0 }}
       className="space-y-4"
     >
-      {/* Pair Filter */}
-      <div className="flex items-center gap-2">
-        <span className="text-[10px] text-muted-foreground">Filter pair:</span>
+      {/* Environment + Pair Filter */}
+      <div className="flex items-center gap-2 flex-wrap">
+        <EnvironmentBadge env={envFilter === 'live+practice' ? 'live' : (envFilter === 'all' ? 'practice' : envFilter as any)} />
+        <EnvironmentFilter value={envFilter} onChange={setEnvFilter} />
+        <span className="text-[10px] text-muted-foreground ml-2">Pair:</span>
         <div className="flex gap-1 flex-wrap">
           <Badge
             variant={pair === 'all' ? 'default' : 'outline'}
