@@ -5,6 +5,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRealtimeOrders } from '@/hooks/useRealtimeOrders';
+import { fetchAllOrders } from '@/lib/forex/fetchAllOrders';
 
 export interface RealExecutionMetrics {
   totalFilled: number;
@@ -71,22 +72,16 @@ export function useOandaPerformance() {
     setLoading(true);
 
     try {
-      // Fetch all orders with real execution telemetry (exclude bulk-cleared legacy)
-      const { data: orders, error } = await supabase
-        .from('oanda_orders')
-        .select('*')
-        .eq('user_id', user.id)
-        .or('error_message.is.null,error_message.not.like.cleared:%')
-        .order('created_at', { ascending: false })
-        .limit(500);
+      // Fetch all orders with real execution telemetry (paginated — no row limit)
+      const orders = await fetchAllOrders({
+        userId: user.id,
+        requirePrices: false,
+        statuses: ['filled', 'closed', 'rejected', 'submitted', 'pending'],
+      });
 
-      if (error) {
-        console.error('[OANDA-PERF] Fetch error:', error);
-        setLoading(false);
-        return;
-      }
-
-      const allOrders = (orders || []) as RealOrder[];
+      const allOrders = (orders || []).filter(
+        (o: any) => !o.error_message || !o.error_message.startsWith('cleared:')
+      ) as RealOrder[];
       
       // Only count orders with actual fills
       const filled = allOrders.filter(o => 
