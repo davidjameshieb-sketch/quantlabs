@@ -40,7 +40,9 @@ async function oandaRequest(
   environment: "practice" | "live" = "practice"
 ) {
   const apiToken = Deno.env.get("OANDA_API_TOKEN");
-  const accountId = Deno.env.get("OANDA_ACCOUNT_ID");
+  const accountId = environment === "live"
+    ? (Deno.env.get("OANDA_LIVE_ACCOUNT_ID") || Deno.env.get("OANDA_ACCOUNT_ID"))
+    : Deno.env.get("OANDA_ACCOUNT_ID");
 
   if (!apiToken || !accountId) {
     throw new Error("OANDA credentials not configured");
