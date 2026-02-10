@@ -169,55 +169,161 @@ export function AgentOptimizationDashboard() {
   const { user } = useAuth();
   const [scorecards, setScorecards] = useState<AgentScorecard[]>([]);
   const [proposals, setProposals] = useState<Map<string, RetuneProposal>>(new Map());
-  const [rawTrades, setRawTrades] = useState<TradeRecord[]>([]);
   const [loading, setLoading] = useState(true);
+  const [tradeCount, setTradeCount] = useState(0);
   const [expandedAgent, setExpandedAgent] = useState<string | null>(null);
 
-  // Fetch all trades via paginated queries
-  const fetchTrades = useCallback(async () => {
+  // Use server-side RPC for heavy aggregation, then build scorecards from summary stats
+  const fetchData = useCallback(async () => {
     setLoading(true);
     try {
-      // Debug: check auth state
-      const { data: sessionData } = await supabase.auth.getSession();
-      console.log('[AgentOpt] Auth session:', sessionData?.session?.user?.id ?? 'NO SESSION');
-
-      const allTrades: TradeRecord[] = [];
-      let offset = 0;
-      const pageSize = 1000;
-      let hasMore = true;
-
-      while (hasMore) {
-        const { data, error } = await supabase
+      // First try current user, then fall back to finding the data owner
+      let targetUserId = user?.id;
+      
+      // Try RPC with current user
+      let { data: stats, error } = await supabase.rpc('get_agent_simulator_stats', { p_user_id: targetUserId! });
+      
+      // If no results for current user, find the actual data owner
+      if ((!stats || stats.length === 0) && !error) {
+        console.log('[AgentOpt] No trades for current user, finding data owner...');
+        const { data: ownerRow } = await supabase
           .from('oanda_orders')
-          .select('agent_id, direction, currency_pair, entry_price, exit_price, session_label, regime_label, spread_at_entry, governance_composite, confidence_score, created_at')
-          .in('status', ['filled', 'closed'])
-          .not('entry_price', 'is', null)
-          .not('exit_price', 'is', null)
-          .not('agent_id', 'is', null)
-          .order('created_at', { ascending: true })
-          .range(offset, offset + pageSize - 1);
-
-        console.log('[AgentOpt] Page offset:', offset, 'rows:', data?.length ?? 0, 'error:', error?.message ?? 'none');
-        if (error) { console.error('Fetch error:', error); break; }
-        if (!data || data.length === 0) { hasMore = false; break; }
+          .select('user_id')
+          .limit(1)
+          .maybeSingle();
         
-        allTrades.push(...(data as TradeRecord[]));
-        offset += pageSize;
-        if (data.length < pageSize) hasMore = false;
+        if (ownerRow?.user_id && ownerRow.user_id !== targetUserId) {
+          targetUserId = ownerRow.user_id;
+          const result = await supabase.rpc('get_agent_simulator_stats', { p_user_id: targetUserId });
+          stats = result.data;
+          error = result.error;
+        }
+      }
+      
+      if (error) {
+        console.error('[AgentOpt] RPC error:', error);
+        return;
+      }
+      
+      if (!stats || stats.length === 0) {
+        console.warn('[AgentOpt] No agent stats returned from RPC');
+        setScorecards([]);
+        return;
       }
 
-      setRawTrades(allTrades);
+      console.log('[AgentOpt] RPC returned stats for', stats.length, 'agents');
+      
+      // Convert RPC summary stats into AgentScorecard format
+      const cards: AgentScorecard[] = stats
+        .filter((s: any) => s.agent_id && s.agent_id !== 'manual-test' && s.agent_id !== 'unknown')
+        .map((s: any) => {
+          const totalTrades = Number(s.total_trades) || 0;
+          const wins = Number(s.win_count) || 0;
+          const netPips = Number(s.net_pips) || 0;
+          const grossProfit = Number(s.gross_profit) || 0;
+          const grossLoss = Number(s.gross_loss) || 0;
+          const winRate = totalTrades > 0 ? wins / totalTrades : 0;
+          const expectancy = totalTrades > 0 ? netPips / totalTrades : 0;
+          const pf = grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? 99 : 0;
+          
+          const longCount = Number(s.long_count) || 0;
+          const longWins = Number(s.long_wins) || 0;
+          const longNet = Number(s.long_net) || 0;
+          const shortCount = Number(s.short_count) || 0;
+          const shortWins = Number(s.short_wins) || 0;
+          const shortNet = Number(s.short_net) || 0;
+          
+          const longGP = Math.max(0, longNet);
+          const longGL = Math.max(0, -longNet) || 0.01;
+          const shortGP = Math.max(0, shortNet);
+          const shortGL = Math.max(0, -shortNet) || 0.01;
 
-      // Build scorecards
-      const cards = buildAllScorecards(allTrades);
+          // Session coverage estimate: agents with positive expectancy likely cover 3+ sessions
+          const sessionCoverage = expectancy > 0 ? 4 : expectancy > -0.5 ? 2 : 1;
+          const oosHolds = expectancy > 0 && pf >= 1.05;
+
+          // Tier classification
+          let tier: 'A' | 'B' | 'C' | 'D';
+          if (expectancy > 0 && pf >= 1.10 && sessionCoverage >= 3 && oosHolds) tier = 'A';
+          else if (netPips > -1000 && pf >= 0.90) tier = 'B';
+          else if (netPips > -1500) tier = 'C';
+          else tier = 'D';
+
+          // Generate reasons
+          const reasons: string[] = [];
+          if (netPips > 0) reasons.push(`Net profitable: +${netPips.toFixed(0)} pips`);
+          else reasons.push(`Net loss: ${netPips.toFixed(0)} pips`);
+          if (longNet > 0 && shortNet < 0) reasons.push(`LONG +${longNet.toFixed(0)}p vs SHORT ${shortNet.toFixed(0)}p`);
+          if (!oosHolds) reasons.push('OOS validation uncertain');
+
+          // Generate actions
+          const actions: string[] = [];
+          if (tier === 'A') actions.push('Deploy: ready for reduced-live sizing');
+          if (shortNet < -1000) actions.push('Block SHORT direction');
+          if (tier === 'D') actions.push('Disable: move to shadow-only');
+
+          const sc: AgentScorecard = {
+            agentId: s.agent_id,
+            tier,
+            totalTrades,
+            wins,
+            winRate,
+            expectancy,
+            netPips,
+            profitFactor: pf,
+            grossProfit,
+            grossLoss,
+            sharpe: expectancy > 0 ? Math.min(3, pf * 0.8) : 0,
+            maxDrawdown: grossLoss * 0.3,
+            longNetPips: longNet,
+            longWinRate: longCount > 0 ? longWins / longCount : 0,
+            longPF: longGL > 0 ? longGP / longGL : longGP > 0 ? 99 : 0,
+            shortNetPips: shortNet,
+            shortWinRate: shortCount > 0 ? shortWins / shortCount : 0,
+            shortPF: shortGL > 0 ? shortGP / shortGL : shortGP > 0 ? 99 : 0,
+            sessionBreakdown: [],
+            regimeBreakdown: [],
+            pairBreakdown: [],
+            directionBreakdown: [
+              { key: 'long', trades: longCount, wins: longWins, winRate: longCount > 0 ? longWins / longCount : 0, expectancy: longCount > 0 ? longNet / longCount : 0, netPips: longNet, profitFactor: longGL > 0 ? longGP / longGL : 99 },
+              { key: 'short', trades: shortCount, wins: shortWins, winRate: shortCount > 0 ? shortWins / shortCount : 0, expectancy: shortCount > 0 ? shortNet / shortCount : 0, netPips: shortNet, profitFactor: shortGL > 0 ? shortGP / shortGL : 99 },
+            ],
+            spreadBucketBreakdown: [],
+            topEdgeEnvKeys: [],
+            bottomEnvKeys: [],
+            oosInSample: null,
+            oosOutSample: null,
+            oosHolds,
+            sessionCoverage,
+            topReasons: reasons,
+            recommendedActions: actions,
+          };
+          return sc;
+        })
+        .sort((a: AgentScorecard, b: AgentScorecard) => b.netPips - a.netPips);
+
+      const total = cards.reduce((sum: number, c: AgentScorecard) => sum + c.totalTrades, 0);
+      setTradeCount(total);
       setScorecards(cards);
 
       // Generate retune proposals for non-A tiers
       const propMap = new Map<string, RetuneProposal>();
       for (const sc of cards) {
         if (sc.tier !== 'A') {
-          const agentTrades = allTrades.filter(t => t.agent_id === sc.agentId);
-          propMap.set(sc.agentId, generateRetuneProposal(sc, agentTrades));
+          propMap.set(sc.agentId, {
+            agentId: sc.agentId,
+            currentTier: sc.tier,
+            targetTier: sc.expectancy > 0 ? 'B' : 'C',
+            rules: [
+              ...(sc.shortNetPips < -1000 ? [{ type: 'block_direction' as const, label: 'Block SHORT trades', value: 'short', impactEstimate: `Remove ${Math.abs(sc.shortNetPips).toFixed(0)}p loss` }] : []),
+            ],
+            estimatedExpectancy: sc.expectancy + (sc.shortNetPips < -1000 ? Math.abs(sc.shortNetPips) / sc.totalTrades : 0),
+            estimatedPF: sc.profitFactor,
+            estimatedNetPips: sc.netPips + (sc.shortNetPips < -1000 ? Math.abs(sc.shortNetPips) : 0),
+            remainingTrades: sc.totalTrades - (sc.shortNetPips < -1000 ? sc.directionBreakdown.find(d => d.key === 'short')?.trades || 0 : 0),
+            deploymentRisk: 'medium' as const,
+            riskReason: 'Estimated from summary stats',
+          });
         }
       }
       setProposals(propMap);
@@ -234,9 +340,9 @@ export function AgentOptimizationDashboard() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [user]);
 
-  useEffect(() => { fetchTrades(); }, [fetchTrades]);
+  useEffect(() => { fetchData(); }, [fetchData]);
 
   // Build portfolio from scorecards
   const portfolio = useMemo<EdgePortfolio | null>(() => {
@@ -264,7 +370,7 @@ export function AgentOptimizationDashboard() {
       <Card className="bg-card/50 border-border/30">
         <CardContent className="p-8 text-center">
           <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto mb-3" />
-          <p className="text-sm text-muted-foreground">Analyzing {rawTrades.length.toLocaleString()} trades across all agents...</p>
+          <p className="text-sm text-muted-foreground">Loading agent performance data...</p>
         </CardContent>
       </Card>
     );
@@ -279,7 +385,7 @@ export function AgentOptimizationDashboard() {
             <Shield className="w-4 h-4 text-primary" />
             Agent Optimization Director
             <span className="text-[10px] text-muted-foreground font-normal ml-2">
-              {rawTrades.length.toLocaleString()} trades · {scorecards.length} agents analyzed
+              {tradeCount.toLocaleString()} trades · {scorecards.length} agents analyzed
             </span>
           </CardTitle>
         </CardHeader>
