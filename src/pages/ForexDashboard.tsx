@@ -2,6 +2,7 @@
 // Isolated forex-only trade performance tracking & analysis
 
 import { useState, useMemo, useEffect, useCallback } from 'react';
+import { LongOnlyFilterProvider } from '@/contexts/LongOnlyFilterContext';
 import { motion } from 'framer-motion';
 import { Globe, TrendingUp, Crosshair, BarChart3, FlaskConical, ShieldCheck, SplitSquareHorizontal, PieChart, Shield, HeartPulse, Radar, Filter, Rocket, ShieldAlert, Brain, GitBranch, UserX, Wrench } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -135,6 +136,7 @@ const ForexDashboard = () => {
   }, [filteredTrades]);
 
   return (
+    <LongOnlyFilterProvider value={{ longOnlyFilter }}>
     <DashboardLayout>
       <div className="space-y-6">
         {/* Header */}
@@ -479,6 +481,7 @@ const ForexDashboard = () => {
         </Tabs>
       </div>
     </DashboardLayout>
+    </LongOnlyFilterProvider>
   );
 };
 
