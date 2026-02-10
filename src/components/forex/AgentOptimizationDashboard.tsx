@@ -175,7 +175,7 @@ function ScorecardDetail({ sc, proposal }: { sc: AgentScorecard; proposal: Retun
 
 // ─── Main Component ──────────────────────────────────────────────────
 
-export function AgentOptimizationDashboard() {
+export function AgentOptimizationDashboard({ longOnlyFilter = false }: { longOnlyFilter?: boolean }) {
   const { user } = useAuth();
   const [scorecards, setScorecards] = useState<AgentScorecard[]>([]);
   const [proposals, setProposals] = useState<Map<string, RetuneProposal>>(new Map());
@@ -223,9 +223,24 @@ export function AgentOptimizationDashboard() {
       }
 
       console.log('[AgentOpt] RPC returned stats for', stats.length, 'agents');
+
+      // Transform stats for long-only filter if active
+      const effectiveStats = longOnlyFilter
+        ? (stats as any[]).map((s: any) => ({
+            ...s,
+            total_trades: Number(s.long_count) || 0,
+            win_count: Number(s.long_wins) || 0,
+            net_pips: Number(s.long_net) || 0,
+            gross_profit: Math.max(0, Number(s.long_net) || 0),
+            gross_loss: Math.max(0, -(Number(s.long_net) || 0)),
+            short_count: 0,
+            short_wins: 0,
+            short_net: 0,
+          }))
+        : stats;
       
       // Convert RPC summary stats into AgentScorecard format
-      const cards: AgentScorecard[] = stats
+      const cards: AgentScorecard[] = effectiveStats
         .filter((s: any) => s.agent_id && s.agent_id !== 'manual-test' && s.agent_id !== 'unknown')
         .map((s: any) => {
           const totalTrades = Number(s.total_trades) || 0;
@@ -340,7 +355,7 @@ export function AgentOptimizationDashboard() {
       setProposals(propMap);
 
       // ═══ Resolve effective states via canonical resolver ═══
-      const rpcStats = (stats as any[]).map((s: any) => ({
+      const rpcStats = (effectiveStats as any[]).map((s: any) => ({
         agent_id: s.agent_id,
         total_trades: Number(s.total_trades) || 0,
         win_count: Number(s.win_count) || 0,
@@ -362,7 +377,7 @@ export function AgentOptimizationDashboard() {
     } finally {
       setLoading(false);
     }
-  }, [user]);
+  }, [user, longOnlyFilter]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
 

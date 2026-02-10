@@ -467,13 +467,13 @@ const ForexDashboard = () => {
           <TabsContent value="agent-simulator" className="space-y-4">
             <LongOnlyBanner longOnlyFilter={longOnlyFilter} onToggleFilter={handleLongOnlyFilterToggle} />
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
-              <AgentExclusionSimulator />
+              <AgentExclusionSimulator longOnlyFilter={longOnlyFilter} />
             </motion.div>
           </TabsContent>
           <TabsContent value="agent-optimization" className="space-y-4">
             <LongOnlyBanner longOnlyFilter={longOnlyFilter} onToggleFilter={handleLongOnlyFilterToggle} />
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
-              <AgentOptimizationDashboard />
+              <AgentOptimizationDashboard longOnlyFilter={longOnlyFilter} />
             </motion.div>
           </TabsContent>
         </Tabs>
