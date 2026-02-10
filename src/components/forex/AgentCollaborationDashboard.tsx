@@ -36,6 +36,7 @@ import { CollaborationMaturityPanel } from './CollaborationMaturityPanel';
 import { AgentRelationshipPanel } from './AgentRelationshipPanel';
 import { getAllAgentStates, type AgentEffectiveState } from '@/lib/agents/agentStateResolver';
 import { EffectiveTierBadge } from './AgentStateBadges';
+import { EnvironmentBadge } from '@/components/forex/EnvironmentGuards';
 
 // ─── Color helpers ───────────────────────────────────────────
 
@@ -158,6 +159,7 @@ export const AgentCollaborationDashboard = () => {
         <div className="flex items-center gap-2">
           <Network className="w-5 h-5 text-primary" />
           <h2 className="font-display text-sm font-bold">Agent Collaboration Graph</h2>
+          <EnvironmentBadge env={learnMode === 'backtest' ? 'backtest' : 'live'} />
           <Badge variant="outline" className="text-[9px]">
             {allPairs.length} pairs tracked
           </Badge>

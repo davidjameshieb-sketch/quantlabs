@@ -33,6 +33,7 @@ import {
 } from '@/lib/agents/ensembleHealthEngine';
 import { getAllAgentStates, type AgentEffectiveState } from '@/lib/agents/agentStateResolver';
 import { EffectiveTierBadge, PostRescueMetricsNote, LegacyStateWarningBanner } from './AgentStateBadges';
+import { EnvironmentBadge, EnvironmentFilter, type EnvFilterValue } from '@/components/forex/EnvironmentGuards';
 
 // ─── Helpers ─────────────────────────────────────────────────
 
@@ -152,10 +153,11 @@ export const EnsembleHealthDashboard = () => {
   return (
     <div className="space-y-4">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-2">
           <HeartPulse className="w-5 h-5 text-primary" />
           <h2 className="font-display text-sm font-bold">Ensemble Health & Contribution</h2>
+          <EnvironmentBadge env={learnMode === 'backtest' ? 'backtest' : 'live'} />
           <Badge variant="outline" className="text-[9px]">{learnMode}</Badge>
         </div>
         <div className="flex items-center gap-2">
