@@ -1102,6 +1102,34 @@ Deno.serve(async (req) => {
         continue;
       }
 
+      // ═══ HARD SAFETY: Long-Only execution block (belt + suspenders) ═══
+      const LONG_ONLY_ENABLED = Deno.env.get("FOREX_LONG_ONLY") === "true";
+      if (LONG_ONLY_ENABLED && signal.direction === "short") {
+        console.warn(`[SCALP-TRADE] HARD BLOCK: Long-Only mode — refusing short on ${signal.pair}`);
+        await supabase
+          .from("oanda_orders")
+          .update({
+            status: "blocked",
+            error_message: "long_only_block: short trade blocked at execution layer",
+            gate_result: "LONG_ONLY_BLOCK",
+            gate_reasons: ["Long-only mode enabled: short trades blocked at execution (hard safety)"],
+            governance_payload: {
+              ...(order.governance_payload as Record<string, unknown> || {}),
+              longOnlyBlock: true,
+              blockedDirection: "short",
+              mode: "LONG_ONLY",
+            },
+          })
+          .eq("id", order.id);
+
+        results.push({
+          pair: signal.pair, direction: signal.direction,
+          status: "blocked", govState,
+          error: "long_only_block",
+        });
+        continue;
+      }
+
       try {
         const signedUnits = signal.direction === "short" ? -tradeUnits : tradeUnits;
         const oandaResult = await oandaRequest(

@@ -35,6 +35,7 @@ import {
 import { getEdgeMemoryEntry, getDeploymentMode } from './edgeLearningState';
 import { computeAdaptiveAllocation, isShadowValidated } from './adaptiveCapitalAllocator';
 import type { Timeframe } from '@/lib/market/types';
+import { isLongOnlyEnabled } from '@/lib/config/tradingMode';
 
 // ─── Re-export from microstructureEngine for convenience ───
 export type { VolatilityPhase, LiquiditySession } from './microstructureEngine';
@@ -64,7 +65,8 @@ export type GateId =
   | 'G7_LOSS_CLUSTER_WEAK_MTF'
   | 'G8_HIGH_SHOCK'
   | 'G9_PRICE_DATA_UNAVAILABLE'
-  | 'G10_ANALYSIS_UNAVAILABLE';
+  | 'G10_ANALYSIS_UNAVAILABLE'
+  | 'G_STRAT_LONG_ONLY_BLOCK';
 
 export interface GateEntry {
   id: GateId;
@@ -381,11 +383,23 @@ export const evaluateTradeProposal = (
   };
 
   const triggeredGates = evaluateRejectionGates(ctx);
+
+  // ── Long-Only Mode Gate (G_STRAT_LONG_ONLY_BLOCK) ──
+  if (isLongOnlyEnabled() && proposal.direction === 'short') {
+    triggeredGates.push({
+      id: 'G_STRAT_LONG_ONLY_BLOCK',
+      message: 'Long-only mode enabled: short trades are blocked.',
+    });
+  }
+
   // Backwards-compatible string reasons
   const rejectionReasons = triggeredGates.map(g => g.message);
 
+  // Long-Only block is an instant rejection regardless of gate count
+  const hasLongOnlyBlock = triggeredGates.some(g => g.id === 'G_STRAT_LONG_ONLY_BLOCK');
+
   let decision: GovernanceDecision = 'approved';
-  if (triggeredGates.length >= 2) {
+  if (hasLongOnlyBlock || triggeredGates.length >= 2) {
     decision = 'rejected';
   } else if (triggeredGates.length === 1 || composite < 0.60) {
     decision = 'throttled';
