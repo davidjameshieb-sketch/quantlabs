@@ -370,7 +370,7 @@ export function analyzeCoalitions(
   learnMode: LearnMode = 'live'
 ): CoalitionAnalysisResult {
   // Filter by learn mode
-  const validEnvs = learnMode === 'live' ? ['live', 'practice'] : ['backtest'];
+  const validEnvs = learnMode === 'live' ? ['live', 'practice', 'backtest'] : ['backtest'];
   const filtered = trades.filter(t =>
     validEnvs.includes(t.environment) &&
     t.session_label && t.regime_label &&

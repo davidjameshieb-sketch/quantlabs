@@ -158,8 +158,7 @@ export function CoalitionsDashboard() {
         created_at: o.created_at,
       }));
 
-      const learnMode = includeBacktest ? 'backtest' as const : 'live' as const;
-      const analysis = analyzeCoalitions(trades, learnMode);
+      const analysis = analyzeCoalitions(trades, 'live');
       setResult(analysis);
     } catch (err) {
       console.error('[Coalitions] Error:', err);
