@@ -18,6 +18,9 @@ const OANDA_HOSTS = {
   live: "https://api-fxtrade.oanda.com",
 };
 
+// ─── FOCUS PAIRS: Only trade these until profitability is proven ───
+const FOCUS_PAIRS = ["EUR_USD", "USD_CAD"];
+
 const SCALP_PAIRS = [
   "EUR_USD", "GBP_USD", "USD_JPY", "AUD_USD", "USD_CAD",
   "EUR_JPY", "GBP_JPY", "EUR_GBP",
@@ -1266,12 +1269,10 @@ Deno.serve(async (req) => {
       const agentSizeMult = forceMode ? 1.0 : (selectedAgent?.sizeMultiplier || 1.0);
       const agentTier = forceMode ? "manual" : (selectedAgent?.effectiveTier || "unknown");
 
-      // ─── Pair selection (from allowed pairs, respecting pair allocations) ───
-      const useMajor = Math.random() < 0.75;
-      const pairPool = useMajor ? SCALP_PAIRS : SECONDARY_PAIRS;
+      // ─── Pair selection: FOCUS PAIRS ONLY until profitability proven ───
       const pair = forceMode
         ? (reqBody.pair || "EUR_USD")
-        : pairPool[Math.floor(Math.random() * pairPool.length)];
+        : FOCUS_PAIRS[Math.floor(Math.random() * FOCUS_PAIRS.length)];
 
       // ═══ R1: LONG-ONLY — direction is ALWAYS long ═══
       const direction: "long" = "long";
