@@ -63,7 +63,7 @@ function HealthBadge({ status, reason }: { status: string; reason: string }) {
 
 // ─── Expanded Row ────────────────────────────────────────────────────
 
-function ScorecardDetail({ sc, proposal }: { sc: AgentScorecard; proposal: RetuneProposal | null }) {
+function ScorecardDetail({ sc, proposal, longOnlyFilter = false }: { sc: AgentScorecard; proposal: RetuneProposal | null; longOnlyFilter?: boolean }) {
   return (
     <div className="grid grid-cols-1 md:grid-cols-3 gap-4 p-4 bg-background/50 border-t border-border/20">
       {/* Direction */}
@@ -74,10 +74,12 @@ function ScorecardDetail({ sc, proposal }: { sc: AgentScorecard; proposal: Retun
             <span className="text-emerald-400">LONG</span>
             <span>{sc.longNetPips.toFixed(0)}p · WR {(sc.longWinRate * 100).toFixed(1)}% · PF {sc.longPF.toFixed(2)}</span>
           </div>
+          {!longOnlyFilter && (
           <div className="flex justify-between">
             <span className="text-red-400">SHORT</span>
             <span>{sc.shortNetPips.toFixed(0)}p · WR {(sc.shortWinRate * 100).toFixed(1)}% · PF {sc.shortPF.toFixed(2)}</span>
           </div>
+          )}
         </div>
       </div>
 
@@ -279,13 +281,13 @@ export function AgentOptimizationDashboard({ longOnlyFilter = false }: { longOnl
           const reasons: string[] = [];
           if (netPips > 0) reasons.push(`Net profitable: +${netPips.toFixed(0)} pips`);
           else reasons.push(`Net loss: ${netPips.toFixed(0)} pips`);
-          if (longNet > 0 && shortNet < 0) reasons.push(`LONG +${longNet.toFixed(0)}p vs SHORT ${shortNet.toFixed(0)}p`);
+          if (longNet > 0 && shortNet < 0 && !longOnlyFilter) reasons.push(`LONG +${longNet.toFixed(0)}p vs SHORT ${shortNet.toFixed(0)}p`);
           if (!oosHolds) reasons.push('OOS validation uncertain');
 
           // Generate actions
           const actions: string[] = [];
           if (tier === 'A') actions.push('Deploy: ready for reduced-live sizing');
-          if (shortNet < -1000) actions.push('Block SHORT direction');
+          if (shortNet < -1000 && !longOnlyFilter) actions.push('Block SHORT direction');
           if (tier === 'D') actions.push('Disable: move to shadow-only');
 
           const sc: AgentScorecard = {
@@ -540,7 +542,7 @@ export function AgentOptimizationDashboard({ longOnlyFilter = false }: { longOnl
                       {expandedAgent === sc.agentId && (
                         <TableRow key={`${sc.agentId}-detail`}>
                           <TableCell colSpan={10} className="p-0">
-                            <ScorecardDetail sc={sc} proposal={proposals.get(sc.agentId) || null} />
+                            <ScorecardDetail sc={sc} proposal={proposals.get(sc.agentId) || null} longOnlyFilter={longOnlyFilter} />
                           </TableCell>
                         </TableRow>
                       )}
