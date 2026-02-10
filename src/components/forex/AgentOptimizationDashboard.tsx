@@ -188,7 +188,7 @@ export function AgentOptimizationDashboard() {
           .from('oanda_orders')
           .select('agent_id, direction, currency_pair, entry_price, exit_price, session_label, regime_label, spread_at_entry, governance_composite, confidence_score, created_at')
           .eq('user_id', user.id)
-          .eq('status', 'closed')
+          .in('status', ['filled', 'closed'])
           .not('entry_price', 'is', null)
           .not('exit_price', 'is', null)
           .not('agent_id', 'is', null)
