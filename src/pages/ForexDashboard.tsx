@@ -4,7 +4,7 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
 import { LongOnlyFilterProvider } from '@/contexts/LongOnlyFilterContext';
 import { motion } from 'framer-motion';
-import { Globe, TrendingUp, Crosshair, BarChart3, FlaskConical, ShieldCheck, SplitSquareHorizontal, PieChart, Shield, HeartPulse, Radar, Filter, Rocket, ShieldAlert, Brain, GitBranch, UserX, Wrench, Target, Beaker, Crown } from 'lucide-react';
+import { Globe, TrendingUp, Crosshair, BarChart3, FlaskConical, ShieldCheck, SplitSquareHorizontal, PieChart, Shield, HeartPulse, Radar, Filter, Rocket, ShieldAlert, Brain, GitBranch, UserX, Wrench, Target, Beaker, Crown, Users } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { DashboardLayout } from '@/components/dashboard/DashboardLayout';
 import { ForexPerformanceOverview } from '@/components/forex/ForexPerformanceOverview';
@@ -47,6 +47,7 @@ import { AgentOptimizationDashboard } from '@/components/forex/AgentOptimization
 import { FocusPairsEdgeDashboard } from '@/components/forex/FocusPairsEdgeDashboard';
 import { EdgeGovernanceSimulatorDashboard } from '@/components/forex/EdgeGovernanceSimulator';
 import { AgentLiveOptimizationDashboard } from '@/components/forex/AgentLiveOptimizationDashboard';
+import { CoalitionsDashboard } from '@/components/forex/CoalitionsDashboard';
 import { LazyTabContent } from '@/components/forex/LazyTabContent';
 import {
   generateForexTrades,
@@ -187,6 +188,7 @@ const ForexDashboard = () => {
             <TabsTrigger value="agent-optimization" className="text-xs gap-1.5"><Wrench className="w-3.5 h-3.5" />Agent Optimization</TabsTrigger>
             <TabsTrigger value="agent-live-opt" className="text-xs gap-1.5"><Crown className="w-3.5 h-3.5" />Agent Live Opt</TabsTrigger>
             <TabsTrigger value="edge-sim" className="text-xs gap-1.5"><Beaker className="w-3.5 h-3.5" />Edge Simulator</TabsTrigger>
+            <TabsTrigger value="coalitions" className="text-xs gap-1.5"><Users className="w-3.5 h-3.5" />Coalitions</TabsTrigger>
           </TabsList>
 
           {/* Focus Pairs — loads immediately */}
@@ -346,6 +348,12 @@ const ForexDashboard = () => {
           <TabsContent value="edge-sim" className="space-y-4">
             <LazyTabContent label="Edge Simulator">
               <EdgeGovernanceSimulatorDashboard />
+            </LazyTabContent>
+          </TabsContent>
+
+          <TabsContent value="coalitions" className="space-y-4">
+            <LazyTabContent label="Coalitions">
+              <CoalitionsDashboard />
             </LazyTabContent>
           </TabsContent>
         </Tabs>
