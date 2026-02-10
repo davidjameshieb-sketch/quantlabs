@@ -193,12 +193,13 @@ Deno.serve(async (req) => {
 
     // ─── Status (open orders from DB) ───
     if (body.action === "status") {
-      // Fetch recent orders, excluding bulk-cleared legacy entries
+      // Fetch recent orders from last 7 days only (avoid full table scan)
+      const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
       const { data: orders, error } = await supabase
         .from("oanda_orders")
         .select("*")
         .eq("user_id", userId)
-        .or("error_message.is.null,error_message.not.like.cleared:%")
+        .gte("created_at", sevenDaysAgo)
         .order("created_at", { ascending: false })
         .limit(50);
 
