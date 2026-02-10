@@ -161,16 +161,15 @@ Deno.serve(async (req) => {
       { global: { headers: { Authorization: authHeader } } }
     );
 
-    const token = authHeader.replace("Bearer ", "");
-    const { data: claimsData, error: claimsError } = await supabase.auth.getClaims(token);
-    if (claimsError || !claimsData?.claims) {
+    const { data: { user: authUser }, error: authError } = await supabase.auth.getUser();
+    if (authError || !authUser) {
       return new Response(JSON.stringify({ error: "Unauthorized" }), {
         status: 401,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
-    const userId = claimsData.claims.sub as string;
+    const userId = authUser.id;
     const body: ExecuteRequest = await req.json();
     const environment = body.environment || "practice";
 
@@ -197,7 +196,7 @@ Deno.serve(async (req) => {
       const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
       const { data: orders, error } = await supabase
         .from("oanda_orders")
-        .select("*")
+        .select("id,signal_id,currency_pair,direction,units,entry_price,exit_price,oanda_order_id,oanda_trade_id,status,error_message,confidence_score,agent_id,environment,created_at,closed_at")
         .eq("user_id", userId)
         .gte("created_at", sevenDaysAgo)
         .order("created_at", { ascending: false })
