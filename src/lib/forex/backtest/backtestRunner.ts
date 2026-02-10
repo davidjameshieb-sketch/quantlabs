@@ -19,6 +19,7 @@ export interface BacktestConfig {
   slPips: number;        // default SL in pips
   maxDurationBars: number; // max hold time in 15m bars
   variantId: string;
+  agentId?: string;      // if set, tags trades with this agent
 }
 
 export const DEFAULT_BACKTEST_CONFIG: BacktestConfig = {
@@ -62,6 +63,7 @@ export interface BacktestTradeRecord {
   direction_tf_used: string | null;
   confirmation_tf_used: string | null;
   variant_id: string;
+  agent_id: string;
   environment: 'backtest';
   status: 'closed';
   mfe_pips: number;
@@ -262,7 +264,7 @@ function runPairBacktest(
   if (candles.length < 20) return trades;
 
   const pipSize = pair.includes('JPY') ? 0.01 : 0.0001;
-  const rng = seededRng(hashStr(`bt-${pair}-${config.variantId}`));
+  const rng = seededRng(hashStr(`bt-${pair}-${config.variantId}-${config.agentId || 'default'}`));
   let inTrade = false;
   let cooldown = 0;
 
@@ -391,7 +393,7 @@ function runPairBacktest(
     const durationMinutes = (exitTimestamp - nextCandle.timestamp) / 60000;
     const captureRatio = mfe > 0 ? Math.min(1, Math.max(0, pnlPips / mfe)) : 0;
 
-    const tradeId = `bt-${pair}-${config.variantId}-${startId + trades.length}`;
+    const tradeId = `bt-${pair}-${config.variantId}-${config.agentId || 'engine'}-${startId + trades.length}`;
     const qualityScore = Math.round(Math.max(0, Math.min(100,
       60 + (captureRatio * 20) - (fill.totalFrictionPips * 5) + (gov.composite > 1 ? 10 : 0)
     )));
@@ -423,6 +425,7 @@ function runPairBacktest(
       direction_tf_used: dir.tfUsed,
       confirmation_tf_used: '15m',
       variant_id: config.variantId,
+      agent_id: config.agentId || 'backtest-engine',
       environment: 'backtest',
       status: 'closed',
       mfe_pips: mfe,
