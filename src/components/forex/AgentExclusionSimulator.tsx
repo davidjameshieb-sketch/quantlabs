@@ -146,8 +146,8 @@ const statusText: Record<HealthColor, string> = {
   red: 'text-neural-red',
 };
 
-// Non-agent IDs to exclude from the simulator (backtests, manual tests, etc.)
-const EXCLUDED_AGENT_IDS = new Set(['backtest-engine', 'manual-test', 'unknown']);
+// Non-agent IDs to exclude from the simulator
+const EXCLUDED_AGENT_IDS = new Set(['manual-test', 'unknown']);
 
 // ─── Component ──────────────────────────────────────────────────────
 
@@ -187,8 +187,10 @@ export const AgentExclusionSimulator = () => {
 
       setAllTrades(rows);
 
-      // Use ALL registered agents, not just those with trades
-      const agents = ALL_AGENT_IDS as string[];
+      // Use ALL registered agents + any extra IDs found in data (e.g. backtest-engine)
+      const registeredIds = ALL_AGENT_IDS as string[];
+      const dataIds = [...new Set(rows.map(r => r.agent_id).filter((id): id is string => id != null))];
+      const agents = [...new Set([...registeredIds, ...dataIds])];
       setUniqueAgents(agents);
       setEnabledAgents(new Set(agents));
       setLoading(false);
