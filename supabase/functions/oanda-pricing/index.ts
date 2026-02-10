@@ -7,7 +7,10 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
-const OANDA_PRACTICE_HOST = "https://api-fxpractice.oanda.com";
+const OANDA_HOSTS: Record<string, string> = {
+  practice: "https://api-fxpractice.oanda.com",
+  live: "https://api-fxtrade.oanda.com",
+};
 
 const ALL_OANDA_INSTRUMENTS = [
   "EUR_USD", "GBP_USD", "USD_JPY", "AUD_USD", "USD_CAD",
@@ -28,14 +31,20 @@ function oandaToDisplay(instrument: string): string {
 }
 
 async function fetchOandaPrices(): Promise<Record<string, { bid: number; ask: number; mid: number }>> {
-  const apiToken = Deno.env.get("OANDA_API_TOKEN");
-  const accountId = Deno.env.get("OANDA_ACCOUNT_ID");
+  const env = Deno.env.get("OANDA_ENV") || "practice";
+  const apiToken = env === "live"
+    ? (Deno.env.get("OANDA_LIVE_API_TOKEN") || Deno.env.get("OANDA_API_TOKEN"))
+    : Deno.env.get("OANDA_API_TOKEN");
+  const accountId = env === "live"
+    ? (Deno.env.get("OANDA_LIVE_ACCOUNT_ID") || Deno.env.get("OANDA_ACCOUNT_ID"))
+    : Deno.env.get("OANDA_ACCOUNT_ID");
 
   if (!apiToken || !accountId) {
     throw new Error("OANDA credentials not configured");
   }
 
-  const url = `${OANDA_PRACTICE_HOST}/v3/accounts/${accountId}/pricing?instruments=${ALL_OANDA_INSTRUMENTS.join(",")}`;
+  const host = OANDA_HOSTS[env] || OANDA_HOSTS.practice;
+  const url = `${host}/v3/accounts/${accountId}/pricing?instruments=${ALL_OANDA_INSTRUMENTS.join(",")}`;
   console.log(`[OANDA-PRICING] Fetching ${ALL_OANDA_INSTRUMENTS.length} instruments`);
 
   const res = await fetch(url, {
