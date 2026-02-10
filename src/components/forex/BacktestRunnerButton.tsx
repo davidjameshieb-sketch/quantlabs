@@ -1,9 +1,10 @@
-// One-click 90-day backtest runner with progress feedback
+// One-click backtest runner — runs per-agent backtests for all 18 agents
 import { useState, useCallback } from 'react';
-import { FlaskConical, Loader2, CheckCircle2, AlertCircle } from 'lucide-react';
+import { FlaskConical, Loader2, CheckCircle2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
 import { runBacktest, persistBacktestTrades, clearBacktestTrades, DEFAULT_BACKTEST_CONFIG } from '@/lib/forex/backtest';
+import { ALL_AGENT_IDS } from '@/lib/agents/agentConfig';
 import { toast } from 'sonner';
 
 export const BacktestRunnerButton = () => {
@@ -14,46 +15,57 @@ export const BacktestRunnerButton = () => {
   const handleRun = useCallback(async () => {
     if (running) return;
     setRunning(true);
-    setProgress(10);
+    setProgress(5);
     setResult(null);
 
     try {
-      // Step 1: Clear previous backtest trades
+      // Step 1: Clear all previous backtest trades
       toast.info('Clearing previous backtest data…');
       await clearBacktestTrades('baseline');
-      setProgress(20);
+      setProgress(10);
 
-      // Step 2: Run the backtest (synchronous, CPU-bound)
-      toast.info('Running 90-day backtest on 8 majors…');
-      setProgress(30);
+      const agents = ALL_AGENT_IDS as string[];
+      let totalTrades = 0;
+      let totalInserted = 0;
+      let totalErrors = 0;
 
-      // Use requestAnimationFrame to let the UI update before heavy computation
-      await new Promise(r => requestAnimationFrame(r));
+      // Step 2: Run backtest per agent
+      for (let a = 0; a < agents.length; a++) {
+        const agentId = agents[a];
+        const pct = 10 + Math.round((a / agents.length) * 75);
+        setProgress(pct);
 
-      const config = {
-        ...DEFAULT_BACKTEST_CONFIG,
-        startDate: new Date(Date.now() - 90 * 24 * 60 * 60 * 1000),
-        endDate: new Date(),
-        variantId: 'baseline',
-      };
+        toast.info(`Backtesting agent ${a + 1}/${agents.length}: ${agentId}…`);
 
-      const { trades, summary } = runBacktest(config);
-      setProgress(70);
+        // Let UI breathe between agents
+        await new Promise(r => requestAnimationFrame(r));
 
-      toast.info(`Generated ${trades.length} trades. Persisting…`);
+        const config = {
+          ...DEFAULT_BACKTEST_CONFIG,
+          startDate: new Date(Date.now() - 90 * 24 * 60 * 60 * 1000),
+          endDate: new Date(),
+          variantId: 'baseline',
+          agentId,
+        };
 
-      // Step 3: Persist to DB
-      const persistence = await persistBacktestTrades(trades);
+        const { trades } = runBacktest(config);
+        totalTrades += trades.length;
+
+        // Persist this agent's trades
+        if (trades.length > 0) {
+          const persistence = await persistBacktestTrades(trades);
+          totalInserted += persistence.inserted;
+          totalErrors += persistence.errors;
+        }
+      }
+
       setProgress(100);
+      setResult({ trades: totalTrades, inserted: totalInserted });
 
-      setResult({ trades: trades.length, inserted: persistence.inserted });
-
-      if (persistence.errors > 0) {
-        toast.warning(`Backtest complete: ${persistence.inserted}/${trades.length} persisted (${persistence.errors} errors)`);
+      if (totalErrors > 0) {
+        toast.warning(`Backtest complete: ${totalInserted}/${totalTrades} persisted across ${agents.length} agents (${totalErrors} errors)`);
       } else {
-        toast.success(
-          `Backtest complete: ${trades.length} trades | Win rate: ${(summary.winRate * 100).toFixed(1)}% | Net: ${summary.netPips >= 0 ? '+' : ''}${summary.netPips.toFixed(1)}p | PF: ${summary.profitFactor.toFixed(2)} | Sharpe: ${summary.sharpe.toFixed(2)}`
-        );
+        toast.success(`Backtest complete: ${totalTrades} trades across ${agents.length} agents — all persisted`);
       }
     } catch (err: any) {
       console.error('[BacktestRunner]', err);
@@ -79,10 +91,13 @@ export const BacktestRunnerButton = () => {
         ) : (
           <FlaskConical className="w-3 h-3" />
         )}
-        {running ? 'Running…' : result ? `${result.inserted} trades stored` : 'Run 90-Day Backtest'}
+        {running ? 'Running…' : result ? `${result.inserted} trades stored` : 'Run Per-Agent Backtest (90d)'}
       </Button>
       {running && (
-        <Progress value={progress} className="h-1.5 w-24" />
+        <div className="flex items-center gap-2">
+          <Progress value={progress} className="h-1.5 w-24" />
+          <span className="text-[9px] text-muted-foreground">{progress}%</span>
+        </div>
       )}
     </div>
   );

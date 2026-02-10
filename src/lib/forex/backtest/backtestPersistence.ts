@@ -51,7 +51,7 @@ export async function persistBacktestTrades(
       gate_result: t.governance_decision,
       gate_reasons: t.gates_triggered.length > 0 ? t.gates_triggered : null,
       confidence_score: t.quantlabs_confidence ? Math.round(t.quantlabs_confidence * 100) : null,
-      agent_id: 'backtest-engine',
+      agent_id: t.agent_id || 'backtest-engine',
       created_at: new Date(t.entry_timestamp).toISOString(),
       closed_at: new Date(t.exit_timestamp).toISOString(),
       governance_payload: {
