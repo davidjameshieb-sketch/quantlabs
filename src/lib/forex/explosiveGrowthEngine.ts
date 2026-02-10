@@ -43,18 +43,22 @@ const DEFAULT_CONFIG: ExplosiveConfig = {
   minPF: 1.6,
   minClusterTrades: 80,
   frictionPercentile: 50,
+  // Fast Ramp §3: +0.05 per window, -0.10 immediate drop
   maxRampPerWindow: 0.05,
   maxImmediateDrop: 0.10,
   alphaMin: 1.25, alphaMax: 1.75,
   betaMin: 0.75,  betaMax: 1.0,
+  // Fast Ramp §5: Champion 1.4x, Specialist 0.85x
   championMax: 1.4,
   specialistMax: 0.85,
   safetyMinPF: 1.2,
   safetyFrictionP80: 0,
   w1: 0.35, w2: 0.25, w3: 0.20, w4: 0.10, w5: 0.10,
-  envKeyMinTrades: 60,
-  envKeyMinPF: 1.4,
-  shadowMinTrades: 50,
+  // Fast Ramp §7: Lower envKey thresholds for faster learning
+  envKeyMinTrades: 40,
+  envKeyMinPF: 1.3,
+  // Fast Ramp §4: Faster shadow validation
+  shadowMinTrades: 35,
 };
 
 // ─── Trade Record (input) ─────────────────────────────────────────────
