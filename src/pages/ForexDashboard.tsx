@@ -4,7 +4,7 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
 import { LongOnlyFilterProvider } from '@/contexts/LongOnlyFilterContext';
 import { motion } from 'framer-motion';
-import { Globe, TrendingUp, Crosshair, BarChart3, FlaskConical, ShieldCheck, SplitSquareHorizontal, PieChart, Shield, HeartPulse, Radar, Filter, Rocket, ShieldAlert, Brain, GitBranch, UserX, Wrench } from 'lucide-react';
+import { Globe, TrendingUp, Crosshair, BarChart3, FlaskConical, ShieldCheck, SplitSquareHorizontal, PieChart, Shield, HeartPulse, Radar, Filter, Rocket, ShieldAlert, Brain, GitBranch, UserX, Wrench, Target } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { DashboardLayout } from '@/components/dashboard/DashboardLayout';
 import { ForexPerformanceOverview } from '@/components/forex/ForexPerformanceOverview';
@@ -44,6 +44,7 @@ import { EnsembleHealthDashboard } from '@/components/forex/EnsembleHealthDashbo
 import { BaselineVsEnsembleCard } from '@/components/forex/BaselineVsEnsembleCard';
 import { AgentExclusionSimulator } from '@/components/forex/AgentExclusionSimulator';
 import { AgentOptimizationDashboard } from '@/components/forex/AgentOptimizationDashboard';
+import { FocusPairsEdgeDashboard } from '@/components/forex/FocusPairsEdgeDashboard';
 import {
   generateForexTrades,
   filterForexTrades,
@@ -166,8 +167,11 @@ const ForexDashboard = () => {
         </motion.div>
 
         {/* Master Tabs */}
-        <Tabs defaultValue="performance" className="space-y-4">
+        <Tabs defaultValue="focus-pairs" className="space-y-4">
           <TabsList className="bg-card/50 border border-border/30 h-auto gap-1 p-1 flex-wrap">
+            <TabsTrigger value="focus-pairs" className="text-xs gap-1.5">
+              <Target className="w-3.5 h-3.5" />Focus Pairs
+            </TabsTrigger>
             <TabsTrigger value="performance" className="text-xs gap-1.5">
               <TrendingUp className="w-3.5 h-3.5" />Performance
             </TabsTrigger>
@@ -223,6 +227,12 @@ const ForexDashboard = () => {
               <Wrench className="w-3.5 h-3.5" />Agent Optimization
             </TabsTrigger>
           </TabsList>
+
+          <TabsContent value="focus-pairs" className="space-y-4">
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+              <FocusPairsEdgeDashboard />
+            </motion.div>
+          </TabsContent>
 
           <TabsContent value="performance" className="space-y-6">
             {/* Long-Only Mode Banner */}
