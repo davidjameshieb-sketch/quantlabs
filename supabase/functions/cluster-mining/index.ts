@@ -260,7 +260,8 @@ async function fetchCandlesPaginated(instrument: string, granularity: string, fr
   const toTs = new Date(to).getTime();
 
   while (new Date(currentFrom).getTime() < toTs) {
-    const url = `${host}/v3/instruments/${instrument}/candles?granularity=${granularity}&from=${encodeURIComponent(currentFrom)}&to=${encodeURIComponent(to)}&price=MBA`;
+    // OANDA rule: cannot use count + from + to together. Use from + count for pagination.
+    const url = `${host}/v3/instruments/${instrument}/candles?granularity=${granularity}&from=${encodeURIComponent(currentFrom)}&count=5000&price=MBA`;
     const res = await fetch(url, {
       headers: { Authorization: `Bearer ${apiToken}`, Accept: "application/json" },
     });
@@ -278,11 +279,13 @@ async function fetchCandlesPaginated(instrument: string, granularity: string, fr
       }));
 
     if (candles.length === 0) break;
-    allCandles.push(...candles);
+    // Only keep candles within our target range
+    const filtered = candles.filter((c: Candle) => new Date(c.t).getTime() <= toTs);
+    allCandles.push(...filtered);
     // Move start past last candle
     const lastTime = new Date(candles[candles.length - 1].t).getTime();
     currentFrom = new Date(lastTime + 1000).toISOString();
-    if (candles.length < 4900) break; // no more data
+    if (candles.length < 4900 || lastTime >= toTs) break;
   }
 
   return allCandles;
