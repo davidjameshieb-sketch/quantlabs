@@ -345,8 +345,9 @@ export function TierBRescueDashboard() {
 
       // Classify tiers from summary stats
       const tierMap = new Map<string, 'A' | 'B' | 'C' | 'D'>();
+      const EXCLUDED_IDS = ['manual-test', 'unknown', 'backtest-engine'];
       for (const s of stats) {
-        if (!s.agent_id || s.agent_id === 'manual-test' || s.agent_id === 'unknown') continue;
+        if (!s.agent_id || EXCLUDED_IDS.includes(s.agent_id)) continue;
         const totalTrades = Number(s.total_trades) || 0;
         const netPips = Number(s.net_pips) || 0;
         const gp = Number(s.gross_profit) || 0;
@@ -423,12 +424,15 @@ export function TierBRescueDashboard() {
         });
 
       // 3. Fetch raw trades ONLY for Tier B agents (needed for segmentation)
+      //    Cap at 5000 trades per agent to prevent browser hangs
+      const MAX_TRADES_PER_AGENT = 5000;
       let tierBTrades: TradeRecord[] = [];
       for (const agentId of tierBIds) {
         let offset = 0;
         const pageSize = 1000;
         let hasMore = true;
-        while (hasMore) {
+        let agentCount = 0;
+        while (hasMore && agentCount < MAX_TRADES_PER_AGENT) {
           const { data, error: err } = await supabase
             .from('oanda_orders')
             .select('agent_id, direction, currency_pair, entry_price, exit_price, session_label, regime_label, spread_at_entry, governance_composite, confidence_score, created_at')
@@ -440,7 +444,10 @@ export function TierBRescueDashboard() {
             .range(offset, offset + pageSize - 1);
 
           if (err) { console.warn(`[TierBRescue] fetch error for ${agentId}:`, err.message); break; }
-          if (data) tierBTrades = tierBTrades.concat(data as TradeRecord[]);
+          if (data) {
+            tierBTrades = tierBTrades.concat(data as TradeRecord[]);
+            agentCount += data.length;
+          }
           hasMore = (data?.length ?? 0) === pageSize;
           offset += pageSize;
         }
