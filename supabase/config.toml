@@ -41,3 +41,6 @@ verify_jwt = false
 
 [functions.forex-indicators]
 verify_jwt = false
+
+[functions.cluster-mining]
+verify_jwt = false
