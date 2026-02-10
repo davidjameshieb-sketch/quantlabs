@@ -119,7 +119,7 @@ const statusText: Record<HealthColor, string> = {
 
 // ─── Component ──────────────────────────────────────────────────────
 
-export const AgentExclusionSimulator = () => {
+export const AgentExclusionSimulator = ({ longOnlyFilter = false }: { longOnlyFilter?: boolean }) => {
   const { user } = useAuth();
   const [agentStatsMap, setAgentStatsMap] = useState<Map<string, AgentStats>>(new Map());
   const [loading, setLoading] = useState(true);
@@ -198,8 +198,28 @@ export const AgentExclusionSimulator = () => {
   const selectAll = () => setEnabledAgents(new Set(ALL_AGENT_IDS as string[]));
   const deselectAll = () => setEnabledAgents(new Set());
 
+  // When longOnlyFilter is active, transform stats to only reflect long trades
+  const effectiveStatsMap = useMemo(() => {
+    if (!longOnlyFilter) return agentStatsMap;
+    const transformed = new Map<string, AgentStats>();
+    for (const [id, s] of agentStatsMap) {
+      transformed.set(id, {
+        ...s,
+        total_trades: s.long_count,
+        win_count: s.long_wins,
+        net_pips: s.long_net,
+        gross_profit: s.long_net > 0 ? s.long_net : 0,
+        gross_loss: s.long_net < 0 ? Math.abs(s.long_net) : 0,
+        short_count: 0,
+        short_wins: 0,
+        short_net: 0,
+      });
+    }
+    return transformed;
+  }, [agentStatsMap, longOnlyFilter]);
+
   // Compute baseline (all agents) and simulated (selected agents)
-  const allAgentStats = useMemo(() => [...agentStatsMap.values()], [agentStatsMap]);
+  const allAgentStats = useMemo(() => [...effectiveStatsMap.values()], [effectiveStatsMap]);
   const baseline = useMemo(() => computeHealthFromAgents(allAgentStats), [allAgentStats]);
   const filteredStats = useMemo(
     () => allAgentStats.filter(a => enabledAgents.has(a.agent_id)),
@@ -210,7 +230,7 @@ export const AgentExclusionSimulator = () => {
   // Per-agent stats
   const agentImpacts: AgentImpact[] = useMemo(() => {
     return uniqueAgents.map(id => {
-      const stats = agentStatsMap.get(id);
+      const stats = effectiveStatsMap.get(id);
       const def = AGENT_DEFINITIONS[id as AgentId];
       if (!stats) {
         return {
@@ -227,7 +247,7 @@ export const AgentExclusionSimulator = () => {
         color: def?.color || '#888',
       };
     }).sort((a, b) => b.netPips - a.netPips);
-  }, [agentStatsMap, uniqueAgents]);
+  }, [effectiveStatsMap, uniqueAgents]);
 
   // Compute delta values
   const delta = (sim: number, base: number) => {
