@@ -1,0 +1,1 @@
+CREATE INDEX IF NOT EXISTS idx_oanda_orders_user_created ON public.oanda_orders (user_id, created_at DESC);
