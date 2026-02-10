@@ -338,6 +338,7 @@ export const filterForexTrades = (
     if (filters.regime !== 'all' && t.regime !== filters.regime) return false;
     if (filters.pair !== 'all' && t.currencyPair !== filters.pair) return false;
     if (filters.agent !== 'all' && t.primaryAgent !== filters.agent) return false;
+    if (filters.direction && filters.direction !== 'all' && t.direction !== filters.direction) return false;
     return true;
   });
 };

@@ -1,7 +1,7 @@
 // Forex Trade Intelligence Dashboard
 // Isolated forex-only trade performance tracking & analysis
 
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useCallback } from 'react';
 import { motion } from 'framer-motion';
 import { Globe, TrendingUp, Crosshair, BarChart3, FlaskConical, ShieldCheck, SplitSquareHorizontal, PieChart, Shield, HeartPulse, Radar, Filter, Rocket, ShieldAlert, Brain, GitBranch, UserX, Wrench } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -66,6 +66,7 @@ import { useTradeAnalytics } from '@/hooks/useTradeAnalytics';
 import { useRealtimeOrders } from '@/hooks/useRealtimeOrders';
 
 const ForexDashboard = () => {
+  const [longOnlyFilter, setLongOnlyFilter] = useState(false);
   const [filters, setFilters] = useState<ForexDashboardFilters>({
     period: '30d',
     outcome: 'all',
@@ -75,7 +76,13 @@ const ForexDashboard = () => {
     era: 'post-direction',
     environment: 'all',
     directionEngine: 'all',
+    direction: 'all',
   });
+
+  const handleLongOnlyFilterToggle = useCallback((enabled: boolean) => {
+    setLongOnlyFilter(enabled);
+    setFilters(prev => ({ ...prev, direction: enabled ? 'long' : 'all' }));
+  }, []);
 
   const [livePricesReady, setLivePricesReady] = useState(hasLivePrices());
 
@@ -217,7 +224,7 @@ const ForexDashboard = () => {
 
           <TabsContent value="performance" className="space-y-6">
             {/* Long-Only Mode Banner */}
-            <LongOnlyBanner />
+            <LongOnlyBanner longOnlyFilter={longOnlyFilter} onToggleFilter={handleLongOnlyFilterToggle} />
 
             {/* Governance State Banner */}
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.01 }}>
@@ -294,14 +301,14 @@ const ForexDashboard = () => {
           </TabsContent>
 
           <TabsContent value="scalp-vs-swing" className="space-y-4">
-            <LongOnlyBanner />
+            <LongOnlyBanner longOnlyFilter={longOnlyFilter} onToggleFilter={handleLongOnlyFilterToggle} />
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
               <ScalpVsSwingView trades={filteredTrades} />
             </motion.div>
           </TabsContent>
 
           <TabsContent value="scalping-trades" className="space-y-4">
-            <LongOnlyBanner />
+            <LongOnlyBanner longOnlyFilter={longOnlyFilter} onToggleFilter={handleLongOnlyFilterToggle} />
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
               <ScalpingTradesDashboard
                 trades={filteredTrades}
@@ -313,14 +320,14 @@ const ForexDashboard = () => {
           </TabsContent>
 
           <TabsContent value="scalping" className="space-y-4">
-            <LongOnlyBanner />
+            <LongOnlyBanner longOnlyFilter={longOnlyFilter} onToggleFilter={handleLongOnlyFilterToggle} />
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
               <ForexScalpingIntelligence />
             </motion.div>
           </TabsContent>
 
           <TabsContent value="reanalysis" className="space-y-4">
-            <LongOnlyBanner />
+            <LongOnlyBanner longOnlyFilter={longOnlyFilter} onToggleFilter={handleLongOnlyFilterToggle} />
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
               <PerformanceReanalysisDashboard
                 trades={filteredTrades}
@@ -332,7 +339,7 @@ const ForexDashboard = () => {
           </TabsContent>
 
           <TabsContent value="audit" className="space-y-4">
-            <LongOnlyBanner />
+            <LongOnlyBanner longOnlyFilter={longOnlyFilter} onToggleFilter={handleLongOnlyFilterToggle} />
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
               <DailyAuditPanel
                 trades={filteredTrades}
@@ -356,7 +363,7 @@ const ForexDashboard = () => {
           </TabsContent>
 
           <TabsContent value="analytics" className="space-y-6">
-            <LongOnlyBanner />
+            <LongOnlyBanner longOnlyFilter={longOnlyFilter} onToggleFilter={handleLongOnlyFilterToggle} />
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
               <div className="flex items-center gap-2 mb-1">
                 <PieChart className="w-4 h-4 text-primary" />
@@ -396,39 +403,39 @@ const ForexDashboard = () => {
           </TabsContent>
 
           <TabsContent value="health" className="space-y-4">
-            <LongOnlyBanner />
+            <LongOnlyBanner longOnlyFilter={longOnlyFilter} onToggleFilter={handleLongOnlyFilterToggle} />
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
               <GovernanceHealthDashboard trades={filteredTrades} />
             </motion.div>
           </TabsContent>
 
           <TabsContent value="edge-discovery" className="space-y-4">
-            <LongOnlyBanner />
+            <LongOnlyBanner longOnlyFilter={longOnlyFilter} onToggleFilter={handleLongOnlyFilterToggle} />
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
               <EdgeDiscoveryDashboard />
             </motion.div>
           </TabsContent>
 
           <TabsContent value="edge-extraction" className="space-y-4">
-            <LongOnlyBanner />
+            <LongOnlyBanner longOnlyFilter={longOnlyFilter} onToggleFilter={handleLongOnlyFilterToggle} />
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
               <EdgeExtractionDashboard />
             </motion.div>
           </TabsContent>
           <TabsContent value="edge-golive" className="space-y-4">
-            <LongOnlyBanner />
+            <LongOnlyBanner longOnlyFilter={longOnlyFilter} onToggleFilter={handleLongOnlyFilterToggle} />
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
               <EdgeGoLivePanel />
             </motion.div>
           </TabsContent>
           <TabsContent value="discovery-risk" className="space-y-4">
-            <LongOnlyBanner />
+            <LongOnlyBanner longOnlyFilter={longOnlyFilter} onToggleFilter={handleLongOnlyFilterToggle} />
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
               <DiscoveryRiskPanel trades={filteredTrades} />
             </motion.div>
           </TabsContent>
           <TabsContent value="adaptive-edge" className="space-y-4">
-            <LongOnlyBanner />
+            <LongOnlyBanner longOnlyFilter={longOnlyFilter} onToggleFilter={handleLongOnlyFilterToggle} />
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
               <AdaptiveEdgeDashboard trades={filteredTrades} />
             </motion.div>
@@ -440,7 +447,7 @@ const ForexDashboard = () => {
             </motion.div>
           </TabsContent>
           <TabsContent value="collaboration" className="space-y-4">
-            <LongOnlyBanner />
+            <LongOnlyBanner longOnlyFilter={longOnlyFilter} onToggleFilter={handleLongOnlyFilterToggle} />
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
               <AgentCollaborationDashboard />
             </motion.div>
@@ -449,7 +456,7 @@ const ForexDashboard = () => {
             </motion.div>
           </TabsContent>
           <TabsContent value="ensemble" className="space-y-4">
-            <LongOnlyBanner />
+            <LongOnlyBanner longOnlyFilter={longOnlyFilter} onToggleFilter={handleLongOnlyFilterToggle} />
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
               <BaselineVsEnsembleCard />
             </motion.div>
@@ -458,13 +465,13 @@ const ForexDashboard = () => {
             </motion.div>
           </TabsContent>
           <TabsContent value="agent-simulator" className="space-y-4">
-            <LongOnlyBanner />
+            <LongOnlyBanner longOnlyFilter={longOnlyFilter} onToggleFilter={handleLongOnlyFilterToggle} />
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
               <AgentExclusionSimulator />
             </motion.div>
           </TabsContent>
           <TabsContent value="agent-optimization" className="space-y-4">
-            <LongOnlyBanner />
+            <LongOnlyBanner longOnlyFilter={longOnlyFilter} onToggleFilter={handleLongOnlyFilterToggle} />
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
               <AgentOptimizationDashboard />
             </motion.div>
