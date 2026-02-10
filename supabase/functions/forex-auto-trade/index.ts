@@ -1011,7 +1011,7 @@ Deno.serve(async (req) => {
       .select("*")
       .eq("user_id", USER_ID)
       .eq("environment", govEnv)
-      .neq("status", "system") // exclude cooldown markers
+      .neq("currency_pair", "SYSTEM") // exclude halt/ramp markers
       .order("created_at", { ascending: false })
       .limit(250);
 
@@ -1127,9 +1127,9 @@ Deno.serve(async (req) => {
           } else if (profitable && currentStageIndex === 2) {
             // Stage 3 profitable → fully recovered, use NORMAL params
             console.log(`[SCALP-TRADE] ═══ HALT RECOVERY COMPLETE: All stages profitable → returning to NORMAL parameters ═══`);
-            govConfig.densityMultiplier = GOV_STATE_CONFIGS.NORMAL.densityMultiplier;
-            govConfig.sizingMultiplier = GOV_STATE_CONFIGS.NORMAL.sizingMultiplier;
-            govConfig.frictionKOverride = GOV_STATE_CONFIGS.NORMAL.frictionKOverride;
+            govConfig.densityMultiplier = STATE_CONFIGS.NORMAL.densityMultiplier;
+            govConfig.sizingMultiplier = STATE_CONFIGS.NORMAL.sizingMultiplier;
+            govConfig.frictionKOverride = STATE_CONFIGS.NORMAL.frictionKOverride;
             // Insert recovery marker
             await supabase.from("oanda_orders").insert({
               user_id: USER_ID,
@@ -1138,7 +1138,7 @@ Deno.serve(async (req) => {
               direction: "long",
               units: 0,
               environment: execConfig.oandaEnv,
-              status: "system",
+              status: "rejected",
               gate_result: "HALT_RECOVERED",
               gate_reasons: [`Graduated ramp-up complete after ${trades.length} profitable trades`],
               session_label: session,
@@ -1166,7 +1166,7 @@ Deno.serve(async (req) => {
             direction: "long",
             units: 0,
             environment: execConfig.oandaEnv,
-            status: "system",
+            status: "rejected",
             gate_result: `HALT_${stage.label}`,
             gate_reasons: degradation?.stateReasons || [],
             session_label: session,
