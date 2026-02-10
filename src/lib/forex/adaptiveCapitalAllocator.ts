@@ -48,11 +48,13 @@ export interface AdaptiveAllocatorConfig {
 const DEFAULT_ALLOCATOR_CONFIG: AdaptiveAllocatorConfig = {
   minMultiplier: 0.25,
   maxMultiplier: 1.75,
+  // Fast Ramp §3: velocity max change per evaluation
   velocityMaxChangePer50: 0.10,
-  shadowMinTrades: 150,
-  shadowMinExpRatio: 1.3,
-  shadowMaxDDRatio: 0.70,
-  shadowMinDecileSlope: 0.02,
+  // Fast Ramp §4: Faster shadow validation threshold
+  shadowMinTrades: 100,
+  shadowMinExpRatio: 1.2,
+  shadowMaxDDRatio: 0.75,
+  shadowMinDecileSlope: 0.015,
 };
 
 let _allocConfig: AdaptiveAllocatorConfig = { ...DEFAULT_ALLOCATOR_CONFIG };

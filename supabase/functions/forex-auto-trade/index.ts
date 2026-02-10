@@ -27,6 +27,8 @@ const SECONDARY_PAIRS_ALLOWED = ["AUD_USD", "EUR_USD", "EUR_GBP"];
 const FOCUS_PAIRS = [PRIMARY_PAIR, ...SECONDARY_PAIRS_ALLOWED];
 // Sessions allowed for secondary pairs (London Open → NY Overlap ONLY)
 const SECONDARY_ALLOWED_SESSIONS: SessionWindow[] = ["london-open", "ny-overlap"];
+// PRIMARY pair trades ALL sessions — no session restrictions (Fast Ramp §1)
+const PRIMARY_ALL_SESSIONS = true;
 // Secondary pair multiplier range
 const SECONDARY_MULTIPLIER_MIN = 0.6;
 const SECONDARY_MULTIPLIER_MAX = 0.8;
@@ -266,14 +268,17 @@ type AgentLiveRole = "champion" | "stabilizer" | "specialist" | "diluter";
 function classifyAgentRole(agent: AgentSnapshot): { role: AgentLiveRole; roleMult: number } {
   const m = agent.metrics;
   if (m.expectancy > 0 && m.profitFactor >= 1.1 && m.winRate >= 0.55) {
-    return { role: "champion", roleMult: 1.15 };
+    // Fast Ramp §5: Champion authority 1.2x→1.4x
+    return { role: "champion", roleMult: 1.30 };
   }
   if (m.expectancy >= -0.1 && m.profitFactor >= 0.95) {
     return { role: "stabilizer", roleMult: 0.95 };
   }
   if (m.expectancy > 0 || m.netPips > -100) {
-    return { role: "specialist", roleMult: 0.7 };
+    // Fast Ramp §5: Specialist capped at 0.85x, only verified envKeys
+    return { role: "specialist", roleMult: 0.75 };
   }
+  // Fast Ramp §5: Diluter — shadow only, zero influence
   return { role: "diluter", roleMult: 0 };
 }
 
@@ -342,7 +347,8 @@ const STATE_CONFIGS: Record<GovernanceState, GovernanceStateConfig> = {
     sizingMultiplier: 1.0,
     frictionKOverride: 3.0,
     pairRestriction: "none",
-    sessionAggressiveness: { asian: 0.7, "london-open": 1.0, "ny-overlap": 0.95, "late-ny": 0.5, rollover: 0.3 },
+    // Fast Ramp §6: All sessions open with higher density, rollover allowed at 0.5
+    sessionAggressiveness: { asian: 0.85, "london-open": 1.0, "ny-overlap": 1.0, "late-ny": 0.65, rollover: 0.5 },
     recoveryRequired: [],
   },
   DEFENSIVE: {
@@ -1489,6 +1495,9 @@ Deno.serve(async (req) => {
         const isEdge =
           (session === "ny-overlap" && regime === "expansion") ||
           (session === "asian" && sym === "USD_CAD" && regime === "expansion") ||
+          (session === "asian" && sym === "USD_CAD" && regime === "compression") ||
+          (session === "london-open" && sym === "USD_CAD") ||
+          (session === "late-ny" && sym === "USD_CAD" && regime !== "ignition") ||
           (session === "london-open" && sym === "AUD_USD" && regime === "expansion") ||
           (sym === "EUR_GBP") ||
           (sym === "USD_JPY" && regime === "compression");
