@@ -14,6 +14,8 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Switch } from '@/components/ui/switch';
+import { Label } from '@/components/ui/label';
 import { Progress } from '@/components/ui/progress';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
@@ -207,6 +209,7 @@ export function AgentLiveOptimizationDashboard() {
   const [result, setResult] = useState<AgentOptimizationResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [expandedAgent, setExpandedAgent] = useState<string | null>(null);
+  const [includeBacktest, setIncludeBacktest] = useState(true);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -227,12 +230,13 @@ export function AgentLiveOptimizationDashboard() {
 
       // Fetch closed trades with full metadata
       const sixMonthsAgo = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000).toISOString();
+      const envFilter = includeBacktest ? ['live', 'practice', 'backtest'] : ['live', 'practice'];
       const { data: orders, error } = await supabase
         .from('oanda_orders')
         .select('agent_id, direction, currency_pair, entry_price, exit_price, session_label, regime_label, spread_at_entry, governance_composite, confidence_score, created_at')
         .eq('user_id', targetUserId)
         .eq('status', 'closed')
-        .in('environment', ['live', 'practice', 'backtest'])
+        .in('environment', envFilter)
         .not('entry_price', 'is', null)
         .not('exit_price', 'is', null)
         .not('agent_id', 'is', null)
@@ -264,7 +268,7 @@ export function AgentLiveOptimizationDashboard() {
     } finally {
       setLoading(false);
     }
-  }, [user]);
+  }, [user, includeBacktest]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
@@ -311,9 +315,15 @@ export function AgentLiveOptimizationDashboard() {
                 {result.systemBaseline.trades.toLocaleString()} trades · {result.contributions.length} agents
               </span>
             </CardTitle>
-            <Button variant="outline" size="sm" className="text-[10px] h-7 gap-1" onClick={() => exportCSV(result)}>
-              <Download className="w-3 h-3" /> Export CSV
-            </Button>
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-1.5">
+                <Switch id="backtest-toggle" checked={includeBacktest} onCheckedChange={setIncludeBacktest} className="scale-75" />
+                <Label htmlFor="backtest-toggle" className="text-[10px] text-muted-foreground cursor-pointer">Backtest</Label>
+              </div>
+              <Button variant="outline" size="sm" className="text-[10px] h-7 gap-1" onClick={() => exportCSV(result)}>
+                <Download className="w-3 h-3" /> Export CSV
+              </Button>
+            </div>
           </div>
         </CardHeader>
         <CardContent>
