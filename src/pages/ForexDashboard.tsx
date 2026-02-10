@@ -4,7 +4,7 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
 import { LongOnlyFilterProvider } from '@/contexts/LongOnlyFilterContext';
 import { motion } from 'framer-motion';
-import { Globe, TrendingUp, Crosshair, BarChart3, FlaskConical, ShieldCheck, SplitSquareHorizontal, PieChart, Shield, HeartPulse, Radar, Filter, Rocket, ShieldAlert, Brain, GitBranch, UserX, Wrench, Target } from 'lucide-react';
+import { Globe, TrendingUp, Crosshair, BarChart3, FlaskConical, ShieldCheck, SplitSquareHorizontal, PieChart, Shield, HeartPulse, Radar, Filter, Rocket, ShieldAlert, Brain, GitBranch, UserX, Wrench, Target, Beaker } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { DashboardLayout } from '@/components/dashboard/DashboardLayout';
 import { ForexPerformanceOverview } from '@/components/forex/ForexPerformanceOverview';
@@ -45,6 +45,7 @@ import { BaselineVsEnsembleCard } from '@/components/forex/BaselineVsEnsembleCar
 import { AgentExclusionSimulator } from '@/components/forex/AgentExclusionSimulator';
 import { AgentOptimizationDashboard } from '@/components/forex/AgentOptimizationDashboard';
 import { FocusPairsEdgeDashboard } from '@/components/forex/FocusPairsEdgeDashboard';
+import { EdgeGovernanceSimulatorDashboard } from '@/components/forex/EdgeGovernanceSimulator';
 import { LazyTabContent } from '@/components/forex/LazyTabContent';
 import {
   generateForexTrades,
@@ -183,6 +184,7 @@ const ForexDashboard = () => {
             <TabsTrigger value="ensemble" className="text-xs gap-1.5"><HeartPulse className="w-3.5 h-3.5" />Ensemble</TabsTrigger>
             <TabsTrigger value="agent-simulator" className="text-xs gap-1.5"><UserX className="w-3.5 h-3.5" />Agent Simulator</TabsTrigger>
             <TabsTrigger value="agent-optimization" className="text-xs gap-1.5"><Wrench className="w-3.5 h-3.5" />Agent Optimization</TabsTrigger>
+            <TabsTrigger value="edge-sim" className="text-xs gap-1.5"><Beaker className="w-3.5 h-3.5" />Edge Simulator</TabsTrigger>
           </TabsList>
 
           {/* Focus Pairs — loads immediately */}
@@ -330,6 +332,12 @@ const ForexDashboard = () => {
           <TabsContent value="agent-optimization" className="space-y-4">
             <LazyTabContent label="Agent Optimization">
               <AgentOptimizationDashboard longOnlyFilter={longOnlyFilter} />
+            </LazyTabContent>
+          </TabsContent>
+
+          <TabsContent value="edge-sim" className="space-y-4">
+            <LazyTabContent label="Edge Simulator">
+              <EdgeGovernanceSimulatorDashboard />
             </LazyTabContent>
           </TabsContent>
         </Tabs>
