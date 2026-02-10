@@ -758,8 +758,10 @@ async function oandaRequest(
   body?: Record<string, unknown>,
   retries = 2
 ): Promise<Record<string, unknown>> {
-  const apiToken = Deno.env.get("OANDA_API_TOKEN");
   const oandaEnv = (Deno.env.get("OANDA_ENV") || "practice");
+  const apiToken = oandaEnv === "live"
+    ? (Deno.env.get("OANDA_LIVE_API_TOKEN") || Deno.env.get("OANDA_API_TOKEN"))
+    : Deno.env.get("OANDA_API_TOKEN");
   const accountId = oandaEnv === "live"
     ? (Deno.env.get("OANDA_LIVE_ACCOUNT_ID") || Deno.env.get("OANDA_ACCOUNT_ID"))
     : Deno.env.get("OANDA_ACCOUNT_ID");
@@ -1056,8 +1058,13 @@ Deno.serve(async (req) => {
 
     let accountBalance = 100000;
     try {
-      const apiToken = Deno.env.get("OANDA_API_TOKEN");
-      const accountId = Deno.env.get("OANDA_ACCOUNT_ID");
+      const balEnv = (Deno.env.get("OANDA_ENV") || "practice");
+      const apiToken = balEnv === "live"
+        ? (Deno.env.get("OANDA_LIVE_API_TOKEN") || Deno.env.get("OANDA_API_TOKEN"))
+        : Deno.env.get("OANDA_API_TOKEN");
+      const accountId = balEnv === "live"
+        ? (Deno.env.get("OANDA_LIVE_ACCOUNT_ID") || Deno.env.get("OANDA_ACCOUNT_ID"))
+        : Deno.env.get("OANDA_ACCOUNT_ID");
       if (apiToken && accountId) {
         const accRes = await fetch(
           `${execConfig.oandaHost}/v3/accounts/${accountId}/summary`,
