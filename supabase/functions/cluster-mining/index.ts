@@ -627,10 +627,12 @@ Deno.serve(async (req) => {
       console.log(`[CLUSTER-MINING] ${tf}: ${enrichedTrades.length} trades mapped to indicators`);
 
       // Build clusters for each granularity
+      // Scale minTrades to dataset size — require at least 3% of trades per cluster
+      const tradeCount = enrichedTrades.length;
       const granularities: { name: string; keys: string[]; minTrades: number }[] = [
-        { name: "lite", keys: LITE_KEYS, minTrades: 200 },
-        { name: "mid", keys: MID_KEYS, minTrades: 150 },
-        { name: "full", keys: FULL_KEYS, minTrades: 100 },
+        { name: "lite", keys: LITE_KEYS, minTrades: Math.max(5, Math.floor(tradeCount * 0.03)) },
+        { name: "mid", keys: MID_KEYS, minTrades: Math.max(4, Math.floor(tradeCount * 0.02)) },
+        { name: "full", keys: FULL_KEYS, minTrades: Math.max(3, Math.floor(tradeCount * 0.01)) },
       ];
 
       const clusterResults: Record<string, any> = {};
