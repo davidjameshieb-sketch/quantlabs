@@ -3,7 +3,7 @@
 
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { motion } from 'framer-motion';
-import { Shield, TrendingUp, TrendingDown, AlertTriangle, CheckCircle2, XCircle, Target, Zap, BarChart3, Eye, Ban, Rocket, ChevronDown, ChevronUp } from 'lucide-react';
+import { Shield, TrendingUp, TrendingDown, AlertTriangle, CheckCircle2, XCircle, Target, Zap, BarChart3, Eye, Ban, Rocket, ChevronDown, ChevronUp, Wrench } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
@@ -21,6 +21,7 @@ import {
 import {
   buildEdgePortfolio, type EdgePortfolio, type AgentEdgeProfile
 } from '@/lib/forex/portfolioAllocator';
+import { TierBRescueDashboard } from './TierBRescueDashboard';
 
 // ─── Tier Badge ──────────────────────────────────────────────────────
 
@@ -426,6 +427,9 @@ export function AgentOptimizationDashboard() {
           <TabsTrigger value="ladder" className="text-xs gap-1.5">
             <Rocket className="w-3.5 h-3.5" />Deployment Ladder
           </TabsTrigger>
+          <TabsTrigger value="rescue" className="text-xs gap-1.5">
+            <Wrench className="w-3.5 h-3.5" />Tier B Rescue
+          </TabsTrigger>
         </TabsList>
 
         {/* Scorecards Table */}
@@ -617,6 +621,11 @@ export function AgentOptimizationDashboard() {
               </Table>
             </CardContent>
           </Card>
+        </TabsContent>
+
+        {/* Tier B Rescue */}
+        <TabsContent value="rescue">
+          <TierBRescueDashboard />
         </TabsContent>
       </Tabs>
     </div>
