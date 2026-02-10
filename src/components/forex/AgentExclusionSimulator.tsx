@@ -187,8 +187,8 @@ export const AgentExclusionSimulator = () => {
 
       setAllTrades(rows);
 
-      // Discover unique agent IDs (real agents only)
-      const agents = [...new Set(rows.map(r => r.agent_id || 'unknown'))].sort();
+      // Use ALL registered agents, not just those with trades
+      const agents = ALL_AGENT_IDS as string[];
       setUniqueAgents(agents);
       setEnabledAgents(new Set(agents));
       setLoading(false);
@@ -203,7 +203,7 @@ export const AgentExclusionSimulator = () => {
       return next;
     });
   };
-  const selectAll = () => setEnabledAgents(new Set(uniqueAgents));
+  const selectAll = () => setEnabledAgents(new Set(ALL_AGENT_IDS as string[]));
   const deselectAll = () => setEnabledAgents(new Set());
 
   // Compute baseline (all agents) and simulated (selected agents)
