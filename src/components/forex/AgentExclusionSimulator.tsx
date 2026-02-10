@@ -2,7 +2,7 @@
 // Toggle agents on/off to see how edge health metrics would change
 import { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
-import { fetchAllOrders } from '@/lib/forex/fetchAllOrders';
+import { supabase } from '@/integrations/supabase/client';
 import { ALL_AGENT_IDS, AGENT_DEFINITIONS } from '@/lib/agents/agentConfig';
 import type { AgentId } from '@/lib/agents/types';
 import type { HealthColor } from '@/hooks/useEdgeHealthStats';
@@ -158,37 +158,36 @@ export const AgentExclusionSimulator = () => {
   const [enabledAgents, setEnabledAgents] = useState<Set<string>>(new Set());
   const [uniqueAgents, setUniqueAgents] = useState<string[]>([]);
 
-  // Fetch trades once (paginated — no row limit)
+  // Fetch trades via server-side RPC (avoids 117k row client-side fetch)
   useEffect(() => {
     if (!user) return;
     (async () => {
       setLoading(true);
       try {
-        const data = await fetchAllOrders({
-          userId: user.id,
-          select: 'agent_id,currency_pair,direction,entry_price,exit_price,session_label,status',
+        const { data, error } = await supabase.rpc('get_agent_simulator_stats', {
+          p_user_id: user.id,
         });
 
+        if (error) throw error;
         if (!data || data.length === 0) { setLoading(false); return; }
 
-      const rows: TradeRow[] = data
-        .filter((o: any) => !EXCLUDED_AGENT_IDS.has(o.agent_id || 'unknown'))
-        .map((o: any) => {
-          const mult = pipMult(o.currency_pair);
-          const pnl = o.direction === 'long'
-            ? (o.exit_price - o.entry_price) * mult
-            : (o.entry_price - o.exit_price) * mult;
-          return { ...o, pips: Math.round(pnl * 10) / 10 };
-        });
+        const rows: TradeRow[] = (data as any[]).map((o: any) => ({
+          agent_id: o.agent_id,
+          currency_pair: o.currency_pair,
+          direction: o.direction,
+          session_label: o.session_label,
+          entry_price: o.entry_price,
+          exit_price: o.exit_price,
+          pips: Number(o.pips),
+        }));
 
-      setAllTrades(rows);
+        setAllTrades(rows);
 
-      // Use ALL registered agents + any extra IDs found in data (e.g. backtest-engine)
-      const registeredIds = ALL_AGENT_IDS as string[];
-      const dataIds = [...new Set(rows.map(r => r.agent_id).filter((id): id is string => id != null))];
-      const agents = [...new Set([...registeredIds, ...dataIds])];
-      setUniqueAgents(agents);
-      setEnabledAgents(new Set(agents));
+        const registeredIds = ALL_AGENT_IDS as string[];
+        const dataIds = [...new Set(rows.map(r => r.agent_id).filter((id): id is string => id != null))];
+        const agents = [...new Set([...registeredIds, ...dataIds])];
+        setUniqueAgents(agents);
+        setEnabledAgents(new Set(agents));
       } catch (err) {
         console.error('[AgentSim] Fetch error:', err);
       } finally {

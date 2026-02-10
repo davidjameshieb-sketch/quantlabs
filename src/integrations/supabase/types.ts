@@ -286,6 +286,18 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      get_agent_simulator_stats: {
+        Args: { p_user_id: string }
+        Returns: {
+          agent_id: string
+          currency_pair: string
+          direction: string
+          entry_price: number
+          exit_price: number
+          pips: number
+          session_label: string
+        }[]
+      }
       has_role: {
         Args: {
           _role: Database["public"]["Enums"]["app_role"]
