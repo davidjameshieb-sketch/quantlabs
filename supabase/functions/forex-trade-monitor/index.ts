@@ -10,7 +10,10 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
-const OANDA_PRACTICE_HOST = "https://api-fxpractice.oanda.com";
+const OANDA_HOSTS: Record<string, string> = {
+  practice: "https://api-fxpractice.oanda.com",
+  live: "https://api-fxtrade.oanda.com",
+};
 const USER_ID = "11edc350-4c81-4d9f-82ae-cd2209b7581d";
 
 // ─── Pair-specific TP/SL thresholds (in price units, not pips) ───
@@ -82,12 +85,17 @@ function computeTrailingStop(
 
 // ─── OANDA API Helper ───
 
-async function oandaRequest(path: string, method: string, body?: Record<string, unknown>): Promise<Record<string, unknown>> {
-  const apiToken = Deno.env.get("OANDA_API_TOKEN");
-  const accountId = Deno.env.get("OANDA_ACCOUNT_ID");
+async function oandaRequest(path: string, method: string, body?: Record<string, unknown>, environment = "practice"): Promise<Record<string, unknown>> {
+  const apiToken = environment === "live"
+    ? (Deno.env.get("OANDA_LIVE_API_TOKEN") || Deno.env.get("OANDA_API_TOKEN"))
+    : Deno.env.get("OANDA_API_TOKEN");
+  const accountId = environment === "live"
+    ? (Deno.env.get("OANDA_LIVE_ACCOUNT_ID") || Deno.env.get("OANDA_ACCOUNT_ID"))
+    : Deno.env.get("OANDA_ACCOUNT_ID");
   if (!apiToken || !accountId) throw new Error("OANDA credentials not configured");
 
-  const url = `${OANDA_PRACTICE_HOST}${path.replace("{accountId}", accountId)}`;
+  const host = OANDA_HOSTS[environment] || OANDA_HOSTS.practice;
+  const url = `${host}${path.replace("{accountId}", accountId)}`;
   
   const headers: Record<string, string> = {
     Authorization: `Bearer ${apiToken}`,
@@ -243,13 +251,24 @@ Deno.serve(async (req) => {
     console.log(`[TRADE-MONITOR] Found ${openOrders.length} open trades to evaluate`);
 
     // 2. Get current OANDA open trades for live pricing
+    // Group orders by environment for correct OANDA routing
+    const ordersByEnv = new Map<string, typeof openOrders>();
+    for (const o of openOrders) {
+      const env = o.environment || "practice";
+      if (!ordersByEnv.has(env)) ordersByEnv.set(env, []);
+      ordersByEnv.get(env)!.push(o);
+    }
+
+    // Fetch open trades from each environment
     let oandaTrades: Array<{ id: string; instrument: string; currentUnits: string; price: string; unrealizedPL: string }> = [];
-    try {
-      const tradesResult = await oandaRequest("/v3/accounts/{accountId}/openTrades", "GET");
-      oandaTrades = (tradesResult.trades || []) as typeof oandaTrades;
-    } catch (err) {
-      console.error("[TRADE-MONITOR] Failed to fetch OANDA trades:", err);
-      // Continue — we'll use pricing API for closed trades
+    for (const env of ordersByEnv.keys()) {
+      try {
+        const tradesResult = await oandaRequest("/v3/accounts/{accountId}/openTrades", "GET", undefined, env);
+        const trades = (tradesResult.trades || []) as typeof oandaTrades;
+        oandaTrades.push(...trades);
+      } catch (err) {
+        console.error(`[TRADE-MONITOR] Failed to fetch OANDA trades for ${env}:`, err);
+      }
     }
 
     // Build a map of OANDA trade ID -> live trade data
@@ -276,7 +295,9 @@ Deno.serve(async (req) => {
         try {
           const tradeDetails = await oandaRequest(
             `/v3/accounts/{accountId}/trades/${order.oanda_trade_id}`,
-            "GET"
+            "GET",
+            undefined,
+            order.environment || "practice"
           ) as { trade: { state: string; averageClosePrice?: string; closeTime?: string; realizedPL?: string } };
           
           if (tradeDetails.trade?.state === "CLOSED") {
@@ -347,7 +368,8 @@ Deno.serve(async (req) => {
         const closeResult = await oandaRequest(
           `/v3/accounts/{accountId}/trades/${order.oanda_trade_id}/close`,
           "PUT",
-          {}
+          {},
+          order.environment || "practice"
         ) as { orderFillTransaction?: { price?: string } };
 
         const exitPrice = closeResult.orderFillTransaction?.price
