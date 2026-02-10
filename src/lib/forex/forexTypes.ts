@@ -178,4 +178,5 @@ export interface ForexDashboardFilters {
   era: EraFilter;
   environment: EnvironmentFilter;
   directionEngine: 'all' | DirectionEngineType;
+  direction: 'all' | 'long' | 'short';
 }
