@@ -255,30 +255,70 @@ function resolveAgentSnapshot(stats: Array<{
 }
 
 /**
- * Portfolio-weighted agent selection.
- * Selects from eligible agents using weighted random based on metrics.
+ * Classify agent role based on metrics for multiplier adjustment.
+ * Champion: positive exp + PF >= 1.1 → 1.1-1.25×
+ * Stabilizer: modest PnL but low DD contribution → 0.9-1.0×
+ * Specialist: positive only in specific envs → 0.6-0.8×
+ * Diluter: degrades system → 0× (shadow)
  */
-function selectAgentFromSnapshot(snapshot: ExecutionSnapshot, pair: string): AgentSnapshot | null {
+type AgentLiveRole = "champion" | "stabilizer" | "specialist" | "diluter";
+
+function classifyAgentRole(agent: AgentSnapshot): { role: AgentLiveRole; roleMult: number } {
+  const m = agent.metrics;
+  if (m.expectancy > 0 && m.profitFactor >= 1.1 && m.winRate >= 0.55) {
+    return { role: "champion", roleMult: 1.15 };
+  }
+  if (m.expectancy >= -0.1 && m.profitFactor >= 0.95) {
+    return { role: "stabilizer", roleMult: 0.95 };
+  }
+  if (m.expectancy > 0 || m.netPips > -100) {
+    return { role: "specialist", roleMult: 0.7 };
+  }
+  return { role: "diluter", roleMult: 0 };
+}
+
+/**
+ * Portfolio-weighted agent selection with role-based multipliers.
+ * Selects from eligible agents using weighted random based on metrics.
+ * Diluters are excluded from selection.
+ */
+function selectAgentFromSnapshot(snapshot: ExecutionSnapshot, pair: string): AgentSnapshot & { role: AgentLiveRole; roleMult: number } | null {
   const eligible = snapshot.eligibleAgents;
   if (eligible.length === 0) return null;
 
-  // Score each agent: expectancy * PF * sizeMultiplier
-  const scored = eligible.map(a => ({
-    agent: a,
-    score: Math.max(0.01, a.metrics.expectancy * a.metrics.profitFactor * a.sizeMultiplier),
+  // Classify and filter out diluters
+  const classified = eligible.map(a => ({ agent: a, ...classifyAgentRole(a) }))
+    .filter(c => c.role !== "diluter");
+
+  if (classified.length === 0) {
+    // Fallback: use first eligible even if diluter
+    const first = eligible[0];
+    return { ...first, role: "stabilizer" as AgentLiveRole, roleMult: 0.95 };
+  }
+
+  // For primary pair: prefer champions + stabilizers
+  const isPrimary = pair === "USD_CAD";
+  const candidates = isPrimary
+    ? classified.filter(c => c.role === "champion" || c.role === "stabilizer")
+    : classified;
+  const pool = candidates.length > 0 ? candidates : classified;
+
+  // Score: expectancy * PF * sizeMultiplier * roleMult
+  const scored = pool.map(c => ({
+    ...c,
+    score: Math.max(0.01, c.agent.metrics.expectancy * c.agent.metrics.profitFactor * c.agent.sizeMultiplier * c.roleMult),
   }));
 
   const totalScore = scored.reduce((sum, s) => sum + s.score, 0);
-  if (totalScore <= 0) return eligible[0]; // fallback to first
+  if (totalScore <= 0) return { ...scored[0].agent, role: scored[0].role, roleMult: scored[0].roleMult };
 
-  // Weighted random selection
   const rand = Math.random() * totalScore;
   let cumulative = 0;
   for (const s of scored) {
     cumulative += s.score;
-    if (rand <= cumulative) return s.agent;
+    if (rand <= cumulative) return { ...s.agent, role: s.role, roleMult: s.roleMult };
   }
-  return scored[0].agent;
+  return { ...scored[0].agent, role: scored[0].role, roleMult: scored[0].roleMult };
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1277,8 +1317,9 @@ Deno.serve(async (req) => {
         : selectAgentFromSnapshot(snapshot, "");
 
       const agentId = forceMode ? "manual-test" : (selectedAgent?.agentId || "forex-macro");
-      const agentSizeMult = forceMode ? 1.0 : (selectedAgent?.sizeMultiplier || 1.0);
+      const agentSizeMult = forceMode ? 1.0 : ((selectedAgent?.sizeMultiplier || 1.0) * (selectedAgent?.roleMult || 1.0));
       const agentTier = forceMode ? "manual" : (selectedAgent?.effectiveTier || "unknown");
+      const agentRole = forceMode ? "manual" : (selectedAgent?.role || "stabilizer");
 
       // ─── Pair selection: weighted toward PRIMARY_PAIR ───
       // Primary pair gets ~50% of signals, secondary pairs split remainder
@@ -1563,7 +1604,9 @@ Deno.serve(async (req) => {
             baseUnits: baseTradeUnits,
             finalUnits: tradeUnits,
             agentTier: agentTier,
+            agentRole: agentRole,
             agentSizeMultiplier: agentSizeMult,
+            agentRoleMultiplier: selectedAgent?.roleMult || 1.0,
             longOnly: true,
             effectiveTier: agentTier,
             deploymentState: selectedAgent?.deploymentState || "unknown",
