@@ -17,7 +17,7 @@ import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
 import {
   buildAllScorecards,
-  type AgentScorecard, type TradeRecord,
+  type AgentScorecard, type AgentBreakdown, type TradeRecord,
 } from '@/lib/forex/agentOptimizationEngine';
 import {
   runAllTierBRescues,
@@ -371,40 +371,84 @@ export function TierBRescueDashboard() {
         return;
       }
 
-      // 2. Fetch raw trades for Tier B + Tier A agents (for correlation check)
-      const relevantIds = [...tierBIds, ...tierAIds];
-      let allTrades: TradeRecord[] = [];
-      let offset = 0;
-      const pageSize = 1000;
-      let hasMore = true;
+      // 2. Build Tier A scorecards from RPC stats (no raw trades needed)
+      const emptyBD: AgentBreakdown[] = [];
+      const tierAScorecards: AgentScorecard[] = stats
+        .filter(s => tierAIds.includes(s.agent_id))
+        .map(s => {
+          const totalTrades = Number(s.total_trades) || 0;
+          const netPips = Number(s.net_pips) || 0;
+          const gp = Number(s.gross_profit) || 0;
+          const gl = Number(s.gross_loss) || 0;
+          const winCount = Number(s.win_count) || 0;
+          const longWins = Number(s.long_wins) || 0;
+          const longCount = Number(s.long_count) || 0;
+          const shortWins = Number(s.short_wins) || 0;
+          const shortCount = Number(s.short_count) || 0;
+          const longNet = Number(s.long_net) || 0;
+          const shortNet = Number(s.short_net) || 0;
+          return {
+            agentId: s.agent_id,
+            tier: 'A' as const,
+            totalTrades,
+            wins: winCount,
+            winRate: totalTrades > 0 ? winCount / totalTrades : 0,
+            expectancy: totalTrades > 0 ? netPips / totalTrades : 0,
+            netPips,
+            profitFactor: gl > 0 ? gp / gl : gp > 0 ? 99 : 0,
+            grossProfit: gp,
+            grossLoss: gl,
+            sharpe: 0,
+            maxDrawdown: 0,
+            longNetPips: longNet,
+            longWinRate: longCount > 0 ? longWins / longCount : 0,
+            longPF: 0,
+            shortNetPips: shortNet,
+            shortWinRate: shortCount > 0 ? shortWins / shortCount : 0,
+            shortPF: 0,
+            sessionBreakdown: emptyBD,
+            regimeBreakdown: emptyBD,
+            pairBreakdown: emptyBD,
+            directionBreakdown: emptyBD,
+            spreadBucketBreakdown: emptyBD,
+            topEdgeEnvKeys: emptyBD,
+            bottomEnvKeys: emptyBD,
+            oosInSample: null,
+            oosOutSample: null,
+            oosHolds: false,
+            sessionCoverage: 0,
+            topReasons: [],
+            recommendedActions: [],
+          };
+        });
 
-      while (hasMore) {
-        const { data, error: err } = await supabase
-          .from('oanda_orders')
-          .select('agent_id, direction, currency_pair, entry_price, exit_price, session_label, regime_label, spread_at_entry, governance_composite, confidence_score, created_at')
-          .eq('user_id', targetUserId!)
-          .in('agent_id', relevantIds)
-          .not('entry_price', 'is', null)
-          .not('exit_price', 'is', null)
-          .order('created_at', { ascending: true })
-          .range(offset, offset + pageSize - 1);
+      // 3. Fetch raw trades ONLY for Tier B agents (needed for segmentation)
+      let tierBTrades: TradeRecord[] = [];
+      for (const agentId of tierBIds) {
+        let offset = 0;
+        const pageSize = 1000;
+        let hasMore = true;
+        while (hasMore) {
+          const { data, error: err } = await supabase
+            .from('oanda_orders')
+            .select('agent_id, direction, currency_pair, entry_price, exit_price, session_label, regime_label, spread_at_entry, governance_composite, confidence_score, created_at')
+            .eq('user_id', targetUserId!)
+            .eq('agent_id', agentId)
+            .not('entry_price', 'is', null)
+            .not('exit_price', 'is', null)
+            .order('created_at', { ascending: true })
+            .range(offset, offset + pageSize - 1);
 
-        if (err) { setError(err.message); break; }
-        if (data) {
-          allTrades = allTrades.concat(data as TradeRecord[]);
+          if (err) { console.warn(`[TierBRescue] fetch error for ${agentId}:`, err.message); break; }
+          if (data) tierBTrades = tierBTrades.concat(data as TradeRecord[]);
+          hasMore = (data?.length ?? 0) === pageSize;
+          offset += pageSize;
         }
-        hasMore = (data?.length ?? 0) === pageSize;
-        offset += pageSize;
       }
 
-      setTradeCount(allTrades.length);
-
-      // 3. Build Tier A scorecards for portfolio comparison
-      const tierATrades = allTrades.filter(t => tierAIds.includes(t.agent_id));
-      const tierAScorecards = buildAllScorecards(tierATrades).filter(sc => sc.tier === 'A');
+      setTradeCount(tierBTrades.length);
 
       // 4. Run rescue pipeline
-      const tierBTrades = allTrades.filter(t => tierBIds.includes(t.agent_id));
       const rescueResults = runAllTierBRescues(tierBTrades, tierBIds, tierAScorecards);
 
       setResults(rescueResults.sort((a, b) => {
