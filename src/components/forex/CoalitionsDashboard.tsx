@@ -464,6 +464,19 @@ export function CoalitionsDashboard() {
         {/* Recommendations */}
         <TabsContent value="recommendations">
           <div className="space-y-4">
+            {result.recommendations.length === 0 && (
+              <Card className="bg-card/50 border-border/30">
+                <CardContent className="p-8 text-center">
+                  <Shield className="w-8 h-8 text-muted-foreground mx-auto mb-3" />
+                  <p className="text-sm text-muted-foreground font-medium mb-1">No recommendations yet</p>
+                  <p className="text-[11px] text-muted-foreground max-w-md mx-auto">
+                    Recommendations require coalitions with sufficient sample sizes: DEPLOY needs ≥120 trades with stability ≥0.3 (PROVEN status), 
+                    SHADOW needs promising coalitions with fewer samples, and AVOID flags harmful coalitions with ≥60 trades. 
+                    Try enabling backtest data for a larger sample.
+                  </p>
+                </CardContent>
+              </Card>
+            )}
             {(['DEPLOY', 'SHADOW', 'AVOID'] as const).map(action => {
               const recs = result.recommendations.filter(r => r.action === action);
               if (recs.length === 0) return null;
