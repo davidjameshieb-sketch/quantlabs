@@ -1,16 +1,16 @@
 // Focus Pairs Edge Dashboard
-// Shows active focus pairs edge, detailed edge quality breakdown for all pairs,
-// and the unlock queue for future pairs.
+// Governance-scored tiered ranking of all pairs with detailed edge analysis.
 
 import { useState, useEffect, useMemo } from 'react';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  Target, Lock, Unlock, TrendingUp, TrendingDown, Shield, Zap, Clock,
-  BarChart3, AlertTriangle, ChevronDown, ChevronUp, Droplets, Gauge,
-  Activity, Sun, Moon, Sunrise, Sunset, Star, Ban, Info,
+  Target, Lock, Unlock, TrendingUp, Shield, Zap, Clock,
+  AlertTriangle, ChevronDown, ChevronUp, Droplets, Gauge,
+  Activity, Sun, Moon, Sunrise, Sunset, Star, Ban, Info, Crown,
+  Medal, CircleDot,
 } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { toDisplaySymbol } from '@/lib/forex/forexSymbolMap';
@@ -35,120 +35,140 @@ interface PairEdgeData {
   winRate: number;
   expectancy: number;
   netPips: number;
+  grossProfit: number;
+  grossLoss: number;
+  profitFactor: number;
+  stddev: number;
+  sharpe: number;
   liveTrades: number;
   liveExpectancy: number;
   liveWinRate: number;
   avgSpread: number;
   avgSlippage: number;
   avgQuality: number;
+  avgGovComposite: number;
+  avgConfidence: number;
   sessions: SessionEdge[];
-  // derived
-  edgeGrade: 'S' | 'A' | 'B' | 'C' | 'D' | 'F';
-  edgeLabel: string;
-  edgeColor: string;
+  // governance scoring
   frictionCost: number;
-  postFrictionExpectancy: number;
-  bestSession: string;
-  worstSession: string;
+  postFrictionExp: number;
+  frictionRatio: number; // friction as % of gross edge
+  edgeScore: number; // composite governance score 0-100
+  tier: 1 | 2 | 3;
+  tierLabel: string;
   edgeReasons: string[];
   edgeRisks: string[];
+  verdict: string;
 }
 
 const FOCUS_PAIRS = ['EUR_USD', 'USD_CAD'];
 
-const LIVE_PROOF_THRESHOLD = {
-  minTrades: 20,
-  minWinRate: 55,
-  minExpectancy: 0.5,
-};
+const LIVE_PROOF_THRESHOLD = { minTrades: 20, minWinRate: 55, minExpectancy: 0.5 };
 
 const SESSION_ICONS: Record<string, React.ElementType> = {
-  'london-open': Sunrise,
-  'ny-overlap': Sun,
-  'asian': Moon,
-  'late-ny': Sunset,
-  'rollover': Clock,
+  'london-open': Sunrise, 'ny-overlap': Sun, 'asian': Moon, 'late-ny': Sunset, 'rollover': Clock,
 };
-
 const SESSION_LABELS: Record<string, string> = {
-  'london-open': 'London Open',
-  'ny-overlap': 'NY Overlap',
-  'asian': 'Asian',
-  'late-ny': 'Late NY',
-  'rollover': 'Rollover',
+  'london-open': 'London Open', 'ny-overlap': 'NY Overlap', 'asian': 'Asian', 'late-ny': 'Late NY', 'rollover': 'Rollover',
 };
 
 const PAIR_BASE_SPREADS: Record<string, number> = {
   EUR_USD: 0.6, GBP_USD: 0.9, USD_JPY: 0.7, AUD_USD: 0.8,
   USD_CAD: 1.0, EUR_JPY: 1.1, GBP_JPY: 1.5, EUR_GBP: 0.8,
-  NZD_USD: 1.2, AUD_JPY: 1.3, USD_CHF: 1.0, EUR_CHF: 1.2,
-  EUR_AUD: 1.6, GBP_AUD: 2.0, AUD_NZD: 1.8,
 };
 
-// ─── Edge grading logic ───
+// ─── Governance Edge Scoring ───
+// Uses the same risk parameters as the governance layer:
+// Expectancy, Sharpe, Win Rate, Friction Ratio, Execution Quality, Profit Factor, Session Robustness
 
-function gradeEdge(exp: number, winRate: number, avgQuality: number, frictionCost: number, postFrictionExp: number): {
-  grade: PairEdgeData['edgeGrade'];
-  label: string;
-  color: string;
-  reasons: string[];
-  risks: string[];
-} {
+function computeEdgeScore(p: {
+  expectancy: number; sharpe: number; winRate: number; profitFactor: number;
+  avgQuality: number; frictionRatio: number; sessionConsistency: number;
+}): number {
+  // Weighted composite (mirrors governance multiplier stack)
+  const expScore = Math.min(30, Math.max(0, (p.expectancy / 3.0) * 30));          // 30pts max — expectancy is king
+  const sharpeScore = Math.min(20, Math.max(0, (p.sharpe / 0.6) * 20));            // 20pts max — risk-adjusted return
+  const wrScore = Math.min(15, Math.max(0, ((p.winRate - 40) / 30) * 15));         // 15pts max — directional accuracy
+  const pfScore = Math.min(15, Math.max(0, ((p.profitFactor - 1.0) / 2.0) * 15));  // 15pts max — payoff asymmetry
+  const qualScore = Math.min(10, Math.max(0, ((p.avgQuality - 50) / 30) * 10));    // 10pts max — execution quality
+  const frictionPenalty = Math.min(10, Math.max(0, p.frictionRatio * 10));          // -10pts max — friction drag
+  const sessionBonus = Math.min(10, Math.max(0, (p.sessionConsistency / 5) * 10)); // 10pts max — robustness across sessions
+  return Math.round(expScore + sharpeScore + wrScore + pfScore + qualScore - frictionPenalty + sessionBonus);
+}
+
+function buildEdgeAnalysis(p: {
+  expectancy: number; winRate: number; profitFactor: number; sharpe: number;
+  avgQuality: number; avgSlippage: number; frictionCost: number; frictionRatio: number;
+  postFrictionExp: number; sessions: SessionEdge[];
+}): { reasons: string[]; risks: string[]; verdict: string } {
   const reasons: string[] = [];
   const risks: string[] = [];
 
-  // Expectancy analysis
-  if (exp >= 2.0) reasons.push(`Elite expectancy (+${exp.toFixed(2)}p) — each trade generates strong positive edge even after friction`);
-  else if (exp >= 1.5) reasons.push(`Strong expectancy (+${exp.toFixed(2)}p) — consistently profitable with meaningful per-trade returns`);
-  else if (exp >= 1.0) reasons.push(`Moderate expectancy (+${exp.toFixed(2)}p) — profitable but requires tight execution to maintain edge`);
-  else if (exp >= 0.5) reasons.push(`Thin expectancy (+${exp.toFixed(2)}p) — barely covers friction costs, vulnerable to spread widening`);
-  else if (exp > 0) reasons.push(`Marginal expectancy (+${exp.toFixed(2)}p) — edge exists but could evaporate under adverse conditions`);
-  else reasons.push(`Negative expectancy (${exp.toFixed(2)}p) — this pair is currently destroying capital`);
+  // ─── Expectancy ───
+  if (p.expectancy >= 2.0) reasons.push(`Elite expectancy (+${p.expectancy.toFixed(2)}p/trade) — the governance layer's primary edge signal. This pair generates consistent surplus above the 0.72 composite threshold.`);
+  else if (p.expectancy >= 1.5) reasons.push(`Strong expectancy (+${p.expectancy.toFixed(2)}p/trade) — reliably clears the governance composite gate with room to absorb friction spikes.`);
+  else if (p.expectancy >= 1.0) reasons.push(`Moderate expectancy (+${p.expectancy.toFixed(2)}p/trade) — passes governance but thin margin means spread widening events could temporarily push below the approval threshold.`);
+  else if (p.expectancy >= 0.5) risks.push(`Thin expectancy (+${p.expectancy.toFixed(2)}p/trade) — barely clears friction. Governance would throttle this pair during DEFENSIVE state as it can't absorb the K×Friction gate at K=3.8+.`);
+  else risks.push(`Marginal expectancy (+${p.expectancy.toFixed(2)}p/trade) — would trigger pair-level banning in the governance state machine (threshold: expectancy < -0.5p over 50 trades).`);
 
-  // Win rate analysis
-  if (winRate >= 65) reasons.push(`High win rate (${winRate.toFixed(1)}%) — strong directional accuracy creates consistent returns`);
-  else if (winRate >= 55) reasons.push(`Solid win rate (${winRate.toFixed(1)}%) — above breakeven with room for asymmetric payoffs`);
-  else if (winRate >= 45) reasons.push(`Mixed win rate (${winRate.toFixed(1)}%) — relies on large winners to offset frequent small losses`);
-  else risks.push(`Low win rate (${winRate.toFixed(1)}%) — losing more often than winning, requires outsized winners to compensate`);
+  // ─── Sharpe ───
+  if (p.sharpe >= 0.4) reasons.push(`High Sharpe ratio (${p.sharpe.toFixed(3)}) — risk-adjusted returns are strong, meaning profits aren't achieved through outsized variance. The governance Adaptive Capital Allocator would assign a 1.25-1.5× capital multiplier.`);
+  else if (p.sharpe >= 0.25) reasons.push(`Moderate Sharpe (${p.sharpe.toFixed(3)}) — acceptable risk/reward. Capital allocation stays at 1.0× baseline.`);
+  else risks.push(`Low Sharpe ratio (${p.sharpe.toFixed(3)}) — returns are noisy relative to risk taken. The governance layer would apply a 0.5-0.7× capital multiplier to limit exposure to this volatility profile.`);
 
-  // Friction analysis
-  if (frictionCost > 0) {
-    const frictionPct = exp > 0 ? (frictionCost / exp) * 100 : 100;
-    if (frictionPct > 60) risks.push(`High friction drag (${frictionCost.toFixed(2)}p per trade = ${frictionPct.toFixed(0)}% of gross edge) — spread and slippage consume most of the raw edge`);
-    else if (frictionPct > 30) reasons.push(`Moderate friction (${frictionCost.toFixed(2)}p per trade = ${frictionPct.toFixed(0)}% of gross edge) — manageable but worth monitoring`);
-    else reasons.push(`Low friction (${frictionCost.toFixed(2)}p per trade = ${frictionPct.toFixed(0)}% of gross edge) — clean execution preserves edge`);
+  // ─── Win Rate ───
+  if (p.winRate >= 65) reasons.push(`High win rate (${p.winRate.toFixed(1)}%) — exceeds the 55% governance NORMAL-state floor by a wide margin. Directional accuracy is a core edge driver.`);
+  else if (p.winRate >= 55) reasons.push(`Solid win rate (${p.winRate.toFixed(1)}%) — meets governance NORMAL requirements. Stays above the 45% THROTTLE trigger.`);
+  else if (p.winRate >= 45) risks.push(`Sub-threshold win rate (${p.winRate.toFixed(1)}%) — below the 55% DEFENSIVE trigger. Governance would escalate to DEFENSIVE state, reducing density to 65% and sizing to 75%.`);
+  else risks.push(`Critical win rate (${p.winRate.toFixed(1)}%) — below the 45% THROTTLE trigger. System would cut density to 30% and restrict to top-performers only.`);
+
+  // ─── Profit Factor ───
+  if (p.profitFactor >= 2.5) reasons.push(`Exceptional profit factor (${p.profitFactor.toFixed(2)}×) — winners substantially outweigh losers. The loss-shrinker logic and asymmetric payoff structure are working as designed.`);
+  else if (p.profitFactor >= 1.5) reasons.push(`Good profit factor (${p.profitFactor.toFixed(2)}×) — healthy payoff asymmetry with average wins exceeding average losses.`);
+  else if (p.profitFactor >= 1.0) risks.push(`Weak profit factor (${p.profitFactor.toFixed(2)}×) — wins barely exceed losses. Any degradation in execution quality could flip this below 1.0.`);
+  else risks.push(`Negative profit factor (${p.profitFactor.toFixed(2)}×) — this pair is a net capital destroyer. Governance would auto-ban at this level.`);
+
+  // ─── Friction ───
+  const frictionPct = p.frictionRatio * 100;
+  if (frictionPct > 50) risks.push(`Severe friction drag (${p.frictionCost.toFixed(2)}p = ${frictionPct.toFixed(0)}% of gross edge) — spread + slippage consume over half the raw edge. The Friction Expectancy Gate (K×Friction check) would reject many entries for this pair.`);
+  else if (frictionPct > 30) risks.push(`Moderate friction drag (${p.frictionCost.toFixed(2)}p = ${frictionPct.toFixed(0)}% of gross edge) — manageable but the 1.8× rollover friction multiplier would push this pair into rejection territory during off-hours.`);
+  else reasons.push(`Low friction drag (${p.frictionCost.toFixed(2)}p = ${frictionPct.toFixed(0)}% of gross edge) — clean execution preserves edge. Easily clears the K=3.0 Friction Gate even during elevated spread conditions.`);
+
+  // ─── Execution Quality ───
+  if (p.avgQuality >= 70) reasons.push(`High execution quality (${p.avgQuality.toFixed(0)}/100) — fills are clean with minimal adverse selection. The Execution Safety layer reports no drift concerns.`);
+  else if (p.avgQuality < 55) risks.push(`Poor execution quality (${p.avgQuality.toFixed(0)}/100) — frequent adverse fills. If quality drops below 35 with high rejection rate, governance triggers HALT state.`);
+
+  // ─── Session Robustness ───
+  if (p.sessions.length >= 3) {
+    const profitable = p.sessions.filter(s => s.expectancy > 0);
+    const negative = p.sessions.filter(s => s.expectancy < 0);
+    if (profitable.length === p.sessions.length) {
+      reasons.push(`Profitable across all ${p.sessions.length} sessions — edge is structurally robust and not dependent on a single liquidity window. Capital can be deployed around the clock.`);
+    } else if (negative.length > 0) {
+      const worst = p.sessions[p.sessions.length - 1];
+      risks.push(`Negative edge in ${negative.length} session(s) — worst: ${SESSION_LABELS[worst?.session] || worst?.session} (${worst?.expectancy.toFixed(2)}p). The Session Budget system would cap density to ${worst?.session === 'rollover' ? '1 trade with 1.8× friction multiplier' : 'reduced levels'} in these windows.`);
+    }
   }
 
-  // Execution quality
-  if (avgQuality >= 70) reasons.push(`High execution quality (${avgQuality.toFixed(0)}/100) — fills are clean with minimal adverse selection`);
-  else if (avgQuality >= 60) {} // neutral, don't mention
-  else if (avgQuality >= 50) risks.push(`Below-average execution quality (${avgQuality.toFixed(0)}/100) — some fills are getting adversely selected`);
-  else risks.push(`Poor execution quality (${avgQuality.toFixed(0)}/100) — frequent adverse fills are eroding returns`);
+  // ─── Post-Friction Viability ───
+  if (p.postFrictionExp < 0) risks.push(`Post-friction expectancy is NEGATIVE (${p.postFrictionExp.toFixed(2)}p) — after real-world execution costs, this pair destroys capital. Governance would auto-restrict.`);
+  else if (p.postFrictionExp < 0.5) risks.push(`Post-friction edge is razor-thin (+${p.postFrictionExp.toFixed(2)}p) — any spread widening event (news, low liquidity) would temporarily eliminate the edge.`);
 
-  // Post-friction viability
-  if (postFrictionExp < 0.3 && exp > 0) risks.push(`Post-friction expectancy is thin (+${postFrictionExp.toFixed(2)}p) — real-world edge may not survive spread widening or volatility events`);
-  if (postFrictionExp < 0) risks.push(`Post-friction expectancy is NEGATIVE (${postFrictionExp.toFixed(2)}p) — this pair loses money after accounting for execution costs`);
-
-  // Grade
-  let grade: PairEdgeData['edgeGrade'];
-  let label: string;
-  let color: string;
-
-  if (exp >= 2.0 && winRate >= 60 && avgQuality >= 65) {
-    grade = 'S'; label = 'Elite Edge'; color = 'text-[hsl(var(--neural-green))]';
-  } else if (exp >= 1.5 && winRate >= 55) {
-    grade = 'A'; label = 'Strong Edge'; color = 'text-[hsl(var(--neural-green))]';
-  } else if (exp >= 1.0 && winRate >= 50) {
-    grade = 'B'; label = 'Solid Edge'; color = 'text-[hsl(var(--neural-blue))]';
-  } else if (exp >= 0.5 && winRate >= 45) {
-    grade = 'C'; label = 'Thin Edge'; color = 'text-[hsl(var(--neural-orange))]';
-  } else if (exp > 0) {
-    grade = 'D'; label = 'Fragile Edge'; color = 'text-[hsl(var(--neural-orange))]';
+  // ─── Verdict ───
+  let verdict: string;
+  if (p.expectancy >= 2.0 && p.winRate >= 60 && p.sharpe >= 0.35 && p.profitFactor >= 2.0) {
+    verdict = "Deploy with full capital allocation (1.0-1.5×). This pair has a statistically validated, friction-resistant edge across multiple sessions.";
+  } else if (p.expectancy >= 1.5 && p.winRate >= 55 && p.profitFactor >= 1.5) {
+    verdict = "Deploy at standard allocation (1.0×). Strong edge but monitor friction ratio and session performance for early degradation signals.";
+  } else if (p.expectancy >= 1.0 && p.winRate >= 50) {
+    verdict = "Deploy at reduced allocation (0.7×). Moderate edge exists but limited margin for error — restrict to prime sessions (London Open, NY Overlap).";
+  } else if (p.expectancy >= 0.5) {
+    verdict = "Shadow-only or restricted allocation (0.3-0.5×). Edge is thin and session-dependent — only viable in the highest-liquidity windows with tight friction gates.";
   } else {
-    grade = 'F'; label = 'No Edge'; color = 'text-[hsl(var(--neural-red))]';
+    verdict = "Do not deploy. Edge does not survive friction costs. Governance would auto-ban this pair or restrict to shadow observation only.";
   }
 
-  return { grade, label, color, reasons, risks };
+  return { reasons, risks, verdict };
 }
 
 // ─── Main Component ───
@@ -158,16 +178,14 @@ export function FocusPairsEdgeDashboard() {
   const [loading, setLoading] = useState(true);
   const [expandedPair, setExpandedPair] = useState<string | null>(null);
 
-  useEffect(() => {
-    fetchPairEdgeData();
-  }, []);
+  useEffect(() => { fetchPairEdgeData(); }, []);
 
   async function fetchPairEdgeData() {
     setLoading(true);
     try {
       const { data: raw } = await supabase
         .from('oanda_orders')
-        .select('currency_pair, environment, direction, entry_price, exit_price, spread_at_entry, slippage_pips, execution_quality_score, session_label, status')
+        .select('currency_pair, environment, direction, entry_price, exit_price, spread_at_entry, slippage_pips, execution_quality_score, session_label, governance_composite, confidence_score, status')
         .eq('status', 'closed')
         .eq('direction', 'long')
         .not('entry_price', 'is', null)
@@ -178,115 +196,116 @@ export function FocusPairsEdgeDashboard() {
 
       if (!raw) { setLoading(false); return; }
 
-      // Group by pair → session
       const pairMap = new Map<string, {
-        total: number; wins: number; netPips: number;
-        liveTrades: number; liveWins: number; liveNetPips: number;
+        pnls: number[]; livePnls: number[];
         spreads: number[]; slippages: number[]; qualities: number[];
-        sessions: Map<string, { trades: number; wins: number; netPips: number; spreads: number[]; slippages: number[]; qualities: number[] }>;
+        govComposites: number[]; confidences: number[];
+        sessions: Map<string, { pnls: number[]; spreads: number[]; slippages: number[]; qualities: number[] }>;
       }>();
 
       for (const o of raw) {
         const pair = o.currency_pair;
+        if (pair.includes('/')) continue; // skip malformed
         if (!pairMap.has(pair)) {
-          pairMap.set(pair, {
-            total: 0, wins: 0, netPips: 0,
-            liveTrades: 0, liveWins: 0, liveNetPips: 0,
-            spreads: [], slippages: [], qualities: [],
-            sessions: new Map(),
-          });
+          pairMap.set(pair, { pnls: [], livePnls: [], spreads: [], slippages: [], qualities: [], govComposites: [], confidences: [], sessions: new Map() });
         }
         const m = pairMap.get(pair)!;
         const pipDiv = pair.includes('JPY') ? 0.01 : 0.0001;
         const pnl = (o.exit_price! - o.entry_price!) / pipDiv;
-
-        m.total++;
-        if (pnl > 0) m.wins++;
-        m.netPips += pnl;
+        m.pnls.push(pnl);
+        if (o.environment === 'live') m.livePnls.push(pnl);
         if (o.spread_at_entry) m.spreads.push(o.spread_at_entry);
         if (o.slippage_pips) m.slippages.push(Math.abs(o.slippage_pips));
         if (o.execution_quality_score) m.qualities.push(o.execution_quality_score);
+        if (o.governance_composite) m.govComposites.push(o.governance_composite);
+        if (o.confidence_score) m.confidences.push(o.confidence_score);
 
-        if (o.environment === 'live') {
-          m.liveTrades++;
-          if (pnl > 0) m.liveWins++;
-          m.liveNetPips += pnl;
-        }
-
-        // Session tracking
         const sess = o.session_label || 'unknown';
-        if (!m.sessions.has(sess)) {
-          m.sessions.set(sess, { trades: 0, wins: 0, netPips: 0, spreads: [], slippages: [], qualities: [] });
-        }
+        if (!m.sessions.has(sess)) m.sessions.set(sess, { pnls: [], spreads: [], slippages: [], qualities: [] });
         const s = m.sessions.get(sess)!;
-        s.trades++;
-        if (pnl > 0) s.wins++;
-        s.netPips += pnl;
+        s.pnls.push(pnl);
         if (o.spread_at_entry) s.spreads.push(o.spread_at_entry);
         if (o.slippage_pips) s.slippages.push(Math.abs(o.slippage_pips));
         if (o.execution_quality_score) s.qualities.push(o.execution_quality_score);
       }
 
       const result: PairEdgeData[] = [];
-      for (const [pair, m] of pairMap) {
-        if (m.total < 5) continue; // skip noise pairs
 
-        const winRate = m.total > 0 ? (m.wins / m.total) * 100 : 0;
-        const expectancy = m.total > 0 ? m.netPips / m.total : 0;
-        const avgSpread = m.spreads.length > 0 ? m.spreads.reduce((a, b) => a + b, 0) / m.spreads.length : PAIR_BASE_SPREADS[pair] || 1.0;
-        const avgSlippage = m.slippages.length > 0 ? m.slippages.reduce((a, b) => a + b, 0) / m.slippages.length : 0.15;
-        const avgQuality = m.qualities.length > 0 ? m.qualities.reduce((a, b) => a + b, 0) / m.qualities.length : 70;
+      for (const [pair, m] of pairMap) {
+        if (m.pnls.length < 20) continue;
+
+        const total = m.pnls.length;
+        const wins = m.pnls.filter(p => p > 0).length;
+        const winRate = (wins / total) * 100;
+        const netPips = m.pnls.reduce((a, b) => a + b, 0);
+        const expectancy = netPips / total;
+        const grossProfit = m.pnls.filter(p => p > 0).reduce((a, b) => a + b, 0);
+        const grossLoss = Math.abs(m.pnls.filter(p => p <= 0).reduce((a, b) => a + b, 0));
+        const profitFactor = grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? 99 : 0;
+        const mean = expectancy;
+        const variance = m.pnls.reduce((s, p) => s + (p - mean) ** 2, 0) / total;
+        const stddev = Math.sqrt(variance);
+        const sharpe = stddev > 0 ? mean / stddev : 0;
+
+        const avg = (arr: number[]) => arr.length > 0 ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
+        const avgSpread = avg(m.spreads) || PAIR_BASE_SPREADS[pair] || 1.0;
+        const avgSlippage = avg(m.slippages) || 0.15;
+        const avgQuality = avg(m.qualities) || 70;
+        const avgGovComposite = avg(m.govComposites);
+        const avgConfidence = avg(m.confidences);
         const frictionCost = avgSpread + avgSlippage;
-        const postFrictionExpectancy = expectancy - frictionCost;
+        const postFrictionExp = expectancy - frictionCost;
+        const frictionRatio = expectancy > 0 ? frictionCost / expectancy : 1;
 
         const sessions: SessionEdge[] = [];
         for (const [sess, s] of m.sessions) {
-          if (s.trades < 3) continue;
+          if (s.pnls.length < 5) continue;
+          const sWins = s.pnls.filter(p => p > 0).length;
           sessions.push({
             session: sess,
-            trades: s.trades,
-            wins: s.wins,
-            winRate: (s.wins / s.trades) * 100,
-            expectancy: s.netPips / s.trades,
-            avgSpread: s.spreads.length > 0 ? s.spreads.reduce((a, b) => a + b, 0) / s.spreads.length : avgSpread,
-            avgSlippage: s.slippages.length > 0 ? s.slippages.reduce((a, b) => a + b, 0) / s.slippages.length : avgSlippage,
-            avgQuality: s.qualities.length > 0 ? s.qualities.reduce((a, b) => a + b, 0) / s.qualities.length : avgQuality,
+            trades: s.pnls.length,
+            wins: sWins,
+            winRate: (sWins / s.pnls.length) * 100,
+            expectancy: s.pnls.reduce((a, b) => a + b, 0) / s.pnls.length,
+            avgSpread: avg(s.spreads) || avgSpread,
+            avgSlippage: avg(s.slippages) || avgSlippage,
+            avgQuality: avg(s.qualities) || avgQuality,
           });
         }
         sessions.sort((a, b) => b.expectancy - a.expectancy);
 
-        const { grade, label, color, reasons, risks } = gradeEdge(expectancy, winRate, avgQuality, frictionCost, postFrictionExpectancy);
+        // Session consistency: how many sessions are profitable
+        const sessionConsistency = sessions.filter(s => s.expectancy > 0).length;
 
-        // Best/worst session
-        const bestSession = sessions.length > 0 ? sessions[0].session : 'unknown';
-        const worstSession = sessions.length > 0 ? sessions[sessions.length - 1].session : 'unknown';
+        const edgeScore = computeEdgeScore({ expectancy, sharpe, winRate, profitFactor, avgQuality, frictionRatio, sessionConsistency });
 
-        // Session-specific reasons
-        if (sessions.length > 1) {
-          const best = sessions[0];
-          const worst = sessions[sessions.length - 1];
-          if (best.expectancy > expectancy * 1.2) {
-            reasons.push(`Best session: ${SESSION_LABELS[best.session] || best.session} (+${best.expectancy.toFixed(2)}p, ${best.winRate.toFixed(0)}% WR) — ${best.expectancy > 2.0 ? 'dominant liquidity and tight spreads drive outsized returns' : 'above-average conditions improve fill quality'}`);
-          }
-          if (worst.expectancy < expectancy * 0.5 || worst.expectancy < 0) {
-            risks.push(`Worst session: ${SESSION_LABELS[worst.session] || worst.session} (${worst.expectancy >= 0 ? '+' : ''}${worst.expectancy.toFixed(2)}p, ${worst.winRate.toFixed(0)}% WR) — ${worst.expectancy < 0 ? 'negative edge from wide spreads and low liquidity destroys profits made in other sessions' : 'weak returns from reduced market participation and poor fills'}`);
-          }
-        }
+        const { reasons, risks, verdict } = buildEdgeAnalysis({
+          expectancy, winRate, profitFactor, sharpe, avgQuality, avgSlippage,
+          frictionCost, frictionRatio, postFrictionExp, sessions,
+        });
+
+        // Tier assignment based on governance score
+        let tier: 1 | 2 | 3;
+        let tierLabel: string;
+        if (edgeScore >= 65) { tier = 1; tierLabel = 'TIER 1 — Deploy Capital'; }
+        else if (edgeScore >= 45) { tier = 2; tierLabel = 'TIER 2 — Conditional Deploy'; }
+        else { tier = 3; tierLabel = 'TIER 3 — Restrict / Shadow Only'; }
+
+        const liveTrades = m.livePnls.length;
+        const liveWins = m.livePnls.filter(p => p > 0).length;
 
         result.push({
-          pair, totalTrades: m.total, winRate, expectancy, netPips: m.netPips,
-          liveTrades: m.liveTrades,
-          liveExpectancy: m.liveTrades > 0 ? m.liveNetPips / m.liveTrades : 0,
-          liveWinRate: m.liveTrades > 0 ? (m.liveWins / m.liveTrades) * 100 : 0,
-          avgSpread, avgSlippage, avgQuality, sessions,
-          edgeGrade: grade, edgeLabel: label, edgeColor: color,
-          frictionCost, postFrictionExpectancy: postFrictionExpectancy,
-          bestSession, worstSession,
-          edgeReasons: reasons, edgeRisks: risks,
+          pair, totalTrades: total, winRate, expectancy, netPips, grossProfit, grossLoss,
+          profitFactor, stddev, sharpe,
+          liveTrades, liveExpectancy: liveTrades > 0 ? m.livePnls.reduce((a, b) => a + b, 0) / liveTrades : 0,
+          liveWinRate: liveTrades > 0 ? (liveWins / liveTrades) * 100 : 0,
+          avgSpread, avgSlippage, avgQuality, avgGovComposite, avgConfidence,
+          sessions, frictionCost, postFrictionExp, frictionRatio,
+          edgeScore, tier, tierLabel, edgeReasons: reasons, edgeRisks: risks, verdict,
         });
       }
 
-      result.sort((a, b) => b.expectancy - a.expectancy);
+      result.sort((a, b) => b.edgeScore - a.edgeScore);
       setPairData(result);
     } catch (e) {
       console.error('Failed to fetch pair edge data:', e);
@@ -294,8 +313,13 @@ export function FocusPairsEdgeDashboard() {
     setLoading(false);
   }
 
+  const tiers = useMemo(() => ({
+    t1: pairData.filter(p => p.tier === 1),
+    t2: pairData.filter(p => p.tier === 2),
+    t3: pairData.filter(p => p.tier === 3),
+  }), [pairData]);
+
   const focusPairs = useMemo(() => pairData.filter(p => FOCUS_PAIRS.includes(p.pair)), [pairData]);
-  const queuePairs = useMemo(() => pairData.filter(p => !FOCUS_PAIRS.includes(p.pair)), [pairData]);
 
   const focusProven = useMemo(() => {
     const totalLive = focusPairs.reduce((s, p) => s + p.liveTrades, 0);
@@ -325,16 +349,23 @@ export function FocusPairsEdgeDashboard() {
         <div className="flex items-center gap-3">
           <Target className="w-6 h-6 text-primary" />
           <div>
-            <h2 className="font-display text-lg font-bold">Edge Quality Map</h2>
+            <h2 className="font-display text-lg font-bold">Governance Edge Ranking</h2>
             <p className="text-xs text-muted-foreground">
-              Detailed edge breakdown for every pair — why they work, where they're weak, and what drives the edge.
+              Pairs ranked by governance composite score — expectancy, Sharpe, friction resistance, execution quality, and session robustness.
             </p>
           </div>
         </div>
-        <Badge variant="outline" className="text-[10px] gap-1">
-          <Zap className="w-3 h-3" />
-          {FOCUS_PAIRS.length} Active / {queuePairs.length} Queued
-        </Badge>
+        <div className="flex items-center gap-2">
+          <Badge variant="outline" className="text-[10px] gap-1 border-[hsl(var(--neural-green))]/30 text-[hsl(var(--neural-green))]">
+            <Crown className="w-3 h-3" /> T1: {tiers.t1.length}
+          </Badge>
+          <Badge variant="outline" className="text-[10px] gap-1 border-[hsl(var(--neural-blue))]/30 text-[hsl(var(--neural-blue))]">
+            <Medal className="w-3 h-3" /> T2: {tiers.t2.length}
+          </Badge>
+          <Badge variant="outline" className="text-[10px] gap-1 border-[hsl(var(--neural-orange))]/30 text-[hsl(var(--neural-orange))]">
+            <CircleDot className="w-3 h-3" /> T3: {tiers.t3.length}
+          </Badge>
+        </div>
       </div>
 
       {/* Live Proof Progress */}
@@ -345,178 +376,143 @@ export function FocusPairsEdgeDashboard() {
               <Shield className="w-4 h-4 text-primary" />
               <span className="text-sm font-display font-bold">Live Profitability Proof</span>
             </div>
-            <Badge
-              variant="outline"
-              className={cn('text-[9px]', focusProven.proven
-                ? 'border-[hsl(var(--neural-green))]/40 text-[hsl(var(--neural-green))]'
-                : 'border-[hsl(var(--neural-orange))]/40 text-[hsl(var(--neural-orange))]'
-              )}
-            >
+            <Badge variant="outline" className={cn('text-[9px]', focusProven.proven ? 'border-[hsl(var(--neural-green))]/40 text-[hsl(var(--neural-green))]' : 'border-[hsl(var(--neural-orange))]/40 text-[hsl(var(--neural-orange))]')}>
               {focusProven.proven ? 'PROVEN — Ready to expand' : 'PROVING'}
             </Badge>
           </div>
           <div className="grid grid-cols-3 gap-4 mb-3">
-            <div>
-              <p className="text-[10px] text-muted-foreground">Live Trades</p>
-              <p className="text-lg font-mono font-bold">{focusProven.totalLive}<span className="text-[10px] text-muted-foreground">/{LIVE_PROOF_THRESHOLD.minTrades}</span></p>
-            </div>
-            <div>
-              <p className="text-[10px] text-muted-foreground">Live Win Rate</p>
-              <p className={cn('text-lg font-mono font-bold', focusProven.liveWR >= LIVE_PROOF_THRESHOLD.minWinRate ? 'text-[hsl(var(--neural-green))]' : 'text-[hsl(var(--neural-orange))]')}>
-                {focusProven.liveWR.toFixed(1)}%
-              </p>
-            </div>
-            <div>
-              <p className="text-[10px] text-muted-foreground">Live Expectancy</p>
-              <p className={cn('text-lg font-mono font-bold', focusProven.liveExp >= LIVE_PROOF_THRESHOLD.minExpectancy ? 'text-[hsl(var(--neural-green))]' : 'text-[hsl(var(--neural-orange))]')}>
-                {focusProven.liveExp >= 0 ? '+' : ''}{focusProven.liveExp.toFixed(2)}p
-              </p>
-            </div>
+            <div><p className="text-[10px] text-muted-foreground">Live Trades</p><p className="text-lg font-mono font-bold">{focusProven.totalLive}<span className="text-[10px] text-muted-foreground">/{LIVE_PROOF_THRESHOLD.minTrades}</span></p></div>
+            <div><p className="text-[10px] text-muted-foreground">Live Win Rate</p><p className={cn('text-lg font-mono font-bold', focusProven.liveWR >= LIVE_PROOF_THRESHOLD.minWinRate ? 'text-[hsl(var(--neural-green))]' : 'text-[hsl(var(--neural-orange))]')}>{focusProven.liveWR.toFixed(1)}%</p></div>
+            <div><p className="text-[10px] text-muted-foreground">Live Expectancy</p><p className={cn('text-lg font-mono font-bold', focusProven.liveExp >= LIVE_PROOF_THRESHOLD.minExpectancy ? 'text-[hsl(var(--neural-green))]' : 'text-[hsl(var(--neural-orange))]')}>{focusProven.liveExp >= 0 ? '+' : ''}{focusProven.liveExp.toFixed(2)}p</p></div>
           </div>
           <div className="space-y-1">
-            <div className="flex justify-between text-[10px] text-muted-foreground">
-              <span>Progress to unlock</span>
-              <span>{Math.round(focusProven.progress)}%</span>
-            </div>
+            <div className="flex justify-between text-[10px] text-muted-foreground"><span>Progress</span><span>{Math.round(focusProven.progress)}%</span></div>
             <Progress value={focusProven.progress} className="h-2" />
           </div>
         </CardContent>
       </Card>
 
-      {/* Active Focus Pairs — Full Detail */}
-      <div>
-        <div className="flex items-center gap-2 mb-3">
-          <Unlock className="w-4 h-4 text-[hsl(var(--neural-green))]" />
-          <h3 className="text-sm font-display font-bold">Active Focus Pairs</h3>
-        </div>
-        <div className="space-y-3">
-          {focusPairs.map((p, i) => (
-            <motion.div key={p.pair} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.05 }}>
-              <EdgeDetailCard
-                data={p}
-                isActive
-                isExpanded={expandedPair === p.pair}
-                onToggle={() => setExpandedPair(expandedPair === p.pair ? null : p.pair)}
-              />
-            </motion.div>
-          ))}
+      {/* TIER 1 */}
+      <TierSection
+        tier={1}
+        icon={Crown}
+        label="TIER 1 — Deploy Capital"
+        description="These pairs have governance-validated edge: high expectancy, strong Sharpe, low friction drag, and consistent performance across sessions. Full capital allocation recommended."
+        color="neural-green"
+        pairs={tiers.t1}
+        expandedPair={expandedPair}
+        setExpandedPair={setExpandedPair}
+      />
+
+      {/* TIER 2 */}
+      <TierSection
+        tier={2}
+        icon={Medal}
+        label="TIER 2 — Conditional Deploy"
+        description="Moderate edge exists but with constraints — higher friction, session dependency, or lower Sharpe. Deploy at reduced allocation (0.7×) and restrict to prime sessions."
+        color="neural-blue"
+        pairs={tiers.t2}
+        expandedPair={expandedPair}
+        setExpandedPair={setExpandedPair}
+      />
+
+      {/* TIER 3 */}
+      <TierSection
+        tier={3}
+        icon={CircleDot}
+        label="TIER 3 — Restrict / Shadow Only"
+        description="Edge is thin, friction-sensitive, or session-dependent. Not viable for live capital deployment — shadow observation or restricted trading only."
+        color="neural-orange"
+        pairs={tiers.t3}
+        expandedPair={expandedPair}
+        setExpandedPair={setExpandedPair}
+      />
+    </div>
+  );
+}
+
+// ─── Tier Section ───
+
+function TierSection({ tier, icon: Icon, label, description, color, pairs, expandedPair, setExpandedPair }: {
+  tier: number;
+  icon: React.ElementType;
+  label: string;
+  description: string;
+  color: string;
+  pairs: PairEdgeData[];
+  expandedPair: string | null;
+  setExpandedPair: (p: string | null) => void;
+}) {
+  if (pairs.length === 0) return null;
+
+  return (
+    <div>
+      <div className="flex items-start gap-2 mb-3">
+        <Icon className={`w-5 h-5 text-[hsl(var(--${color}))] shrink-0 mt-0.5`} />
+        <div>
+          <h3 className="text-sm font-display font-bold">{label}</h3>
+          <p className="text-[10px] text-muted-foreground">{description}</p>
         </div>
       </div>
-
-      {/* Unlock Queue — Full Detail */}
-      <div>
-        <div className="flex items-center gap-2 mb-3">
-          <Lock className="w-4 h-4 text-muted-foreground" />
-          <h3 className="text-sm font-display font-bold">Unlock Queue — Edge Quality Ranked</h3>
-          <span className="text-[10px] text-muted-foreground">— Click any pair to see detailed edge analysis</span>
-        </div>
-        <div className="space-y-3">
-          {queuePairs.map((p, i) => (
-            <motion.div key={p.pair} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.03 }}>
-              <EdgeDetailCard
-                data={p}
-                isActive={false}
-                isExpanded={expandedPair === p.pair}
-                onToggle={() => setExpandedPair(expandedPair === p.pair ? null : p.pair)}
-                rank={i + 1}
-              />
-            </motion.div>
-          ))}
-        </div>
+      <div className="space-y-3">
+        {pairs.map((p, i) => (
+          <motion.div key={p.pair} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.04 }}>
+            <EdgeCard
+              data={p}
+              color={color}
+              isExpanded={expandedPair === p.pair}
+              onToggle={() => setExpandedPair(expandedPair === p.pair ? null : p.pair)}
+            />
+          </motion.div>
+        ))}
       </div>
     </div>
   );
 }
 
-// ─── Edge Detail Card ───
+// ─── Edge Card ───
 
-function EdgeDetailCard({ data, isActive, isExpanded, onToggle, rank }: {
-  data: PairEdgeData;
-  isActive: boolean;
-  isExpanded: boolean;
-  onToggle: () => void;
-  rank?: number;
+function EdgeCard({ data, color, isExpanded, onToggle }: {
+  data: PairEdgeData; color: string; isExpanded: boolean; onToggle: () => void;
 }) {
   const display = toDisplaySymbol(data.pair);
-
-  const gradeBg: Record<string, string> = {
-    S: 'bg-[hsl(var(--neural-green))]/10 border-[hsl(var(--neural-green))]/30',
-    A: 'bg-[hsl(var(--neural-green))]/5 border-[hsl(var(--neural-green))]/20',
-    B: 'bg-[hsl(var(--neural-blue))]/5 border-[hsl(var(--neural-blue))]/20',
-    C: 'bg-[hsl(var(--neural-orange))]/5 border-[hsl(var(--neural-orange))]/20',
-    D: 'bg-[hsl(var(--neural-orange))]/5 border-[hsl(var(--neural-orange))]/15',
-    F: 'bg-[hsl(var(--neural-red))]/5 border-[hsl(var(--neural-red))]/20',
-  };
-
-  const gradeBadgeBg: Record<string, string> = {
-    S: 'bg-[hsl(var(--neural-green))]/20 text-[hsl(var(--neural-green))] border-[hsl(var(--neural-green))]/40',
-    A: 'bg-[hsl(var(--neural-green))]/15 text-[hsl(var(--neural-green))] border-[hsl(var(--neural-green))]/30',
-    B: 'bg-[hsl(var(--neural-blue))]/15 text-[hsl(var(--neural-blue))] border-[hsl(var(--neural-blue))]/30',
-    C: 'bg-[hsl(var(--neural-orange))]/15 text-[hsl(var(--neural-orange))] border-[hsl(var(--neural-orange))]/30',
-    D: 'bg-[hsl(var(--neural-orange))]/10 text-[hsl(var(--neural-orange))] border-[hsl(var(--neural-orange))]/20',
-    F: 'bg-[hsl(var(--neural-red))]/15 text-[hsl(var(--neural-red))] border-[hsl(var(--neural-red))]/30',
-  };
+  const isLive = FOCUS_PAIRS.includes(data.pair);
 
   return (
-    <Card className={cn('transition-all cursor-pointer', gradeBg[data.edgeGrade])} onClick={onToggle}>
+    <Card className={cn('transition-all cursor-pointer border', `bg-[hsl(var(--${color}))]/5 border-[hsl(var(--${color}))]/20 hover:border-[hsl(var(--${color}))]/40`)} onClick={onToggle}>
       <CardContent className="p-4">
-        {/* Header row */}
+        {/* Header */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            {rank != null && (
-              <div className="w-6 h-6 rounded-full bg-muted/30 flex items-center justify-center text-[10px] font-mono font-bold text-muted-foreground shrink-0">
-                {rank}
-              </div>
-            )}
+            <div className={cn('w-10 h-10 rounded-lg flex items-center justify-center font-mono font-bold text-sm', `bg-[hsl(var(--${color}))]/15 text-[hsl(var(--${color}))]`)}>
+              {data.edgeScore}
+            </div>
             <div>
               <div className="flex items-center gap-2">
                 <span className="font-display font-bold text-base">{display}</span>
-                <Badge variant="outline" className={cn('text-[9px] font-bold px-2 py-0', gradeBadgeBg[data.edgeGrade])}>
-                  {data.edgeGrade}-TIER · {data.edgeLabel}
+                <Badge variant="outline" className={cn('text-[8px] font-bold px-1.5 py-0', `border-[hsl(var(--${color}))]/30 text-[hsl(var(--${color}))]`)}>
+                  {data.tierLabel.split('—')[0].trim()}
                 </Badge>
-                {isActive && (
-                  <Badge variant="outline" className="text-[8px] px-1.5 py-0 border-[hsl(var(--neural-green))]/30 text-[hsl(var(--neural-green))]">
-                    LIVE
-                  </Badge>
-                )}
+                {isLive && <Badge variant="outline" className="text-[8px] px-1.5 py-0 border-[hsl(var(--neural-green))]/30 text-[hsl(var(--neural-green))]">LIVE</Badge>}
               </div>
-              <p className="text-[10px] text-muted-foreground mt-0.5">
-                {data.totalTrades.toLocaleString()} trades · {data.edgeReasons[0]}
-              </p>
+              <p className="text-[10px] text-muted-foreground mt-0.5 max-w-md truncate">{data.edgeReasons[0]}</p>
             </div>
           </div>
 
           <div className="flex items-center gap-4">
-            {/* Key metrics */}
-            <div className="hidden sm:grid grid-cols-4 gap-4 text-right">
-              <div>
-                <p className="text-[8px] text-muted-foreground">Expectancy</p>
-                <p className={cn('text-sm font-mono font-bold', data.edgeColor)}>
-                  {data.expectancy >= 0 ? '+' : ''}{data.expectancy.toFixed(2)}p
-                </p>
-              </div>
-              <div>
-                <p className="text-[8px] text-muted-foreground">Win Rate</p>
-                <p className="text-sm font-mono font-bold">{data.winRate.toFixed(1)}%</p>
-              </div>
-              <div>
-                <p className="text-[8px] text-muted-foreground">Net Pips</p>
-                <p className={cn('text-sm font-mono font-bold', data.netPips >= 0 ? 'text-[hsl(var(--neural-green))]' : 'text-[hsl(var(--neural-red))]')}>
-                  {data.netPips >= 0 ? '+' : ''}{Math.round(data.netPips).toLocaleString()}
-                </p>
-              </div>
-              <div>
-                <p className="text-[8px] text-muted-foreground">Post-Friction</p>
-                <p className={cn('text-sm font-mono font-bold', data.postFrictionExpectancy >= 0.5 ? 'text-[hsl(var(--neural-green))]' : data.postFrictionExpectancy >= 0 ? 'text-[hsl(var(--neural-orange))]' : 'text-[hsl(var(--neural-red))]')}>
-                  {data.postFrictionExpectancy >= 0 ? '+' : ''}{data.postFrictionExpectancy.toFixed(2)}p
-                </p>
-              </div>
+            <div className="hidden sm:grid grid-cols-6 gap-3 text-right">
+              <MiniMetric label="Exp" value={`${data.expectancy >= 0 ? '+' : ''}${data.expectancy.toFixed(2)}p`} good={data.expectancy >= 1.5} bad={data.expectancy < 0.5} />
+              <MiniMetric label="WR" value={`${data.winRate.toFixed(1)}%`} good={data.winRate >= 60} bad={data.winRate < 45} />
+              <MiniMetric label="Sharpe" value={data.sharpe.toFixed(3)} good={data.sharpe >= 0.35} bad={data.sharpe < 0.2} />
+              <MiniMetric label="PF" value={`${data.profitFactor.toFixed(2)}×`} good={data.profitFactor >= 2.0} bad={data.profitFactor < 1.5} />
+              <MiniMetric label="Friction" value={`${(data.frictionRatio * 100).toFixed(0)}%`} good={data.frictionRatio < 0.2} bad={data.frictionRatio > 0.5} invert />
+              <MiniMetric label="Net" value={`${data.netPips >= 0 ? '+' : ''}${Math.round(data.netPips).toLocaleString()}`} good={data.netPips > 5000} bad={data.netPips < 0} />
             </div>
             {isExpanded ? <ChevronUp className="w-4 h-4 text-muted-foreground" /> : <ChevronDown className="w-4 h-4 text-muted-foreground" />}
           </div>
         </div>
 
-        {/* Expanded Detail */}
+        {/* Expanded */}
         <AnimatePresence>
           {isExpanded && (
             <motion.div
@@ -528,23 +524,34 @@ function EdgeDetailCard({ data, isActive, isExpanded, onToggle, rank }: {
               onClick={(e) => e.stopPropagation()}
             >
               <div className="pt-4 mt-4 border-t border-border/20 space-y-4">
-                {/* Mobile metrics (shown only on small screens) */}
-                <div className="grid grid-cols-4 gap-3 sm:hidden">
-                  <MetricCell label="Expectancy" value={`${data.expectancy >= 0 ? '+' : ''}${data.expectancy.toFixed(2)}p`} positive={data.expectancy > 0} />
+                {/* Mobile metrics */}
+                <div className="grid grid-cols-6 gap-2 sm:hidden">
+                  <MetricCell label="Expectancy" value={`${data.expectancy >= 0 ? '+' : ''}${data.expectancy.toFixed(2)}p`} positive={data.expectancy > 1.5} />
                   <MetricCell label="Win Rate" value={`${data.winRate.toFixed(1)}%`} positive={data.winRate > 55} />
-                  <MetricCell label="Net Pips" value={`${data.netPips >= 0 ? '+' : ''}${Math.round(data.netPips).toLocaleString()}`} positive={data.netPips > 0} />
-                  <MetricCell label="Post-Friction" value={`${data.postFrictionExpectancy >= 0 ? '+' : ''}${data.postFrictionExpectancy.toFixed(2)}p`} positive={data.postFrictionExpectancy > 0.5} warn={data.postFrictionExpectancy < 0} />
+                  <MetricCell label="Sharpe" value={data.sharpe.toFixed(3)} positive={data.sharpe > 0.35} />
+                  <MetricCell label="PF" value={`${data.profitFactor.toFixed(2)}×`} positive={data.profitFactor > 2} />
+                  <MetricCell label="Friction" value={`${(data.frictionRatio * 100).toFixed(0)}%`} warn={data.frictionRatio > 0.5} />
+                  <MetricCell label="Net Pips" value={`${Math.round(data.netPips).toLocaleString()}`} positive={data.netPips > 0} />
                 </div>
 
-                {/* WHY section */}
+                {/* Verdict */}
+                <div className={cn('p-3 rounded-lg border', `bg-[hsl(var(--${color}))]/5 border-[hsl(var(--${color}))]/15`)}>
+                  <div className="flex items-center gap-1.5 mb-1.5">
+                    <Gauge className={`w-3.5 h-3.5 text-[hsl(var(--${color}))]`} />
+                    <span className={`text-[10px] font-bold uppercase tracking-wider text-[hsl(var(--${color}))]`}>Governance Verdict</span>
+                    <span className={`text-[10px] font-mono font-bold text-[hsl(var(--${color}))]`}>Score: {data.edgeScore}/100</span>
+                  </div>
+                  <p className="text-[11px] text-foreground/80 leading-relaxed">{data.verdict}</p>
+                </div>
+
+                {/* Why / Risks */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {/* Edge Drivers */}
                   <div>
                     <div className="flex items-center gap-1.5 mb-2">
                       <TrendingUp className="w-3.5 h-3.5 text-[hsl(var(--neural-green))]" />
-                      <span className="text-[10px] font-bold uppercase tracking-wider text-[hsl(var(--neural-green))]">Why This Edge Works</span>
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-[hsl(var(--neural-green))]">Edge Drivers</span>
                     </div>
-                    <div className="space-y-1.5">
+                    <div className="space-y-2">
                       {data.edgeReasons.map((r, i) => (
                         <div key={i} className="flex gap-2 text-[11px] text-muted-foreground leading-relaxed">
                           <Star className="w-3 h-3 text-[hsl(var(--neural-green))] shrink-0 mt-0.5" />
@@ -553,15 +560,13 @@ function EdgeDetailCard({ data, isActive, isExpanded, onToggle, rank }: {
                       ))}
                     </div>
                   </div>
-
-                  {/* Risks */}
                   <div>
                     <div className="flex items-center gap-1.5 mb-2">
                       <AlertTriangle className="w-3.5 h-3.5 text-[hsl(var(--neural-orange))]" />
-                      <span className="text-[10px] font-bold uppercase tracking-wider text-[hsl(var(--neural-orange))]">Edge Risks & Weaknesses</span>
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-[hsl(var(--neural-orange))]">Risks & Constraints</span>
                     </div>
                     {data.edgeRisks.length > 0 ? (
-                      <div className="space-y-1.5">
+                      <div className="space-y-2">
                         {data.edgeRisks.map((r, i) => (
                           <div key={i} className="flex gap-2 text-[11px] text-muted-foreground leading-relaxed">
                             <Ban className="w-3 h-3 text-[hsl(var(--neural-orange))] shrink-0 mt-0.5" />
@@ -575,18 +580,20 @@ function EdgeDetailCard({ data, isActive, isExpanded, onToggle, rank }: {
                   </div>
                 </div>
 
-                {/* Friction Breakdown */}
+                {/* Governance Parameters */}
                 <div className="p-3 rounded-lg bg-muted/5 border border-border/10">
                   <div className="flex items-center gap-1.5 mb-2">
                     <Droplets className="w-3.5 h-3.5 text-muted-foreground" />
-                    <span className="text-[10px] font-bold uppercase tracking-wider">Friction Analysis</span>
+                    <span className="text-[10px] font-bold uppercase tracking-wider">Governance Risk Parameters</span>
                   </div>
-                  <div className="grid grid-cols-5 gap-3">
+                  <div className="grid grid-cols-7 gap-2">
                     <MetricCell label="Avg Spread" value={`${data.avgSpread.toFixed(2)}p`} />
                     <MetricCell label="Avg Slippage" value={`${data.avgSlippage.toFixed(2)}p`} />
-                    <MetricCell label="Total Friction" value={`${data.frictionCost.toFixed(2)}p`} warn={data.frictionCost > 1.5} />
+                    <MetricCell label="Total Friction" value={`${data.frictionCost.toFixed(2)}p`} warn={data.frictionCost > 1.0} />
+                    <MetricCell label="Post-Friction" value={`${data.postFrictionExp >= 0 ? '+' : ''}${data.postFrictionExp.toFixed(2)}p`} positive={data.postFrictionExp >= 0.5} warn={data.postFrictionExp < 0} />
                     <MetricCell label="Exec Quality" value={`${data.avgQuality.toFixed(0)}/100`} positive={data.avgQuality >= 70} warn={data.avgQuality < 55} />
-                    <MetricCell label="Friction % of Edge" value={data.expectancy > 0 ? `${((data.frictionCost / data.expectancy) * 100).toFixed(0)}%` : '∞'} warn={data.expectancy > 0 && data.frictionCost / data.expectancy > 0.5} />
+                    <MetricCell label="Std Dev" value={`${data.stddev.toFixed(2)}p`} />
+                    <MetricCell label="Trades" value={data.totalTrades.toLocaleString()} />
                   </div>
                 </div>
 
@@ -594,56 +601,26 @@ function EdgeDetailCard({ data, isActive, isExpanded, onToggle, rank }: {
                 <div>
                   <div className="flex items-center gap-1.5 mb-2">
                     <Activity className="w-3.5 h-3.5 text-muted-foreground" />
-                    <span className="text-[10px] font-bold uppercase tracking-wider">Session-Level Edge</span>
-                    <span className="text-[9px] text-muted-foreground">— Where the edge is strongest and weakest</span>
+                    <span className="text-[10px] font-bold uppercase tracking-wider">Session Edge Map</span>
                   </div>
                   <div className="space-y-1">
                     {data.sessions.map((s) => {
                       const Icon = SESSION_ICONS[s.session] || Clock;
                       const label = SESSION_LABELS[s.session] || s.session;
-                      const isGood = s.expectancy >= data.expectancy;
                       const isBad = s.expectancy < 0;
+                      const isPrime = s.expectancy >= 2.0;
                       return (
-                        <div key={s.session} className={cn(
-                          'flex items-center gap-3 p-2.5 rounded-lg',
-                          isBad ? 'bg-[hsl(var(--neural-red))]/5' : isGood ? 'bg-[hsl(var(--neural-green))]/3' : 'bg-muted/5'
-                        )}>
-                          <Icon className={cn('w-3.5 h-3.5 shrink-0', isBad ? 'text-[hsl(var(--neural-red))]' : isGood ? 'text-[hsl(var(--neural-green))]' : 'text-muted-foreground')} />
+                        <div key={s.session} className={cn('flex items-center gap-3 p-2 rounded-lg', isBad ? 'bg-[hsl(var(--neural-red))]/5' : isPrime ? 'bg-[hsl(var(--neural-green))]/5' : 'bg-muted/5')}>
+                          <Icon className={cn('w-3.5 h-3.5 shrink-0', isBad ? 'text-[hsl(var(--neural-red))]' : isPrime ? 'text-[hsl(var(--neural-green))]' : 'text-muted-foreground')} />
                           <span className="w-24 text-xs font-display font-bold shrink-0">{label}</span>
-                          <div className="flex-1 grid grid-cols-5 gap-2">
-                            <div>
-                              <p className="text-[8px] text-muted-foreground">Expectancy</p>
-                              <p className={cn('text-xs font-mono font-bold', s.expectancy >= 0 ? 'text-[hsl(var(--neural-green))]' : 'text-[hsl(var(--neural-red))]')}>
-                                {s.expectancy >= 0 ? '+' : ''}{s.expectancy.toFixed(2)}p
-                              </p>
-                            </div>
-                            <div>
-                              <p className="text-[8px] text-muted-foreground">Win Rate</p>
-                              <p className="text-xs font-mono">{s.winRate.toFixed(1)}%</p>
-                            </div>
-                            <div>
-                              <p className="text-[8px] text-muted-foreground">Trades</p>
-                              <p className="text-xs font-mono">{s.trades.toLocaleString()}</p>
-                            </div>
-                            <div>
-                              <p className="text-[8px] text-muted-foreground">Spread</p>
-                              <p className="text-xs font-mono">{s.avgSpread.toFixed(2)}</p>
-                            </div>
-                            <div>
-                              <p className="text-[8px] text-muted-foreground">Quality</p>
-                              <p className={cn('text-xs font-mono', s.avgQuality >= 70 ? 'text-[hsl(var(--neural-green))]' : s.avgQuality < 55 ? 'text-[hsl(var(--neural-red))]' : '')}>
-                                {s.avgQuality.toFixed(0)}
-                              </p>
-                            </div>
+                          <div className="flex-1 grid grid-cols-4 gap-2">
+                            <div><p className="text-[8px] text-muted-foreground">Exp</p><p className={cn('text-xs font-mono font-bold', s.expectancy >= 0 ? 'text-[hsl(var(--neural-green))]' : 'text-[hsl(var(--neural-red))]')}>{s.expectancy >= 0 ? '+' : ''}{s.expectancy.toFixed(2)}p</p></div>
+                            <div><p className="text-[8px] text-muted-foreground">WR</p><p className="text-xs font-mono">{s.winRate.toFixed(1)}%</p></div>
+                            <div><p className="text-[8px] text-muted-foreground">Trades</p><p className="text-xs font-mono">{s.trades.toLocaleString()}</p></div>
+                            <div><p className="text-[8px] text-muted-foreground">Quality</p><p className={cn('text-xs font-mono', s.avgQuality >= 70 ? 'text-[hsl(var(--neural-green))]' : s.avgQuality < 55 ? 'text-[hsl(var(--neural-red))]' : '')}>{s.avgQuality.toFixed(0)}</p></div>
                           </div>
-                          {/* Session verdict */}
-                          <Badge variant="outline" className={cn('text-[8px] shrink-0',
-                            isBad ? 'border-[hsl(var(--neural-red))]/30 text-[hsl(var(--neural-red))]'
-                            : s.expectancy >= 2.0 ? 'border-[hsl(var(--neural-green))]/30 text-[hsl(var(--neural-green))]'
-                            : s.expectancy >= 1.0 ? 'border-[hsl(var(--neural-blue))]/30 text-[hsl(var(--neural-blue))]'
-                            : 'border-border/30 text-muted-foreground'
-                          )}>
-                            {isBad ? 'AVOID' : s.expectancy >= 2.0 ? 'PRIME' : s.expectancy >= 1.5 ? 'STRONG' : s.expectancy >= 1.0 ? 'OK' : 'WEAK'}
+                          <Badge variant="outline" className={cn('text-[8px] shrink-0', isBad ? 'border-[hsl(var(--neural-red))]/30 text-[hsl(var(--neural-red))]' : isPrime ? 'border-[hsl(var(--neural-green))]/30 text-[hsl(var(--neural-green))]' : s.expectancy >= 1.5 ? 'border-[hsl(var(--neural-blue))]/30 text-[hsl(var(--neural-blue))]' : 'border-border/30 text-muted-foreground')}>
+                            {isBad ? 'AVOID' : isPrime ? 'PRIME' : s.expectancy >= 1.5 ? 'STRONG' : s.expectancy >= 1.0 ? 'OK' : 'WEAK'}
                           </Badge>
                         </div>
                       );
@@ -651,24 +628,19 @@ function EdgeDetailCard({ data, isActive, isExpanded, onToggle, rank }: {
                   </div>
                 </div>
 
-                {/* Live performance if available */}
-                {isActive && data.liveTrades > 0 && (
+                {/* Live if active */}
+                {isLive && data.liveTrades > 0 && (
                   <div className="p-3 rounded-lg bg-primary/5 border border-primary/10">
                     <div className="flex items-center gap-1.5 mb-2">
-                      <Gauge className="w-3.5 h-3.5 text-primary" />
-                      <span className="text-[10px] font-bold uppercase tracking-wider text-primary">Live Execution Reality</span>
+                      <Zap className="w-3.5 h-3.5 text-primary" />
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-primary">Live Reality</span>
                     </div>
                     <div className="grid grid-cols-3 gap-3">
                       <MetricCell label="Live Trades" value={data.liveTrades.toString()} />
-                      <MetricCell label="Live Win Rate" value={`${data.liveWinRate.toFixed(0)}%`} positive={data.liveWinRate >= 55} warn={data.liveWinRate < 45} />
-                      <MetricCell label="Live Expectancy" value={`${data.liveExpectancy >= 0 ? '+' : ''}${data.liveExpectancy.toFixed(2)}p`} positive={data.liveExpectancy > 0} warn={data.liveExpectancy < 0} />
+                      <MetricCell label="Live WR" value={`${data.liveWinRate.toFixed(0)}%`} positive={data.liveWinRate >= 55} warn={data.liveWinRate < 45} />
+                      <MetricCell label="Live Exp" value={`${data.liveExpectancy >= 0 ? '+' : ''}${data.liveExpectancy.toFixed(2)}p`} positive={data.liveExpectancy > 0} warn={data.liveExpectancy < 0} />
                     </div>
-                    {data.liveTrades < 20 && (
-                      <div className="flex items-center gap-1.5 mt-2 text-[9px] text-[hsl(var(--neural-orange))]">
-                        <Info className="w-3 h-3" />
-                        Small sample — need {Math.max(0, 20 - data.liveTrades)} more trades for statistical confidence.
-                      </div>
-                    )}
+                    {data.liveTrades < 20 && <p className="text-[9px] text-[hsl(var(--neural-orange))] mt-2 flex items-center gap-1"><Info className="w-3 h-3" />Need {20 - data.liveTrades} more trades for confidence.</p>}
                   </div>
                 )}
               </div>
@@ -680,19 +652,24 @@ function EdgeDetailCard({ data, isActive, isExpanded, onToggle, rank }: {
   );
 }
 
-// ─── Metric Cell ───
+// ─── Helpers ───
+
+function MiniMetric({ label, value, good, bad, invert }: { label: string; value: string; good?: boolean; bad?: boolean; invert?: boolean }) {
+  const isGood = invert ? bad : good;
+  const isBad = invert ? good : bad;
+  return (
+    <div>
+      <p className="text-[8px] text-muted-foreground">{label}</p>
+      <p className={cn('text-xs font-mono font-bold', isBad ? 'text-[hsl(var(--neural-red))]' : isGood ? 'text-[hsl(var(--neural-green))]' : 'text-foreground')}>{value}</p>
+    </div>
+  );
+}
 
 function MetricCell({ label, value, positive, warn }: { label: string; value: string; positive?: boolean; warn?: boolean }) {
   return (
     <div>
       <p className="text-[8px] text-muted-foreground">{label}</p>
-      <p className={cn('text-sm font-mono font-bold',
-        warn ? 'text-[hsl(var(--neural-red))]'
-        : positive ? 'text-[hsl(var(--neural-green))]'
-        : 'text-foreground'
-      )}>
-        {value}
-      </p>
+      <p className={cn('text-sm font-mono font-bold', warn ? 'text-[hsl(var(--neural-red))]' : positive ? 'text-[hsl(var(--neural-green))]' : 'text-foreground')}>{value}</p>
     </div>
   );
 }
