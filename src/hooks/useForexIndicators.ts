@@ -8,19 +8,25 @@ export function useForexIndicators() {
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState({ done: 0, total: 0 });
 
-  const fetchIndicator = useCallback(async (instrument: string, timeframe: string): Promise<IndicatorSnapshot | null> => {
+  const fetchIndicator = useCallback(async (
+    instrument: string,
+    timeframe: string,
+    backtestFrom?: string,
+    backtestTo?: string,
+  ): Promise<IndicatorSnapshot | null> => {
     try {
       const projectUrl = import.meta.env.VITE_SUPABASE_URL;
       const anonKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
-      const res = await fetch(
-        `${projectUrl}/functions/v1/forex-indicators?instrument=${instrument}&timeframe=${timeframe}`,
-        {
-          headers: {
-            'Authorization': `Bearer ${anonKey}`,
-            'apikey': anonKey,
-          },
-        }
-      );
+      let url = `${projectUrl}/functions/v1/forex-indicators?instrument=${instrument}&timeframe=${timeframe}`;
+      if (backtestFrom) url += `&from=${encodeURIComponent(backtestFrom)}`;
+      if (backtestTo) url += `&to=${encodeURIComponent(backtestTo)}`;
+
+      const res = await fetch(url, {
+        headers: {
+          'Authorization': `Bearer ${anonKey}`,
+          'apikey': anonKey,
+        },
+      });
 
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
@@ -34,7 +40,12 @@ export function useForexIndicators() {
     }
   }, []);
 
-  const fetchBatch = useCallback(async (pairs: string[], timeframes: string[]) => {
+  const fetchBatch = useCallback(async (
+    pairs: string[],
+    timeframes: string[],
+    backtestFrom?: string,
+    backtestTo?: string,
+  ) => {
     setLoading(true);
     setError(null);
     const total = pairs.length * timeframes.length;
@@ -43,7 +54,6 @@ export function useForexIndicators() {
     const results: Record<string, IndicatorSnapshot> = {};
     let done = 0;
 
-    // Fetch in batches of 3 to avoid overwhelming OANDA
     const tasks: { pair: string; tf: string }[] = [];
     for (const pair of pairs) {
       for (const tf of timeframes) {
@@ -56,7 +66,7 @@ export function useForexIndicators() {
       const batch = tasks.slice(i, i + batchSize);
       const batchResults = await Promise.all(
         batch.map(async ({ pair, tf }) => {
-          const snap = await fetchIndicator(pair, tf);
+          const snap = await fetchIndicator(pair, tf, backtestFrom, backtestTo);
           done++;
           setProgress({ done, total });
           return { key: `${pair}_${tf}`, snap };

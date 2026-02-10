@@ -36,8 +36,10 @@ export interface ConsensusResult {
 export interface IndicatorSnapshot {
   instrument: string;
   timeframe: string;
+  mode?: 'live' | 'backtest';
   lastPrice: number;
   lastTime: string;
+  firstTime?: string;
   candleCount: number;
   indicators: IndicatorSet;
   consensus: ConsensusResult;

@@ -3,7 +3,7 @@
 
 import { useState, useMemo, useCallback } from 'react';
 import { motion } from 'framer-motion';
-import { Activity, TrendingUp, TrendingDown, Minus, RefreshCw, BarChart3, Radar, Layers } from 'lucide-react';
+import { Activity, TrendingUp, TrendingDown, Minus, RefreshCw, BarChart3, Radar, Layers, History, Zap } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -11,6 +11,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Progress } from '@/components/ui/progress';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Input } from '@/components/ui/input';
+import { Switch } from '@/components/ui/switch';
+import { Label } from '@/components/ui/label';
 import { useForexIndicators } from '@/hooks/useForexIndicators';
 import {
   ALL_FOREX_PAIRS,
@@ -85,20 +88,31 @@ function computeAgentScore(snap: IndicatorSnapshot, agentId: string): { score: n
 export const IndicatorComparisonDashboard = () => {
   const { snapshots, loading, error, progress, fetchBatch } = useForexIndicators();
   const [selectedTf, setSelectedTf] = useState<ScalpingTimeframe>('5m');
-  const [selectedPairs, setSelectedPairs] = useState<string[]>(ALL_FOREX_PAIRS.slice(0, 8)); // Start with majors
+  const [selectedPairs, setSelectedPairs] = useState<string[]>(ALL_FOREX_PAIRS.slice(0, 8));
   const [subTab, setSubTab] = useState('heatmap');
   const [started, setStarted] = useState(false);
 
+  // Backtest mode state
+  const [backtestMode, setBacktestMode] = useState(false);
+  const defaultFrom = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 16);
+  const defaultTo = new Date().toISOString().slice(0, 16);
+  const [backtestFrom, setBacktestFrom] = useState(defaultFrom);
+  const [backtestTo, setBacktestTo] = useState(defaultTo);
+
   const handleScan = useCallback(async () => {
     setStarted(true);
-    await fetchBatch(selectedPairs, [...SCALPING_TIMEFRAMES]);
-  }, [selectedPairs, fetchBatch]);
+    const from = backtestMode ? new Date(backtestFrom).toISOString() : undefined;
+    const to = backtestMode ? new Date(backtestTo).toISOString() : undefined;
+    await fetchBatch(selectedPairs, [...SCALPING_TIMEFRAMES], from, to);
+  }, [selectedPairs, fetchBatch, backtestMode, backtestFrom, backtestTo]);
 
   const handleScanAll = useCallback(async () => {
     setStarted(true);
     setSelectedPairs(ALL_FOREX_PAIRS);
-    await fetchBatch(ALL_FOREX_PAIRS, [...SCALPING_TIMEFRAMES]);
-  }, [fetchBatch]);
+    const from = backtestMode ? new Date(backtestFrom).toISOString() : undefined;
+    const to = backtestMode ? new Date(backtestTo).toISOString() : undefined;
+    await fetchBatch(ALL_FOREX_PAIRS, [...SCALPING_TIMEFRAMES], from, to);
+  }, [fetchBatch, backtestMode, backtestFrom, backtestTo]);
 
   // Get snapshots for current timeframe
   const currentSnapshots = useMemo(() => {
@@ -143,15 +157,54 @@ export const IndicatorComparisonDashboard = () => {
           <Radar className="w-12 h-12 text-primary/50" />
           <h3 className="font-display font-bold text-lg">Live Indicator Scanner</h3>
           <p className="text-sm text-muted-foreground text-center max-w-md">
-            Compute 16 technical indicators across all pairs × 3 timeframes from live OANDA candle data.
-            Compare agents, identify consensus, and build the optimal ensemble.
+            Compute 16 technical indicators across all pairs × 3 timeframes from {backtestMode ? 'historical' : 'live'} OANDA candle data.
           </p>
+
+          {/* Backtest toggle */}
+          <div className="flex items-center gap-3 p-3 rounded-lg border border-border/30 bg-muted/10">
+            <Zap className="w-4 h-4 text-primary" />
+            <Label htmlFor="backtest-toggle" className="text-xs font-medium cursor-pointer">Live</Label>
+            <Switch
+              id="backtest-toggle"
+              checked={backtestMode}
+              onCheckedChange={setBacktestMode}
+            />
+            <Label htmlFor="backtest-toggle" className="text-xs font-medium cursor-pointer flex items-center gap-1">
+              <History className="w-3 h-3" />Backtest
+            </Label>
+          </div>
+
+          {backtestMode && (
+            <div className="flex flex-col sm:flex-row items-center gap-2">
+              <div className="flex flex-col gap-1">
+                <Label className="text-[10px] text-muted-foreground">From</Label>
+                <Input
+                  type="datetime-local"
+                  value={backtestFrom}
+                  onChange={(e) => setBacktestFrom(e.target.value)}
+                  className="h-8 text-xs w-48"
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <Label className="text-[10px] text-muted-foreground">To</Label>
+                <Input
+                  type="datetime-local"
+                  value={backtestTo}
+                  onChange={(e) => setBacktestTo(e.target.value)}
+                  className="h-8 text-xs w-48"
+                />
+              </div>
+            </div>
+          )}
+
           <div className="flex gap-2">
             <Button onClick={handleScan} className="gap-2">
-              <Activity className="w-4 h-4" />Scan Majors (8 pairs)
+              <Activity className="w-4 h-4" />
+              {backtestMode ? 'Backtest' : 'Scan'} Majors (8 pairs)
             </Button>
             <Button variant="outline" onClick={handleScanAll} className="gap-2">
-              <Layers className="w-4 h-4" />Scan All ({ALL_FOREX_PAIRS.length} pairs)
+              <Layers className="w-4 h-4" />
+              {backtestMode ? 'Backtest' : 'Scan'} All ({ALL_FOREX_PAIRS.length} pairs)
             </Button>
           </div>
         </CardContent>
@@ -185,10 +238,18 @@ export const IndicatorComparisonDashboard = () => {
         <div className="flex items-center justify-between flex-wrap gap-2">
           <div className="flex items-center gap-2">
             <Radar className="w-5 h-5 text-primary" />
-            <h2 className="font-display text-lg font-bold">Live Indicator Comparison</h2>
+            <h2 className="font-display text-lg font-bold">
+              {backtestMode ? 'Backtest' : 'Live'} Indicator Comparison
+            </h2>
             <Badge variant="outline" className="text-[9px]">
               {Object.keys(snapshots).length} snapshots · 16 indicators
             </Badge>
+            {backtestMode && (
+              <Badge variant="secondary" className="text-[9px] gap-1">
+                <History className="w-3 h-3" />
+                {new Date(backtestFrom).toLocaleDateString()} → {new Date(backtestTo).toLocaleDateString()}
+              </Badge>
+            )}
           </div>
           <div className="flex items-center gap-2">
             <Select value={selectedTf} onValueChange={(v) => setSelectedTf(v as ScalpingTimeframe)}>
