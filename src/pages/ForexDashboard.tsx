@@ -4,7 +4,7 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
 import { LongOnlyFilterProvider } from '@/contexts/LongOnlyFilterContext';
 import { motion } from 'framer-motion';
-import { Globe, TrendingUp, Crosshair, BarChart3, FlaskConical, ShieldCheck, SplitSquareHorizontal, PieChart, Shield, HeartPulse, Radar, Filter, Rocket, ShieldAlert, Brain, GitBranch, UserX, Wrench, Target, Beaker, Crown, Users } from 'lucide-react';
+import { Globe, TrendingUp, Crosshair, BarChart3, FlaskConical, ShieldCheck, SplitSquareHorizontal, PieChart, Shield, HeartPulse, Radar, Filter, Rocket, ShieldAlert, Brain, GitBranch, UserX, Wrench, Target, Beaker, Crown, Users, Zap } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { DashboardLayout } from '@/components/dashboard/DashboardLayout';
 import { ForexPerformanceOverview } from '@/components/forex/ForexPerformanceOverview';
@@ -48,6 +48,7 @@ import { FocusPairsEdgeDashboard } from '@/components/forex/FocusPairsEdgeDashbo
 import { EdgeGovernanceSimulatorDashboard } from '@/components/forex/EdgeGovernanceSimulator';
 import { AgentLiveOptimizationDashboard } from '@/components/forex/AgentLiveOptimizationDashboard';
 import { CoalitionsDashboard } from '@/components/forex/CoalitionsDashboard';
+import { ExplosiveGrowthDashboard } from '@/components/forex/ExplosiveGrowthDashboard';
 import { LazyTabContent } from '@/components/forex/LazyTabContent';
 import {
   generateForexTrades,
@@ -189,6 +190,7 @@ const ForexDashboard = () => {
             <TabsTrigger value="agent-live-opt" className="text-xs gap-1.5"><Crown className="w-3.5 h-3.5" />Agent Live Opt</TabsTrigger>
             <TabsTrigger value="edge-sim" className="text-xs gap-1.5"><Beaker className="w-3.5 h-3.5" />Edge Simulator</TabsTrigger>
             <TabsTrigger value="coalitions" className="text-xs gap-1.5"><Users className="w-3.5 h-3.5" />Coalitions</TabsTrigger>
+            <TabsTrigger value="explosive" className="text-xs gap-1.5"><Zap className="w-3.5 h-3.5" />Explosive Growth</TabsTrigger>
           </TabsList>
 
           {/* Focus Pairs — loads immediately */}
@@ -354,6 +356,12 @@ const ForexDashboard = () => {
           <TabsContent value="coalitions" className="space-y-4">
             <LazyTabContent label="Coalitions">
               <CoalitionsDashboard />
+            </LazyTabContent>
+          </TabsContent>
+
+          <TabsContent value="explosive" className="space-y-4">
+            <LazyTabContent label="Explosive Growth">
+              <ExplosiveGrowthDashboard />
             </LazyTabContent>
           </TabsContent>
         </Tabs>
