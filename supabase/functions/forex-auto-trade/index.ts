@@ -759,7 +759,10 @@ async function oandaRequest(
   retries = 2
 ): Promise<Record<string, unknown>> {
   const apiToken = Deno.env.get("OANDA_API_TOKEN");
-  const accountId = Deno.env.get("OANDA_ACCOUNT_ID");
+  const oandaEnv = (Deno.env.get("OANDA_ENV") || "practice");
+  const accountId = oandaEnv === "live"
+    ? (Deno.env.get("OANDA_LIVE_ACCOUNT_ID") || Deno.env.get("OANDA_ACCOUNT_ID"))
+    : Deno.env.get("OANDA_ACCOUNT_ID");
   if (!apiToken || !accountId) throw new Error("OANDA credentials not configured");
 
   const url = `${oandaHost}${path.replace("{accountId}", accountId)}`;
