@@ -22,26 +22,21 @@ export function useUsdCadLearning() {
     setError(null);
 
     try {
-      let allOrders: any[] = [];
-      let offset = 0;
-      const pageSize = 1000;
-      let hasMore = true;
+      // 21-day lookback to prevent database statement timeouts
+      const since = new Date(Date.now() - 21 * 24 * 60 * 60 * 1000).toISOString();
 
-      while (hasMore) {
-        const { data, error: err } = await supabase
-          .from('oanda_orders')
-          .select('*')
-          .eq('user_id', user.id)
-          .ilike('currency_pair', '%USD_CAD%')
-          .in('status', ['filled', 'closed', 'shadow_eval'])
-          .order('created_at', { ascending: true })
-          .range(offset, offset + pageSize - 1);
+      const { data, error: err } = await supabase
+        .from('oanda_orders')
+        .select('*')
+        .eq('user_id', user.id)
+        .ilike('currency_pair', '%USD_CAD%')
+        .in('status', ['filled', 'closed', 'shadow_eval'])
+        .gte('created_at', since)
+        .order('created_at', { ascending: true })
+        .limit(5000);
 
-        if (err) { setError(err.message); break; }
-        allOrders = allOrders.concat(data || []);
-        hasMore = (data?.length ?? 0) === pageSize;
-        offset += pageSize;
-      }
+      if (err) { setError(err.message); setLoading(false); return; }
+      const allOrders = data || [];
 
       const decisionEvents = buildDecisionEvents(allOrders);
       setEvents(decisionEvents);
