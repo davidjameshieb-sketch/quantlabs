@@ -1,5 +1,6 @@
 // Edge Discovery & Failure Mapping Dashboard
 // Full analytics module for conditional edge identification
+// Uses canonical agentStateResolver for effective tier display
 
 import { useState } from 'react';
 import { motion } from 'framer-motion';
@@ -18,10 +19,13 @@ import { EdgeDecayTimeline } from './EdgeDecayTimeline';
 import { EdgeRngComparison } from './EdgeRngComparison';
 import { EdgeGovernanceQuality } from './EdgeGovernanceQuality';
 import { EdgeOutputSummary } from './EdgeOutputSummary';
+import { getAllAgentStates } from '@/lib/agents/agentStateResolver';
+import { LegacyStateWarningBanner } from '@/components/forex/AgentStateBadges';
 
 export const EdgeDiscoveryDashboard = () => {
   const { result, trades, loading, error } = useEdgeDiscovery();
   const [activeTab, setActiveTab] = useState('heatmap');
+  const hasLegacyStates = getAllAgentStates().some(s => s.effectiveTier === 'B-Legacy');
 
   if (loading) {
     return (
@@ -60,6 +64,9 @@ export const EdgeDiscoveryDashboard = () => {
 
   return (
     <div className="space-y-4">
+      {/* Legacy State Warning */}
+      {hasLegacyStates && <LegacyStateWarningBanner />}
+
       {/* Header */}
       <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }}>
         <div className="flex items-center justify-between">

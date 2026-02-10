@@ -1,4 +1,5 @@
 // Edge Extraction Dashboard — 3-column comparison + Rules Editor + OOS Validation
+// Uses canonical agentStateResolver for effective tier display
 import { useState, useMemo, useCallback } from 'react';
 import { motion } from 'framer-motion';
 import { Radar, Filter, TrendingUp, AlertTriangle, Shield, Save, Trash2, BarChart3, FlaskConical, ArrowRightLeft } from 'lucide-react';
@@ -37,11 +38,14 @@ import { MetricsComparisonPanel } from './MetricsComparisonPanel';
 import { EnvironmentTable } from './EnvironmentTable';
 import { RemovalReasonsChart } from './RemovalReasonsChart';
 import { OOSValidationPanel } from './OOSValidationPanel';
+import { getAllAgentStates } from '@/lib/agents/agentStateResolver';
+import { LegacyStateWarningBanner } from '@/components/forex/AgentStateBadges';
 
 export const EdgeExtractionDashboard = () => {
   const { trades, loading, error } = useEdgeDiscovery();
   const [rules, setRules] = useState<FilterRuleSet>(createRecommendedV1());
   const [activeTab, setActiveTab] = useState('comparison');
+  const hasLegacyStates = getAllAgentStates().some(s => s.effectiveTier === 'B-Legacy');
 
   // Simulation results
   const simResult = useMemo(() => {
@@ -123,6 +127,9 @@ export const EdgeExtractionDashboard = () => {
 
   return (
     <div className="space-y-4">
+      {/* Legacy State Warning */}
+      {hasLegacyStates && <LegacyStateWarningBanner />}
+
       {/* Header */}
       <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }}>
         <div className="flex items-center justify-between flex-wrap gap-2">

@@ -2,6 +2,7 @@
 // Ensemble Health & Agent Contribution Dashboard
 // Cards: Ensemble Health (rolling metrics) + Agent Contribution
 // CSV export for envKey tables
+// Uses canonical agentStateResolver for effective tier display
 // ═══════════════════════════════════════════════════════════════
 
 import { useState, useEffect, useMemo, useCallback } from 'react';
@@ -30,6 +31,8 @@ import {
   AgentContribution,
   RollingMetrics,
 } from '@/lib/agents/ensembleHealthEngine';
+import { getAllAgentStates, type AgentEffectiveState } from '@/lib/agents/agentStateResolver';
+import { EffectiveTierBadge, PostRescueMetricsNote, LegacyStateWarningBanner } from './AgentStateBadges';
 
 // ─── Helpers ─────────────────────────────────────────────────
 
@@ -126,6 +129,18 @@ export const EnsembleHealthDashboard = () => {
   const harmfulAgents = useMemo(() => contributions.filter(c => c.isFlaggedHarmful), [contributions]);
   const topContributors = useMemo(() => contributions.filter(c => c.deltaExpectancy > 0).slice(0, 5), [contributions]);
 
+  const agentStateMap = useMemo(() => {
+    const map = new Map<string, AgentEffectiveState>();
+    for (const s of getAllAgentStates()) map.set(s.agentId, s);
+    return map;
+  }, [contributions]);
+  const hasLegacyMix = useMemo(() => {
+    return contributions.some(c => {
+      const es = agentStateMap.get(c.agentId);
+      return es && es.effectiveTier === 'B-Legacy';
+    });
+  }, [contributions, agentStateMap]);
+
   if (loading) {
     return (
       <div className="p-6 rounded-xl bg-card/50 border border-border/30 text-center">
@@ -156,6 +171,9 @@ export const EnsembleHealthDashboard = () => {
           </Button>
         </div>
       </div>
+
+      {/* Legacy State Warning */}
+      {hasLegacyMix && <LegacyStateWarningBanner />}
 
       {/* Rollback Alert */}
       {health?.rollbackActive && (
@@ -272,8 +290,16 @@ export const EnsembleHealthDashboard = () => {
                 <>
                   <tr key={c.agentId} className="border-b border-border/10 hover:bg-muted/5">
                     <td className="py-1.5 px-2">
-                      <span className="mr-1">{agentIcon(c.agentId)}</span>
-                      <span className="font-medium">{agentName(c.agentId)}</span>
+                      <div className="flex items-center gap-1.5">
+                        <span>{agentIcon(c.agentId)}</span>
+                        <span className="font-medium">{agentName(c.agentId)}</span>
+                        {agentStateMap.get(c.agentId) && (
+                          <EffectiveTierBadge tier={agentStateMap.get(c.agentId)!.effectiveTier} />
+                        )}
+                        {agentStateMap.get(c.agentId)?.rescued && (
+                          <PostRescueMetricsNote state={agentStateMap.get(c.agentId)!} />
+                        )}
+                      </div>
                     </td>
                     <td className={cn('text-right py-1.5 px-2 font-mono font-bold', c.deltaExpectancy >= 0 ? 'text-neural-green' : 'text-neural-red')}>
                       {c.deltaExpectancy >= 0 ? '+' : ''}{c.deltaExpectancy}p

@@ -1,6 +1,9 @@
 // Agent Weighting Table — shows which agents get capital priority and why
+// Uses canonical agentStateResolver for effective tier display
 import { useMemo } from 'react';
 import { getAgentWeightingTable, type AgentCapitalPriority } from '@/lib/forex/metaOrchestrator';
+import { getAllAgentStates, type AgentEffectiveState } from '@/lib/agents/agentStateResolver';
+import { EffectiveTierBadge } from './AgentStateBadges';
 import { cn } from '@/lib/utils';
 
 const priorityColors: Record<AgentCapitalPriority, string> = {
@@ -19,6 +22,11 @@ const priorityLabels: Record<AgentCapitalPriority, string> = {
 
 export const AgentWeightingTable = () => {
   const agents = useMemo(() => getAgentWeightingTable(), []);
+  const agentStateMap = useMemo(() => {
+    const map = new Map<string, AgentEffectiveState>();
+    for (const s of getAllAgentStates()) map.set(s.agentId, s);
+    return map;
+  }, []);
 
   const grouped = useMemo(() => {
     const order: AgentCapitalPriority[] = ['HIGH', 'STANDARD', 'REDUCED', 'BLOCKED'];
@@ -68,6 +76,9 @@ export const AgentWeightingTable = () => {
                     <div className="flex items-center gap-1.5">
                       <span className="text-base">{agent.icon}</span>
                       <span className="font-medium text-foreground">{agent.name}</span>
+                      {agentStateMap.get(agent.agentId) && (
+                        <EffectiveTierBadge tier={agentStateMap.get(agent.agentId)!.effectiveTier} />
+                      )}
                     </div>
                   </td>
                   <td className="px-3 py-2 text-muted-foreground">{agent.model}</td>
