@@ -824,25 +824,25 @@ async function runLivePreflight(
 ): Promise<PreflightResult> {
   const checks: Array<{ name: string; pass: boolean; detail: string }> = [];
 
-  // B1 — Long-Only Leak Test: check last 500 orders for any executed shorts
+  // B1 — Long-Only Leak Test: only check orders AFTER the long-only code was deployed
+  const LONG_ONLY_CUTOVER = "2026-02-10T04:00:00Z";
   const { data: recentExecOrders } = await supabase
     .from("oanda_orders")
     .select("direction, status")
     .eq("user_id", USER_ID)
     .in("status", ["filled", "closed"])
-    .order("created_at", { ascending: false })
-    .limit(500);
+    .gte("created_at", LONG_ONLY_CUTOVER)
+    .eq("direction", "short")
+    .limit(10);
 
-  const executedShorts = (recentExecOrders || []).filter(
-    (o: Record<string, unknown>) => o.direction === "short"
-  ).length;
+  const executedShorts = (recentExecOrders || []).length;
 
   checks.push({
     name: "Long-Only Leak Test",
     pass: executedShorts === 0,
     detail: executedShorts === 0
-      ? "No executed shorts in last 500 orders"
-      : `FAIL: ${executedShorts} executed shorts found — abort live`,
+      ? `No executed shorts since cutover (${LONG_ONLY_CUTOVER})`
+      : `FAIL: ${executedShorts} executed shorts found post-cutover — abort live`,
   });
 
   // B2 — Agent eligibility
@@ -906,21 +906,65 @@ Deno.serve(async (req) => {
     );
 
     // ═══════════════════════════════════════════════════════════
-    // PHASE 0: Load Agent Snapshot via RPC
+    // PHASE 0: Load Agent Snapshot (lightweight direct query, avoids RPC timeout)
     // ═══════════════════════════════════════════════════════════
 
-    const { data: agentStats, error: rpcErr } = await supabase.rpc(
-      "get_agent_simulator_stats",
-      { p_user_id: USER_ID }
-    );
+    const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
+    const { data: rawOrders, error: ordersErr } = await supabase
+      .from("oanda_orders")
+      .select("agent_id, direction, entry_price, exit_price, currency_pair, status")
+      .eq("user_id", USER_ID)
+      .in("status", ["filled", "closed"])
+      .not("agent_id", "is", null)
+      .not("entry_price", "is", null)
+      .not("exit_price", "is", null)
+      .gte("created_at", ninetyDaysAgo)
+      .order("created_at", { ascending: false })
+      .limit(5000);
 
-    if (rpcErr) {
-      console.error("[SCALP-TRADE] Agent stats RPC failed:", rpcErr.message);
+    if (ordersErr) {
+      console.error("[SCALP-TRADE] Agent orders query failed:", ordersErr.message);
     }
 
-    const snapshot = resolveAgentSnapshot(agentStats || []);
+    // Aggregate stats per agent from raw orders
+    const agentStatsMap = new Map<string, {
+      agent_id: string; total_trades: number; win_count: number; net_pips: number;
+      gross_profit: number; gross_loss: number;
+      long_count: number; long_wins: number; long_net: number;
+      short_count: number; short_wins: number; short_net: number;
+    }>();
 
-    console.log(`[SCALP-TRADE] Agent Snapshot: ${snapshot.eligibleCount} eligible, ${snapshot.shadowCount} shadow, ${snapshot.disabledCount} disabled`);
+    for (const o of (rawOrders || [])) {
+      const aid = o.agent_id as string;
+      if (!aid || aid === "manual-test" || aid === "unknown" || aid === "backtest-engine") continue;
+
+      if (!agentStatsMap.has(aid)) {
+        agentStatsMap.set(aid, {
+          agent_id: aid, total_trades: 0, win_count: 0, net_pips: 0,
+          gross_profit: 0, gross_loss: 0,
+          long_count: 0, long_wins: 0, long_net: 0,
+          short_count: 0, short_wins: 0, short_net: 0,
+        });
+      }
+      const s = agentStatsMap.get(aid)!;
+      const entry = o.entry_price as number;
+      const exit = o.exit_price as number;
+      const dir = o.direction as string;
+      const pair = o.currency_pair as string;
+      const pipDiv = pair?.includes("JPY") ? 0.01 : 0.0001;
+      const pips = dir === "long" ? (exit - entry) / pipDiv : (entry - exit) / pipDiv;
+
+      s.total_trades++;
+      if (pips > 0) { s.win_count++; s.gross_profit += pips; } else { s.gross_loss += Math.abs(pips); }
+      s.net_pips += pips;
+      if (dir === "long") { s.long_count++; if (pips > 0) s.long_wins++; s.long_net += pips; }
+      else { s.short_count++; if (pips > 0) s.short_wins++; s.short_net += pips; }
+    }
+
+    const agentStats = Array.from(agentStatsMap.values());
+    const snapshot = resolveAgentSnapshot(agentStats);
+
+    console.log(`[SCALP-TRADE] Agent Snapshot: ${snapshot.eligibleCount} eligible, ${snapshot.shadowCount} shadow, ${snapshot.disabledCount} disabled (from ${agentStats.length} agents, ${(rawOrders||[]).length} orders)`);
     for (const a of snapshot.effectiveAgents) {
       console.log(`[SCALP-TRADE]   ${a.agentId}: ${a.effectiveTier} | ${a.deploymentState} | size=${a.sizeMultiplier} | exec=${a.canExecute}`);
     }
