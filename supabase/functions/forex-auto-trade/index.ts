@@ -1023,8 +1023,9 @@ Deno.serve(async (req) => {
 
     const degradation = forceMode ? null : buildDegradationReport(orders);
 
-    const govState: GovernanceState = forceMode ? "NORMAL" : (degradation?.governanceState || "NORMAL");
-    const govConfig = STATE_CONFIGS[govState];
+    // ─── OVERRIDE: Force NORMAL — no halts/throttles during data accumulation phase ───
+    const govState: GovernanceState = "NORMAL";
+    const govConfig = { ...STATE_CONFIGS.NORMAL };
     const pairAllocations = degradation?.pairAllocations || computeAllPairAllocations(orders);
 
     console.log(`[SCALP-TRADE] ═══ GOVERNANCE STATE: ${govState} ═══`);
@@ -1047,7 +1048,7 @@ Deno.serve(async (req) => {
     ];
     const RAMP_INTERVAL_MS = 15 * 60 * 1000; // 15 minutes per stage
 
-    if (govState === "HALT" && !forceMode) {
+    if (false && govState === "HALT" && !forceMode) { // DISABLED: no halts during data accumulation
       // Find the most recent HALT cooldown marker
       const { data: lastHaltOrder } = await supabase
         .from("oanda_orders")
