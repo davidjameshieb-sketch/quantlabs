@@ -415,8 +415,86 @@ Deno.serve(async (req) => {
       }
     }
 
+    // ═══════════════════════════════════════════════════════════
+    // COUNTERFACTUAL MONITOR — Track outcomes for blocked trades
+    // ═══════════════════════════════════════════════════════════
+    let counterfactualUpdated = 0;
+    try {
+      // Find rejected orders with counterfactual entry price but missing exit prices
+      const fifteenMinAgo = new Date(Date.now() - 15 * 60 * 1000).toISOString();
+      const thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+      
+      const { data: cfOrders } = await supabase
+        .from("oanda_orders")
+        .select("id, currency_pair, direction, counterfactual_entry_price, created_at")
+        .in("status", ["rejected", "blocked", "skipped"])
+        .not("counterfactual_entry_price", "is", null)
+        .is("counterfactual_exit_15m", null)
+        .gte("created_at", thirtyMinAgo)
+        .lte("created_at", fifteenMinAgo)
+        .limit(20);
+
+      if (cfOrders && cfOrders.length > 0) {
+        // Group by pair to minimize OANDA API calls
+        const pairSet = new Set(cfOrders.map(o => o.currency_pair));
+        const pairPrices = new Map<string, number>();
+
+        for (const p of pairSet) {
+          try {
+            const priceRes = await oandaRequest(
+              `/v3/accounts/{accountId}/pricing?instruments=${p}`, "GET", undefined, "live"
+            ) as { prices?: Array<{ asks?: Array<{ price: string }>; bids?: Array<{ price: string }> }> };
+            const mid = priceRes.prices?.[0];
+            if (mid) {
+              const ask = parseFloat(mid.asks?.[0]?.price || "0");
+              const bid = parseFloat(mid.bids?.[0]?.price || "0");
+              pairPrices.set(p, (ask + bid) / 2);
+            }
+          } catch { /* skip pair */ }
+        }
+
+        for (const cfOrder of cfOrders) {
+          const currentPrice = pairPrices.get(cfOrder.currency_pair);
+          if (!currentPrice || !cfOrder.counterfactual_entry_price) continue;
+
+          const entryPrice = Number(cfOrder.counterfactual_entry_price);
+          const pipMult = cfOrder.currency_pair.includes("JPY") ? 0.01 : 0.0001;
+          const pnlPips = cfOrder.direction === "long"
+            ? (currentPrice - entryPrice) / pipMult
+            : (entryPrice - currentPrice) / pipMult;
+
+          const ageMs = Date.now() - new Date(cfOrder.created_at).getTime();
+          const ageMin = ageMs / 60000;
+
+          // Determine which time bucket to fill
+          const updates: Record<string, unknown> = {};
+          if (ageMin >= 5 && ageMin < 10) {
+            updates.counterfactual_exit_5m = currentPrice;
+          } else if (ageMin >= 10 && ageMin < 15) {
+            updates.counterfactual_exit_5m = updates.counterfactual_exit_5m || currentPrice;
+            updates.counterfactual_exit_10m = currentPrice;
+          } else if (ageMin >= 15) {
+            updates.counterfactual_exit_15m = currentPrice;
+            updates.counterfactual_pips = pnlPips;
+            updates.counterfactual_result = pnlPips > 0 ? "win" : "loss";
+          }
+
+          if (Object.keys(updates).length > 0) {
+            await supabase
+              .from("oanda_orders")
+              .update(updates)
+              .eq("id", cfOrder.id);
+            counterfactualUpdated++;
+          }
+        }
+        console.log(`[TRADE-MONITOR] Counterfactual: updated ${counterfactualUpdated} blocked trade outcomes`);
+      }
+    } catch (cfErr) {
+      console.warn(`[TRADE-MONITOR] Counterfactual monitor error:`, (cfErr as Error).message);
+    }
+
     const elapsed = Date.now() - startTime;
-    console.log(`[TRADE-MONITOR] Complete: ${openOrders.length} monitored | ${closedCount} closed | ${heldCount} held | ${elapsed}ms`);
+    console.log(`[TRADE-MONITOR] Complete: ${openOrders.length} monitored | ${closedCount} closed | ${heldCount} held | ${counterfactualUpdated} counterfactual | ${elapsed}ms`);
 
     return new Response(
       JSON.stringify({
@@ -424,6 +502,7 @@ Deno.serve(async (req) => {
         monitored: openOrders.length,
         closed: closedCount,
         held: heldCount,
+        counterfactualUpdated,
         results,
         elapsed,
       }),

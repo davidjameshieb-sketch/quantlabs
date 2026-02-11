@@ -1804,7 +1804,26 @@ Deno.serve(async (req) => {
         ? edgeLockReasons.slice(0, 3)
         : [`MTF confirmed (${indicatorConsensusScore})`, `Regime: ${regime}`, `Coalition: ${snapshot.eligibleCount} agents`];
 
-      // Update the order with finalized edge proof
+      // ═══ COUNTERFACTUAL: Capture market price at rejection for what-if analysis ═══
+      let counterfactualEntryPrice: number | null = null;
+      if (edgeLockReasons.length > 0 && !forceMode) {
+        try {
+          const cfPriceRes = await oandaRequest(
+            `/v3/accounts/{accountId}/pricing?instruments=${pair}`, "GET",
+            execConfig.oandaHost
+          ) as { prices?: Array<{ asks?: Array<{ price: string }>; bids?: Array<{ price: string }> }> };
+          const cfPrice = cfPriceRes.prices?.[0];
+          if (cfPrice) {
+            counterfactualEntryPrice = direction === "long"
+              ? parseFloat(cfPrice.asks?.[0]?.price || "0")
+              : parseFloat(cfPrice.bids?.[0]?.price || "0");
+          }
+        } catch (cfErr) {
+          console.warn(`[SCALP-TRADE] Counterfactual price fetch failed: ${(cfErr as Error).message}`);
+        }
+      }
+
+      // Update the order with finalized edge proof + counterfactual price
       await supabase
         .from("oanda_orders")
         .update({
@@ -1818,11 +1837,15 @@ Deno.serve(async (req) => {
           },
           status: edgeLockReasons.length > 0 ? "rejected" : (shouldExecute ? "submitted" : "shadow_eval"),
           error_message: edgeLockReasons.length > 0 ? `EDGE LOCK: ${edgeLockReasons.join(' | ')}` : null,
+          counterfactual_entry_price: counterfactualEntryPrice,
         })
         .eq("id", order.id);
 
       if (edgeLockReasons.length > 0 && !forceMode) {
         console.warn(`[SCALP-TRADE] ═══ HARD EDGE LOCK: ${pair} ${direction} BLOCKED ═══`);
+        if (counterfactualEntryPrice) {
+          console.log(`[SCALP-TRADE]   📊 Counterfactual entry: ${counterfactualEntryPrice} (will track outcome)`);
+        }
         for (const r of edgeLockReasons) console.warn(`[SCALP-TRADE]   🔒 ${r}`);
         results.push({
           pair, direction, status: "edge-locked",

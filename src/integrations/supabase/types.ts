@@ -83,6 +83,12 @@ export type Database = {
           closed_at: string | null
           confidence_score: number | null
           confirmation_tf_used: string | null
+          counterfactual_entry_price: number | null
+          counterfactual_exit_10m: number | null
+          counterfactual_exit_15m: number | null
+          counterfactual_exit_5m: number | null
+          counterfactual_pips: number | null
+          counterfactual_result: string | null
           created_at: string
           currency_pair: string
           direction: string
@@ -122,6 +128,12 @@ export type Database = {
           closed_at?: string | null
           confidence_score?: number | null
           confirmation_tf_used?: string | null
+          counterfactual_entry_price?: number | null
+          counterfactual_exit_10m?: number | null
+          counterfactual_exit_15m?: number | null
+          counterfactual_exit_5m?: number | null
+          counterfactual_pips?: number | null
+          counterfactual_result?: string | null
           created_at?: string
           currency_pair: string
           direction: string
@@ -161,6 +173,12 @@ export type Database = {
           closed_at?: string | null
           confidence_score?: number | null
           confirmation_tf_used?: string | null
+          counterfactual_entry_price?: number | null
+          counterfactual_exit_10m?: number | null
+          counterfactual_exit_15m?: number | null
+          counterfactual_exit_5m?: number | null
+          counterfactual_pips?: number | null
+          counterfactual_result?: string | null
           created_at?: string
           currency_pair?: string
           direction?: string

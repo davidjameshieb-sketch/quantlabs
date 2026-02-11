@@ -21,6 +21,7 @@ import { LiveForexTradesPanel } from '@/components/forex/LiveForexTradesPanel';
 import { LiveExecutionHero } from '@/components/forex/LiveExecutionHero';
 import { GovernanceStateBanner } from '@/components/forex/GovernanceStateBanner';
 import { SystemLearningPanel } from '@/components/forex/SystemLearningPanel';
+import { CounterfactualPanel } from '@/components/forex/CounterfactualPanel';
 
 // Performance components
 import { EquityCurveChart } from '@/components/forex/EquityCurveChart';
@@ -176,6 +177,9 @@ const ForexDashboard = () => {
 
                 {/* Execution Proof — Integrity verification */}
                 <ExecutionProofPanel />
+
+                {/* Counterfactual — What would blocked trades have done? */}
+                <CounterfactualPanel />
 
                 {/* Live Trades — Open positions & recent orders */}
                 <LiveForexTradesPanel />
