@@ -1244,7 +1244,32 @@ Deno.serve(async (req) => {
 
       if (reqBody.preflight) {
         return new Response(
-          JSON.stringify({ success: true, mode: "preflight", preflight }),
+          JSON.stringify({
+            success: true,
+            mode: "preflight",
+            session,
+            regime,
+            governanceState: "NORMAL",
+            elapsed: Date.now() - startTime,
+            preflight,
+            agentSnapshot: {
+              eligible: snapshot.eligibleCount,
+              total: snapshot.totalAgents,
+              shadow: snapshot.shadowCount,
+              disabled: snapshot.disabledCount,
+              coalition: snapshot.coalitionRequirement,
+              promotionLog: snapshot.promotionLog,
+              agents: snapshot.effectiveAgents.map(a => ({
+                id: a.agentId,
+                tier: a.effectiveTier,
+                fleetSet: a.fleetSet,
+                state: a.deploymentState,
+                size: a.sizeMultiplier,
+              })),
+            },
+            signals: [],
+            summary: { total: 0, filled: 0, gated: 0, rejected: 0 },
+          }),
           { headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }
