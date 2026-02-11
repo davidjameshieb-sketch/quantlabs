@@ -109,7 +109,7 @@ export const LiveEdgeExecutionDashboard = () => {
           <div>
             <h2 className="font-display text-lg font-bold text-foreground">Live Edge Execution</h2>
             <p className="text-xs text-muted-foreground">
-              Adaptive learning • Flexible duration • Indicator-derived regimes
+              Indicator-derived regimes · Directional momentum confirmation · Flexible duration
             </p>
           </div>
         </div>
@@ -220,6 +220,62 @@ export const LiveEdgeExecutionDashboard = () => {
         {/* ─── Adaptive Learning ─── */}
         <TabsContent value="learning" className="space-y-4">
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {/* Long Regime Gating */}
+            <Card className="border-border/30 bg-card/50">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm flex items-center gap-2">
+                  <TrendingUp className="w-4 h-4 text-emerald-400" />
+                  Long Regime Gating
+                  <Badge variant="outline" className="text-[9px] ml-auto text-emerald-400 border-emerald-500/30">
+                    INDICATOR-DERIVED
+                  </Badge>
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="p-2 rounded-lg bg-background/50 border border-border/20">
+                    <p className="text-[9px] text-muted-foreground uppercase">Required Regime</p>
+                    <div className="flex flex-wrap gap-1 mt-1">
+                      {['expansion', 'momentum', 'exhaustion'].map(r => (
+                        <Badge key={r} variant="outline" className="text-[9px] text-emerald-400 border-emerald-500/30 capitalize">{r}</Badge>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="p-2 rounded-lg bg-background/50 border border-border/20">
+                    <p className="text-[9px] text-muted-foreground uppercase">Bullish Momentum</p>
+                    <p className="text-lg font-mono font-bold text-emerald-400">≥ 4/7</p>
+                    <p className="text-[8px] text-muted-foreground">Directional indicators</p>
+                  </div>
+                  <div className="p-2 rounded-lg bg-background/50 border border-border/20">
+                    <p className="text-[9px] text-muted-foreground uppercase">Regime Strength</p>
+                    <p className="text-lg font-mono font-bold">≥ 30</p>
+                    <p className="text-[8px] text-muted-foreground">Minimum threshold</p>
+                  </div>
+                  <div className="p-2 rounded-lg bg-background/50 border border-border/20">
+                    <p className="text-[9px] text-muted-foreground uppercase">Transition Override</p>
+                    <p className="text-sm font-mono font-bold text-amber-400">5/7 bullish</p>
+                    <p className="text-[8px] text-muted-foreground">Required for transition regime</p>
+                  </div>
+                </div>
+                <div className="border-t border-border/20 pt-2">
+                  <p className="text-[10px] text-muted-foreground font-bold uppercase mb-1.5">Blocked Regimes (Long)</p>
+                  <div className="flex flex-wrap gap-1">
+                    {['breakdown', 'risk-off', 'compression', 'flat'].map(r => (
+                      <Badge key={r} variant="outline" className="text-[9px] text-red-400 border-red-500/30 capitalize">{r}</Badge>
+                    ))}
+                  </div>
+                </div>
+                <div className="border-t border-border/20 pt-2">
+                  <p className="text-[10px] text-muted-foreground font-bold uppercase mb-1.5">Momentum Indicators (7)</p>
+                  <div className="flex flex-wrap gap-1">
+                    {['ROC', 'Elder Force', 'EMA-50', 'Supertrend', 'PSAR', 'Ichimoku', 'Heikin-Ashi'].map(ind => (
+                      <Badge key={ind} variant="outline" className="text-[9px] capitalize">{ind}</Badge>
+                    ))}
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
             {/* Short Learning Overview */}
             <Card className="border-border/30 bg-card/50">
               <CardHeader className="pb-2">

@@ -428,6 +428,9 @@ export interface GovernanceRule {
 }
 
 export const LONG_GOVERNANCE_RULES: GovernanceRule[] = [
+  { name: 'Indicator-Derived Regime', description: 'Longs require expansion/momentum/exhaustion regime — not time-based', direction: 'long' },
+  { name: 'Bullish Momentum Gate', description: 'Requires ≥4/7 bullish directional indicators (EMA, Supertrend, PSAR, Ichimoku, ROC, Elder Force, Heikin-Ashi)', direction: 'long' },
+  { name: 'Regime Strength Minimum', description: 'Regime strength must be ≥30 — weak regimes blocked', direction: 'long' },
   { name: 'Continuation Bias', description: 'Maintain trades through minor volatility noise', direction: 'long' },
   { name: 'Expansion Priority', description: 'Prioritize expansion persistence over early exit', direction: 'long' },
   { name: 'Regime Exit Only', description: 'Terminate ONLY when expansion momentum decays or regime invalidates', direction: 'long' },
