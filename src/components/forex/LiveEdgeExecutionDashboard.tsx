@@ -124,12 +124,10 @@ export const LiveEdgeExecutionDashboard = () => {
       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}
         className={cn(
           'p-3 rounded-xl border flex items-center gap-3',
-          state.coalitionRequirement.tier === 'solo' ? 'border-emerald-500/30 bg-emerald-500/5' :
           state.coalitionRequirement.tier === 'duo' ? 'border-amber-500/30 bg-amber-500/5' :
           'border-red-500/30 bg-red-500/5'
         )}>
         <Users className={cn('w-5 h-5',
-          state.coalitionRequirement.tier === 'solo' ? 'text-emerald-400' :
           state.coalitionRequirement.tier === 'duo' ? 'text-amber-400' : 'text-red-400'
         )} />
         <div className="flex-1">

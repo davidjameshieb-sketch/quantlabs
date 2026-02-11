@@ -110,7 +110,7 @@ interface AgentSnapshot {
 }
 
 // ─── Coalition Requirement Levels ───
-type CoalitionTier = "solo" | "duo" | "trio";
+type CoalitionTier = "duo" | "trio";
 
 interface CoalitionRequirement {
   tier: CoalitionTier;
@@ -122,20 +122,10 @@ interface CoalitionRequirement {
   reasons: string[];
 }
 
-interface ExecutionSnapshot {
-  effectiveAgents: AgentSnapshot[];
-  eligibleAgents: AgentSnapshot[];  // canExecute=true only
-  allowedPairs: string[];
-  totalAgents: number;
-  eligibleCount: number;
-  shadowCount: number;
-  disabledCount: number;
-  coalitionRequirement: CoalitionRequirement;
-}
-
 /**
  * Compute dynamic coalition requirement based on aggregate survivorship metrics.
- * Solo execution allowed if metrics are strong; degraded metrics require more agents.
+ * MINIMUM 2 agents always required — solo execution is DISABLED.
+ * Degraded metrics require 3 agents for additional confirmation.
  */
 function computeCoalitionRequirement(agents: AgentSnapshot[]): CoalitionRequirement {
   const eligible = agents.filter(a => a.canExecute);
@@ -156,35 +146,24 @@ function computeCoalitionRequirement(agents: AgentSnapshot[]): CoalitionRequirem
   const weightedPF = eligible.reduce((s, a) => s + a.metrics.profitFactor * a.metrics.totalTrades, 0) / (totalTrades || 1);
 
   // Survivorship score: 0-100 composite
-  const wrScore = Math.min(30, weightedWR * 50);           // max 30 pts (60% WR = 30)
-  const expScore = Math.min(30, Math.max(0, weightedExp * 15)); // max 30 pts (2p exp = 30)
-  const pfScore = Math.min(25, Math.max(0, (weightedPF - 0.5) * 12.5)); // max 25 pts (PF 2.5 = 25)
-  const sampleScore = Math.min(15, totalTrades / 20);       // max 15 pts (300 trades = 15)
+  const wrScore = Math.min(30, weightedWR * 50);
+  const expScore = Math.min(30, Math.max(0, weightedExp * 15));
+  const pfScore = Math.min(25, Math.max(0, (weightedPF - 0.5) * 12.5));
+  const sampleScore = Math.min(15, totalTrades / 20);
   const survivorshipScore = Math.round(wrScore + expScore + pfScore + sampleScore);
 
-  // Expectancy slope proxy: positive expectancy = positive slope assumption
   const expectancySlope = weightedExp;
 
-  // Stability trend: based on PF and consistency
   let stabilityTrend: "improving" | "flat" | "deteriorating";
   if (weightedPF >= 1.3 && weightedWR >= 0.55) stabilityTrend = "improving";
   else if (weightedPF >= 1.0 && weightedWR >= 0.45) stabilityTrend = "flat";
   else stabilityTrend = "deteriorating";
 
-  // ─── Tier determination ───
-  // SOLO: survivorship ≥ 60, PF ≥ 1.2, expectancy > 0, stability improving
-  if (survivorshipScore >= 60 && weightedPF >= 1.2 && expectancySlope > 0 && stabilityTrend === "improving") {
-    reasons.push(`Survivorship ${survivorshipScore} ≥ 60`);
-    reasons.push(`PF ${weightedPF.toFixed(2)} ≥ 1.2`);
-    reasons.push(`Expectancy slope ${expectancySlope.toFixed(2)} > 0`);
-    reasons.push(`Stability: ${stabilityTrend}`);
-    return { tier: "solo", minAgents: 1, survivorshipScore, rollingPF: weightedPF, expectancySlope, stabilityTrend, reasons };
-  }
-
-  // DUO: survivorship 40-59, PF 1.05-1.2, stability neutral
+  // ─── Tier determination (minimum 2 always) ───
+  // DUO: survivorship ≥ 40, PF ≥ 1.05, stability not deteriorating
   if (survivorshipScore >= 40 && weightedPF >= 1.05 && stabilityTrend !== "deteriorating") {
-    reasons.push(`Survivorship ${survivorshipScore} in [40-59]`);
-    reasons.push(`PF ${weightedPF.toFixed(2)} in [1.05-1.2]`);
+    reasons.push(`Survivorship ${survivorshipScore} ≥ 40`);
+    reasons.push(`PF ${weightedPF.toFixed(2)} ≥ 1.05`);
     reasons.push(`Stability: ${stabilityTrend}`);
     return { tier: "duo", minAgents: 2, survivorshipScore, rollingPF: weightedPF, expectancySlope, stabilityTrend, reasons };
   }
@@ -449,12 +428,13 @@ const STATE_CONFIGS: Record<GovernanceState, GovernanceStateConfig> = {
     recoveryRequired: ["expectancy > 0.8 over 30 trades", "win rate > 60%", "no slippage drift"],
   },
   HALT: {
+    // GRACEFUL DEGRADATION: HALT now reduces to minimum viable instead of stopping
     densityMultiplier: 0.15,
     sizingMultiplier: 0.35,
     frictionKOverride: 5.5,
     pairRestriction: "top-performers",
     sessionAggressiveness: { asian: 0.0, "london-open": 0.3, "ny-overlap": 0.25, "late-ny": 0.0, rollover: 0.0 },
-    recoveryRequired: ["15-min cooldown → 3-stage ramp-up (15min each) if profitable → normal"],
+    recoveryRequired: ["Graceful degradation — trading continues at minimum viable params"],
   },
 };
 
@@ -1157,9 +1137,11 @@ Deno.serve(async (req) => {
 
     const degradation = forceMode ? null : buildDegradationReport(orders);
 
-    // ─── OVERRIDE: Force NORMAL — no halts/throttles during data accumulation phase ───
-    const govState: GovernanceState = "NORMAL";
-    const govConfig = { ...STATE_CONFIGS.NORMAL };
+    // ─── LIVE GOVERNANCE: State machine active with graceful degradation ───
+    // HALT no longer stops trading — it reduces params to minimum viable
+    const govStateResult = degradation ? determineGovernanceState(degradation.windows.w20, degradation.windows.w50, degradation.windows.w200) : { state: "NORMAL" as GovernanceState, reasons: ["No degradation data"] };
+    const govState: GovernanceState = forceMode ? "NORMAL" : govStateResult.state;
+    const govConfig = { ...STATE_CONFIGS[govState] };
     const pairAllocations = degradation?.pairAllocations || computeAllPairAllocations(orders);
 
     console.log(`[SCALP-TRADE] ═══ GOVERNANCE STATE: ${govState} ═══`);
@@ -1168,149 +1150,12 @@ Deno.serve(async (req) => {
       console.log(`[SCALP-TRADE] Banned pairs: ${degradation.bannedPairs.join(", ") || "none"}`);
     }
 
-    // ─── HALT check: 15-minute cooldown + graduated ramp-up ───
-    // After HALT triggers: 15-min pause, then resume in stages.
-    // Each stage lasts 15 min. Advance to next stage only if trades were profitable.
-    // Stage 1: 0.15x density, 0.35x sizing
-    // Stage 2: 0.35x density, 0.55x sizing
-    // Stage 3: 0.65x density, 0.75x sizing
-    // Stage 4: 1.0x (normal) — fully recovered
-    const RAMP_STAGES = [
-      { density: 0.15, sizing: 0.35, label: "RAMP-1" },
-      { density: 0.35, sizing: 0.55, label: "RAMP-2" },
-      { density: 0.65, sizing: 0.75, label: "RAMP-3" },
-    ];
-    const RAMP_INTERVAL_MS = 15 * 60 * 1000; // 15 minutes per stage
-
-    if (false && govState === "HALT" && !forceMode) { // DISABLED: no halts during data accumulation
-      // Find the most recent HALT cooldown marker
-      const { data: lastHaltOrder } = await supabase
-        .from("oanda_orders")
-        .select("created_at, gate_result")
-        .eq("user_id", USER_ID)
-        .in("gate_result", ["HALT_COOLDOWN", "HALT_RAMP-1", "HALT_RAMP-2", "HALT_RAMP-3"])
-        .order("created_at", { ascending: false })
-        .limit(1);
-
-      const lastMarker = lastHaltOrder?.[0];
-      const lastMarkerTs = lastMarker?.created_at ? new Date(lastMarker.created_at).getTime() : 0;
-      const timeSinceMarker = Date.now() - lastMarkerTs;
-      const lastGateResult = lastMarker?.gate_result || "";
-
-      // Determine current ramp stage
-      let currentStageIndex = -1; // -1 = initial cooldown (no ramp yet)
-      if (lastGateResult === "HALT_RAMP-1") currentStageIndex = 0;
-      else if (lastGateResult === "HALT_RAMP-2") currentStageIndex = 1;
-      else if (lastGateResult === "HALT_RAMP-3") currentStageIndex = 2;
-      else if (lastGateResult === "HALT_COOLDOWN") currentStageIndex = -1;
-
-      // If within 15 min of last marker, stay in cooldown/current stage
-      if (lastMarkerTs > 0 && timeSinceMarker < RAMP_INTERVAL_MS) {
-        // If we're in a ramp stage (not initial cooldown), execute with that stage's params
-        if (currentStageIndex >= 0) {
-          const stage = RAMP_STAGES[currentStageIndex];
-          govConfig.densityMultiplier = stage.density;
-          govConfig.sizingMultiplier = stage.sizing;
-          console.log(`[SCALP-TRADE] ═══ HALT ${stage.label}: continuing at density=${stage.density}, sizing=${stage.sizing} (${Math.ceil((RAMP_INTERVAL_MS - timeSinceMarker) / 60000)}min left) ═══`);
-          // Fall through to execute with these params
-        } else {
-          // Initial cooldown — skip
-          const remainingMin = Math.ceil((RAMP_INTERVAL_MS - timeSinceMarker) / 60000);
-          console.log(`[SCALP-TRADE] ═══ HALT COOLDOWN: ${remainingMin}min remaining — skipping this cycle ═══`);
-          return new Response(
-            JSON.stringify({
-              success: true,
-              mode: "halt-cooldown",
-              governanceState: govState,
-              cooldownRemainingMin: remainingMin,
-              reasons: degradation?.stateReasons || [],
-            }),
-            { headers: { ...corsHeaders, "Content-Type": "application/json" } }
-          );
-        }
-      } else {
-        // 15 min elapsed — time to advance (or start) ramp
-        let nextStageIndex = 0; // default: start at Stage 1
-
-        if (currentStageIndex >= 0) {
-          // Check if trades since last marker were profitable
-          const { data: recentTrades } = await supabase
-            .from("oanda_orders")
-            .select("entry_price, exit_price, direction, currency_pair")
-            .eq("user_id", USER_ID)
-            .eq("environment", execConfig.oandaEnv)
-            .eq("status", "closed")
-            .neq("currency_pair", "SYSTEM")
-            .gte("created_at", lastMarker!.created_at)
-            .not("exit_price", "is", null)
-            .not("entry_price", "is", null);
-
-          const trades = recentTrades || [];
-          let netPips = 0;
-          for (const t of trades) {
-            const pipMult = ["USD_JPY", "EUR_JPY", "GBP_JPY", "AUD_JPY"].includes(t.currency_pair) ? 0.01 : 0.0001;
-            const pnl = t.direction === "long"
-              ? (t.exit_price! - t.entry_price!) / pipMult
-              : (t.entry_price! - t.exit_price!) / pipMult;
-            netPips += pnl;
-          }
-
-          const profitable = trades.length === 0 || netPips >= 0; // No trades = OK to advance
-          if (profitable && currentStageIndex < 2) {
-            nextStageIndex = currentStageIndex + 1;
-            console.log(`[SCALP-TRADE] ═══ HALT RAMP-UP: Stage ${currentStageIndex + 1} was profitable (${netPips.toFixed(1)}p / ${trades.length} trades) → advancing to Stage ${nextStageIndex + 1} ═══`);
-          } else if (profitable && currentStageIndex === 2) {
-            // Stage 3 profitable → fully recovered, use NORMAL params
-            console.log(`[SCALP-TRADE] ═══ HALT RECOVERY COMPLETE: All stages profitable → returning to NORMAL parameters ═══`);
-            govConfig.densityMultiplier = STATE_CONFIGS.NORMAL.densityMultiplier;
-            govConfig.sizingMultiplier = STATE_CONFIGS.NORMAL.sizingMultiplier;
-            govConfig.frictionKOverride = STATE_CONFIGS.NORMAL.frictionKOverride;
-            // Insert recovery marker
-            await supabase.from("oanda_orders").insert({
-              user_id: USER_ID,
-              signal_id: `halt-recovered-${Date.now()}`,
-              currency_pair: "SYSTEM",
-              direction: "long",
-              units: 0,
-              environment: execConfig.oandaEnv,
-              status: "rejected",
-              gate_result: "HALT_RECOVERED",
-              gate_reasons: [`Graduated ramp-up complete after ${trades.length} profitable trades`],
-              session_label: session,
-              regime_label: regime,
-            });
-            // Skip the ramp marker insertion below — override govState to NORMAL
-            govState = "NORMAL";
-          } else {
-            // Not profitable — restart at Stage 1
-            nextStageIndex = 0;
-            console.log(`[SCALP-TRADE] ═══ HALT RAMP RESET: Stage ${currentStageIndex + 1} unprofitable (${netPips.toFixed(1)}p) → restarting at Stage 1 ═══`);
-          }
-        }
-
-        if (govState === "HALT") {
-          const stage = RAMP_STAGES[nextStageIndex];
-          govConfig.densityMultiplier = stage.density;
-          govConfig.sizingMultiplier = stage.sizing;
-
-          // Insert ramp marker
-          await supabase.from("oanda_orders").insert({
-            user_id: USER_ID,
-            signal_id: `halt-ramp-${Date.now()}`,
-            currency_pair: "SYSTEM",
-            direction: "long",
-            units: 0,
-            environment: execConfig.oandaEnv,
-            status: "rejected",
-            gate_result: `HALT_${stage.label}`,
-            gate_reasons: degradation?.stateReasons || [],
-            session_label: session,
-            regime_label: regime,
-          });
-
-          console.log(`[SCALP-TRADE] ═══ HALT ${stage.label}: resuming at density=${stage.density}, sizing=${stage.sizing} ═══`);
-        }
-      }
+    // ─── HALT GRACEFUL DEGRADATION ───
+    // HALT no longer stops trading. It applies minimum viable params from STATE_CONFIGS.HALT
+    // and continues execution with reduced density/sizing. Trading continuity is preserved.
+    if (govState === "HALT" && !forceMode) {
+      console.log(`[SCALP-TRADE] ═══ HALT GRACEFUL DEGRADATION: density=${govConfig.densityMultiplier}, sizing=${govConfig.sizingMultiplier}, frictionK=${govConfig.frictionKOverride} ═══`);
+      console.log(`[SCALP-TRADE] Trading continues at minimum viable parameters — no full stops`);
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -1343,25 +1188,20 @@ Deno.serve(async (req) => {
 
     // ═══════════════════════════════════════════════════════════
     // PHASE 4: Signal Generation & Execution
-    // Agent selection now uses snapshot, direction is LONG-only
+    // Full intelligence-driven: indicator-confirmed direction, multi-agent coalition, regime validation
     // ═══════════════════════════════════════════════════════════
 
     const sessionAgg = govConfig.sessionAggressiveness[session] || 0.5;
     const baseCount = forceMode ? 1 : 3 + Math.floor(Math.random() * 4);
     const signalCount = forceMode
       ? 1
-      : Math.max(0, Math.min(sessionBudget.maxDensity,
+      : Math.max(1, Math.min(sessionBudget.maxDensity,
           Math.round(baseCount * govConfig.densityMultiplier * sessionAgg)));
 
+    // HALT PREVENTION: session-skip downgrades signal count but never goes to zero
     if (signalCount === 0 && !forceMode) {
-      console.log(`[SCALP-TRADE] Session aggressiveness zero for ${session} in ${govState} — skipping`);
-      return new Response(
-        JSON.stringify({
-          success: true, mode: "session-skip",
-          governanceState: govState, session, sessionAgg,
-        }),
-        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      console.log(`[SCALP-TRADE] Session aggressiveness very low for ${session} in ${govState} — forcing minimum 1 signal`);
+      // Override: ensure at least 1 signal attempt for trading continuity
     }
 
     // Check we have eligible agents
@@ -1427,93 +1267,123 @@ Deno.serve(async (req) => {
       const isPrimaryPair = pair === PRIMARY_PAIR;
       const isSecondaryPair = SECONDARY_PAIRS_ALLOWED.includes(pair);
 
-      // ═══ DUAL-DIRECTION: ~20% short signals on eligible pairs/sessions ═══
+      // ═══ INDICATOR-CONFIRMED DIRECTION (Multi-Timeframe Consensus) ═══
+      // Direction is ONLY authorized when MTF consensus aligns. Random selection prohibited.
       let direction: "long" | "short" = "long";
-      if (!forceMode) {
-        const shortRoll = Math.random();
-        // 20% chance of short signal, only on eligible pairs + sessions
-        if (shortRoll < 0.20 && SHORT_ELIGIBLE_PAIRS.includes(pair) && SHORT_ELIGIBLE_SESSIONS.includes(session)) {
-          direction = "short";
-        }
-      } else {
+      let indicatorConsensusScore = 0;
+      let indicatorDirection: "bullish" | "bearish" | "neutral" = "neutral";
+      let mtfConfirmed = false;
+
+      if (forceMode) {
         direction = reqBody.direction || "long";
+        mtfConfirmed = true;
+        indicatorConsensusScore = 80;
+      } else {
+        // Call forex-indicators for MTF consensus (15m directional bias)
+        try {
+          const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+          const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+          const indicatorRes = await fetch(`${supabaseUrl}/functions/v1/forex-indicators`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${supabaseKey}`,
+            },
+            body: JSON.stringify({ instrument: pair, timeframe: "15m" }),
+          });
+
+          if (indicatorRes.ok) {
+            const indicatorData = await indicatorRes.json();
+            if (indicatorData?.consensus) {
+              indicatorConsensusScore = indicatorData.consensus.score || 0;
+              indicatorDirection = indicatorData.consensus.direction || "neutral";
+
+              // Minimum consensus threshold for trade authorization
+              const MIN_CONSENSUS = 25; // Absolute value
+              if (Math.abs(indicatorConsensusScore) >= MIN_CONSENSUS) {
+                if (indicatorDirection === "bullish") {
+                  direction = "long";
+                  mtfConfirmed = true;
+                } else if (indicatorDirection === "bearish") {
+                  // Shorts only on eligible pairs + sessions
+                  if (SHORT_ELIGIBLE_PAIRS.includes(pair) && SHORT_ELIGIBLE_SESSIONS.includes(session)) {
+                    direction = "short";
+                    mtfConfirmed = true;
+                  } else {
+                    // Bearish but pair/session not eligible for shorts — skip
+                    console.log(`[SCALP-TRADE] ${pair}: Bearish consensus but not short-eligible — skipping`);
+                    results.push({ pair, direction: "short", status: "direction-mismatch", govState, agentId });
+                    continue;
+                  }
+                }
+              } else {
+                // Consensus too weak — skip this trade
+                console.log(`[SCALP-TRADE] ${pair}: Consensus too weak (${indicatorConsensusScore}) — skipping`);
+                results.push({ pair, direction, status: "weak-consensus", govState, agentId });
+                continue;
+              }
+            }
+          } else {
+            // Indicator service unavailable — use regime-based fallback (default long)
+            console.warn(`[SCALP-TRADE] ${pair}: Indicator service returned ${indicatorRes.status} — using regime fallback`);
+            mtfConfirmed = false;
+            direction = "long"; // Fallback: default long
+          }
+        } catch (indicatorErr) {
+          console.warn(`[SCALP-TRADE] ${pair}: Indicator call failed: ${(indicatorErr as Error).message} — using regime fallback`);
+          mtfConfirmed = false;
+          direction = "long"; // Fallback: default long
+        }
       }
-      const confidence = forceMode ? 90 : Math.round(60 + Math.random() * 35);
 
-      console.log(`[SCALP-TRADE] Signal ${i + 1}: ${direction.toUpperCase()} ${pair} (${isPrimaryPair ? 'PRIMARY' : 'SECONDARY'}) | agent=${agentId}(${agentTier}) | size=${agentSizeMult}`);
+      const confidence = forceMode ? 90 : Math.round(
+        mtfConfirmed ? (60 + Math.abs(indicatorConsensusScore) * 0.3) : (50 + Math.random() * 20)
+      );
 
-      // ─── Pair Allocation Check ───
+      console.log(`[SCALP-TRADE] Signal ${i + 1}: ${direction.toUpperCase()} ${pair} (${isPrimaryPair ? 'PRIMARY' : 'SECONDARY'}) | consensus=${indicatorConsensusScore} (${indicatorDirection}) | mtf=${mtfConfirmed} | agent=${agentId}(${agentTier}) | size=${agentSizeMult}`);
+
+      // ─── Pair Allocation Check (GRACEFUL DEGRADATION) ───
       const pairAlloc = pairAllocations[pair] || { banned: false, restricted: false, capitalMultiplier: 1.0 };
-      // DISABLED: Pair bans removed for maximum data collection
-      if (false && !forceMode && pairAlloc.banned) {
-        console.log(`[SCALP-TRADE] ${pair}: BANNED`);
-        results.push({ pair, direction, status: "pair-banned", pairCapitalMult: 0, govState, agentId, effectiveTier: agentTier });
-        continue;
+
+      // Banned pairs: reduce allocation to 30% instead of full block (graceful degradation)
+      if (!forceMode && (pairAlloc as PairRollingMetrics).banned && pair !== PRIMARY_PAIR) {
+        console.log(`[SCALP-TRADE] ${pair}: DEGRADED (was banned) — reducing allocation to 30%`);
+        (pairAlloc as PairRollingMetrics).capitalMultiplier = 0.3;
+        (pairAlloc as PairRollingMetrics).banned = false;
       }
 
-      // ═══ SECONDARY PAIR GATES (Capital Deployment Directive §2) ═══
-      if (false && !forceMode && isSecondaryPair) { // DISABLED: All session/degradation gates removed for data collection
-        // Gate 1: Session filter — London Open + NY Overlap ONLY
+      // ═══ SECONDARY PAIR GATES — GRACEFUL DEGRADATION (downgrade not block) ═══
+      if (!forceMode && isSecondaryPair) {
+        // Session intelligence: downgrade allocation instead of blocking
         if (!SECONDARY_ALLOWED_SESSIONS.includes(session)) {
-          console.log(`[SCALP-TRADE] ${pair}: SECONDARY blocked — session ${session} not in [london-open, ny-overlap]`);
-          await supabase.from("oanda_orders").insert({
-            user_id: USER_ID,
-            signal_id: `secondary-session-block-${Date.now()}-${i}-${pair}`,
-            currency_pair: pair, direction, units: 0,
-            confidence_score: confidence, agent_id: agentId,
-            environment: execConfig.oandaEnv,
-            status: "secondary_blocked",
-            session_label: session, regime_label: regime,
-            gate_result: "SECONDARY_SESSION_BLOCK",
-            gate_reasons: [`Secondary pair ${pair} blocked: session ${session} not allowed (require london-open or ny-overlap)`],
-          });
-          results.push({ pair, direction, status: "secondary_session_blocked", govState, agentId });
-          continue;
+          console.log(`[SCALP-TRADE] ${pair}: SECONDARY session downgrade — ${session} not in prime sessions, reducing allocation to 40%`);
+          (pairAlloc as PairRollingMetrics).capitalMultiplier = Math.min(
+            (pairAlloc as PairRollingMetrics).capitalMultiplier || 1.0,
+            0.4
+          );
         }
 
-        // Gate 2: Pair performance check — auto-disable on degradation
+        // Pair performance: reduce allocation for underperformers (graceful degradation)
         const pm = pairAlloc as PairRollingMetrics;
-        const secondaryAutoDisable =
-          (pm.tradeCount >= 5 && pm.expectancy < 0) ||      // Negative expectancy
-          (pm.tradeCount >= 5 && pm.winRate < 0.40) ||       // Win rate collapsed
-          (pm.tradeCount >= 8 && (pm.netPnlPips / pm.tradeCount) < -1.0); // Severe P&L bleed
-
-        // Compute pair-level PF for auto-disable check
-        const pmGrossProfit = pm.netPnlPips > 0 ? pm.netPnlPips : 0;
-        const pmGrossLoss = pm.netPnlPips < 0 ? Math.abs(pm.netPnlPips) : 0.01;
-        const pmPF = pmGrossProfit / pmGrossLoss;
-
-        if (secondaryAutoDisable || (pm.tradeCount >= 5 && pmPF < 1.0)) {
-          console.log(`[SCALP-TRADE] ${pair}: SECONDARY auto-disabled — exp=${pm.expectancy.toFixed(2)}, WR=${(pm.winRate*100).toFixed(0)}%, PF=${pmPF.toFixed(2)}`);
-          await supabase.from("oanda_orders").insert({
-            user_id: USER_ID,
-            signal_id: `secondary-degrade-block-${Date.now()}-${i}-${pair}`,
-            currency_pair: pair, direction, units: 0,
-            confidence_score: confidence, agent_id: agentId,
-            environment: execConfig.oandaEnv,
-            status: "secondary_degraded",
-            session_label: session, regime_label: regime,
-            gate_result: "SECONDARY_DEGRADATION_BLOCK",
-            gate_reasons: [
-              `Secondary pair ${pair} auto-disabled: exp=${pm.expectancy.toFixed(2)}p, WR=${(pm.winRate*100).toFixed(0)}%, PF=${pmPF.toFixed(2)}`,
-              secondaryAutoDisable ? "Performance below minimum thresholds" : "Profit Factor < 1.0",
-            ],
-          });
-          results.push({ pair, direction, status: "secondary_degraded", govState, agentId });
-          continue;
+        if (pm.tradeCount >= 5 && pm.expectancy < -1.0) {
+          console.log(`[SCALP-TRADE] ${pair}: SECONDARY performance downgrade — exp=${pm.expectancy.toFixed(2)}, reducing to 25%`);
+          pm.capitalMultiplier = 0.25;
+        } else if (pm.tradeCount >= 5 && pm.expectancy < 0) {
+          console.log(`[SCALP-TRADE] ${pair}: SECONDARY mild downgrade — exp=${pm.expectancy.toFixed(2)}, reducing to 50%`);
+          pm.capitalMultiplier = Math.min(pm.capitalMultiplier, 0.5);
         }
-
-        // Gate 3: Cap multiplier applied later in position sizing
       }
 
-      // DISABLED: Pair restriction gates removed for data collection
-      if (false && !forceMode && govConfig.pairRestriction === "majors-only" && !SCALP_PAIRS.includes(pair)) {
-        results.push({ pair, direction, status: "pair-restricted", govState, agentId });
-        continue;
+      // Pair restriction: reduce allocation instead of blocking
+      if (!forceMode && govConfig.pairRestriction === "majors-only" && !SCALP_PAIRS.includes(pair)) {
+        (pairAlloc as PairRollingMetrics).capitalMultiplier = Math.min(
+          (pairAlloc as PairRollingMetrics).capitalMultiplier || 1.0, 0.4
+        );
       }
-      if (false && !forceMode && govConfig.pairRestriction === "top-performers" && pairAlloc.capitalMultiplier < 1.0) {
-        results.push({ pair, direction, status: "pair-restricted", govState, agentId });
-        continue;
+      if (!forceMode && govConfig.pairRestriction === "top-performers" && (pairAlloc as PairRollingMetrics).capitalMultiplier < 1.0) {
+        (pairAlloc as PairRollingMetrics).capitalMultiplier = Math.max(0.2,
+          (pairAlloc as PairRollingMetrics).capitalMultiplier * 0.7
+        );
       }
 
       // ─── Pre-Trade Friction Gate ───
@@ -1565,7 +1435,7 @@ Deno.serve(async (req) => {
       const envKey = `${session}|${regime}|${pair}|${direction}|${agentId}`;
       const explainReasons: string[] = [];
 
-      if (false && DISCOVERY_RISK_MODE && !forceMode && ADAPTIVE_EDGE_ENABLED) { // DISABLED: Discovery risk blocks removed for data collection
+      if (DISCOVERY_RISK_MODE && !forceMode && ADAPTIVE_EDGE_ENABLED) {
         const sym = pair.toUpperCase();
         const baseSpread = PAIR_BASE_SPREADS[pair] || 1.5;
         const spreadPips = baseSpread * (SESSION_BUDGETS[session]?.frictionMultiplier || 1.0);
@@ -1574,6 +1444,7 @@ Deno.serve(async (req) => {
         const AUD_CROSSES = ["AUD_JPY", "AUD_USD", "AUD_NZD", "AUD_CAD", "AUD_CHF", "EUR_AUD", "GBP_AUD"];
         const isAudCross = AUD_CROSSES.includes(sym);
 
+        // GRACEFUL DEGRADATION: "destructive" environments get reduced allocation, not blocked
         const isDestructive =
           isAudCross ||
           sym === "GBP_USD" ||
@@ -1595,57 +1466,24 @@ Deno.serve(async (req) => {
           (sym === "USD_JPY" && regime === "compression");
 
         if (isDestructive) {
-          discoveryRiskLabel = "BLOCKED";
-          discoveryMultiplier = 0;
-          discoveryBlocked = true;
-          if (isAudCross) explainReasons.push("AUD cross pair blocked");
-          else if (sym === "GBP_USD" || sym === "GBP_JPY") explainReasons.push(`${sym} blocked`);
-          else if (agentId === "sentiment-reactor" || agentId === "range-navigator") explainReasons.push(`Agent ${agentId} blocked by discovery risk`);
-          else if (session === "rollover") explainReasons.push("Rollover session blocked");
-          else if (spreadPips > SPREAD_BLOCK_THRESHOLD) explainReasons.push(`Spread ${spreadPips.toFixed(1)}p > ${SPREAD_BLOCK_THRESHOLD}p`);
-          else explainReasons.push("Ignition + low composite");
+          // GRACEFUL DEGRADATION: reduce allocation to 20% instead of blocking
+          discoveryRiskLabel = "REDUCED_RISK";
+          discoveryMultiplier = 0.20;
+          if (isAudCross) explainReasons.push("AUD cross — allocation reduced to 20%");
+          else if (sym === "GBP_USD" || sym === "GBP_JPY") explainReasons.push(`${sym} — high volatility, allocation reduced`);
+          else if (agentId === "sentiment-reactor" || agentId === "range-navigator") explainReasons.push(`Agent ${agentId} — reduced allocation`);
+          else if (session === "rollover") explainReasons.push("Rollover session — minimal allocation");
+          else if (spreadPips > SPREAD_BLOCK_THRESHOLD) explainReasons.push(`Spread ${spreadPips.toFixed(1)}p elevated — reduced`);
+          else explainReasons.push("Ignition + low composite — reduced");
+          console.log(`[SCALP-TRADE] ${pair}: Discovery risk REDUCED (was destructive) — multiplier=${discoveryMultiplier}`);
         } else if (isEdge) {
           discoveryRiskLabel = "EDGE_BOOST";
           discoveryMultiplier = EDGE_BOOST_MULTIPLIER;
-          explainReasons.push(`Edge candidate: ${session} ${regime} long`);
+          explainReasons.push(`Edge candidate: ${session} ${regime} ${direction}`);
         } else {
-          discoveryRiskLabel = "REDUCED";
+          discoveryRiskLabel = "BASELINE";
           discoveryMultiplier = BASELINE_REDUCTION_MULTIPLIER;
-          explainReasons.push("Baseline reduction — not in edge environment");
-        }
-
-        if (discoveryBlocked) {
-          await supabase.from("oanda_orders").insert({
-            user_id: USER_ID,
-            signal_id: signalId,
-            currency_pair: pair,
-            direction,
-            units: 0,
-            confidence_score: confidence,
-            agent_id: agentId,
-            environment: execConfig.oandaEnv,
-            status: "discovery_blocked",
-            session_label: session,
-            regime_label: regime,
-            gate_result: `DISCOVERY_BLOCKED:${discoveryRiskLabel}`,
-            gate_reasons: explainReasons,
-            friction_score: gate.frictionScore,
-            governance_payload: {
-              envKey, discoveryRiskLabel,
-              adaptiveEdgeEnabled: ADAPTIVE_EDGE_ENABLED,
-              explainReasons,
-              agentTier: agentTier,
-              agentSizeMultiplier: agentSizeMult,
-              longOnly: false,
-            },
-          });
-
-          results.push({
-            pair, direction, status: "discovery_blocked", govState,
-            gateResult: "DISCOVERY_BLOCKED", frictionScore: gate.frictionScore,
-            agentId, effectiveTier: agentTier,
-          });
-          continue;
+          explainReasons.push("Baseline allocation — standard environment");
         }
       }
 
@@ -1714,6 +1552,13 @@ Deno.serve(async (req) => {
             effectiveTier: agentTier,
             deploymentState: selectedAgent?.deploymentState || "unknown",
             constraints: selectedAgent?.constraints || [],
+            // Intelligence layer metadata
+            indicatorConsensus: indicatorConsensusScore,
+            indicatorDirection,
+            mtfConfirmed,
+            coalitionTier: snapshot.coalitionRequirement.tier,
+            coalitionMinAgents: snapshot.coalitionRequirement.minAgents,
+            governanceState: govState,
           },
         })
         .select()

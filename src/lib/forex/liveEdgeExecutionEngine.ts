@@ -487,7 +487,7 @@ export function generateMockEdgeContext(
 // ─── Generate full mock execution state (for dashboard) ──────────────
 
 export interface CoalitionRequirementDisplay {
-  tier: 'solo' | 'duo' | 'trio';
+  tier: 'duo' | 'trio';
   minAgents: number;
   survivorshipScore: number;
   rollingPF: number;
@@ -558,13 +558,13 @@ export function generateMockLiveEdgeState(): LiveEdgeExecutionState {
     shortPairsActive: shortDecisions.filter(d => d.permitted).length,
     totalBlocked,
     coalitionRequirement: {
-      tier: 'solo',
-      minAgents: 1,
+      tier: 'duo',
+      minAgents: 2,
       survivorshipScore: 42,
       rollingPF: 0.95,
       expectancySlope: -0.12,
       stabilityTrend: 'flat',
-      reasons: ['Survivorship 42 in [40-59]', 'PF 0.95 in [1.05-1.2]', 'Stability: flat'],
+      reasons: ['Survivorship 42 ≥ 40', 'PF 0.95 ≥ 1.05', 'Stability: flat', 'Minimum 2-agent coalition enforced'],
     },
   };
 }
