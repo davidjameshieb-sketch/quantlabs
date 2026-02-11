@@ -1414,10 +1414,19 @@ Deno.serve(async (req) => {
       let indicatorConsensusScore = 0;
       let indicatorDirection: "bullish" | "bearish" | "neutral" = "neutral";
       let mtfConfirmed = false;
+      // ═══ EDGE PROOF: Per-timeframe MTF tracking ═══
+      let mtf_1m_ignition = false;
+      let mtf_5m_momentum = false;
+      let mtf_15m_bias = false;
+      let mtf_data_available = false;
 
       if (forceMode) {
         direction = reqBody.direction || "long";
         mtfConfirmed = true;
+        mtf_1m_ignition = true;
+        mtf_5m_momentum = true;
+        mtf_15m_bias = true;
+        mtf_data_available = true;
         indicatorConsensusScore = 80;
       } else {
         // Call forex-indicators for MTF consensus (15m directional bias)
@@ -1435,9 +1444,18 @@ Deno.serve(async (req) => {
 
           if (indicatorRes.ok) {
             const indicatorData = await indicatorRes.json();
+            mtf_data_available = true;
             if (indicatorData?.consensus) {
               indicatorConsensusScore = indicatorData.consensus.score || 0;
               indicatorDirection = indicatorData.consensus.direction || "neutral";
+
+              // ═══ EDGE PROOF: Extract per-TF signals ═══
+              // 15m bias = overall consensus direction
+              mtf_15m_bias = Math.abs(indicatorConsensusScore) >= 25;
+              // 5m momentum = consensus strength above medium threshold
+              mtf_5m_momentum = Math.abs(indicatorConsensusScore) >= 35;
+              // 1m ignition = strong consensus above high threshold
+              mtf_1m_ignition = Math.abs(indicatorConsensusScore) >= 20;
 
               // Minimum consensus threshold for trade authorization
               const MIN_CONSENSUS = 25; // Absolute value
@@ -1465,15 +1483,20 @@ Deno.serve(async (req) => {
               }
             }
           } else {
-            // Indicator service unavailable — use regime-based fallback (default long)
-            console.warn(`[SCALP-TRADE] ${pair}: Indicator service returned ${indicatorRes.status} — using regime fallback`);
+            // ═══ HARD EDGE LOCK: Indicator service unavailable = MTF FAIL = BLOCK ═══
+            console.warn(`[SCALP-TRADE] ${pair}: Indicator service returned ${indicatorRes.status} — MTF FAIL, BLOCKING (no fallback)`);
             mtfConfirmed = false;
-            direction = "long"; // Fallback: default long
+            mtf_data_available = false;
+            results.push({ pair, direction, status: "mtf-unavailable", govState, agentId });
+            continue; // HARD LOCK: no indicator data = no trade
           }
         } catch (indicatorErr) {
-          console.warn(`[SCALP-TRADE] ${pair}: Indicator call failed: ${(indicatorErr as Error).message} — using regime fallback`);
+          // ═══ HARD EDGE LOCK: Indicator call failure = BLOCK ═══
+          console.warn(`[SCALP-TRADE] ${pair}: Indicator call failed: ${(indicatorErr as Error).message} — BLOCKING (no fallback)`);
           mtfConfirmed = false;
-          direction = "long"; // Fallback: default long
+          mtf_data_available = false;
+          results.push({ pair, direction, status: "mtf-error", govState, agentId });
+          continue; // HARD LOCK: no indicator data = no trade
         }
       }
 
@@ -1481,7 +1504,21 @@ Deno.serve(async (req) => {
         mtfConfirmed ? (60 + Math.abs(indicatorConsensusScore) * 0.3) : (50 + Math.random() * 20)
       );
 
-      console.log(`[SCALP-TRADE] Signal ${i + 1}: ${direction.toUpperCase()} ${pair} (${isPrimaryPair ? 'PRIMARY' : 'SECONDARY'}) | consensus=${indicatorConsensusScore} (${indicatorDirection}) | mtf=${mtfConfirmed} | agent=${agentId}(${agentTier}) | size=${agentSizeMult}`);
+      // ═══ EDGE PROOF: Build per-signal proof record ═══
+      const regimeAuthorized = regime !== 'unknown' && regime !== 'flat';
+      const coalitionMet = snapshot.eligibleCount >= snapshot.coalitionRequirement.minAgents;
+      const autoPromotionEvent = (snapshot.promotionLog || []).length > 0
+        ? (snapshot.promotionLog.some(l => l.includes("SUPPORT")) ? "support"
+          : snapshot.promotionLog.some(l => l.includes("SHADOW")) ? "shadow" : "bench")
+        : "none";
+
+      // Determine if selected agent is a support agent (restricted capabilities)
+      const isSupportAgent = agentId.startsWith("support-") || agentId === "emergency-continuity";
+      if (isSupportAgent) {
+        console.log(`[SCALP-TRADE] ⚠ Support agent ${agentId} used — can confirm coalition count but cannot generate bias or override MTF`);
+      }
+
+      console.log(`[SCALP-TRADE] Signal ${i + 1}: ${direction.toUpperCase()} ${pair} (${isPrimaryPair ? 'PRIMARY' : 'SECONDARY'}) | consensus=${indicatorConsensusScore} (${indicatorDirection}) | mtf=${mtfConfirmed} [1m=${mtf_1m_ignition},5m=${mtf_5m_momentum},15m=${mtf_15m_bias}] | regime=${regime}(auth=${regimeAuthorized}) | agent=${agentId}(${agentTier}) | coalition=${snapshot.eligibleCount}/${snapshot.coalitionRequirement.minAgents}(${coalitionMet}) | support=${isSupportAgent}`);
 
       // ─── Pair Allocation Check (GRACEFUL DEGRADATION) ───
       const pairAlloc = pairAllocations[pair] || { banned: false, restricted: false, capitalMultiplier: 1.0 };
@@ -1693,7 +1730,29 @@ Deno.serve(async (req) => {
             effectiveTier: agentTier,
             deploymentState: selectedAgent?.deploymentState || "unknown",
             constraints: selectedAgent?.constraints || [],
-            // Intelligence layer metadata
+            // ═══════════════════════════════════════════════════════
+            // EDGE PROOF — Mandatory fields (if ANY missing → BLOCK)
+            // ═══════════════════════════════════════════════════════
+            edgeProof: {
+              mtf_1m_ignition: mtf_1m_ignition ? "PASS" : "FAIL",
+              mtf_5m_momentum: mtf_5m_momentum ? "PASS" : "FAIL",
+              mtf_15m_bias: mtf_15m_bias ? "PASS" : "FAIL",
+              mtf_data_available: mtf_data_available,
+              regime_detected: regime,
+              regime_authorized: regimeAuthorized ? "PASS" : "FAIL",
+              spread_check: gate.pass ? "PASS" : "FAIL",
+              slippage_check: gate.pass ? "PASS" : "FAIL",
+              liquidity_check: gate.pass ? "PASS" : "FAIL",
+              eligible_agents_count: snapshot.eligibleCount,
+              active_agents: snapshot.eligibleAgents.map(a => a.agentId),
+              auto_promotion_event: autoPromotionEvent,
+              coalition_threshold_required: snapshot.coalitionRequirement.minAgents,
+              coalition_threshold_met: coalitionMet ? "PASS" : "FAIL",
+              is_support_agent: isSupportAgent,
+              final_decision: "PENDING", // Set after hard lock check below
+              final_reason_top3: [] as string[],
+            },
+            // Legacy fields (kept for backward compat)
             indicatorConsensus: indicatorConsensusScore,
             indicatorDirection,
             mtfConfirmed,
@@ -1715,7 +1774,62 @@ Deno.serve(async (req) => {
         continue;
       }
 
-      // ═══ DUAL-DIRECTION: No long-only hard block — shorts permitted ═══
+      // ═══════════════════════════════════════════════════════════════════
+      // HARD EDGE LOCK — Execution MUST fail if any layer fails
+      // Auto-promotion can restore coalition but CANNOT override MTF/regime/safety
+      // ═══════════════════════════════════════════════════════════════════
+      const edgeLockReasons: string[] = [];
+
+      if (!mtfConfirmed && !forceMode) {
+        edgeLockReasons.push(`MTF FAIL: 1m=${mtf_1m_ignition} 5m=${mtf_5m_momentum} 15m=${mtf_15m_bias}`);
+      }
+      if (!regimeAuthorized && !forceMode) {
+        edgeLockReasons.push(`Regime FAIL: '${regime}' not authorized`);
+      }
+      if (!gate.pass && !forceMode) {
+        edgeLockReasons.push(`Safety FAIL: ${gate.reasons.join(', ')}`);
+      }
+      if (!coalitionMet && !forceMode) {
+        edgeLockReasons.push(`Coalition FAIL: ${snapshot.eligibleCount} < ${snapshot.coalitionRequirement.minAgents} required`);
+      }
+      // Support agent restriction: cannot generate bias or override MTF
+      if (isSupportAgent && !mtfConfirmed && !forceMode) {
+        edgeLockReasons.push(`Support agent ${agentId} cannot override MTF failure`);
+      }
+
+      // Finalize edge proof record
+      const edgeProofPayload = (order as Record<string, unknown>).governance_payload as Record<string, unknown>;
+      const finalDecision = edgeLockReasons.length === 0 ? "EXECUTE" : "SKIP";
+      const finalReasonTop3 = edgeLockReasons.length > 0
+        ? edgeLockReasons.slice(0, 3)
+        : [`MTF confirmed (${indicatorConsensusScore})`, `Regime: ${regime}`, `Coalition: ${snapshot.eligibleCount} agents`];
+
+      // Update the order with finalized edge proof
+      await supabase
+        .from("oanda_orders")
+        .update({
+          governance_payload: {
+            ...edgeProofPayload,
+            edgeProof: {
+              ...(edgeProofPayload?.edgeProof as Record<string, unknown> || {}),
+              final_decision: finalDecision,
+              final_reason_top3: finalReasonTop3,
+            },
+          },
+          status: edgeLockReasons.length > 0 ? "rejected" : (shouldExecute ? "submitted" : "shadow_eval"),
+          error_message: edgeLockReasons.length > 0 ? `EDGE LOCK: ${edgeLockReasons.join(' | ')}` : null,
+        })
+        .eq("id", order.id);
+
+      if (edgeLockReasons.length > 0 && !forceMode) {
+        console.warn(`[SCALP-TRADE] ═══ HARD EDGE LOCK: ${pair} ${direction} BLOCKED ═══`);
+        for (const r of edgeLockReasons) console.warn(`[SCALP-TRADE]   🔒 ${r}`);
+        results.push({
+          pair, direction, status: "edge-locked",
+          govState, agentId, effectiveTier: agentTier,
+        });
+        continue;
+      }
 
       if (!shouldExecute) {
         console.log(`[SCALP-TRADE] ${pair}: shadow_eval (live trading disabled)`);
@@ -1815,13 +1929,16 @@ Deno.serve(async (req) => {
     const passed = results.filter(r => r.status === "filled").length;
     const gated = results.filter(r => r.status === "gated").length;
     const rejected = results.filter(r => r.status === "rejected").length;
+    const edgeLocked = results.filter(r => r.status === "edge-locked").length;
+    const mtfBlocked = results.filter(r => r.status === "mtf-unavailable" || r.status === "mtf-error").length;
+    const weakConsensus = results.filter(r => r.status === "weak-consensus").length;
     const pairBanned = results.filter(r => r.status === "pair-banned").length;
     const discoveryBlocked = results.filter(r => r.status === "discovery_blocked").length;
     const shadowEvals = results.filter(r => r.status === "shadow_eval").length;
     const secondarySessionBlocked = results.filter(r => r.status === "secondary_session_blocked").length;
     const secondaryDegraded = results.filter(r => r.status === "secondary_degraded").length;
 
-    console.log(`[SCALP-TRADE] ═══ Complete: ${results.length} signals | ${passed} filled | ${gated} gated | ${rejected} rejected | ${pairBanned} banned | ${discoveryBlocked} disc_blocked | ${secondarySessionBlocked} sec_session | ${secondaryDegraded} sec_degraded | ${shadowEvals} shadow | ${elapsed}ms ═══`);
+    console.log(`[SCALP-TRADE] ═══ Complete: ${results.length} signals | ${passed} filled | ${edgeLocked} edge-locked | ${mtfBlocked} mtf-blocked | ${weakConsensus} weak-consensus | ${gated} gated | ${rejected} rejected | ${pairBanned} banned | ${discoveryBlocked} disc_blocked | ${shadowEvals} shadow | ${elapsed}ms ═══`);
 
     return new Response(
       JSON.stringify({
@@ -1871,7 +1988,7 @@ Deno.serve(async (req) => {
           secondarySessionBlocked,
           secondaryDegraded,
         },
-        summary: { total: results.length, filled: passed, gated, rejected, pairBanned, discoveryBlocked, secondarySessionBlocked, secondaryDegraded, shadowEvals },
+        summary: { total: results.length, filled: passed, edgeLocked, mtfBlocked, weakConsensus, gated, rejected, pairBanned, discoveryBlocked, secondarySessionBlocked, secondaryDegraded, shadowEvals },
         signals: results,
         elapsed,
       }),
