@@ -131,7 +131,7 @@ export const LiveEdgeExecutionDashboard = () => {
           state.coalitionRequirement.tier === 'duo' ? 'text-amber-400' : 'text-red-400'
         )} />
         <div className="flex-1">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <span className="text-xs font-bold font-mono uppercase">
               {state.coalitionRequirement.tier} Mode
             </span>
@@ -150,10 +150,22 @@ export const LiveEdgeExecutionDashboard = () => {
             )}>
               {state.coalitionRequirement.stabilityTrend}
             </Badge>
+            {(state.coalitionRequirement.autoPromotions ?? 0) > 0 && (
+              <Badge className="text-[9px] bg-blue-500/20 text-blue-300 border-blue-500/30">
+                ⚡ {state.coalitionRequirement.autoPromotions} auto-promoted
+              </Badge>
+            )}
           </div>
           <p className="text-[10px] text-muted-foreground mt-0.5">
             {state.coalitionRequirement.reasons.join(' • ')}
           </p>
+          {(state.coalitionRequirement.promotionLog?.length ?? 0) > 0 && (
+            <div className="mt-1 space-y-0.5">
+              {state.coalitionRequirement.promotionLog.map((log, i) => (
+                <p key={i} className="text-[9px] text-blue-300/70 font-mono">{log}</p>
+              ))}
+            </div>
+          )}
         </div>
       </motion.div>
 
