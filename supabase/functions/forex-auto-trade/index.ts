@@ -82,7 +82,7 @@ function getExecutionConfig(): ExecutionConfig {
   return {
     oandaEnv,
     liveTradingEnabled,
-    longOnlyEnabled: true, // HARD-CODED — shorts are NEVER allowed
+    longOnlyEnabled: false, // DUAL-DIRECTION: both longs and shorts enabled for data collection
     oandaHost: OANDA_HOSTS[oandaEnv] || OANDA_HOSTS.practice,
   };
 }
@@ -236,7 +236,7 @@ function resolveAgentSnapshot(stats: Array<{
       effectiveTier,
       deploymentState,
       sizeMultiplier,
-      longOnly: true, // ALWAYS true
+      longOnly: false, // DUAL-DIRECTION enabled
       canExecute,
       constraints,
       metrics: displayMetrics,
@@ -887,25 +887,11 @@ async function runLivePreflight(
 ): Promise<PreflightResult> {
   const checks: Array<{ name: string; pass: boolean; detail: string }> = [];
 
-  // B1 — Long-Only Leak Test: only check orders AFTER the long-only code was deployed
-  const LONG_ONLY_CUTOVER = "2026-02-10T04:00:00Z";
-  const { data: recentExecOrders } = await supabase
-    .from("oanda_orders")
-    .select("direction, status")
-    .eq("user_id", USER_ID)
-    .in("status", ["filled", "closed"])
-    .gte("created_at", LONG_ONLY_CUTOVER)
-    .eq("direction", "short")
-    .limit(10);
-
-  const executedShorts = (recentExecOrders || []).length;
-
+  // B1 — Direction Leak Test: Removed — dual-direction (long+short) is now authorized
   checks.push({
-    name: "Long-Only Leak Test",
-    pass: executedShorts === 0,
-    detail: executedShorts === 0
-      ? `No executed shorts since cutover (${LONG_ONLY_CUTOVER})`
-      : `FAIL: ${executedShorts} executed shorts found post-cutover — abort live`,
+    name: "Dual-Direction Authorization",
+    pass: true,
+    detail: "Dual-direction trading enabled — both longs and shorts authorized",
   });
 
   // B2 — Agent eligibility
@@ -1316,7 +1302,11 @@ Deno.serve(async (req) => {
       agentId?: string; effectiveTier?: string; sizeMultiplier?: number;
     }> = [];
 
-    console.log(`[SCALP-TRADE] Generating ${signalCount} LONG-only signals via snapshot agents`);
+    // ─── Short-eligible pairs (from Live Edge Execution Module) ───
+    const SHORT_ELIGIBLE_PAIRS = ["USD_JPY", "GBP_JPY", "EUR_USD", "GBP_USD"];
+    const SHORT_ELIGIBLE_SESSIONS: SessionWindow[] = ["london-open", "ny-overlap"];
+
+    console.log(`[SCALP-TRADE] Generating ${signalCount} DUAL-DIRECTION signals via snapshot agents`);
 
     for (let i = 0; i < signalCount; i++) {
       // ─── Agent Selection from Snapshot ───
@@ -1346,8 +1336,17 @@ Deno.serve(async (req) => {
       const isPrimaryPair = pair === PRIMARY_PAIR;
       const isSecondaryPair = SECONDARY_PAIRS_ALLOWED.includes(pair);
 
-      // ═══ R1: LONG-ONLY — direction is ALWAYS long ═══
-      const direction: "long" = "long";
+      // ═══ DUAL-DIRECTION: ~20% short signals on eligible pairs/sessions ═══
+      let direction: "long" | "short" = "long";
+      if (!forceMode) {
+        const shortRoll = Math.random();
+        // 20% chance of short signal, only on eligible pairs + sessions
+        if (shortRoll < 0.20 && SHORT_ELIGIBLE_PAIRS.includes(pair) && SHORT_ELIGIBLE_SESSIONS.includes(session)) {
+          direction = "short";
+        }
+      } else {
+        direction = reqBody.direction || "long";
+      }
       const confidence = forceMode ? 90 : Math.round(60 + Math.random() * 35);
 
       console.log(`[SCALP-TRADE] Signal ${i + 1}: ${direction.toUpperCase()} ${pair} (${isPrimaryPair ? 'PRIMARY' : 'SECONDARY'}) | agent=${agentId}(${agentTier}) | size=${agentSizeMult}`);
@@ -1544,7 +1543,7 @@ Deno.serve(async (req) => {
               explainReasons,
               agentTier: agentTier,
               agentSizeMultiplier: agentSizeMult,
-              longOnly: true,
+              longOnly: false,
             },
           });
 
@@ -1592,7 +1591,7 @@ Deno.serve(async (req) => {
           user_id: USER_ID,
           signal_id: signalId,
           currency_pair: pair,
-          direction, // ALWAYS "long"
+          direction, // long or short
           units: tradeUnits,
           confidence_score: confidence,
           agent_id: agentId,
@@ -1618,7 +1617,7 @@ Deno.serve(async (req) => {
             agentRole: agentRole,
             agentSizeMultiplier: agentSizeMult,
             agentRoleMultiplier: selectedAgent?.roleMult || 1.0,
-            longOnly: true,
+            longOnly: false,
             effectiveTier: agentTier,
             deploymentState: selectedAgent?.deploymentState || "unknown",
             constraints: selectedAgent?.constraints || [],
@@ -1637,23 +1636,7 @@ Deno.serve(async (req) => {
         continue;
       }
 
-      // ═══ R1 DOUBLE-LOCK: Final long-only hard block at OANDA submission ═══
-      // This should NEVER trigger because direction is always "long" above,
-      // but exists as an absolute safety net.
-      if (direction !== "long") {
-        console.error(`[SCALP-TRADE] CRITICAL: Non-long direction detected at submission layer: ${direction}`);
-        await supabase
-          .from("oanda_orders")
-          .update({
-            status: "blocked",
-            error_message: "long_only_hard_block: impossible short at submission layer",
-            gate_result: "LONG_ONLY_HARD_BLOCK",
-            gate_reasons: ["CRITICAL: Long-only hard block — short trade blocked at final submission layer"],
-          })
-          .eq("id", order.id);
-        results.push({ pair, direction, status: "blocked", error: "long_only_hard_block", agentId });
-        continue;
-      }
+      // ═══ DUAL-DIRECTION: No long-only hard block — shorts permitted ═══
 
       if (!shouldExecute) {
         console.log(`[SCALP-TRADE] ${pair}: shadow_eval (live trading disabled)`);
@@ -1665,7 +1648,7 @@ Deno.serve(async (req) => {
       }
 
       try {
-        const signedUnits = tradeUnits; // Always positive because always long
+        const signedUnits = direction === "short" ? -tradeUnits : tradeUnits; // Negative for shorts
         const oandaResult = await oandaRequest(
           "/v3/accounts/{accountId}/orders", "POST",
           execConfig.oandaHost,
@@ -1768,7 +1751,7 @@ Deno.serve(async (req) => {
         executionConfig: {
           oandaEnv: execConfig.oandaEnv,
           liveTradingEnabled: execConfig.liveTradingEnabled,
-          longOnly: true,
+          longOnly: false,
         },
         governanceState: govState,
         session: sessionBudget.label,
