@@ -1353,14 +1353,15 @@ Deno.serve(async (req) => {
 
       // ─── Pair Allocation Check ───
       const pairAlloc = pairAllocations[pair] || { banned: false, restricted: false, capitalMultiplier: 1.0 };
-      if (!forceMode && pairAlloc.banned) {
+      // DISABLED: Pair bans removed for maximum data collection
+      if (false && !forceMode && pairAlloc.banned) {
         console.log(`[SCALP-TRADE] ${pair}: BANNED`);
         results.push({ pair, direction, status: "pair-banned", pairCapitalMult: 0, govState, agentId, effectiveTier: agentTier });
         continue;
       }
 
       // ═══ SECONDARY PAIR GATES (Capital Deployment Directive §2) ═══
-      if (!forceMode && isSecondaryPair) {
+      if (false && !forceMode && isSecondaryPair) { // DISABLED: All session/degradation gates removed for data collection
         // Gate 1: Session filter — London Open + NY Overlap ONLY
         if (!SECONDARY_ALLOWED_SESSIONS.includes(session)) {
           console.log(`[SCALP-TRADE] ${pair}: SECONDARY blocked — session ${session} not in [london-open, ny-overlap]`);
@@ -1414,11 +1415,12 @@ Deno.serve(async (req) => {
         // Gate 3: Cap multiplier applied later in position sizing
       }
 
-      if (!forceMode && govConfig.pairRestriction === "majors-only" && !SCALP_PAIRS.includes(pair)) {
+      // DISABLED: Pair restriction gates removed for data collection
+      if (false && !forceMode && govConfig.pairRestriction === "majors-only" && !SCALP_PAIRS.includes(pair)) {
         results.push({ pair, direction, status: "pair-restricted", govState, agentId });
         continue;
       }
-      if (!forceMode && govConfig.pairRestriction === "top-performers" && pairAlloc.capitalMultiplier < 1.0) {
+      if (false && !forceMode && govConfig.pairRestriction === "top-performers" && pairAlloc.capitalMultiplier < 1.0) {
         results.push({ pair, direction, status: "pair-restricted", govState, agentId });
         continue;
       }
@@ -1472,7 +1474,7 @@ Deno.serve(async (req) => {
       const envKey = `${session}|${regime}|${pair}|${direction}|${agentId}`;
       const explainReasons: string[] = [];
 
-      if (DISCOVERY_RISK_MODE && !forceMode && ADAPTIVE_EDGE_ENABLED) {
+      if (false && DISCOVERY_RISK_MODE && !forceMode && ADAPTIVE_EDGE_ENABLED) { // DISABLED: Discovery risk blocks removed for data collection
         const sym = pair.toUpperCase();
         const baseSpread = PAIR_BASE_SPREADS[pair] || 1.5;
         const spreadPips = baseSpread * (SESSION_BUDGETS[session]?.frictionMultiplier || 1.0);
