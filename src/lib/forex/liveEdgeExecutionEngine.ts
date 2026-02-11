@@ -494,6 +494,8 @@ export interface CoalitionRequirementDisplay {
   expectancySlope: number;
   stabilityTrend: 'improving' | 'flat' | 'deteriorating';
   reasons: string[];
+  autoPromotions: number;
+  promotionLog: string[];
 }
 
 export interface LiveEdgeExecutionState {
@@ -565,6 +567,8 @@ export function generateMockLiveEdgeState(): LiveEdgeExecutionState {
       expectancySlope: -0.12,
       stabilityTrend: 'flat',
       reasons: ['Survivorship 42 ≥ 40', 'PF 0.95 ≥ 1.05', 'Stability: flat', 'Minimum 2-agent coalition enforced'],
+      autoPromotions: 1,
+      promotionLog: ['[AUTO-PROMOTE] BENCH→ACTIVE: regime-transition (PF=1.05, exp=0.12)'],
     },
   };
 }
