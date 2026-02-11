@@ -435,12 +435,12 @@ export const ExecutionProofPanel = () => {
               </div>
 
               {/* Auto-Promotions */}
-              {(proof.agentSnapshot.promotionLog?.length ?? 0) > 0 && (
+              {(proof.agentSnapshot?.promotionLog?.length ?? 0) > 0 && (
                 <div>
                   <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1 font-bold flex items-center gap-1">
                     <Zap className="w-3 h-3 text-blue-400" /> Auto-Promotions
                   </p>
-                  {proof.agentSnapshot.promotionLog.map((log, i) => (
+                  {(proof.agentSnapshot?.promotionLog ?? []).map((log, i) => (
                     <p key={i} className="text-[9px] text-blue-300/80 font-mono py-0.5">{log}</p>
                   ))}
                 </div>
