@@ -75,10 +75,11 @@ function getSessionMultiplier(session: string, direction: 'long' | 'short'): num
 
 // ─── Pair Authorization ──────────────────────────────────────────────
 
-export const LONG_AUTHORIZED_PAIRS = ['USD_CAD', 'USD_JPY', 'EUR_USD', 'NZD_USD', 'AUD_USD', 'EUR_GBP'];
-export const SHORT_AUTHORIZED_PAIRS = ['USD_JPY', 'GBP_JPY', 'EUR_USD', 'GBP_USD', 'EUR_GBP', 'USD_CAD', 'AUD_USD'];
+// STRATEGY REVAMP: All pairs authorized for both directions — no restrictions
+export const LONG_AUTHORIZED_PAIRS = ['USD_CAD', 'USD_JPY', 'EUR_USD', 'NZD_USD', 'AUD_USD', 'EUR_GBP', 'GBP_USD', 'GBP_JPY', 'EUR_JPY', 'AUD_JPY', 'USD_CHF'];
+export const SHORT_AUTHORIZED_PAIRS = ['USD_CAD', 'USD_JPY', 'EUR_USD', 'NZD_USD', 'AUD_USD', 'EUR_GBP', 'GBP_USD', 'GBP_JPY', 'EUR_JPY', 'AUD_JPY', 'USD_CHF'];
 export const SHORT_RESTRICTED_PAIRS: Record<string, string> = {
-  'USD_CAD': 'Restricted during carry dominance',
+  // No restrictions — strategy revamp removes all pair blocks
 };
 
 // ─── Entry Validation ────────────────────────────────────────────────
