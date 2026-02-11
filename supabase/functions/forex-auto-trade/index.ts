@@ -542,8 +542,8 @@ const STATE_CONFIGS: Record<GovernanceState, GovernanceStateConfig> = {
     sizingMultiplier: 1.0,
     frictionKOverride: 3.0,
     pairRestriction: "none",
-    // Fast Ramp §6: All sessions open with higher density, rollover allowed at 0.5
-    sessionAggressiveness: { asian: 0.85, "london-open": 1.0, "ny-overlap": 1.0, "late-ny": 0.65, rollover: 0.5 },
+    // PROFIT FIX: Rollover blocked (was -0.8p avg, 42% WR) — zero density = no trades
+    sessionAggressiveness: { asian: 0.85, "london-open": 1.0, "ny-overlap": 1.0, "late-ny": 0.65, rollover: 0.0 },
     recoveryRequired: [],
   },
   DEFENSIVE: {
@@ -1494,7 +1494,8 @@ Deno.serve(async (req) => {
     }> = [];
 
     // ─── Short-eligible pairs (from Live Edge Execution Module) ───
-    const SHORT_ELIGIBLE_PAIRS = ["USD_JPY", "GBP_JPY", "EUR_USD", "GBP_USD", "EUR_GBP", "USD_CAD", "AUD_USD"];
+    // ─── PROFIT FIX: Removed GBP_JPY (31.7% WR, -1.1p) and EUR_JPY (34.5% WR, -0.6p) ───
+    const SHORT_ELIGIBLE_PAIRS = ["EUR_USD", "GBP_USD", "EUR_GBP", "USD_CAD", "AUD_USD"];
     const SHORT_ELIGIBLE_SESSIONS: SessionWindow[] = ["london-open", "ny-overlap"];
 
     console.log(`[SCALP-TRADE] Generating ${signalCount} DUAL-DIRECTION signals via snapshot agents`);
@@ -1649,12 +1650,20 @@ Deno.serve(async (req) => {
                   direction = "long";
                   mtfConfirmed = true;
                 } else if (indicatorDirection === "bearish") {
+                  // ═══ PROFIT FIX: Shorts require 1.6x the consensus threshold ═══
+                  // Shorts have 33% WR vs 57.6% for longs — demand stronger conviction
+                  const SHORT_CONSENSUS_MULTIPLIER = 1.6;
+                  const shortThreshold = Math.round(MIN_CONSENSUS * SHORT_CONSENSUS_MULTIPLIER);
+                  if (Math.abs(indicatorConsensusScore) < shortThreshold) {
+                    console.log(`[SCALP-TRADE] ${pair}: Bearish consensus ${indicatorConsensusScore} below short threshold ${shortThreshold} — skipping`);
+                    results.push({ pair, direction: "short", status: "weak-short-consensus", govState, agentId });
+                    continue;
+                  }
                   // Shorts only on eligible pairs + sessions
                   if (SHORT_ELIGIBLE_PAIRS.includes(pair) && SHORT_ELIGIBLE_SESSIONS.includes(session)) {
                     direction = "short";
                     mtfConfirmed = true;
                   } else {
-                    // Bearish but pair/session not eligible for shorts — skip
                     console.log(`[SCALP-TRADE] ${pair}: Bearish consensus but not short-eligible — skipping`);
                     results.push({ pair, direction: "short", status: "direction-mismatch", govState, agentId });
                     continue;
