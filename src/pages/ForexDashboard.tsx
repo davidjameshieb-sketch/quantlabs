@@ -23,6 +23,8 @@ import { GovernanceStateBanner } from '@/components/forex/GovernanceStateBanner'
 import { SystemLearningPanel } from '@/components/forex/SystemLearningPanel';
 import { CounterfactualPanel } from '@/components/forex/CounterfactualPanel';
 import { TradeQualityWatchdog } from '@/components/forex/TradeQualityWatchdog';
+import { SystemConfidenceMeter } from '@/components/forex/SystemConfidenceMeter';
+import { StatusMeterRow } from '@/components/forex/StatusMeter';
 
 // Performance components
 import { EquityCurveChart } from '@/components/forex/EquityCurveChart';
@@ -166,6 +168,16 @@ const ForexDashboard = () => {
             sessionBudgets={governanceDashboard.sessionBudgets}
           />
 
+          {/* Hero Confidence Meter */}
+          <SystemConfidenceMeter
+            executionMetrics={executionMetrics}
+            connected={connected}
+            governanceState={governanceDashboard.currentState}
+            totalClosedTrades={tradeAnalytics.totalClosedTrades}
+            totalPnlPips={tradeAnalytics.totalPnlPips}
+            overallSharpe={tradeAnalytics.overallSharpe}
+          />
+
           {/* 4-Tab Layout */}
           <Tabs defaultValue="command-center" className="space-y-4">
             <TabsList className="bg-card/50 border border-border/30 h-auto gap-1 p-1">
@@ -216,6 +228,12 @@ const ForexDashboard = () => {
                     openTradeCount={openTrades.length}
                     executionMetrics={executionMetrics}
                   />
+                  <StatusMeterRow meters={[
+                    { label: 'Win Rate', value: (executionMetrics?.winRate ?? 0) * 100 },
+                    { label: 'Exec Quality', value: executionMetrics?.avgExecutionQuality ?? 0 },
+                    { label: 'Margin Health', value: account ? Math.max(0, 100 - (parseFloat(account.marginUsed ?? '0') / Math.max(parseFloat(account.balance ?? '1'), 1)) * 100) : 0 },
+                    { label: 'Positions', value: Math.max(0, 100 - (openTrades.length / 6) * 100) },
+                  ]} />
                 </PanelCheatSheet>
 
                 {/* System Learning Status */}
@@ -255,6 +273,12 @@ const ForexDashboard = () => {
                   ];
                 })()}>
                   <SystemLearningPanel executionMetrics={executionMetrics} />
+                  <StatusMeterRow meters={[
+                    { label: 'Edge Confidence', value: Math.round((executionMetrics?.winRate ?? 0.5) * 100) },
+                    { label: 'Maturity', value: Math.min(100, Math.round((tradeAnalytics.totalClosedTrades / 500) * 100)) },
+                    { label: 'Exec Quality', value: executionMetrics?.avgExecutionQuality ?? 0 },
+                    { label: 'Latency', value: Math.max(0, 100 - (executionMetrics?.avgFillLatency ?? 0) / 5) },
+                  ]} />
                 </PanelCheatSheet>
 
                 {/* Trade Quality Watchdog */}
@@ -285,6 +309,11 @@ const ForexDashboard = () => {
                   ];
                 })()}>
                   <TradeQualityWatchdog realMetrics={executionMetrics} />
+                  <StatusMeterRow meters={[
+                    { label: 'Sharpe', value: Math.min(100, Math.max(0, tradeAnalytics.overallSharpe * 33)) },
+                    { label: 'Win Rate', value: Math.round((tradeAnalytics.pairAnalytics.length > 0 ? tradeAnalytics.pairAnalytics.reduce((s, p) => s + p.winRate, 0) / tradeAnalytics.pairAnalytics.length : 0) * 100) },
+                    { label: 'P&L Health', value: Math.min(100, Math.max(0, 50 + tradeAnalytics.totalPnlPips / 2)) },
+                  ]} />
                 </PanelCheatSheet>
 
                 {/* Execution Proof — Integrity verification */}
@@ -306,6 +335,11 @@ const ForexDashboard = () => {
                   ];
                 })()}>
                   <ExecutionProofPanel />
+                  <StatusMeterRow meters={[
+                    { label: 'Gov Health', value: governanceDashboard.currentState === 'NORMAL' ? 90 : governanceDashboard.currentState === 'DEFENSIVE' ? 50 : 20 },
+                    { label: 'Promoted', value: Math.min(100, governanceDashboard.promotedPairs.length * 25) },
+                    { label: 'Safety', value: governanceDashboard.bannedPairs.length === 0 ? 95 : Math.max(10, 95 - governanceDashboard.bannedPairs.length * 20) },
+                  ]} />
                 </PanelCheatSheet>
 
                 {/* Counterfactual */}
