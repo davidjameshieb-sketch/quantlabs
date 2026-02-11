@@ -7,7 +7,7 @@ import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
 import {
   ShieldAlert, TrendingUp, TrendingDown, RefreshCw, Eye,
-  CheckCircle2, XCircle, BarChart3, AlertTriangle,
+  CheckCircle2, XCircle, BarChart3, AlertTriangle, Zap, Clock,
 } from 'lucide-react';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 
@@ -108,6 +108,8 @@ export function CounterfactualPanel() {
   const [orders, setOrders] = useState<CounterfactualOrder[]>([]);
   const [loading, setLoading] = useState(true);
   const [showDetails, setShowDetails] = useState(false);
+  const [resolving, setResolving] = useState(false);
+  const [lastResolved, setLastResolved] = useState<{ resolved: number; pending: number } | null>(null);
 
   const fetchData = useCallback(async () => {
     if (!user) return;
@@ -131,6 +133,31 @@ export function CounterfactualPanel() {
       setLoading(false);
     }
   }, [user]);
+
+  const triggerResolver = useCallback(async () => {
+    setResolving(true);
+    try {
+      const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+      const res = await fetch(`${supabaseUrl}/functions/v1/forex-counterfactual-resolver`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+        },
+        body: JSON.stringify({ source: 'manual' }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setLastResolved({ resolved: data.resolved || 0, pending: data.pending || 0 });
+        // Refresh the panel data after resolving
+        setTimeout(() => fetchData(), 1000);
+      }
+    } catch (err) {
+      console.error('[Counterfactual] Resolver error:', err);
+    } finally {
+      setResolving(false);
+    }
+  }, [fetchData]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
@@ -169,6 +196,10 @@ export function CounterfactualPanel() {
             </Badge>
           </div>
           <div className="flex items-center gap-1.5">
+            <Button variant="ghost" size="sm" className="h-6 px-2 text-[10px]" onClick={triggerResolver} disabled={resolving}>
+              <Zap className={`w-3 h-3 mr-1 ${resolving ? 'animate-pulse' : ''}`} />
+              {resolving ? 'Resolving...' : 'Resolve Now'}
+            </Button>
             <Button variant="ghost" size="sm" className="h-6 px-2 text-[10px]" onClick={fetchData} disabled={loading}>
               <RefreshCw className={`w-3 h-3 mr-1 ${loading ? 'animate-spin' : ''}`} />
               Refresh
@@ -193,6 +224,21 @@ export function CounterfactualPanel() {
             {verdict === 'over-filtering' && `⚠ Governance may be over-filtering — ${stats.wins} of ${stats.resolved} blocked trades would have been profitable (+${stats.totalMissedPips.toFixed(1)}p missed)`}
             {verdict === 'insufficient' && `Collecting data — ${stats.pending} blocked trades pending outcome (need 5+ resolved)`}
           </span>
+        </div>
+
+        {/* Resolver Status */}
+        {lastResolved && (
+          <div className="flex items-center gap-2 p-1.5 rounded bg-primary/10 border border-primary/20">
+            <Zap className="w-3 h-3 text-primary" />
+            <span className="text-[10px] text-primary">
+              Resolver: {lastResolved.resolved} resolved, {lastResolved.pending} still pending
+            </span>
+          </div>
+        )}
+
+        <div className="flex items-center gap-2 text-[9px] text-muted-foreground">
+          <Clock className="w-3 h-3" />
+          <span>Auto-resolves every 5 min via cron · Checks price 15min after rejection</span>
         </div>
 
         {/* Summary Stats */}
