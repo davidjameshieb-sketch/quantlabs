@@ -4,7 +4,7 @@
 // Coalition agents + votes, Auto-promotion events, Final decision reason.
 // Includes Live Integrity Summary mode (20-attempt audit).
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -198,20 +198,18 @@ export const ExecutionProofPanel = () => {
     }
   }, []);
 
-  if (!proof && !loading && !error && !integrity) {
+  // Auto-load on mount
+  useEffect(() => {
+    fetchProof();
+    fetchIntegrity();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (!proof && !integrity && loading) {
     return (
       <Card className="border-border/30 bg-card/50">
         <CardContent className="py-8 flex flex-col items-center gap-3">
-          <Lock className="w-8 h-8 text-primary/50" />
-          <p className="text-xs text-muted-foreground text-center">Verify all intelligence layers are consulted for every trade</p>
-          <div className="flex gap-2">
-            <Button size="sm" variant="outline" onClick={fetchProof}>
-              <Zap className="w-3.5 h-3.5 mr-1.5" /> Load Execution Proof
-            </Button>
-            <Button size="sm" variant="outline" onClick={fetchIntegrity}>
-              <BarChart3 className="w-3.5 h-3.5 mr-1.5" /> Integrity Audit
-            </Button>
-          </div>
+          <RefreshCw className="w-6 h-6 text-primary/50 animate-spin" />
+          <p className="text-xs text-muted-foreground text-center">Loading execution proof…</p>
         </CardContent>
       </Card>
     );
