@@ -18,7 +18,7 @@ export const OandaConnectionPanel = () => {
   } = useOandaExecution();
 
   useEffect(() => {
-    fetchAccountSummary('practice');
+    fetchAccountSummary('live');
   }, [fetchAccountSummary]);
 
   const formatCurrency = (val: string | undefined, currency = 'USD') => {
@@ -62,7 +62,7 @@ export const OandaConnectionPanel = () => {
           size="sm"
           variant="ghost"
           className="h-6 px-2 text-[10px]"
-          onClick={() => fetchAccountSummary('practice')}
+          onClick={() => fetchAccountSummary('live')}
           disabled={loading}
         >
           <RefreshCw className={cn('w-3 h-3 mr-1', loading && 'animate-spin')} />

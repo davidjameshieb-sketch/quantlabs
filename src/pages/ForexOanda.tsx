@@ -34,8 +34,8 @@ const ForexOanda = () => {
 
   // Fetch real order data for the execution health panel on mount
   useEffect(() => {
-    fetchAccountSummary('practice');
-    fetchOrderHistory('practice');
+    fetchAccountSummary('live');
+    fetchOrderHistory('live');
   }, [fetchAccountSummary, fetchOrderHistory]);
 
   return (

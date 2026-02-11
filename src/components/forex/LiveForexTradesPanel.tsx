@@ -25,8 +25,8 @@ export const LiveForexTradesPanel = () => {
   } = useOandaExecution();
 
   const handleRefresh = useCallback(() => {
-    fetchAccountSummary('practice');
-    fetchOrderHistory('practice');
+    fetchAccountSummary('live');
+    fetchOrderHistory('live');
   }, [fetchAccountSummary, fetchOrderHistory]);
 
   // Realtime: auto-refresh when orders change (alerts handled by the hook)
@@ -99,7 +99,7 @@ export const LiveForexTradesPanel = () => {
         </p>
         {openTrades.length === 0 ? (
           <p className="text-[10px] text-muted-foreground/60 py-2 text-center">
-            No open positions on OANDA practice account.
+            No open positions on OANDA live account.
           </p>
         ) : (
           <div className="space-y-1 max-h-40 overflow-y-auto">
