@@ -448,13 +448,13 @@ export const ExecutionProofPanel = () => {
 
               {/* Summary */}
               <div className="flex gap-3 text-[10px] text-muted-foreground border-t border-border/20 pt-2 flex-wrap">
-                <span>Total: {proof.summary.total}</span>
-                <span className="text-emerald-400">Filled: {proof.summary.filled}</span>
-                {(proof.summary.edgeLocked ?? 0) > 0 && <span className="text-red-400">Edge-Locked: {proof.summary.edgeLocked}</span>}
-                {(proof.summary.mtfBlocked ?? 0) > 0 && <span className="text-red-400">MTF-Blocked: {proof.summary.mtfBlocked}</span>}
-                {(proof.summary.weakConsensus ?? 0) > 0 && <span className="text-amber-400">Weak-Consensus: {proof.summary.weakConsensus}</span>}
-                <span>Gated: {proof.summary.gated}</span>
-                <span>Rejected: {proof.summary.rejected}</span>
+                <span>Total: {proof.summary?.total ?? 0}</span>
+                <span className="text-emerald-400">Filled: {proof.summary?.filled ?? 0}</span>
+                {(proof.summary?.edgeLocked ?? 0) > 0 && <span className="text-red-400">Edge-Locked: {proof.summary?.edgeLocked}</span>}
+                {(proof.summary?.mtfBlocked ?? 0) > 0 && <span className="text-red-400">MTF-Blocked: {proof.summary?.mtfBlocked}</span>}
+                {(proof.summary?.weakConsensus ?? 0) > 0 && <span className="text-amber-400">Weak-Consensus: {proof.summary?.weakConsensus}</span>}
+                <span>Gated: {proof.summary?.gated ?? 0}</span>
+                <span>Rejected: {proof.summary?.rejected ?? 0}</span>
               </div>
             </motion.div>
           )}
