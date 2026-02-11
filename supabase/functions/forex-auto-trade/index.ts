@@ -1650,21 +1650,27 @@ Deno.serve(async (req) => {
                   direction = "long";
                   mtfConfirmed = true;
                 } else if (indicatorDirection === "bearish") {
-                  // ═══ PROFIT FIX: Shorts require 1.6x the consensus threshold ═══
-                  // Shorts have 33% WR vs 57.6% for longs — demand stronger conviction
-                  const SHORT_CONSENSUS_MULTIPLIER = 1.6;
-                  const shortThreshold = Math.round(MIN_CONSENSUS * SHORT_CONSENSUS_MULTIPLIER);
-                  if (Math.abs(indicatorConsensusScore) < shortThreshold) {
-                    console.log(`[SCALP-TRADE] ${pair}: Bearish consensus ${indicatorConsensusScore} below short threshold ${shortThreshold} — skipping`);
-                    results.push({ pair, direction: "short", status: "weak-short-consensus", govState, agentId });
+                  // ═══ SHORT DIRECTION FIX: Indicator consensus does NOT trigger shorts ═══
+                  // Data proves indicator "bearish" = "not bullish", not a genuine short signal.
+                  // 15,322 shorts in "expansion" regime all lost (-2.01p avg, 33% WR).
+                  // Shorts now require a BEARISH REGIME (compression/contraction) — not indicator inversion.
+                  const SHORT_REGIMES = ["compression", "contraction", "shock", "breakdown", "risk-off", "flat"];
+                  const isShortRegime = SHORT_REGIMES.includes(regime);
+                  
+                  if (!isShortRegime) {
+                    // Bearish indicator in expansion/momentum regime → skip, don't short
+                    console.log(`[SCALP-TRADE] ${pair}: Bearish consensus but regime=${regime} is NOT short-friendly — skipping (no indicator-driven shorts)`);
+                    results.push({ pair, direction: "short", status: "regime-not-short-friendly", govState, agentId });
                     continue;
                   }
-                  // Shorts only on eligible pairs + sessions
+                  
+                  // Short regime confirmed — now check pair + session eligibility
                   if (SHORT_ELIGIBLE_PAIRS.includes(pair) && SHORT_ELIGIBLE_SESSIONS.includes(session)) {
                     direction = "short";
                     mtfConfirmed = true;
+                    console.log(`[SCALP-TRADE] ${pair}: SHORT authorized — regime=${regime} is short-friendly + bearish consensus=${indicatorConsensusScore}`);
                   } else {
-                    console.log(`[SCALP-TRADE] ${pair}: Bearish consensus but not short-eligible — skipping`);
+                    console.log(`[SCALP-TRADE] ${pair}: Short regime but pair/session not eligible — skipping`);
                     results.push({ pair, direction: "short", status: "direction-mismatch", govState, agentId });
                     continue;
                   }
