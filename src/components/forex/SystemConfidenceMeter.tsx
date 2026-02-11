@@ -2,10 +2,11 @@
 // "Autonomous live profitability with zero agent execution bottlenecks"
 
 import { motion } from 'framer-motion';
-import { Brain, Target, Zap, TrendingUp, Shield, AlertTriangle, BookOpen, Activity } from 'lucide-react';
+import { Brain, Target, Zap, TrendingUp, Shield, AlertTriangle, BookOpen, Activity, Filter } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { RealExecutionMetrics } from '@/hooks/useOandaPerformance';
 import { getEdgeLearningSummary } from '@/lib/forex/edgeLearningState';
+import { computeAdaptiveThreshold, computeIndicatorProfile } from '@/lib/forex/indicatorLearningEngine';
 import { useMemo } from 'react';
 
 interface SystemConfidenceMeterProps {
@@ -50,9 +51,12 @@ export const SystemConfidenceMeter = ({
     f.push({ label: 'Risk-Adjusted', value: sharpeScore, max: 20, status: sharpeScore >= 15 ? 'good' : sharpeScore >= 8 ? 'warn' : 'bad' });
     s += sharpeScore;
 
-    // 4. Edge confidence / learning stability (0-20)
+    // 4. Edge confidence / learning stability + indicator learning quality (0-20)
+    const indicatorLearningBonus = learningSummary.totalTradesProcessed >= 20
+      ? Math.min(5, Math.round(learningSummary.stableCount * 1.5))
+      : 0;
     const edgeScore = Math.min(20, Math.round(
-      learningSummary.avgEdgeConfidence * 15 + (learningSummary.stableCount * 2)
+      learningSummary.avgEdgeConfidence * 12 + (learningSummary.stableCount * 1.5) + indicatorLearningBonus
     ));
     f.push({ label: 'Edge Stability', value: edgeScore, max: 20, status: edgeScore >= 14 ? 'good' : edgeScore >= 7 ? 'warn' : 'bad' });
     s += edgeScore;
@@ -115,7 +119,22 @@ export const SystemConfidenceMeter = ({
     } else if (totalClosedTrades < 75) {
       insights.push({ icon: '🔬', text: 'Adapting: Gathering statistical significance — all environments under observation', status: 'bad' });
     } else {
-      insights.push({ icon: '🔬', text: 'Adapting: Fine-tuning edge allocation multipliers across validated environments', status: 'good' });
+      insights.push({ icon: '🔬', text: 'Adapting: Fine-tuning edge allocation — noise indicators auto-excluded from consensus', status: 'good' });
+    }
+
+    // Indicator learning status
+    if (learningSummary.totalTradesProcessed >= 20) {
+      insights.push({
+        icon: '🧹',
+        text: `Indicator learning active: noise indicators auto-excluded per pair, consensus threshold adapts with maturity`,
+        status: 'good',
+      });
+    } else if (learningSummary.totalTradesProcessed >= 10) {
+      insights.push({
+        icon: '🧹',
+        text: `Indicator profiling: ${learningSummary.totalTradesProcessed} trades analyzed — need 20+ per pair to activate noise filtering`,
+        status: 'warn',
+      });
     }
 
     // Edge stability
