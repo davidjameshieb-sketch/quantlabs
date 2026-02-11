@@ -1548,11 +1548,13 @@ Deno.serve(async (req) => {
       let mtf_5m_momentum = false;
       let mtf_15m_bias = false;
       let mtf_data_available = false;
-      // ═══ INDICATOR-DERIVED REGIME (replaces time-based for short decisions) ═══
+      // ═══ INDICATOR-DERIVED REGIME (replaces time-based for BOTH long and short decisions) ═══
       let indicatorRegime = "unknown";
       let indicatorRegimeStrength = 0;
       let indicatorShortFriendly = false;
+      let indicatorLongFriendly = false;
       let indicatorBearishMomentum = 0;
+      let indicatorBullishMomentum = 0;
 
       if (forceMode) {
         direction = reqBody.direction || "long";
@@ -1610,8 +1612,10 @@ Deno.serve(async (req) => {
                 indicatorRegime = indicatorData.regime.label || "unknown";
                 indicatorRegimeStrength = indicatorData.regime.strength || 0;
                 indicatorShortFriendly = indicatorData.regime.shortFriendly === true;
+                indicatorLongFriendly = indicatorData.regime.longFriendly === true;
                 indicatorBearishMomentum = indicatorData.regime.bearishMomentum || 0;
-                console.log(`[REGIME-INDICATOR] ${pair}: regime=${indicatorRegime} strength=${indicatorRegimeStrength} shortFriendly=${indicatorShortFriendly} bearishMomentum=${indicatorBearishMomentum}`);
+                indicatorBullishMomentum = indicatorData.regime.bullishMomentum || 0;
+                console.log(`[REGIME-INDICATOR] ${pair}: regime=${indicatorRegime} strength=${indicatorRegimeStrength} longFriendly=${indicatorLongFriendly} shortFriendly=${indicatorShortFriendly} bullishMom=${indicatorBullishMomentum} bearishMom=${indicatorBearishMomentum}`);
               }
 
               // ═══ INDICATOR LEARNING: Apply noise filtering ═══
@@ -1663,8 +1667,42 @@ Deno.serve(async (req) => {
               }
               if (Math.abs(indicatorConsensusScore) >= MIN_CONSENSUS) {
                 if (indicatorDirection === "bullish") {
+                  // ═══ LONG DIRECTION: Uses INDICATOR-DERIVED regime (not time-based) ═══
+                  // Longs only authorized when real market structure confirms bullish conditions.
+                  // Mirrors short-side logic: regime must be longFriendly + bullish momentum threshold.
+                  
+                  const LONG_FRIENDLY_REGIMES = ["expansion", "momentum", "exhaustion"];
+                  const MIN_BULLISH_MOMENTUM = 4; // Require 4/7 bullish indicators
+                  
+                  if (!indicatorLongFriendly) {
+                    // Check if regime could still support longs (transition with strong bullish momentum)
+                    if (indicatorRegime === "transition" && indicatorBullishMomentum >= 5) {
+                      console.log(`[LONG-REGIME] ${pair}: Transition regime overridden — strong bullish momentum (${indicatorBullishMomentum}/7)`);
+                    } else {
+                      console.log(`[SCALP-TRADE] ${pair}: Bullish consensus but indicatorRegime=${indicatorRegime} (strength=${indicatorRegimeStrength}) is NOT long-friendly — skipping`);
+                      results.push({ pair, direction: "long", status: "regime-not-long-friendly", govState, agentId,
+                        error: `indicatorRegime=${indicatorRegime},bullishMomentum=${indicatorBullishMomentum}` });
+                      continue;
+                    }
+                  }
+                  
+                  // Require minimum bullish momentum confirmation
+                  if (indicatorBullishMomentum < MIN_BULLISH_MOMENTUM) {
+                    console.log(`[SCALP-TRADE] ${pair}: bullishMomentum=${indicatorBullishMomentum} < ${MIN_BULLISH_MOMENTUM} — insufficient long conviction`);
+                    results.push({ pair, direction: "long", status: "weak-bullish-momentum", govState, agentId });
+                    continue;
+                  }
+                  
+                  // Require minimum regime strength
+                  if (indicatorRegimeStrength < 30) {
+                    console.log(`[SCALP-TRADE] ${pair}: Regime strength ${indicatorRegimeStrength} < 30 — too weak for long entry`);
+                    results.push({ pair, direction: "long", status: "weak-regime-strength", govState, agentId });
+                    continue;
+                  }
+                  
                   direction = "long";
                   mtfConfirmed = true;
+                  console.log(`[SCALP-TRADE] ${pair}: LONG authorized — indicatorRegime=${indicatorRegime} (strength=${indicatorRegimeStrength}, bullishMom=${indicatorBullishMomentum}) + consensus=${indicatorConsensusScore}`);
                 } else if (indicatorDirection === "bearish") {
                   // ═══ SHORT DIRECTION: Uses INDICATOR-DERIVED regime (not time-based) ═══
                   // Shorts only authorized when real market structure confirms bearish conditions.
@@ -1999,7 +2037,9 @@ Deno.serve(async (req) => {
               indicator_regime: indicatorRegime,
               indicator_regime_strength: indicatorRegimeStrength,
               indicator_short_friendly: indicatorShortFriendly,
+              indicator_long_friendly: indicatorLongFriendly,
               indicator_bearish_momentum: indicatorBearishMomentum,
+              indicator_bullish_momentum: indicatorBullishMomentum,
               regime_authorized: regimeAuthorized ? "PASS" : "FAIL",
               spread_check: gate.pass ? "PASS" : "FAIL",
               slippage_check: gate.pass ? "PASS" : "FAIL",
