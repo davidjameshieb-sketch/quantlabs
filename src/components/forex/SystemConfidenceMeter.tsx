@@ -2,7 +2,7 @@
 // "Autonomous live profitability with zero agent execution bottlenecks"
 
 import { motion } from 'framer-motion';
-import { Brain, Target, Zap, TrendingUp, Shield } from 'lucide-react';
+import { Brain, Target, Zap, TrendingUp, Shield, AlertTriangle, BookOpen, Activity } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { RealExecutionMetrics } from '@/hooks/useOandaPerformance';
 import { getEdgeLearningSummary } from '@/lib/forex/edgeLearningState';
@@ -71,6 +71,116 @@ export const SystemConfidenceMeter = ({
 
   const maturityLabel = score >= 80 ? 'Autonomous' : score >= 60 ? 'Converging' : score >= 40 ? 'Learning' : score >= 20 ? 'Calibrating' : 'Bootstrap';
 
+  // Score explanation
+  const scoreExplanation = useMemo(() => {
+    if (score >= 80) return 'System has proven autonomous profitability with stable edge and minimal bottlenecks.';
+    if (score >= 60) return 'System is converging toward autonomous operation. Edge is forming but needs more statistical proof.';
+    if (score >= 40) return 'System is actively learning from real trades. Patterns emerging but not yet statistically validated.';
+    if (score >= 20) return 'System is calibrating its models with early trade data. Needs more volume to establish reliable patterns.';
+    return 'System is in bootstrap phase — collecting initial trade data to begin learning. More real trades needed.';
+  }, [score]);
+
+  // Current edge & learning focus
+  const edgeInsights = useMemo(() => {
+    const insights: { icon: string; text: string; status: 'good' | 'warn' | 'bad' }[] = [];
+
+    // Best performing pair
+    const pairBreakdown = executionMetrics?.pairBreakdown ?? {};
+    const pairs = Object.values(pairBreakdown).filter(p => p.filled >= 3);
+    if (pairs.length > 0) {
+      const bestPair = pairs.reduce((a, b) => {
+        const aWR = a.winCount / Math.max(a.filled, 1);
+        const bWR = b.winCount / Math.max(b.filled, 1);
+        return bWR > aWR ? b : a;
+      });
+      const bestWR = (bestPair.winCount / Math.max(bestPair.filled, 1) * 100).toFixed(0);
+      insights.push({ icon: '🎯', text: `Best edge: ${bestPair.pair} (${bestWR}% WR, ${bestPair.filled} trades)`, status: 'good' });
+    }
+
+    // Learning maturity stage
+    const stage = totalClosedTrades >= 500 ? 'Mature' : totalClosedTrades >= 200 ? 'Converging' : totalClosedTrades >= 75 ? 'Growing' : totalClosedTrades >= 20 ? 'Early' : 'Bootstrap';
+    const nextMilestone = totalClosedTrades >= 500 ? null : totalClosedTrades >= 200 ? 500 : totalClosedTrades >= 75 ? 200 : totalClosedTrades >= 20 ? 75 : 20;
+    insights.push({
+      icon: '📊',
+      text: `Learning stage: ${stage}${nextMilestone ? ` → next milestone at ${nextMilestone} trades (${nextMilestone - totalClosedTrades} to go)` : ' — fully matured'}`,
+      status: stage === 'Mature' ? 'good' : stage === 'Converging' || stage === 'Growing' ? 'warn' : 'bad',
+    });
+
+    // Current system focus
+    const winRate = executionMetrics?.winRate ?? 0;
+    if (winRate < 0.5 && totalClosedTrades > 10) {
+      insights.push({ icon: '🔬', text: 'Adapting: Improving win rate — tightening entry filters and governance gates', status: 'warn' });
+    } else if (overallSharpe < 1.0 && totalClosedTrades > 20) {
+      insights.push({ icon: '🔬', text: 'Adapting: Stabilizing risk-adjusted returns — optimizing position sizing and exit timing', status: 'warn' });
+    } else if (totalClosedTrades < 75) {
+      insights.push({ icon: '🔬', text: 'Adapting: Gathering statistical significance — all environments under observation', status: 'bad' });
+    } else {
+      insights.push({ icon: '🔬', text: 'Adapting: Fine-tuning edge allocation multipliers across validated environments', status: 'good' });
+    }
+
+    // Edge stability
+    const stableEnvs = learningSummary.stableCount;
+    const totalEnvs = learningSummary.totalEnvironments;
+    if (totalEnvs > 0) {
+      insights.push({
+        icon: '🧬',
+        text: `${stableEnvs}/${totalEnvs} environment signatures stable (avg confidence: ${(learningSummary.avgEdgeConfidence * 100).toFixed(0)}%)`,
+        status: stableEnvs > totalEnvs / 2 ? 'good' : stableEnvs > 0 ? 'warn' : 'bad',
+      });
+    }
+
+    return insights;
+  }, [executionMetrics, totalClosedTrades, overallSharpe, learningSummary]);
+
+  // Common loss reasons
+  const lossReasons = useMemo(() => {
+    const reasons: { reason: string; pct: number; status: 'bad' | 'warn' }[] = [];
+    const pairBreakdown = executionMetrics?.pairBreakdown ?? {};
+    const pairs = Object.values(pairBreakdown).filter(p => p.filled >= 3);
+    const totalLosses = executionMetrics?.lossCount ?? 0;
+
+    if (totalLosses === 0) return reasons;
+
+    // Spread/slippage losses
+    const avgSlip = executionMetrics?.avgSlippage ?? 0;
+    if (avgSlip > 0.5) {
+      reasons.push({ reason: `High spread/slippage (avg ${avgSlip.toFixed(1)}p) eating into thin margins`, pct: Math.min(40, Math.round(avgSlip * 15)), status: 'bad' });
+    }
+
+    // Worst pair drag
+    if (pairs.length > 0) {
+      const worstPair = pairs.reduce((a, b) => {
+        const aWR = a.winCount / Math.max(a.filled, 1);
+        const bWR = b.winCount / Math.max(b.filled, 1);
+        return aWR < bWR ? a : b;
+      });
+      const worstWR = worstPair.winCount / Math.max(worstPair.filled, 1);
+      if (worstWR < 0.45) {
+        reasons.push({ reason: `${worstPair.pair} dragging returns (${(worstWR * 100).toFixed(0)}% WR over ${worstPair.filled} trades)`, pct: Math.round((1 - worstWR) * 30), status: 'bad' });
+      }
+    }
+
+    // Low win rate in general
+    const winRate = executionMetrics?.winRate ?? 0;
+    if (winRate < 0.5) {
+      reasons.push({ reason: `Overall win rate below 50% — system still calibrating entry precision`, pct: Math.round((1 - winRate) * 40), status: 'warn' });
+    }
+
+    // Execution quality
+    const avgQuality = executionMetrics?.avgExecutionQuality ?? 0;
+    if (avgQuality < 60) {
+      reasons.push({ reason: `Low execution quality (${avgQuality.toFixed(0)}%) — poor fill timing or adverse price movement`, pct: Math.round((100 - avgQuality) * 0.3), status: 'warn' });
+    }
+
+    // Regime misreads (if governance not normal)
+    if (governanceState !== 'NORMAL') {
+      reasons.push({ reason: `Governance in ${governanceState === 'HALT' ? 'COOLDOWN' : governanceState} — market conditions challenging`, pct: 20, status: 'warn' });
+    }
+
+    // Sort by impact
+    return reasons.sort((a, b) => b.pct - a.pct).slice(0, 4);
+  }, [executionMetrics, governanceState]);
+
   // SVG arc gauge
   const svgSize = 200;
   const strokeWidth = 14;
@@ -87,46 +197,60 @@ export const SystemConfidenceMeter = ({
       animate={{ opacity: 1, y: 0 }}
       className="p-5 rounded-xl bg-gradient-to-br from-card/90 to-card/50 border border-border/50"
     >
-      <div className="flex flex-col lg:flex-row items-center gap-6">
+      <div className="flex flex-col lg:flex-row items-start gap-6">
         {/* Big gauge */}
-        <div className="relative flex-shrink-0" style={{ width: svgSize, height: svgSize / 2 + 30 }}>
-          <svg width={svgSize} height={svgSize / 2 + 20} viewBox={`0 0 ${svgSize} ${svgSize / 2 + 20}`}>
-            {/* Background arc */}
-            <path
-              d={`M ${strokeWidth / 2} ${svgSize / 2} A ${radius} ${radius} 0 0 1 ${svgSize - strokeWidth / 2} ${svgSize / 2}`}
-              fill="none"
-              stroke="hsl(var(--muted))"
-              strokeWidth={strokeWidth}
-              strokeLinecap="round"
-            />
-            {/* Foreground arc */}
-            <motion.path
-              d={`M ${strokeWidth / 2} ${svgSize / 2} A ${radius} ${radius} 0 0 1 ${svgSize - strokeWidth / 2} ${svgSize / 2}`}
-              fill="none"
-              strokeWidth={strokeWidth}
-              strokeLinecap="round"
-              strokeDasharray={circumference}
-              initial={{ strokeDashoffset: circumference }}
-              animate={{ strokeDashoffset }}
-              transition={{ duration: 1.5, ease: 'easeOut' }}
-              className={strokeColorClass}
-            />
-          </svg>
-          {/* Center value */}
-          <div className="absolute inset-0 flex flex-col items-center justify-end pb-2">
-            <motion.span
-              initial={{ opacity: 0, scale: 0.5 }}
-              animate={{ opacity: 1, scale: 1 }}
-              transition={{ delay: 0.8, duration: 0.4 }}
-              className={cn('text-4xl font-display font-bold', scoreColor)}
-            >
-              {score}
-            </motion.span>
-            <span className="text-[10px] text-muted-foreground">/ 100</span>
+        <div className="flex flex-col items-center flex-shrink-0">
+          <div className="relative" style={{ width: svgSize, height: svgSize / 2 + 30 }}>
+            <svg width={svgSize} height={svgSize / 2 + 20} viewBox={`0 0 ${svgSize} ${svgSize / 2 + 20}`}>
+              {/* Background arc */}
+              <path
+                d={`M ${strokeWidth / 2} ${svgSize / 2} A ${radius} ${radius} 0 0 1 ${svgSize - strokeWidth / 2} ${svgSize / 2}`}
+                fill="none"
+                stroke="hsl(var(--muted))"
+                strokeWidth={strokeWidth}
+                strokeLinecap="round"
+              />
+              {/* Foreground arc */}
+              <motion.path
+                d={`M ${strokeWidth / 2} ${svgSize / 2} A ${radius} ${radius} 0 0 1 ${svgSize - strokeWidth / 2} ${svgSize / 2}`}
+                fill="none"
+                strokeWidth={strokeWidth}
+                strokeLinecap="round"
+                strokeDasharray={circumference}
+                initial={{ strokeDashoffset: circumference }}
+                animate={{ strokeDashoffset }}
+                transition={{ duration: 1.5, ease: 'easeOut' }}
+                className={strokeColorClass}
+              />
+            </svg>
+            {/* Center value */}
+            <div className="absolute inset-0 flex flex-col items-center justify-end pb-2">
+              <motion.span
+                initial={{ opacity: 0, scale: 0.5 }}
+                animate={{ opacity: 1, scale: 1 }}
+                transition={{ delay: 0.8, duration: 0.4 }}
+                className={cn('text-4xl font-display font-bold', scoreColor)}
+              >
+                {score}
+              </motion.span>
+              <span className="text-[10px] text-muted-foreground">/ 100</span>
+            </div>
+          </div>
+          {/* Score explanation below gauge */}
+          <div className="text-center max-w-[220px] mt-1">
+            <span className={cn(
+              'px-2 py-0.5 rounded-full text-[9px] font-bold border inline-block mb-1',
+              score >= 70 ? 'border-neural-green/30 text-neural-green bg-neural-green/10'
+                : score >= 40 ? 'border-neural-orange/30 text-neural-orange bg-neural-orange/10'
+                : 'border-neural-red/30 text-neural-red bg-neural-red/10'
+            )}>
+              {maturityLabel}
+            </span>
+            <p className="text-[9px] text-muted-foreground leading-tight">{scoreExplanation}</p>
           </div>
         </div>
 
-        {/* Right side: label + breakdown */}
+        {/* Right side: label + breakdown + insights */}
         <div className="flex-1 space-y-3 min-w-0">
           <div className="flex items-center gap-2">
             <Target className="w-5 h-5 text-primary" />
@@ -136,14 +260,6 @@ export const SystemConfidenceMeter = ({
                 Autonomous live profitability · {totalClosedTrades.toLocaleString()} real trades processed
               </p>
             </div>
-            <span className={cn(
-              'ml-auto px-2 py-0.5 rounded-full text-[9px] font-bold border',
-              score >= 70 ? 'border-neural-green/30 text-neural-green bg-neural-green/10'
-                : score >= 40 ? 'border-neural-orange/30 text-neural-orange bg-neural-orange/10'
-                : 'border-neural-red/30 text-neural-red bg-neural-red/10'
-            )}>
-              {maturityLabel}
-            </span>
           </div>
 
           {/* Factor bars */}
@@ -153,8 +269,44 @@ export const SystemConfidenceMeter = ({
             ))}
           </div>
 
+          {/* Edge Insights — What system is doing */}
+          <div className="space-y-1.5 pt-1 border-t border-border/30">
+            <div className="flex items-center gap-1.5">
+              <Brain className="w-3.5 h-3.5 text-primary" />
+              <span className="text-[10px] font-display font-bold text-primary uppercase tracking-wider">Current Edge & Learning Focus</span>
+            </div>
+            {edgeInsights.map((insight, i) => (
+              <div key={i} className="flex items-start gap-2">
+                <span className="text-[10px] mt-0.5">{insight.icon}</span>
+                <span className={cn('text-[10px] leading-tight', insight.status === 'good' ? 'text-neural-green' : insight.status === 'warn' ? 'text-neural-orange' : 'text-muted-foreground')}>
+                  {insight.text}
+                </span>
+              </div>
+            ))}
+          </div>
+
+          {/* Loss Reasons */}
+          {lossReasons.length > 0 && (
+            <div className="space-y-1.5 pt-1 border-t border-border/30">
+              <div className="flex items-center gap-1.5">
+                <AlertTriangle className="w-3.5 h-3.5 text-neural-orange" />
+                <span className="text-[10px] font-display font-bold text-neural-orange uppercase tracking-wider">Common Loss Drivers</span>
+              </div>
+              {lossReasons.map((r, i) => (
+                <div key={i} className="flex items-center gap-2">
+                  <div className="flex-shrink-0 w-8">
+                    <div className="h-1.5 rounded-full bg-muted/30 overflow-hidden">
+                      <div className={cn('h-full rounded-full', r.status === 'bad' ? 'bg-neural-red' : 'bg-neural-orange')} style={{ width: `${r.pct}%` }} />
+                    </div>
+                  </div>
+                  <span className="text-[10px] text-muted-foreground leading-tight">{r.reason}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
           {/* Prime directive tagline */}
-          <p className="text-[9px] text-muted-foreground italic flex items-center gap-1">
+          <p className="text-[9px] text-muted-foreground italic flex items-center gap-1 pt-1">
             <Zap className="w-3 h-3 text-primary" />
             Zero execution bottlenecks · Safety brakes absolute · Learning never stops
           </p>
