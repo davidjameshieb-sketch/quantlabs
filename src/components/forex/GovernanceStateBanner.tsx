@@ -54,11 +54,11 @@ const stateUI: Record<GovernanceState, {
     badge: 'bg-[hsl(var(--neural-orange))]/20 text-[hsl(var(--neural-orange))] border-[hsl(var(--neural-orange))]/40',
   },
   HALT: {
-    icon: ShieldOff,
-    bg: 'bg-[hsl(var(--neural-red))]/10',
-    border: 'border-[hsl(var(--neural-red))]/40',
-    text: 'text-[hsl(var(--neural-red))]',
-    badge: 'bg-[hsl(var(--neural-red))]/20 text-[hsl(var(--neural-red))] border-[hsl(var(--neural-red))]/40',
+    icon: ShieldAlert,
+    bg: 'bg-[hsl(var(--neural-orange))]/10',
+    border: 'border-[hsl(var(--neural-orange))]/40',
+    text: 'text-[hsl(var(--neural-orange))]',
+    badge: 'bg-[hsl(var(--neural-orange))]/20 text-[hsl(var(--neural-orange))] border-[hsl(var(--neural-orange))]/40',
   },
 };
 
