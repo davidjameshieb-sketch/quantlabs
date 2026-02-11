@@ -768,10 +768,10 @@ function computePairMetrics(
     .filter((v): v is number => v != null);
   const avgQuality = qualities.length ? qualities.reduce((a, b) => a + b, 0) / qualities.length : 70;
 
-  // PRIMARY_PAIR (USD_CAD) is NEVER banned or restricted — always trades
-  const isPrimary = pair === PRIMARY_PAIR;
-  const banned = !isPrimary && closed.length >= 5 && (expectancy < -2 || winRate < 0.30);
-  const restricted = !isPrimary && closed.length >= 3 && (expectancy < -0.5 || winRate < 0.40 || avgQuality < 40);
+    // STRATEGY REVAMP: No pairs are ever banned or restricted — all pairs trade freely
+    // Performance-based allocation still applies (capital multiplier adjusts sizing)
+    const banned = false;
+    const restricted = false;
 
   let capitalMultiplier = 1.0;
   if (banned) capitalMultiplier = 0.0;
@@ -1653,7 +1653,8 @@ Deno.serve(async (req) => {
 
     // ─── Short-eligible pairs (from Live Edge Execution Module) ───
     // ─── PROFIT FIX: Removed GBP_JPY (31.7% WR, -1.1p) and EUR_JPY (34.5% WR, -0.6p) ───
-    const SHORT_ELIGIBLE_PAIRS = ["EUR_USD", "GBP_USD", "EUR_GBP", "USD_CAD", "AUD_USD", "USD_JPY"];
+    // STRATEGY REVAMP: All pairs eligible for shorts — no pair restrictions
+    const SHORT_ELIGIBLE_PAIRS = ALL_PAIRS;
     // ═══ ADAPTIVE SHORT LEARNING: No session restriction — learn from all sessions ═══
     // Session performance is tracked per-regime and auto-adjusted via shortLearningProfile
     const SHORT_ELIGIBLE_SESSIONS: SessionWindow[] = ["london-open", "ny-overlap", "asian", "late-ny"];
@@ -2187,7 +2188,7 @@ Deno.serve(async (req) => {
           status: shouldExecute ? "submitted" : "shadow_eval",
           idempotency_key: idempotencyKey,
           session_label: session,
-          regime_label: regime,
+          regime_label: indicatorRegime !== "unknown" ? indicatorRegime : regime,
           gate_result: gate.result,
           gate_reasons: gate.reasons.length > 0 ? gate.reasons : null,
           friction_score: gate.frictionScore,
@@ -2375,10 +2376,48 @@ Deno.serve(async (req) => {
 
       try {
         const signedUnits = direction === "short" ? -tradeUnits : tradeUnits; // Negative for shorts
+        
+        // ═══ STOP-LOSS: Dynamic ATR-based stop-loss wired into OANDA order ═══
+        // Fetches current price to compute stop-loss level
+        let stopLossPrice: number | undefined;
+        try {
+          const priceRes = await oandaRequest(
+            `/v3/accounts/{accountId}/pricing?instruments=${pair}`, "GET",
+            execConfig.oandaHost
+          ) as { prices?: Array<{ asks?: Array<{ price: string }>; bids?: Array<{ price: string }> }> };
+          const currentPrice = priceRes.prices?.[0];
+          if (currentPrice) {
+            const entryEstimate = direction === "long"
+              ? parseFloat(currentPrice.asks?.[0]?.price || "0")
+              : parseFloat(currentPrice.bids?.[0]?.price || "0");
+            if (entryEstimate > 0) {
+              stopLossPrice = computeStopLossPrice(pair, direction, entryEstimate);
+              const stopPips = computeStopLossPips(pair, direction);
+              console.log(`[SCALP-TRADE] ${pair}: Stop-loss set at ${stopLossPrice} (${stopPips}p from entry ~${entryEstimate})`);
+            }
+          }
+        } catch (slErr) {
+          console.warn(`[SCALP-TRADE] ${pair}: Could not compute stop-loss price: ${(slErr as Error).message}`);
+        }
+        
+        const orderBody: Record<string, unknown> = {
+          type: "MARKET",
+          instrument: pair,
+          units: signedUnits.toString(),
+          timeInForce: "FOK",
+          positionFill: "DEFAULT",
+        };
+        if (stopLossPrice) {
+          orderBody.stopLossOnFill = {
+            price: stopLossPrice.toString(),
+            timeInForce: "GTC",
+          };
+        }
+        
         const oandaResult = await oandaRequest(
           "/v3/accounts/{accountId}/orders", "POST",
           execConfig.oandaHost,
-          { order: { type: "MARKET", instrument: pair, units: signedUnits.toString(), timeInForce: "FOK", positionFill: "DEFAULT" } }
+          { order: orderBody }
         ) as Record<string, Record<string, string>>;
 
         const fillLatencyMs = Date.now() - orderTimestamp;
