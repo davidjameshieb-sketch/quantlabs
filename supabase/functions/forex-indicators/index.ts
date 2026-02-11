@@ -456,6 +456,7 @@ Deno.serve(async (req) => {
         trendEfficiency: trendEff,
         bollingerWidth: bbWidth,
         shortFriendly: ["breakdown", "risk-off", "exhaustion", "compression"].includes(marketRegime),
+        longFriendly: ["expansion", "momentum", "exhaustion"].includes(marketRegime),
       },
     }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
