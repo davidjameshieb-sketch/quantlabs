@@ -237,6 +237,11 @@ export const IndicatorPerformancePanel = () => {
             <BarChart3 className="w-4 h-4 text-primary" />
             Indicator Performance Analytics
             <Badge variant="outline" className="text-[9px]">{trades.length} trades analyzed</Badge>
+            {trades.length >= 10 && (
+              <Badge className="text-[8px] bg-emerald-500/20 text-emerald-300 border-emerald-500/30">
+                🧠 Learning Active
+              </Badge>
+            )}
           </CardTitle>
           <Button size="sm" variant="ghost" onClick={fetchTrades} disabled={loading} className="h-7 text-xs gap-1">
             <RefreshCw className={cn('w-3 h-3', loading && 'animate-spin')} /> Refresh
