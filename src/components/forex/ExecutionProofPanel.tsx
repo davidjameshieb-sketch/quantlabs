@@ -379,8 +379,8 @@ export const ExecutionProofPanel = () => {
                 <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1 font-bold">Intelligence Layers</p>
                 <LayerRow
                   label="MTF Indicator Timing"
-                  passed={proof.signals.some(s => s.gateResult === 'PASS')}
-                  detail={proof.signals.length > 0 ? `${proof.signals.filter(s => s.gateResult === 'PASS').length}/${proof.signals.length} signals passed` : 'No signals'}
+                  passed={(proof.signals ?? []).some(s => s.gateResult === 'PASS')}
+                  detail={(proof.signals ?? []).length > 0 ? `${(proof.signals ?? []).filter(s => s.gateResult === 'PASS').length}/${(proof.signals ?? []).length} signals passed` : 'No signals'}
                   icon={<TrendingUp className="w-3.5 h-3.5" />}
                 />
                 <LayerRow
@@ -391,8 +391,8 @@ export const ExecutionProofPanel = () => {
                 />
                 <LayerRow
                   label="Safety Gates (Spread/Slippage/Liquidity)"
-                  passed={proof.signals.every(s => s.frictionScore >= 50)}
-                  detail={proof.signals.length > 0 ? `Friction: ${proof.signals.map(s => s.frictionScore).join(', ')}` : 'No signals'}
+                  passed={(proof.signals ?? []).every(s => s.frictionScore >= 50)}
+                  detail={(proof.signals ?? []).length > 0 ? `Friction: ${(proof.signals ?? []).map(s => s.frictionScore).join(', ')}` : 'No signals'}
                   icon={<ShieldCheck className="w-3.5 h-3.5" />}
                 />
                 <LayerRow

@@ -74,13 +74,13 @@ const ForexDashboard = () => {
   const { metrics: executionMetrics } = useOandaPerformance();
   const tradeAnalytics = useTradeAnalytics(executionMetrics);
   useRealtimeOrders({
-    onOrderChange: () => fetchAccountSummary('practice'),
+    onOrderChange: () => fetchAccountSummary('live'),
     enableAlerts: true,
   });
 
   useEffect(() => {
     fetchOandaLivePrices().then(() => setLivePricesReady(true));
-    fetchAccountSummary('practice');
+    fetchAccountSummary('live');
   }, [fetchAccountSummary]);
 
   const agents = useMemo(() => createAgents(), []);
