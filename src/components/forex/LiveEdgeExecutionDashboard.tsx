@@ -10,7 +10,7 @@ import { Progress } from '@/components/ui/progress';
 import {
   Zap, TrendingUp, TrendingDown, ArrowDownRight, ShieldCheck,
   ShieldAlert, Clock, Activity, CheckCircle2, XCircle, AlertTriangle,
-  Radio, Target, Crosshair, Gauge, Lock,
+  Radio, Target, Crosshair, Gauge, Lock, Users,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import {
@@ -23,6 +23,7 @@ import {
   type EdgeExecutionDecision,
   type LiveEdgeExecutionState,
   type EntryCheck,
+  type CoalitionRequirementDisplay,
 } from '@/lib/forex/liveEdgeExecutionEngine';
 
 // ─── Sub-components ──────────────────────────────────────────────────
@@ -116,6 +117,45 @@ export const LiveEdgeExecutionDashboard = () => {
             <Radio className="w-3 h-3" />
             {state.systemMode.replace(/_/g, ' ')}
           </Badge>
+        </div>
+      </motion.div>
+
+      {/* Coalition Requirement Banner */}
+      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}
+        className={cn(
+          'p-3 rounded-xl border flex items-center gap-3',
+          state.coalitionRequirement.tier === 'solo' ? 'border-emerald-500/30 bg-emerald-500/5' :
+          state.coalitionRequirement.tier === 'duo' ? 'border-amber-500/30 bg-amber-500/5' :
+          'border-red-500/30 bg-red-500/5'
+        )}>
+        <Users className={cn('w-5 h-5',
+          state.coalitionRequirement.tier === 'solo' ? 'text-emerald-400' :
+          state.coalitionRequirement.tier === 'duo' ? 'text-amber-400' : 'text-red-400'
+        )} />
+        <div className="flex-1">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-bold font-mono uppercase">
+              {state.coalitionRequirement.tier} Mode
+            </span>
+            <Badge variant="outline" className="text-[9px]">
+              Min {state.coalitionRequirement.minAgents} agent{state.coalitionRequirement.minAgents > 1 ? 's' : ''}
+            </Badge>
+            <Badge variant="outline" className="text-[9px]">
+              Survivorship {state.coalitionRequirement.survivorshipScore}
+            </Badge>
+            <Badge variant="outline" className="text-[9px]">
+              PF {state.coalitionRequirement.rollingPF.toFixed(2)}
+            </Badge>
+            <Badge variant="outline" className={cn('text-[9px]',
+              state.coalitionRequirement.stabilityTrend === 'improving' ? 'text-emerald-400' :
+              state.coalitionRequirement.stabilityTrend === 'flat' ? 'text-amber-400' : 'text-red-400'
+            )}>
+              {state.coalitionRequirement.stabilityTrend}
+            </Badge>
+          </div>
+          <p className="text-[10px] text-muted-foreground mt-0.5">
+            {state.coalitionRequirement.reasons.join(' • ')}
+          </p>
         </div>
       </motion.div>
 

@@ -109,6 +109,19 @@ interface AgentSnapshot {
   };
 }
 
+// ─── Coalition Requirement Levels ───
+type CoalitionTier = "solo" | "duo" | "trio";
+
+interface CoalitionRequirement {
+  tier: CoalitionTier;
+  minAgents: number;
+  survivorshipScore: number;
+  rollingPF: number;
+  expectancySlope: number;
+  stabilityTrend: "improving" | "flat" | "deteriorating";
+  reasons: string[];
+}
+
 interface ExecutionSnapshot {
   effectiveAgents: AgentSnapshot[];
   eligibleAgents: AgentSnapshot[];  // canExecute=true only
@@ -117,6 +130,70 @@ interface ExecutionSnapshot {
   eligibleCount: number;
   shadowCount: number;
   disabledCount: number;
+  coalitionRequirement: CoalitionRequirement;
+}
+
+/**
+ * Compute dynamic coalition requirement based on aggregate survivorship metrics.
+ * Solo execution allowed if metrics are strong; degraded metrics require more agents.
+ */
+function computeCoalitionRequirement(agents: AgentSnapshot[]): CoalitionRequirement {
+  const eligible = agents.filter(a => a.canExecute);
+  const reasons: string[] = [];
+
+  if (eligible.length === 0) {
+    return {
+      tier: "trio", minAgents: 3, survivorshipScore: 0, rollingPF: 0,
+      expectancySlope: 0, stabilityTrend: "deteriorating",
+      reasons: ["No eligible agents"],
+    };
+  }
+
+  // Aggregate survivorship score from eligible agents' metrics
+  const totalTrades = eligible.reduce((s, a) => s + a.metrics.totalTrades, 0);
+  const weightedWR = eligible.reduce((s, a) => s + a.metrics.winRate * a.metrics.totalTrades, 0) / (totalTrades || 1);
+  const weightedExp = eligible.reduce((s, a) => s + a.metrics.expectancy * a.metrics.totalTrades, 0) / (totalTrades || 1);
+  const weightedPF = eligible.reduce((s, a) => s + a.metrics.profitFactor * a.metrics.totalTrades, 0) / (totalTrades || 1);
+
+  // Survivorship score: 0-100 composite
+  const wrScore = Math.min(30, weightedWR * 50);           // max 30 pts (60% WR = 30)
+  const expScore = Math.min(30, Math.max(0, weightedExp * 15)); // max 30 pts (2p exp = 30)
+  const pfScore = Math.min(25, Math.max(0, (weightedPF - 0.5) * 12.5)); // max 25 pts (PF 2.5 = 25)
+  const sampleScore = Math.min(15, totalTrades / 20);       // max 15 pts (300 trades = 15)
+  const survivorshipScore = Math.round(wrScore + expScore + pfScore + sampleScore);
+
+  // Expectancy slope proxy: positive expectancy = positive slope assumption
+  const expectancySlope = weightedExp;
+
+  // Stability trend: based on PF and consistency
+  let stabilityTrend: "improving" | "flat" | "deteriorating";
+  if (weightedPF >= 1.3 && weightedWR >= 0.55) stabilityTrend = "improving";
+  else if (weightedPF >= 1.0 && weightedWR >= 0.45) stabilityTrend = "flat";
+  else stabilityTrend = "deteriorating";
+
+  // ─── Tier determination ───
+  // SOLO: survivorship ≥ 60, PF ≥ 1.2, expectancy > 0, stability improving
+  if (survivorshipScore >= 60 && weightedPF >= 1.2 && expectancySlope > 0 && stabilityTrend === "improving") {
+    reasons.push(`Survivorship ${survivorshipScore} ≥ 60`);
+    reasons.push(`PF ${weightedPF.toFixed(2)} ≥ 1.2`);
+    reasons.push(`Expectancy slope ${expectancySlope.toFixed(2)} > 0`);
+    reasons.push(`Stability: ${stabilityTrend}`);
+    return { tier: "solo", minAgents: 1, survivorshipScore, rollingPF: weightedPF, expectancySlope, stabilityTrend, reasons };
+  }
+
+  // DUO: survivorship 40-59, PF 1.05-1.2, stability neutral
+  if (survivorshipScore >= 40 && weightedPF >= 1.05 && stabilityTrend !== "deteriorating") {
+    reasons.push(`Survivorship ${survivorshipScore} in [40-59]`);
+    reasons.push(`PF ${weightedPF.toFixed(2)} in [1.05-1.2]`);
+    reasons.push(`Stability: ${stabilityTrend}`);
+    return { tier: "duo", minAgents: 2, survivorshipScore, rollingPF: weightedPF, expectancySlope, stabilityTrend, reasons };
+  }
+
+  // TRIO: survivorship < 40, PF < 1.05, stability deteriorating
+  reasons.push(`Survivorship ${survivorshipScore} < 40`);
+  if (weightedPF < 1.05) reasons.push(`PF ${weightedPF.toFixed(2)} < 1.05`);
+  if (stabilityTrend === "deteriorating") reasons.push(`Stability: ${stabilityTrend}`);
+  return { tier: "trio", minAgents: 3, survivorshipScore, rollingPF: weightedPF, expectancySlope, stabilityTrend, reasons };
 }
 
 /**
@@ -245,14 +322,18 @@ function resolveAgentSnapshot(stats: Array<{
 
   const eligible = agents.filter(a => a.canExecute);
 
+  // ─── Compute Coalition Requirement from aggregate metrics ───
+  const coalitionRequirement = computeCoalitionRequirement(agents);
+
   return {
     effectiveAgents: agents,
     eligibleAgents: eligible,
-    allowedPairs: ALL_PAIRS, // pairs are filtered by discovery risk, not agent state
+    allowedPairs: ALL_PAIRS,
     totalAgents: agents.length,
     eligibleCount: eligible.length,
     shadowCount: agents.filter(a => a.deploymentState === "shadow").length,
     disabledCount: agents.filter(a => a.deploymentState === "disabled").length,
+    coalitionRequirement,
   };
 }
 
@@ -901,15 +982,23 @@ async function runLivePreflight(
     detail: `${snapshot.eligibleCount} eligible agents (${snapshot.shadowCount} shadow, ${snapshot.disabledCount} disabled)`,
   });
 
-  // B3 — No empty eligible list
+  // B3 — Dynamic Coalition Requirement (replaces fixed 2-agent minimum)
+  const cr = snapshot.coalitionRequirement;
   const eligibleNames = snapshot.eligibleAgents.map(a => `${a.agentId}(${a.effectiveTier})`).join(", ");
+  const coalitionPass = snapshot.eligibleCount >= cr.minAgents;
   checks.push({
-    name: "Agent Roster",
-    pass: snapshot.eligibleCount >= 2,
-    detail: snapshot.eligibleCount >= 2
-      ? `Eligible: ${eligibleNames}`
-      : `FAIL: Only ${snapshot.eligibleCount} agents eligible — need at least 2`,
+    name: "Coalition Governance",
+    pass: coalitionPass,
+    detail: coalitionPass
+      ? `${cr.tier.toUpperCase()} mode: ${snapshot.eligibleCount} eligible ≥ ${cr.minAgents} required | Survivorship=${cr.survivorshipScore} PF=${cr.rollingPF.toFixed(2)} Stability=${cr.stabilityTrend} | Eligible: ${eligibleNames}`
+      : `FAIL: ${cr.tier.toUpperCase()} mode requires ${cr.minAgents} agents but only ${snapshot.eligibleCount} eligible | Survivorship=${cr.survivorshipScore} PF=${cr.rollingPF.toFixed(2)} Stability=${cr.stabilityTrend} | Reasons: ${cr.reasons.join("; ")}`,
   });
+
+  // Log coalition transition for audit
+  console.log(`[COALITION-GOV] Tier=${cr.tier} MinAgents=${cr.minAgents} Survivorship=${cr.survivorshipScore} PF=${cr.rollingPF.toFixed(2)} ExpSlope=${cr.expectancySlope.toFixed(3)} Stability=${cr.stabilityTrend} Pass=${coalitionPass}`);
+  for (const r of cr.reasons) {
+    console.log(`[COALITION-GOV]   ${r}`);
+  }
 
   const allPass = checks.every(c => c.pass);
   return { pass: allPass, checks };
@@ -1014,6 +1103,7 @@ Deno.serve(async (req) => {
     const snapshot = resolveAgentSnapshot(agentStats);
 
     console.log(`[SCALP-TRADE] Agent Snapshot: ${snapshot.eligibleCount} eligible, ${snapshot.shadowCount} shadow, ${snapshot.disabledCount} disabled (from ${agentStats.length} agents, ${(rawOrders||[]).length} orders)`);
+    console.log(`[SCALP-TRADE] Coalition: ${snapshot.coalitionRequirement.tier.toUpperCase()} (min ${snapshot.coalitionRequirement.minAgents} agents) | Survivorship=${snapshot.coalitionRequirement.survivorshipScore} PF=${snapshot.coalitionRequirement.rollingPF.toFixed(2)}`);
     for (const a of snapshot.effectiveAgents) {
       console.log(`[SCALP-TRADE]   ${a.agentId}: ${a.effectiveTier} | ${a.deploymentState} | size=${a.sizeMultiplier} | exec=${a.canExecute}`);
     }
@@ -1285,6 +1375,7 @@ Deno.serve(async (req) => {
             eligible: 0,
             shadow: snapshot.shadowCount,
             disabled: snapshot.disabledCount,
+            coalition: snapshot.coalitionRequirement,
             agents: snapshot.effectiveAgents.map(a => ({
               id: a.agentId, tier: a.effectiveTier, state: a.deploymentState,
             })),
@@ -1763,6 +1854,7 @@ Deno.serve(async (req) => {
           eligible: snapshot.eligibleCount,
           shadow: snapshot.shadowCount,
           disabled: snapshot.disabledCount,
+          coalition: snapshot.coalitionRequirement,
           agents: snapshot.eligibleAgents.map(a => ({
             id: a.agentId,
             tier: a.effectiveTier,

@@ -486,6 +486,16 @@ export function generateMockEdgeContext(
 
 // ─── Generate full mock execution state (for dashboard) ──────────────
 
+export interface CoalitionRequirementDisplay {
+  tier: 'solo' | 'duo' | 'trio';
+  minAgents: number;
+  survivorshipScore: number;
+  rollingPF: number;
+  expectancySlope: number;
+  stabilityTrend: 'improving' | 'flat' | 'deteriorating';
+  reasons: string[];
+}
+
 export interface LiveEdgeExecutionState {
   longDecisions: EdgeExecutionDecision[];
   shortDecisions: EdgeExecutionDecision[];
@@ -496,6 +506,7 @@ export interface LiveEdgeExecutionState {
   longPairsActive: number;
   shortPairsActive: number;
   totalBlocked: number;
+  coalitionRequirement: CoalitionRequirementDisplay;
 }
 
 export function generateMockLiveEdgeState(): LiveEdgeExecutionState {
@@ -546,5 +557,14 @@ export function generateMockLiveEdgeState(): LiveEdgeExecutionState {
     longPairsActive: longDecisions.filter(d => d.permitted).length,
     shortPairsActive: shortDecisions.filter(d => d.permitted).length,
     totalBlocked,
+    coalitionRequirement: {
+      tier: 'solo',
+      minAgents: 1,
+      survivorshipScore: 42,
+      rollingPF: 0.95,
+      expectancySlope: -0.12,
+      stabilityTrend: 'flat',
+      reasons: ['Survivorship 42 in [40-59]', 'PF 0.95 in [1.05-1.2]', 'Stability: flat'],
+    },
   };
 }
