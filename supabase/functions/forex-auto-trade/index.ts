@@ -1631,8 +1631,19 @@ Deno.serve(async (req) => {
               // 1m ignition = strong consensus above high threshold
               mtf_1m_ignition = Math.abs(indicatorConsensusScore) >= 20;
 
-              // Minimum consensus threshold for trade authorization
-              const MIN_CONSENSUS = 25; // Absolute value
+              // ═══ ADAPTIVE CONSENSUS THRESHOLD ═══
+              // Tightens as indicator learning matures — more data = higher bar
+              // Base: 25, scales up to 45 based on learning quality + noise count
+              let MIN_CONSENSUS = 25;
+              if (pairLearningProfile && pairLearningProfile.totalTrades >= 20) {
+                const learningMaturity = Math.min(1, pairLearningProfile.totalTrades / 100);
+                const noiseRatio = pairLearningProfile.noiseIndicators.length / 16;
+                // More noise found = system is more selective = raise threshold
+                const qualityBoost = Math.round(pairLearningProfile.qualityScore * 0.15);
+                const noiseBoost = Math.round(noiseRatio * 10);
+                MIN_CONSENSUS = Math.min(45, 25 + Math.round((qualityBoost + noiseBoost) * learningMaturity));
+                console.log(`[INDICATOR-LEARN] ${pair}: Adaptive threshold=${MIN_CONSENSUS} (maturity=${(learningMaturity*100).toFixed(0)}%, quality=${pairLearningProfile.qualityScore}, noise=${pairLearningProfile.noiseIndicators.length})`);
+              }
               if (Math.abs(indicatorConsensusScore) >= MIN_CONSENSUS) {
                 if (indicatorDirection === "bullish") {
                   direction = "long";
@@ -1948,7 +1959,8 @@ Deno.serve(async (req) => {
               qualityScore: pairLearningProfile?.qualityScore || 0,
               baselineWinRate: pairLearningProfile?.baselineWinRate || 0,
               learningTrades: pairLearningProfile?.totalTrades || 0,
-            } : { applied: false },
+              adaptiveThreshold: MIN_CONSENSUS,
+            } : { applied: false, adaptiveThreshold: 25 },
           },
         })
         .select()

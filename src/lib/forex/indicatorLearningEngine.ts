@@ -38,6 +38,21 @@ const NOISE_LIFT_THRESHOLD = -0.03; // < -3% lift = noise
 const SIGNAL_LIFT_THRESHOLD = 0.02; // > +2% lift = signal
 
 /**
+ * Compute adaptive consensus threshold based on learning maturity.
+ * More data + more noise identified = higher bar for entry.
+ */
+export function computeAdaptiveThreshold(profile: PairIndicatorProfile): number {
+  const BASE = 25;
+  const MAX = 45;
+  if (profile.totalTrades < 20) return BASE;
+  const maturity = Math.min(1, profile.totalTrades / 100);
+  const noiseRatio = profile.noiseIndicators.length / 16;
+  const qualityBoost = Math.round(profile.qualityScore * 0.15);
+  const noiseBoost = Math.round(noiseRatio * 10);
+  return Math.min(MAX, BASE + Math.round((qualityBoost + noiseBoost) * maturity));
+}
+
+/**
  * Compute indicator reliability profile for a given pair from historical trades.
  * This is the core learning function — runs either client-side for dashboard
  * or server-side in the edge function.
