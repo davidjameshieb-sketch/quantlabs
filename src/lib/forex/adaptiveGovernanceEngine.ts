@@ -182,15 +182,10 @@ function computeWindow(
 function determineState(w20: RollingWindow, w50: RollingWindow, w200: RollingWindow): { state: GovernanceState; reasons: string[] } {
   const reasons: string[] = [];
 
-  // HALT
-  if (w20.tradeCount >= 5 && w20.winRate < 0.35 && w20.expectancy < -2) {
-    reasons.push(`20-trade WR ${(w20.winRate * 100).toFixed(0)}% < 35% with negative expectancy`);
-    return { state: "HALT", reasons };
-  }
-  if (w50.tradeCount >= 10 && w50.frictionAdjPnl < -50) {
-    reasons.push(`50-trade friction-adj P&L ${w50.frictionAdjPnl.toFixed(1)}p is catastrophic`);
-    return { state: "HALT", reasons };
-  }
+  // HALT / COOLDOWN — disabled until Prime Directive confidence > 50% (needs hundreds of trades)
+  // Will be re-enabled once system has enough data to justify cooldown pauses.
+  // if (w20.tradeCount >= 5 && w20.winRate < 0.35 && w20.expectancy < -2) { ... }
+  // if (w50.tradeCount >= 10 && w50.frictionAdjPnl < -50) { ... }
 
   // THROTTLED
   if (w20.tradeCount >= 5 && w20.winRate < 0.45) reasons.push(`20-trade WR ${(w20.winRate * 100).toFixed(0)}% < 45%`);
