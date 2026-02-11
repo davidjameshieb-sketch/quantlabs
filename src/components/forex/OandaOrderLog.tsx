@@ -12,7 +12,7 @@ export const OandaOrderLog = () => {
   const { orders, fetchOrderHistory, loading } = useOandaExecution();
 
   useEffect(() => {
-    fetchOrderHistory('practice');
+    fetchOrderHistory('live');
   }, [fetchOrderHistory]);
 
   const statusConfig: Record<string, { icon: React.ElementType; color: string }> = {
@@ -32,7 +32,7 @@ export const OandaOrderLog = () => {
           size="sm"
           variant="ghost"
           className="h-6 px-2 text-[10px]"
-          onClick={() => fetchOrderHistory('practice')}
+          onClick={() => fetchOrderHistory('live')}
           disabled={loading}
         >
           <RefreshCw className={cn('w-3 h-3 mr-1', loading && 'animate-spin')} />
