@@ -226,19 +226,26 @@ const ForexDashboard = () => {
                   const latency = executionMetrics?.avgFillLatency ?? 0;
                   const friction = executionMetrics?.avgFrictionScore ?? 0;
                   const pairCount = Object.keys(executionMetrics?.pairBreakdown ?? {}).length;
-                  const maturity = total >= 50 ? 'Mature' : total >= 20 ? 'Growing' : total >= 5 ? 'Early' : 'Bootstrap';
-                  // Derive best/worst pair from pairBreakdown
-                  const pairEntries = Object.values(executionMetrics?.pairBreakdown ?? {});
-                  const bestPair = pairEntries.length > 0 ? pairEntries.reduce((a, b) => (a.winCount / Math.max(a.filled, 1)) > (b.winCount / Math.max(b.filled, 1)) ? a : b) : null;
-                  const worstPair = pairEntries.length > 0 ? pairEntries.reduce((a, b) => (a.winCount / Math.max(a.filled, 1)) < (b.winCount / Math.max(b.filled, 1)) ? a : b) : null;
+                  const maturity = total >= 500 ? 'Mature' : total >= 200 ? 'Converging' : total >= 75 ? 'Growing' : total >= 20 ? 'Early' : 'Bootstrap';
+                  // Derive best/worst pair from pairBreakdown by win rate, with trade count tiebreaker
+                  const pairEntries = Object.values(executionMetrics?.pairBreakdown ?? {}).filter(p => p.filled >= 5);
+                  const pairWR = (p: typeof pairEntries[0]) => p.winCount / Math.max(p.filled, 1);
+                  const bestPair = pairEntries.length > 0 ? pairEntries.reduce((a, b) => {
+                    const diff = pairWR(b) - pairWR(a);
+                    return diff !== 0 ? (diff < 0 ? a : b) : (a.filled > b.filled ? a : b);
+                  }) : null;
+                  const worstPair = pairEntries.length > 0 ? pairEntries.reduce((a, b) => {
+                    const diff = pairWR(a) - pairWR(b);
+                    return diff !== 0 ? (diff < 0 ? a : b) : (a.filled > b.filled ? a : b);
+                  }) : null;
                   return [
-                    { label: 'Learning Maturity', value: maturity, status: total >= 50 ? 'good' as const : total >= 20 ? 'warn' as const : 'neutral' as const },
+                    { label: 'Learning Maturity', value: maturity, status: total >= 500 ? 'good' as const : total >= 75 ? 'warn' as const : 'neutral' as const },
                     { label: 'Sample Size', value: `${total} trades`, status: total > 30 ? 'good' as const : total > 10 ? 'warn' as const : 'bad' as const },
                     { label: 'Record', value: `${wc}W / ${lc}L`, status: wc > lc ? 'good' as const : wc === lc ? 'warn' as const : 'bad' as const },
                     { label: 'Realized P&L', value: `${pnl >= 0 ? '+' : ''}${pnl.toFixed(1)}p`, status: pnl >= 0 ? 'good' as const : 'bad' as const },
                     { label: 'Avg Execution Quality', value: `${quality.toFixed(0)}%`, status: quality >= 75 ? 'good' as const : quality >= 50 ? 'warn' as const : 'bad' as const },
                     { label: 'Avg Fill Latency', value: `${latency.toFixed(0)}ms`, status: latency < 200 ? 'good' as const : latency < 500 ? 'warn' as const : 'bad' as const },
-                    { label: 'Avg Friction Score', value: `${(friction * 100).toFixed(0)}%`, status: friction < 0.3 ? 'good' as const : friction < 0.6 ? 'warn' as const : 'bad' as const },
+                    { label: 'Avg Friction Score', value: friction > 1 ? `${friction.toFixed(1)}` : `${(friction * 100).toFixed(0)}%`, status: (friction > 1 ? friction < 30 : friction < 0.3) ? 'good' as const : (friction > 1 ? friction < 60 : friction < 0.6) ? 'warn' as const : 'bad' as const },
                     { label: 'Pairs Traded', value: `${pairCount}`, status: pairCount >= 3 ? 'good' as const : 'neutral' as const },
                     { label: 'Best Pair (WR)', value: bestPair ? bestPair.pair : '—', status: 'good' as const },
                     { label: 'Worst Pair (WR)', value: worstPair ? worstPair.pair : '—', status: 'bad' as const },
