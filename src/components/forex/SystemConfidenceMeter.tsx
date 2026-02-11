@@ -113,20 +113,20 @@ export const SystemConfidenceMeter = ({
     // Current system focus
     const winRate = executionMetrics?.winRate ?? 0;
     if (winRate < 0.5 && totalClosedTrades > 10) {
-      insights.push({ icon: '🔬', text: 'Adapting: Improving win rate — tightening entry filters and governance gates', status: 'warn' });
+      insights.push({ icon: '🔬', text: 'Adapting: Improving win rate — tightening entry filters and regime-based direction gating', status: 'warn' });
     } else if (overallSharpe < 1.0 && totalClosedTrades > 20) {
-      insights.push({ icon: '🔬', text: 'Adapting: Stabilizing risk-adjusted returns — optimizing position sizing and exit timing', status: 'warn' });
+      insights.push({ icon: '🔬', text: 'Adapting: Stabilizing risk-adjusted returns — indicator-derived regimes gate both long and short entries', status: 'warn' });
     } else if (totalClosedTrades < 75) {
       insights.push({ icon: '🔬', text: 'Adapting: Gathering statistical significance — all environments under observation', status: 'bad' });
     } else {
-      insights.push({ icon: '🔬', text: 'Adapting: Fine-tuning edge allocation — noise indicators auto-excluded from consensus', status: 'good' });
+      insights.push({ icon: '🔬', text: 'Adapting: Fine-tuning edge allocation — regime + momentum confirmation required for all directions', status: 'good' });
     }
 
     // Indicator learning status
     if (learningSummary.totalTradesProcessed >= 20) {
       insights.push({
         icon: '🧹',
-        text: `Indicator learning active: noise indicators auto-excluded per pair, consensus threshold adapts with maturity`,
+        text: `Indicator learning active: noise excluded per pair, regime gates both longs (expansion/momentum ≥4 bullish) and shorts (breakdown/risk-off ≥4 bearish)`,
         status: 'good',
       });
     } else if (learningSummary.totalTradesProcessed >= 10) {
@@ -327,7 +327,7 @@ export const SystemConfidenceMeter = ({
           {/* Prime directive tagline */}
           <p className="text-[9px] text-muted-foreground italic flex items-center gap-1 pt-1">
             <Zap className="w-3 h-3 text-primary" />
-            Zero execution bottlenecks · Safety brakes absolute · Learning never stops
+            Indicator-derived regimes · Directional momentum confirmation · Zero execution bottlenecks
           </p>
         </div>
       </div>
