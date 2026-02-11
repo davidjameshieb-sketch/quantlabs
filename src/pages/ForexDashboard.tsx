@@ -56,6 +56,7 @@ import { useOandaExecution } from '@/hooks/useOandaExecution';
 import { useOandaPerformance } from '@/hooks/useOandaPerformance';
 import { useTradeAnalytics } from '@/hooks/useTradeAnalytics';
 import { useRealtimeOrders } from '@/hooks/useRealtimeOrders';
+import { PanelCheatSheet, CheatSheetLine } from '@/components/forex/PanelCheatSheet';
 
 const ForexDashboard = () => {
   const [longOnlyFilter, setLongOnlyFilter] = useState(false);
@@ -166,30 +167,85 @@ const ForexDashboard = () => {
             <TabsContent value="command-center" className="space-y-4">
               <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-4">
                 {/* Live Execution Hero */}
-                <LiveExecutionHero
-                  account={account}
-                  connected={connected}
-                  openTradeCount={openTrades.length}
-                  executionMetrics={executionMetrics}
-                />
+                <PanelCheatSheet title="Execution Summary" lines={(() => {
+                  const bal = account ? parseFloat(account.balance) : 0;
+                  const upl = account ? parseFloat(account.unrealizedPL) : 0;
+                  const rpl = account ? parseFloat(account.pl) : 0;
+                  const wr = executionMetrics?.winRate ?? 0;
+                  return [
+                    { label: 'Balance', value: `$${bal.toFixed(2)}`, status: 'neutral' as const },
+                    { label: 'Unrealized P&L', value: `${upl >= 0 ? '+' : ''}$${upl.toFixed(2)}`, status: upl >= 0 ? 'good' as const : 'bad' as const },
+                    { label: 'Realized P&L', value: `${rpl >= 0 ? '+' : ''}$${rpl.toFixed(2)}`, status: rpl >= 0 ? 'good' as const : 'bad' as const },
+                    { label: 'Open Trades', value: `${openTrades.length}`, status: openTrades.length > 3 ? 'warn' as const : 'neutral' as const },
+                    { label: 'Win Rate', value: `${(wr * 100).toFixed(1)}%`, status: wr >= 0.55 ? 'good' as const : wr >= 0.45 ? 'warn' as const : 'bad' as const },
+                    { label: 'Connected', value: connected ? 'YES' : 'NO', status: connected ? 'good' as const : 'bad' as const },
+                  ];
+                })()}>
+                  <LiveExecutionHero
+                    account={account}
+                    connected={connected}
+                    openTradeCount={openTrades.length}
+                    executionMetrics={executionMetrics}
+                  />
+                </PanelCheatSheet>
 
                 {/* System Learning Status */}
-                <SystemLearningPanel executionMetrics={executionMetrics} />
+                <PanelCheatSheet title="System Learning" lines={(() => {
+                  const total = executionMetrics ? (executionMetrics.winCount + executionMetrics.lossCount) : 0;
+                  return [
+                    { label: 'Total Closed Trades', value: `${total}`, status: total > 20 ? 'good' as const : total > 5 ? 'warn' as const : 'neutral' as const },
+                    { label: 'Wins / Losses', value: `${executionMetrics?.winCount ?? 0}W / ${executionMetrics?.lossCount ?? 0}L`, status: (executionMetrics?.winRate ?? 0) >= 0.5 ? 'good' as const : 'bad' as const },
+                    { label: 'Realized P&L', value: `${(executionMetrics?.realizedPnl ?? 0).toFixed(1)}p`, status: (executionMetrics?.realizedPnl ?? 0) >= 0 ? 'good' as const : 'bad' as const },
+                    { label: 'Avg Quality', value: `${(executionMetrics?.avgExecutionQuality ?? 0).toFixed(0)}%`, status: (executionMetrics?.avgExecutionQuality ?? 0) >= 70 ? 'good' as const : 'warn' as const },
+                    { label: 'Data Available', value: executionMetrics?.hasData ? 'YES' : 'NO', status: executionMetrics?.hasData ? 'good' as const : 'warn' as const },
+                  ];
+                })()}>
+                  <SystemLearningPanel executionMetrics={executionMetrics} />
+                </PanelCheatSheet>
 
                 {/* Trade Quality Watchdog — 4 critical columns */}
-                <TradeQualityWatchdog realMetrics={executionMetrics} />
+                <PanelCheatSheet title="Trade Quality" lines={[
+                  { label: 'Net P&L', value: `${tradeAnalytics.totalPnlPips >= 0 ? '+' : ''}${tradeAnalytics.totalPnlPips}p`, status: tradeAnalytics.totalPnlPips >= 0 ? 'good' : 'bad' },
+                  { label: 'Closed Trades', value: `${tradeAnalytics.totalClosedTrades}`, status: 'neutral' },
+                  { label: 'Sharpe Ratio', value: `${tradeAnalytics.overallSharpe.toFixed(2)}`, status: tradeAnalytics.overallSharpe > 1 ? 'good' : tradeAnalytics.overallSharpe > 0.5 ? 'warn' : 'bad' },
+                ]}>
+                  <TradeQualityWatchdog realMetrics={executionMetrics} />
+                </PanelCheatSheet>
 
                 {/* Execution Proof — Integrity verification */}
-                <ExecutionProofPanel />
+                <PanelCheatSheet title="Execution Proof" lines={[
+                  { label: 'Purpose', value: 'Verify all layers pass before trade', status: 'neutral' },
+                  { label: 'Layers', value: 'MTF · Regime · Safety · Coalition', status: 'neutral' },
+                  { label: 'Governance', value: governanceDashboard.currentState, status: governanceDashboard.currentState === 'NORMAL' ? 'good' : governanceDashboard.currentState === 'DEFENSIVE' ? 'warn' : 'bad' },
+                ]}>
+                  <ExecutionProofPanel />
+                </PanelCheatSheet>
 
                 {/* Counterfactual — What would blocked trades have done? */}
-                <CounterfactualPanel />
+                <PanelCheatSheet title="Counterfactual" lines={[
+                  { label: 'Tracks', value: 'Blocked trades — were they right?', status: 'neutral' },
+                  { label: 'Auto-resolve', value: 'Every 5 min · 15min after rejection', status: 'neutral' },
+                ]}>
+                  <CounterfactualPanel />
+                </PanelCheatSheet>
 
                 {/* Live Trades — Open positions & recent orders */}
-                <LiveForexTradesPanel />
+                <PanelCheatSheet title="Live Trades" lines={[
+                  { label: 'Open Positions', value: `${openTrades.length}`, status: openTrades.length > 0 ? 'good' : 'neutral' },
+                  { label: 'Connection', value: connected ? 'Live' : 'Disconnected', status: connected ? 'good' : 'bad' },
+                ]}>
+                  <LiveForexTradesPanel />
+                </PanelCheatSheet>
 
                 {/* Live Edge Execution — Dual-edge decisions */}
-                <LiveEdgeExecutionDashboard />
+                <PanelCheatSheet title="Edge Execution" lines={[
+                  { label: 'Mode', value: 'Dual-Edge (Long + Short)', status: 'neutral' },
+                  { label: 'Governance', value: governanceDashboard.currentState, status: governanceDashboard.currentState === 'NORMAL' ? 'good' : 'warn' },
+                  { label: 'Restricted Pairs', value: `${governanceDashboard.restrictedPairs.length}`, status: governanceDashboard.restrictedPairs.length > 0 ? 'warn' : 'good' },
+                  { label: 'Banned Pairs', value: `${governanceDashboard.bannedPairs.length}`, status: governanceDashboard.bannedPairs.length > 0 ? 'bad' : 'good' },
+                ]}>
+                  <LiveEdgeExecutionDashboard />
+                </PanelCheatSheet>
               </motion.div>
             </TabsContent>
 
