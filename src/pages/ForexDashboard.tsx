@@ -56,7 +56,8 @@ import { PairDarwinismDashboard } from '@/components/forex/PairDarwinismDashboar
 import { LiveTradingProofPanel } from '@/components/forex/EnvironmentGuards';
 import { ShortEngineDashboard } from '@/components/forex/shorts/ShortEngineDashboard';
 import { DarwinControlDashboard } from '@/components/forex/DarwinControlDashboard';
-import { Pickaxe, Dna, ArrowDownRight, Orbit } from 'lucide-react';
+import { LiveEdgeExecutionDashboard } from '@/components/forex/LiveEdgeExecutionDashboard';
+import { Pickaxe, Dna, ArrowDownRight, Orbit, Zap as ZapIcon } from 'lucide-react';
 import { LazyTabContent } from '@/components/forex/LazyTabContent';
 import {
   generateForexTrades,
@@ -205,6 +206,7 @@ const ForexDashboard = () => {
             <TabsTrigger value="darwinism" className="text-xs gap-1.5"><Dna className="w-3.5 h-3.5" />Pair Darwinism</TabsTrigger>
             <TabsTrigger value="darwin-control" className="text-xs gap-1.5"><Orbit className="w-3.5 h-3.5" />Darwin Control</TabsTrigger>
             <TabsTrigger value="short-engine" className="text-xs gap-1.5"><ArrowDownRight className="w-3.5 h-3.5" />Short Engine</TabsTrigger>
+            <TabsTrigger value="live-edge" className="text-xs gap-1.5"><ZapIcon className="w-3.5 h-3.5" />Live Edge</TabsTrigger>
           </TabsList>
 
           {/* Focus Pairs — loads immediately */}
@@ -415,6 +417,12 @@ const ForexDashboard = () => {
           <TabsContent value="short-engine" className="space-y-4">
             <LazyTabContent label="Short Engine">
               <ShortEngineDashboard />
+            </LazyTabContent>
+          </TabsContent>
+
+          <TabsContent value="live-edge" className="space-y-4">
+            <LazyTabContent label="Live Edge Execution">
+              <LiveEdgeExecutionDashboard />
             </LazyTabContent>
           </TabsContent>
         </Tabs>
