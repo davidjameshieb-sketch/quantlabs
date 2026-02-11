@@ -1375,7 +1375,7 @@ Deno.serve(async (req) => {
     }> = [];
 
     // ─── Short-eligible pairs (from Live Edge Execution Module) ───
-    const SHORT_ELIGIBLE_PAIRS = ["USD_JPY", "GBP_JPY", "EUR_USD", "GBP_USD"];
+    const SHORT_ELIGIBLE_PAIRS = ["USD_JPY", "GBP_JPY", "EUR_USD", "GBP_USD", "EUR_GBP", "USD_CAD", "AUD_USD"];
     const SHORT_ELIGIBLE_SESSIONS: SessionWindow[] = ["london-open", "ny-overlap"];
 
     console.log(`[SCALP-TRADE] Generating ${signalCount} DUAL-DIRECTION signals via snapshot agents`);
