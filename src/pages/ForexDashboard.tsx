@@ -57,6 +57,7 @@ import { LiveTradingProofPanel } from '@/components/forex/EnvironmentGuards';
 import { ShortEngineDashboard } from '@/components/forex/shorts/ShortEngineDashboard';
 import { DarwinControlDashboard } from '@/components/forex/DarwinControlDashboard';
 import { LiveEdgeExecutionDashboard } from '@/components/forex/LiveEdgeExecutionDashboard';
+import { ExecutionProofPanel } from '@/components/forex/ExecutionProofPanel';
 import { Pickaxe, Dna, ArrowDownRight, Orbit, Zap as ZapIcon } from 'lucide-react';
 import { LazyTabContent } from '@/components/forex/LazyTabContent';
 import {
@@ -422,6 +423,7 @@ const ForexDashboard = () => {
 
           <TabsContent value="live-edge" className="space-y-4">
             <LazyTabContent label="Live Edge Execution">
+              <ExecutionProofPanel />
               <LiveEdgeExecutionDashboard />
             </LazyTabContent>
           </TabsContent>
