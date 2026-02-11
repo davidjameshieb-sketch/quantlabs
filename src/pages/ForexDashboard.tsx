@@ -22,6 +22,7 @@ import { LiveExecutionHero } from '@/components/forex/LiveExecutionHero';
 import { GovernanceStateBanner } from '@/components/forex/GovernanceStateBanner';
 import { SystemLearningPanel } from '@/components/forex/SystemLearningPanel';
 import { CounterfactualPanel } from '@/components/forex/CounterfactualPanel';
+import { TradeQualityWatchdog } from '@/components/forex/TradeQualityWatchdog';
 
 // Performance components
 import { EquityCurveChart } from '@/components/forex/EquityCurveChart';
@@ -175,6 +176,9 @@ const ForexDashboard = () => {
                 {/* System Learning Status */}
                 <SystemLearningPanel executionMetrics={executionMetrics} />
 
+                {/* Trade Quality Watchdog — 4 critical columns */}
+                <TradeQualityWatchdog realMetrics={executionMetrics} />
+
                 {/* Execution Proof — Integrity verification */}
                 <ExecutionProofPanel />
 
@@ -205,6 +209,8 @@ const ForexDashboard = () => {
                     metrics={performance}
                     governanceStats={governanceStats}
                     trades={filteredTrades}
+                    realMetrics={executionMetrics}
+                    tradeAnalytics={tradeAnalytics}
                   />
 
                   {/* Agent Accountability */}
