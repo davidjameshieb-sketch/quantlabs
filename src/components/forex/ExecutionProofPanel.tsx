@@ -397,8 +397,8 @@ export const ExecutionProofPanel = () => {
                 />
                 <LayerRow
                   label="Coalition Governance"
-                  passed={proof.agentSnapshot.eligible >= proof.agentSnapshot.coalition.minAgents}
-                  detail={`${proof.agentSnapshot.coalition.tier.toUpperCase()}: ${proof.agentSnapshot.eligible} agents (min ${proof.agentSnapshot.coalition.minAgents})`}
+                  passed={(proof.agentSnapshot?.eligible ?? 0) >= (proof.agentSnapshot?.coalition?.minAgents ?? 1)}
+                  detail={proof.agentSnapshot ? `${(proof.agentSnapshot.coalition?.tier ?? 'unknown').toUpperCase()}: ${proof.agentSnapshot.eligible ?? 0} agents (min ${proof.agentSnapshot.coalition?.minAgents ?? 1})` : 'No agent data'}
                   icon={<Users className="w-3.5 h-3.5" />}
                 />
               </div>
@@ -418,7 +418,7 @@ export const ExecutionProofPanel = () => {
               {/* Coalition Agents */}
               <div>
                 <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1 font-bold">Coalition Agents</p>
-                {proof.agentSnapshot.agents.map((agent, i) => (
+                {(proof.agentSnapshot?.agents ?? []).map((agent, i) => (
                   <div key={i} className="flex items-center gap-2 text-xs py-1 border-b border-border/10 last:border-0">
                     <Badge variant="outline" className={cn('text-[9px]',
                       agent.fleetSet === 'ACTIVE' ? 'text-emerald-400 border-emerald-500/30' :
