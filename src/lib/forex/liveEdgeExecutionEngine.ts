@@ -1,13 +1,14 @@
 // ─── Live Edge Execution Engine ───
 // Dual-edge (LONG + SHORT) production execution controller.
-// Deterministic rule enforcement only — no model training, optimization, or parameter discovery.
-// Integrates with Darwin governance and survivorship scoring.
+// Adaptive learning — tracks what works and adjusts settings dynamically.
+// Flexible trade duration — not restricted to scalping for either direction.
 //
 // GLOBAL PHILOSOPHY: Trade ONLY when edge is confirmed across:
 // • Live trade survivorship
 // • Shadow validation pipeline
 // • Indicator coalition confirmation
-// • Regime alignment
+// • Regime alignment (indicator-derived, not time-based)
+// • Short adaptive learning (regime/session/pair performance tracking)
 //
 // If survivorship deteriorates → throttle exposure (not optimize, not retrain).
 
@@ -74,8 +75,8 @@ function getSessionMultiplier(session: string, direction: 'long' | 'short'): num
 
 // ─── Pair Authorization ──────────────────────────────────────────────
 
-export const LONG_AUTHORIZED_PAIRS = ['USD_CAD', 'USD_JPY', 'EUR_USD', 'NZD_USD'];
-export const SHORT_AUTHORIZED_PAIRS = ['USD_JPY', 'GBP_JPY', 'EUR_USD', 'GBP_USD'];
+export const LONG_AUTHORIZED_PAIRS = ['USD_CAD', 'USD_JPY', 'EUR_USD', 'NZD_USD', 'AUD_USD', 'EUR_GBP'];
+export const SHORT_AUTHORIZED_PAIRS = ['USD_JPY', 'GBP_JPY', 'EUR_USD', 'GBP_USD', 'EUR_GBP', 'USD_CAD', 'AUD_USD'];
 export const SHORT_RESTRICTED_PAIRS: Record<string, string> = {
   'USD_CAD': 'Restricted during carry dominance',
 };
@@ -430,15 +431,17 @@ export const LONG_GOVERNANCE_RULES: GovernanceRule[] = [
   { name: 'Continuation Bias', description: 'Maintain trades through minor volatility noise', direction: 'long' },
   { name: 'Expansion Priority', description: 'Prioritize expansion persistence over early exit', direction: 'long' },
   { name: 'Regime Exit Only', description: 'Terminate ONLY when expansion momentum decays or regime invalidates', direction: 'long' },
+  { name: 'Flexible Duration', description: 'Not restricted to scalping — hold as long as edge persists', direction: 'long' },
 ];
 
 export const SHORT_GOVERNANCE_RULES: GovernanceRule[] = [
-  { name: 'Reversal Volatility', description: 'Accept higher volatility environment', direction: 'short' },
+  { name: 'Adaptive Learning', description: 'Tracks regime/session/pair outcomes — auto-adjusts thresholds', direction: 'short' },
+  { name: 'Indicator-Derived Regime', description: 'Uses ADX, ROC, momentum counts — not time-based', direction: 'short' },
+  { name: 'Regime Override', description: 'Learning can authorize shorts in non-standard regimes if historically profitable', direction: 'short' },
   { name: 'Lower Win Tolerance', description: 'Allow lower win-rate tolerance for larger R:R', direction: 'short' },
-  { name: 'Fast Capture', description: 'Capture fast directional expansions', direction: 'short' },
+  { name: 'Flexible Duration', description: 'Not restricted to scalping — hold as long as edge persists', direction: 'short' },
   { name: 'Regime Exit', description: 'Terminate when regime exits authorized list', direction: 'short' },
-  { name: 'Expansion Decay Exit', description: 'Terminate when expansion continuation disappears', direction: 'short' },
-  { name: 'Volatility Collapse Exit', description: 'Terminate when volatility collapses', direction: 'short' },
+  { name: 'Auto-Block Destructive', description: 'Automatically blocks regimes/sessions with proven negative expectancy', direction: 'short' },
 ];
 
 // ─── Mock Context Generator (for dashboard) ─────────────────────────
@@ -498,17 +501,32 @@ export interface CoalitionRequirementDisplay {
   promotionLog: string[];
 }
 
+export interface ShortLearningState {
+  maturity: string;
+  totalShortTrades: number;
+  overallWR: number;
+  overallExpectancy: number;
+  adaptiveBearishThreshold: number;
+  adaptiveRegimeStrengthMin: number;
+  bestRegimes: string[];
+  worstRegimes: string[];
+  regimeStats: Record<string, { wins: number; losses: number; totalPips: number; avgDuration: number }>;
+  sessionStats: Record<string, { wins: number; losses: number; totalPips: number }>;
+}
+
 export interface LiveEdgeExecutionState {
   longDecisions: EdgeExecutionDecision[];
   shortDecisions: EdgeExecutionDecision[];
   activeRegimes: { direction: 'long' | 'short'; regime: string; pair: string; authorized: boolean }[];
   sessionStatus: SessionPriority[];
   governanceRules: GovernanceRule[];
-  systemMode: 'DUAL_EDGE_ACTIVE' | 'LONG_ONLY' | 'FALLBACK';
+  systemMode: 'DUAL_EDGE_ADAPTIVE' | 'DUAL_EDGE_ACTIVE' | 'LONG_ONLY' | 'FALLBACK';
   longPairsActive: number;
   shortPairsActive: number;
   totalBlocked: number;
   coalitionRequirement: CoalitionRequirementDisplay;
+  shortLearning: ShortLearningState;
+  tradingMode: 'flexible-duration' | 'scalp-only';
 }
 
 export function generateMockLiveEdgeState(): LiveEdgeExecutionState {
@@ -555,7 +573,8 @@ export function generateMockLiveEdgeState(): LiveEdgeExecutionState {
     activeRegimes,
     sessionStatus: SESSION_PRIORITIES,
     governanceRules: [...LONG_GOVERNANCE_RULES, ...SHORT_GOVERNANCE_RULES],
-    systemMode: 'DUAL_EDGE_ACTIVE',
+    systemMode: 'DUAL_EDGE_ADAPTIVE',
+    tradingMode: 'flexible-duration',
     longPairsActive: longDecisions.filter(d => d.permitted).length,
     shortPairsActive: shortDecisions.filter(d => d.permitted).length,
     totalBlocked,
@@ -569,6 +588,27 @@ export function generateMockLiveEdgeState(): LiveEdgeExecutionState {
       reasons: ['Survivorship 42 ≥ 40', 'PF 0.95 ≥ 1.05', 'Stability: flat', 'Minimum 2-agent coalition enforced'],
       autoPromotions: 1,
       promotionLog: ['[AUTO-PROMOTE] BENCH→ACTIVE: regime-transition (PF=1.05, exp=0.12)'],
+    },
+    shortLearning: {
+      maturity: 'growing',
+      totalShortTrades: 42,
+      overallWR: 0.33,
+      overallExpectancy: -2.01,
+      adaptiveBearishThreshold: 5,
+      adaptiveRegimeStrengthMin: 40,
+      bestRegimes: ['compression', 'risk-off'],
+      worstRegimes: ['expansion', 'momentum'],
+      regimeStats: {
+        'compression': { wins: 8, losses: 6, totalPips: 4.2, avgDuration: 18 },
+        'risk-off': { wins: 5, losses: 4, totalPips: 2.1, avgDuration: 12 },
+        'expansion': { wins: 2, losses: 10, totalPips: -15.3, avgDuration: 5 },
+        'breakdown': { wins: 3, losses: 5, totalPips: -3.2, avgDuration: 8 },
+      },
+      sessionStats: {
+        'london-open': { wins: 7, losses: 8, totalPips: -1.2 },
+        'ny-overlap': { wins: 6, losses: 9, totalPips: -4.5 },
+        'asian': { wins: 3, losses: 5, totalPips: -2.1 },
+      },
     },
   };
 }

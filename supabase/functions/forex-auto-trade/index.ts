@@ -1495,8 +1495,10 @@ Deno.serve(async (req) => {
 
     // ─── Short-eligible pairs (from Live Edge Execution Module) ───
     // ─── PROFIT FIX: Removed GBP_JPY (31.7% WR, -1.1p) and EUR_JPY (34.5% WR, -0.6p) ───
-    const SHORT_ELIGIBLE_PAIRS = ["EUR_USD", "GBP_USD", "EUR_GBP", "USD_CAD", "AUD_USD"];
-    const SHORT_ELIGIBLE_SESSIONS: SessionWindow[] = ["london-open", "ny-overlap"];
+    const SHORT_ELIGIBLE_PAIRS = ["EUR_USD", "GBP_USD", "EUR_GBP", "USD_CAD", "AUD_USD", "USD_JPY"];
+    // ═══ ADAPTIVE SHORT LEARNING: No session restriction — learn from all sessions ═══
+    // Session performance is tracked per-regime and auto-adjusted via shortLearningProfile
+    const SHORT_ELIGIBLE_SESSIONS: SessionWindow[] = ["london-open", "ny-overlap", "asian", "late-ny"];
 
     console.log(`[SCALP-TRADE] Generating ${signalCount} DUAL-DIRECTION signals via snapshot agents`);
 
@@ -1668,26 +1670,59 @@ Deno.serve(async (req) => {
                   // Shorts only authorized when real market structure confirms bearish conditions.
                   // Indicator regime uses ADX, ROC, trend efficiency, Bollinger, momentum counts.
                   
+                  // ═══ ADAPTIVE SHORT LEARNING: Use learned thresholds ═══
+                  const adaptiveBearishThreshold = shortLearningProfile.adaptiveBearishThreshold;
+                  const adaptiveRegimeStrengthMin = shortLearningProfile.adaptiveRegimeStrengthMin;
+                  
                   if (!indicatorShortFriendly) {
-                    // Market structure is NOT bearish — skip short
-                    console.log(`[SCALP-TRADE] ${pair}: Bearish consensus but indicatorRegime=${indicatorRegime} (strength=${indicatorRegimeStrength}) is NOT short-friendly — skipping`);
-                    results.push({ pair, direction: "short", status: "regime-not-short-friendly", govState, agentId,
-                      error: `indicatorRegime=${indicatorRegime},bearishMomentum=${indicatorBearishMomentum}` });
+                    // Check if learning has identified this regime as profitable for shorts
+                    const regimeLearned = shortLearningProfile.bestRegimes.includes(indicatorRegime);
+                    if (!regimeLearned) {
+                      console.log(`[SCALP-TRADE] ${pair}: Bearish consensus but indicatorRegime=${indicatorRegime} (strength=${indicatorRegimeStrength}) is NOT short-friendly and NOT learned — skipping`);
+                      results.push({ pair, direction: "short", status: "regime-not-short-friendly", govState, agentId,
+                        error: `indicatorRegime=${indicatorRegime},bearishMomentum=${indicatorBearishMomentum}` });
+                      continue;
+                    }
+                    console.log(`[SHORT-LEARN] ${pair}: Regime ${indicatorRegime} overridden by learning — historically profitable for shorts`);
+                  }
+                  
+                  // Check regime strength minimum (adaptive)
+                  if (indicatorRegimeStrength < adaptiveRegimeStrengthMin) {
+                    console.log(`[SCALP-TRADE] ${pair}: Regime strength ${indicatorRegimeStrength} < adaptive min ${adaptiveRegimeStrengthMin} — skipping`);
+                    results.push({ pair, direction: "short", status: "weak-regime-strength", govState, agentId });
                     continue;
                   }
                   
-                  // Require minimum bearish momentum count (at least 4 of 7 bearish indicators)
-                  if (indicatorBearishMomentum < 4) {
-                    console.log(`[SCALP-TRADE] ${pair}: Short-friendly regime but bearishMomentum=${indicatorBearishMomentum} < 4 — insufficient conviction`);
+                  // Check if this regime is in the worst list (auto-blocked by learning)
+                  if (shortLearningProfile.worstRegimes.includes(indicatorRegime)) {
+                    console.log(`[SHORT-LEARN] ${pair}: Regime ${indicatorRegime} AUTO-BLOCKED by learning — historically destructive`);
+                    results.push({ pair, direction: "short", status: "regime-learned-destructive", govState, agentId });
+                    continue;
+                  }
+                  
+                  // Adaptive bearish momentum threshold (learned from data)
+                  if (indicatorBearishMomentum < adaptiveBearishThreshold) {
+                    console.log(`[SCALP-TRADE] ${pair}: bearishMomentum=${indicatorBearishMomentum} < adaptive threshold ${adaptiveBearishThreshold} — insufficient conviction`);
                     results.push({ pair, direction: "short", status: "weak-bearish-momentum", govState, agentId });
                     continue;
                   }
                   
-                  // Short regime + momentum confirmed — check pair + session eligibility
+                  // Short learning + regime + momentum confirmed — check pair + session eligibility
                   if (SHORT_ELIGIBLE_PAIRS.includes(pair) && SHORT_ELIGIBLE_SESSIONS.includes(session)) {
+                    // Check session-specific learning (block sessions with negative expectancy)
+                    const sessStats = shortLearningProfile.sessionStats[session];
+                    if (sessStats && (sessStats.wins + sessStats.losses) >= 5) {
+                      const sessExp = sessStats.totalPips / (sessStats.wins + sessStats.losses);
+                      if (sessExp < -2) {
+                        console.log(`[SHORT-LEARN] ${pair}: Session ${session} AUTO-BLOCKED for shorts — exp=${sessExp.toFixed(2)}p (learned)`);
+                        results.push({ pair, direction: "short", status: "session-learned-destructive", govState, agentId });
+                        continue;
+                      }
+                    }
+                    
                     direction = "short";
                     mtfConfirmed = true;
-                    console.log(`[SCALP-TRADE] ${pair}: SHORT authorized — indicatorRegime=${indicatorRegime} (strength=${indicatorRegimeStrength}, bearishMom=${indicatorBearishMomentum}) + consensus=${indicatorConsensusScore}`);
+                    console.log(`[SCALP-TRADE] ${pair}: SHORT authorized — indicatorRegime=${indicatorRegime} (strength=${indicatorRegimeStrength}, bearishMom=${indicatorBearishMomentum}, adaptiveThreshold=${adaptiveBearishThreshold}) + consensus=${indicatorConsensusScore} | learning=${shortLearningProfile.learningMaturity}`);
                   } else {
                     console.log(`[SCALP-TRADE] ${pair}: Short regime confirmed but pair/session not eligible — skipping`);
                     results.push({ pair, direction: "short", status: "direction-mismatch", govState, agentId });
@@ -1999,6 +2034,17 @@ Deno.serve(async (req) => {
               learningTrades: pairLearningProfile?.totalTrades || 0,
               adaptiveThreshold: MIN_CONSENSUS,
             } : { applied: false, adaptiveThreshold: 25 },
+            // ═══ SHORT ADAPTIVE LEARNING ═══
+            shortLearning: {
+              maturity: shortLearningProfile.learningMaturity,
+              totalShortTrades: shortLearningProfile.totalShortTrades,
+              overallWR: shortLearningProfile.overallShortWR,
+              overallExpectancy: shortLearningProfile.overallShortExpectancy,
+              adaptiveBearishThreshold: shortLearningProfile.adaptiveBearishThreshold,
+              adaptiveRegimeStrengthMin: shortLearningProfile.adaptiveRegimeStrengthMin,
+              bestRegimes: shortLearningProfile.bestRegimes,
+              worstRegimes: shortLearningProfile.worstRegimes,
+            },
           },
         })
         .select()

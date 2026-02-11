@@ -1,5 +1,5 @@
-// Live Edge Execution Dashboard — Dual-edge (Long + Short) monitoring
-// Deterministic rule enforcement only — no optimization, ranking, or training.
+// Live Edge Execution Dashboard — Dual-edge (Long + Short) with Adaptive Learning
+// Flexible duration • Indicator-derived regimes • Short learning engine
 
 import { useState, useMemo } from 'react';
 import { motion } from 'framer-motion';
@@ -10,7 +10,7 @@ import { Progress } from '@/components/ui/progress';
 import {
   Zap, TrendingUp, TrendingDown, ArrowDownRight, ShieldCheck,
   ShieldAlert, Clock, Activity, CheckCircle2, XCircle, AlertTriangle,
-  Radio, Target, Crosshair, Gauge, Lock, Users,
+  Radio, Target, Crosshair, Gauge, Lock, Users, Brain, Timer,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import {
@@ -24,6 +24,7 @@ import {
   type LiveEdgeExecutionState,
   type EntryCheck,
   type CoalitionRequirementDisplay,
+  type ShortLearningState,
 } from '@/lib/forex/liveEdgeExecutionEngine';
 
 // ─── Sub-components ──────────────────────────────────────────────────
@@ -108,7 +109,7 @@ export const LiveEdgeExecutionDashboard = () => {
           <div>
             <h2 className="font-display text-lg font-bold text-foreground">Live Edge Execution</h2>
             <p className="text-xs text-muted-foreground">
-              Dual-edge deployment • Deterministic rule enforcement • Survivorship-confirmed
+              Adaptive learning • Flexible duration • Indicator-derived regimes
             </p>
           </div>
         </div>
@@ -116,6 +117,10 @@ export const LiveEdgeExecutionDashboard = () => {
           <Badge variant="default" className="text-[10px] gap-1">
             <Radio className="w-3 h-3" />
             {state.systemMode.replace(/_/g, ' ')}
+          </Badge>
+          <Badge variant="outline" className="text-[10px] gap-1 text-amber-400 border-amber-500/30">
+            <Timer className="w-3 h-3" />
+            {state.tradingMode === 'flexible-duration' ? 'FLEXIBLE DURATION' : 'SCALP ONLY'}
           </Badge>
         </div>
       </motion.div>
@@ -183,6 +188,7 @@ export const LiveEdgeExecutionDashboard = () => {
       <Tabs defaultValue="decisions" className="space-y-4">
         <TabsList className="bg-card/50 border border-border/30 h-auto gap-1 p-1 flex-wrap">
           <TabsTrigger value="decisions" className="text-xs gap-1.5"><Target className="w-3 h-3" />Execution Decisions</TabsTrigger>
+          <TabsTrigger value="learning" className="text-xs gap-1.5"><Brain className="w-3 h-3" />Adaptive Learning</TabsTrigger>
           <TabsTrigger value="regimes" className="text-xs gap-1.5"><Activity className="w-3 h-3" />Regime Status</TabsTrigger>
           <TabsTrigger value="sessions" className="text-xs gap-1.5"><Clock className="w-3 h-3" />Session Intelligence</TabsTrigger>
           <TabsTrigger value="governance" className="text-xs gap-1.5"><ShieldCheck className="w-3 h-3" />Governance Rules</TabsTrigger>
@@ -211,7 +217,167 @@ export const LiveEdgeExecutionDashboard = () => {
           </div>
         </TabsContent>
 
-        {/* ─── Regime Status ─── */}
+        {/* ─── Adaptive Learning ─── */}
+        <TabsContent value="learning" className="space-y-4">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {/* Short Learning Overview */}
+            <Card className="border-border/30 bg-card/50">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm flex items-center gap-2">
+                  <Brain className="w-4 h-4 text-primary" />
+                  Short Adaptive Learning
+                  <Badge variant="outline" className="text-[9px] ml-auto capitalize">
+                    {state.shortLearning.maturity}
+                  </Badge>
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="p-2 rounded-lg bg-background/50 border border-border/20">
+                    <p className="text-[9px] text-muted-foreground uppercase">Total Short Trades</p>
+                    <p className="text-lg font-mono font-bold">{state.shortLearning.totalShortTrades}</p>
+                  </div>
+                  <div className="p-2 rounded-lg bg-background/50 border border-border/20">
+                    <p className="text-[9px] text-muted-foreground uppercase">Win Rate</p>
+                    <p className={cn('text-lg font-mono font-bold', state.shortLearning.overallWR >= 0.45 ? 'text-emerald-400' : 'text-red-400')}>
+                      {(state.shortLearning.overallWR * 100).toFixed(0)}%
+                    </p>
+                  </div>
+                  <div className="p-2 rounded-lg bg-background/50 border border-border/20">
+                    <p className="text-[9px] text-muted-foreground uppercase">Expectancy</p>
+                    <p className={cn('text-lg font-mono font-bold', state.shortLearning.overallExpectancy >= 0 ? 'text-emerald-400' : 'text-red-400')}>
+                      {state.shortLearning.overallExpectancy.toFixed(2)}p
+                    </p>
+                  </div>
+                  <div className="p-2 rounded-lg bg-background/50 border border-border/20">
+                    <p className="text-[9px] text-muted-foreground uppercase">Trading Mode</p>
+                    <p className="text-sm font-mono font-bold text-amber-400 flex items-center gap-1">
+                      <Timer className="w-3 h-3" /> Flexible
+                    </p>
+                  </div>
+                </div>
+
+                {/* Adaptive Thresholds */}
+                <div className="border-t border-border/20 pt-2">
+                  <p className="text-[10px] text-muted-foreground font-bold uppercase mb-1.5">Adaptive Thresholds (Learned)</p>
+                  <div className="flex gap-3">
+                    <div className="flex items-center gap-1.5 text-xs">
+                      <span className="text-muted-foreground">Bearish Momentum ≥</span>
+                      <Badge variant="outline" className="text-[10px] font-mono">{state.shortLearning.adaptiveBearishThreshold}/7</Badge>
+                    </div>
+                    <div className="flex items-center gap-1.5 text-xs">
+                      <span className="text-muted-foreground">Regime Strength ≥</span>
+                      <Badge variant="outline" className="text-[10px] font-mono">{state.shortLearning.adaptiveRegimeStrengthMin}</Badge>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Best/Worst Regimes */}
+                <div className="border-t border-border/20 pt-2">
+                  <p className="text-[10px] text-muted-foreground font-bold uppercase mb-1.5">Learned Regime Classification</p>
+                  <div className="space-y-1">
+                    {state.shortLearning.bestRegimes.length > 0 && (
+                      <div className="flex items-center gap-2 text-xs">
+                        <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" />
+                        <span className="text-muted-foreground">Profitable:</span>
+                        {state.shortLearning.bestRegimes.map(r => (
+                          <Badge key={r} variant="outline" className="text-[9px] text-emerald-400 border-emerald-500/30 capitalize">{r}</Badge>
+                        ))}
+                      </div>
+                    )}
+                    {state.shortLearning.worstRegimes.length > 0 && (
+                      <div className="flex items-center gap-2 text-xs">
+                        <XCircle className="w-3 h-3 text-red-400 shrink-0" />
+                        <span className="text-muted-foreground">Auto-Blocked:</span>
+                        {state.shortLearning.worstRegimes.map(r => (
+                          <Badge key={r} variant="outline" className="text-[9px] text-red-400 border-red-500/30 capitalize">{r}</Badge>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Regime Performance Breakdown */}
+            <Card className="border-border/30 bg-card/50">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm flex items-center gap-2">
+                  <Activity className="w-4 h-4 text-primary" />
+                  Regime Performance (Shorts)
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                {Object.entries(state.shortLearning.regimeStats).map(([regime, stats]) => {
+                  const total = stats.wins + stats.losses;
+                  const wr = total > 0 ? stats.wins / total : 0;
+                  const exp = total > 0 ? stats.totalPips / total : 0;
+                  const isGood = wr >= 0.45 && exp > 0;
+                  const isBad = wr < 0.30 || exp < -2;
+                  return (
+                    <motion.div key={regime} initial={{ opacity: 0, x: -6 }} animate={{ opacity: 1, x: 0 }}
+                      className={cn('p-2.5 rounded-lg border', isGood ? 'border-emerald-500/20 bg-emerald-500/5' : isBad ? 'border-red-500/20 bg-red-500/5' : 'border-border/20 bg-background/50')}>
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-xs font-mono font-bold capitalize">{regime.replace(/-/g, ' ')}</span>
+                        <div className="flex gap-2">
+                          <Badge variant="outline" className={cn('text-[9px]', wr >= 0.45 ? 'text-emerald-400' : wr < 0.30 ? 'text-red-400' : 'text-amber-400')}>
+                            {(wr * 100).toFixed(0)}% WR
+                          </Badge>
+                          <Badge variant="outline" className={cn('text-[9px]', exp >= 0 ? 'text-emerald-400' : 'text-red-400')}>
+                            {exp.toFixed(1)}p
+                          </Badge>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-3 text-[10px] text-muted-foreground">
+                        <span>{total} trades</span>
+                        <span>{stats.wins}W / {stats.losses}L</span>
+                        <span>Avg {stats.avgDuration.toFixed(0)}min</span>
+                        {isGood && <span className="text-emerald-400 font-bold">✓ AUTHORIZED</span>}
+                        {isBad && <span className="text-red-400 font-bold">✗ BLOCKED</span>}
+                      </div>
+                    </motion.div>
+                  );
+                })}
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Session Performance for Shorts */}
+          <Card className="border-border/30 bg-card/50">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm flex items-center gap-2">
+                <Clock className="w-4 h-4 text-primary" />
+                Session Performance (Shorts — Adaptive)
+                <span className="text-[9px] text-muted-foreground ml-2">All sessions open • Destructive sessions auto-blocked by learning</span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                {Object.entries(state.shortLearning.sessionStats).map(([sess, stats]) => {
+                  const total = stats.wins + stats.losses;
+                  const wr = total > 0 ? stats.wins / total : 0;
+                  const exp = total > 0 ? stats.totalPips / total : 0;
+                  const isBlocked = total >= 5 && exp < -2;
+                  return (
+                    <div key={sess} className={cn('p-3 rounded-lg border', isBlocked ? 'border-red-500/20 bg-red-500/5' : 'border-border/20 bg-background/50')}>
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-xs font-mono capitalize">{sess.replace('-', ' ')}</span>
+                        {isBlocked && <Badge variant="destructive" className="text-[8px]">AUTO-BLOCKED</Badge>}
+                      </div>
+                      <div className="flex items-center gap-3 text-[10px]">
+                        <span className={cn(wr >= 0.45 ? 'text-emerald-400' : 'text-red-400')}>{(wr * 100).toFixed(0)}% WR</span>
+                        <span className={cn(exp >= 0 ? 'text-emerald-400' : 'text-red-400')}>{exp.toFixed(1)}p exp</span>
+                        <span className="text-muted-foreground">{total} trades</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+
         <TabsContent value="regimes" className="space-y-3">
           <Card className="border-border/30 bg-card/50">
             <CardHeader className="pb-2">
