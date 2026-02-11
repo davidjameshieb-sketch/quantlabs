@@ -1300,6 +1300,100 @@ Deno.serve(async (req) => {
     const orders = (recentOrders || []) as Array<Record<string, unknown>>;
 
     // ═══════════════════════════════════════════════════════════
+    // PHASE 1.5: Indicator Learning Engine — per-pair noise detection
+    // ═══════════════════════════════════════════════════════════
+    const indicatorLearningProfiles = new Map<string, {
+      noiseIndicators: string[];
+      signalIndicators: string[];
+      qualityScore: number;
+      baselineWinRate: number;
+      totalTrades: number;
+    }>();
+
+    // Parse closed trades with indicator data for learning
+    const closedWithIndicators = orders.filter(o => {
+      const gp = o.governance_payload as Record<string, unknown> | null;
+      return (o.status === "closed" || o.status === "filled") &&
+        o.entry_price != null && o.exit_price != null &&
+        gp?.indicatorBreakdown != null;
+    });
+
+    if (closedWithIndicators.length > 0) {
+      // Group by pair
+      const pairTradesMap = new Map<string, Array<{
+        pair: string; direction: string; won: boolean;
+        indicators: Record<string, string>;
+      }>>();
+
+      for (const o of closedWithIndicators) {
+        const pair = o.currency_pair as string;
+        const entry = o.entry_price as number;
+        const exit = o.exit_price as number;
+        const dir = o.direction as string;
+        const pipDiv = pair?.includes("JPY") ? 0.01 : 0.0001;
+        const pips = dir === "long" ? (exit - entry) / pipDiv : (entry - exit) / pipDiv;
+        const gp = o.governance_payload as Record<string, unknown>;
+        const breakdown = gp.indicatorBreakdown as Record<string, string>;
+
+        if (!pairTradesMap.has(pair)) pairTradesMap.set(pair, []);
+        pairTradesMap.get(pair)!.push({
+          pair, direction: dir, won: pips > 0, indicators: breakdown,
+        });
+      }
+
+      const MIN_LEARNING_TRADES = 10;
+      const NOISE_THRESHOLD = -0.03;
+      const SIGNAL_THRESHOLD = 0.02;
+
+      for (const [pair, pairTrades] of pairTradesMap) {
+        if (pairTrades.length < MIN_LEARNING_TRADES) continue;
+
+        const baseWR = pairTrades.filter(t => t.won).length / pairTrades.length;
+        const noiseList: string[] = [];
+        const signalList: string[] = [];
+
+        for (const indKey of Object.keys(INDICATOR_NAMES)) {
+          let confirmed = 0, wins = 0;
+          for (const t of pairTrades) {
+            const sig = t.indicators[indKey];
+            if (!sig || sig === "neutral") continue;
+            const isConf = (
+              (t.direction === "long" && (sig === "bullish" || sig === "oversold")) ||
+              (t.direction === "short" && (sig === "bearish" || sig === "overbought"))
+            );
+            if (isConf) { confirmed++; if (t.won) wins++; }
+          }
+          if (confirmed < MIN_LEARNING_TRADES) continue;
+          const wr = wins / confirmed;
+          const lift = wr - baseWR;
+          if (lift <= NOISE_THRESHOLD) noiseList.push(indKey);
+          else if (lift >= SIGNAL_THRESHOLD) signalList.push(indKey);
+        }
+
+        const qualityScore = Math.min(100, Math.round(
+          (signalList.length / 16) * 50 + Math.min(50, signalList.length * 5)
+        ));
+
+        indicatorLearningProfiles.set(pair, {
+          noiseIndicators: noiseList,
+          signalIndicators: signalList,
+          qualityScore,
+          baselineWinRate: baseWR,
+          totalTrades: pairTrades.length,
+        });
+
+        if (noiseList.length > 0) {
+          console.log(`[INDICATOR-LEARN] ${pair}: NOISE indicators excluded: ${noiseList.join(", ")} (${pairTrades.length} trades, baseline WR=${(baseWR*100).toFixed(0)}%)`);
+        }
+        if (signalList.length > 0) {
+          console.log(`[INDICATOR-LEARN] ${pair}: SIGNAL indicators: ${signalList.join(", ")} (quality=${qualityScore})`);
+        }
+      }
+    }
+
+    console.log(`[INDICATOR-LEARN] Learning profiles computed for ${indicatorLearningProfiles.size} pairs from ${closedWithIndicators.length} trades with indicator data`);
+
+    // ═══════════════════════════════════════════════════════════
     // PHASE 2: Degradation Autopilot + Governance State Machine
     // ═══════════════════════════════════════════════════════════
 
@@ -1440,6 +1534,12 @@ Deno.serve(async (req) => {
       let indicatorDirection: "bullish" | "bearish" | "neutral" = "neutral";
       let indicatorBreakdown: Record<string, string> | null = null;
       let mtfConfirmed = false;
+      // ═══ INDICATOR LEARNING: Filtered consensus tracking ═══
+      let filteredConsensusScore: number | null = null;
+      let filteredDirection: string | null = null;
+      let noiseExcludedCount = 0;
+      let learningApplied = false;
+      let pairLearningProfile: typeof indicatorLearningProfiles extends Map<string, infer V> ? V | null : null = null;
       // ═══ EDGE PROOF: Per-timeframe MTF tracking ═══
       let mtf_1m_ignition = false;
       let mtf_5m_momentum = false;
@@ -1497,6 +1597,32 @@ Deno.serve(async (req) => {
               indicatorConsensusScore = indicatorData.consensus.score || 0;
               indicatorDirection = indicatorData.consensus.direction || "neutral";
 
+              // ═══ INDICATOR LEARNING: Apply noise filtering ═══
+              pairLearningProfile = indicatorLearningProfiles.get(pair) || null;
+              if (pairLearningProfile && indicatorBreakdown && pairLearningProfile.noiseIndicators.length > 0) {
+                learningApplied = true;
+                const noiseKeys = pairLearningProfile.noiseIndicators;
+
+                // Re-compute consensus excluding noise indicators
+                let bullish = 0, bearish = 0, total = 0;
+                for (const [indKey, sig] of Object.entries(indicatorBreakdown)) {
+                  if (noiseKeys.includes(indKey)) { noiseExcludedCount++; continue; }
+                  if (sig === "neutral") continue;
+                  total++;
+                  if (sig === "bullish" || sig === "oversold") bullish++;
+                  else if (sig === "bearish" || sig === "overbought") bearish++;
+                }
+
+                filteredConsensusScore = total > 0 ? Math.round(((bullish - bearish) / total) * 100) : 0;
+                filteredDirection = filteredConsensusScore > 15 ? "bullish" : filteredConsensusScore < -15 ? "bearish" : "neutral";
+
+                console.log(`[INDICATOR-LEARN] ${pair}: Raw consensus=${indicatorConsensusScore} (${indicatorDirection}) → Filtered=${filteredConsensusScore} (${filteredDirection}) | ${noiseExcludedCount} noise indicators excluded: ${noiseKeys.join(",")}`);
+
+                // USE FILTERED consensus for direction decision
+                indicatorConsensusScore = filteredConsensusScore;
+                indicatorDirection = filteredDirection as "bullish" | "bearish" | "neutral";
+              }
+
               // ═══ EDGE PROOF: Extract per-TF signals ═══
               // 15m bias = overall consensus direction
               mtf_15m_bias = Math.abs(indicatorConsensusScore) >= 25;
@@ -1524,8 +1650,11 @@ Deno.serve(async (req) => {
                   }
                 }
               } else {
-                // Consensus too weak — skip this trade
-                console.log(`[SCALP-TRADE] ${pair}: Consensus too weak (${indicatorConsensusScore}) — skipping`);
+                // Consensus too weak (after noise filtering) — skip this trade
+                const reason = learningApplied
+                  ? `Filtered consensus too weak (${indicatorConsensusScore}, ${noiseExcludedCount} noise excluded)`
+                  : `Consensus too weak (${indicatorConsensusScore})`;
+                console.log(`[SCALP-TRADE] ${pair}: ${reason} — skipping`);
                 results.push({ pair, direction, status: "weak-consensus", govState, agentId });
                 continue;
               }
@@ -1808,6 +1937,18 @@ Deno.serve(async (req) => {
             coalitionTier: snapshot.coalitionRequirement.tier,
             coalitionMinAgents: snapshot.coalitionRequirement.minAgents,
             governanceState: govState,
+            // ═══ INDICATOR LEARNING ═══
+            indicatorLearning: learningApplied ? {
+              applied: true,
+              filteredConsensus: filteredConsensusScore,
+              filteredDirection,
+              noiseExcluded: pairLearningProfile?.noiseIndicators || [],
+              signalIndicators: pairLearningProfile?.signalIndicators || [],
+              noiseExcludedCount,
+              qualityScore: pairLearningProfile?.qualityScore || 0,
+              baselineWinRate: pairLearningProfile?.baselineWinRate || 0,
+              learningTrades: pairLearningProfile?.totalTrades || 0,
+            } : { applied: false },
           },
         })
         .select()
