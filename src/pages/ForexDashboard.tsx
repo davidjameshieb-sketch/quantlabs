@@ -20,6 +20,7 @@ import { LiveEdgeExecutionDashboard } from '@/components/forex/LiveEdgeExecution
 import { LiveForexTradesPanel } from '@/components/forex/LiveForexTradesPanel';
 import { LiveExecutionHero } from '@/components/forex/LiveExecutionHero';
 import { GovernanceStateBanner } from '@/components/forex/GovernanceStateBanner';
+import { SystemLearningPanel } from '@/components/forex/SystemLearningPanel';
 
 // Performance components
 import { EquityCurveChart } from '@/components/forex/EquityCurveChart';
@@ -169,6 +170,9 @@ const ForexDashboard = () => {
                   openTradeCount={openTrades.length}
                   executionMetrics={executionMetrics}
                 />
+
+                {/* System Learning Status */}
+                <SystemLearningPanel executionMetrics={executionMetrics} />
 
                 {/* Execution Proof — Integrity verification */}
                 <ExecutionProofPanel />
