@@ -425,11 +425,16 @@ const ForexDashboard = () => {
                       { label: 'Curve Trend', value: pnl > 0 ? 'POSITIVE' : 'NEGATIVE', status: pnl > 0 ? 'good' as const : 'bad' as const },
                     ];
                   })()}>
-                    <EquityCurveChart
+                   <EquityCurveChart
                       data={tradeAnalytics.rollingSharpe}
                       totalPnlPips={tradeAnalytics.totalPnlPips}
                       totalTrades={tradeAnalytics.totalClosedTrades}
                     />
+                    <StatusMeterRow meters={[
+                      { label: 'Net P&L', value: Math.min(100, Math.max(0, 50 + tradeAnalytics.totalPnlPips / 2)) },
+                      { label: 'Drawdown', value: Math.max(0, 100 - ((tradeAnalytics.rollingSharpe ?? []).reduce((max, d) => Math.max(max, d.cumPnlPips ?? 0), 0) > 0 ? (((tradeAnalytics.rollingSharpe ?? []).reduce((max, d) => Math.max(max, d.cumPnlPips ?? 0), 0) - tradeAnalytics.totalPnlPips) / (tradeAnalytics.rollingSharpe ?? []).reduce((max, d) => Math.max(max, d.cumPnlPips ?? 0), 1) * 100) : 0)) },
+                      { label: 'Sharpe', value: Math.min(100, Math.max(0, tradeAnalytics.overallSharpe * 33)) },
+                    ]} />
                   </PanelCheatSheet>
 
                   {/* Performance Overview */}
@@ -449,13 +454,18 @@ const ForexDashboard = () => {
                       { label: 'Execution Quality', value: `${(executionMetrics?.avgExecutionQuality ?? 0).toFixed(0)}%`, status: (executionMetrics?.avgExecutionQuality ?? 0) >= 75 ? 'good' as const : 'warn' as const },
                     ];
                   })()}>
-                    <ForexPerformanceOverview
+                     <ForexPerformanceOverview
                       metrics={performance}
                       governanceStats={governanceStats}
                       trades={filteredTrades}
                       realMetrics={executionMetrics}
                       tradeAnalytics={tradeAnalytics}
                     />
+                    <StatusMeterRow meters={[
+                      { label: 'Win Rate', value: (executionMetrics?.winRate ?? 0) * 100 },
+                      { label: 'W/L Ratio', value: Math.min(100, ((executionMetrics?.winCount ?? 0) / Math.max(executionMetrics?.lossCount ?? 1, 1)) * 33) },
+                      { label: 'Exec Quality', value: executionMetrics?.avgExecutionQuality ?? 0 },
+                    ]} />
                   </PanelCheatSheet>
 
                   {/* Agent Accountability */}
@@ -472,6 +482,10 @@ const ForexDashboard = () => {
                     ];
                   })()}>
                     <AgentAccountabilityPanel metrics={executionMetrics} />
+                    <StatusMeterRow meters={[
+                      { label: 'Agents Active', value: Math.min(100, Object.keys(executionMetrics?.agentBreakdown ?? {}).length * 15) },
+                      { label: 'Avg Quality', value: (() => { const agents = Object.values(executionMetrics?.agentBreakdown ?? {}); return agents.length > 0 ? agents.reduce((s, a) => s + a.avgQuality, 0) / agents.length : 0; })() },
+                    ]} />
                   </PanelCheatSheet>
 
                   {/* Rolling Sharpe */}
@@ -493,6 +507,10 @@ const ForexDashboard = () => {
                       data={tradeAnalytics.rollingSharpe}
                       overallSharpe={tradeAnalytics.overallSharpe}
                     />
+                    <StatusMeterRow meters={[
+                      { label: 'Sharpe', value: Math.min(100, Math.max(0, tradeAnalytics.overallSharpe * 33)) },
+                      { label: 'Stability', value: Math.min(100, (tradeAnalytics.rollingSharpe ?? []).length * 5) },
+                    ]} />
                   </PanelCheatSheet>
 
                   {/* Session Heatmap & Pair P&L */}
@@ -584,6 +602,11 @@ const ForexDashboard = () => {
                     ];
                   })()}>
                     <AdaptiveGovernancePanel data={governanceDashboard} />
+                    <StatusMeterRow meters={[
+                      { label: 'Gov Health', value: governanceDashboard.currentState === 'NORMAL' ? 90 : governanceDashboard.currentState === 'DEFENSIVE' ? 50 : 20 },
+                      { label: 'Win Rate (20)', value: (governanceDashboard.windows.w20.winRate ?? 0) * 100 },
+                      { label: 'Expectancy', value: Math.min(100, Math.max(0, 50 + (governanceDashboard.windows.w50.expectancy ?? 0) * 20)) },
+                    ]} />
                   </PanelCheatSheet>
                   <PanelCheatSheet title="Governance Health" lines={(() => {
                     const executed = filteredTrades.filter(t => t.outcome !== 'avoided').length;
@@ -599,6 +622,10 @@ const ForexDashboard = () => {
                     ];
                   })()}>
                     <GovernanceHealthDashboard trades={filteredTrades} />
+                    <StatusMeterRow meters={[
+                      { label: 'Pass Rate', value: (() => { const exec = filteredTrades.filter(t => t.outcome !== 'avoided').length; const tot = filteredTrades.length; return tot > 0 ? (exec / tot) * 100 : 0; })() },
+                      { label: 'Block Rate', value: (() => { const exec = filteredTrades.filter(t => t.outcome !== 'avoided').length; const tot = filteredTrades.length; return tot > 0 ? ((tot - exec) / tot) * 100 : 0; })() },
+                    ]} />
                   </PanelCheatSheet>
                 </div>
               </LazyTabContent>

@@ -1,18 +1,16 @@
 import { useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import AIAgents from './AIAgents';
 
 const Dashboard = () => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
 
   useEffect(() => {
-    if (searchParams.get('market') === 'forex') {
-      navigate('/dashboard/forex', { replace: true });
-    }
-  }, [searchParams, navigate]);
+    // Default to Forex Command Center as the primary dashboard
+    navigate('/dashboard/forex', { replace: true });
+  }, [navigate]);
 
-  return <AIAgents />;
+  return null;
 };
 
 export default Dashboard;
