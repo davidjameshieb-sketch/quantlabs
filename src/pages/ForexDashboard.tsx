@@ -58,6 +58,8 @@ import { useTradeAnalytics } from '@/hooks/useTradeAnalytics';
 import { useRealtimeOrders } from '@/hooks/useRealtimeOrders';
 import { PanelCheatSheet, CheatSheetLine } from '@/components/forex/PanelCheatSheet';
 
+const govStateDisplay = (s: string) => s === 'HALT' ? 'COOLDOWN' : s;
+
 const ForexDashboard = () => {
   const [longOnlyFilter, setLongOnlyFilter] = useState(false);
   const [filters, setFilters] = useState<ForexDashboardFilters>({
@@ -294,7 +296,7 @@ const ForexDashboard = () => {
                   const budgets = governanceDashboard.sessionBudgets ?? {};
                   const activeBudgets = Object.entries(budgets).filter(([, v]) => (v as any)?.remaining > 0).length;
                   return [
-                    { label: 'Governance State', value: state, status: state === 'NORMAL' ? 'good' as const : state === 'DEFENSIVE' ? 'warn' as const : 'bad' as const },
+                    { label: 'Governance State', value: govStateDisplay(state), status: state === 'NORMAL' ? 'good' as const : state === 'DEFENSIVE' ? 'warn' as const : 'bad' as const },
                     { label: 'Gate Layers', value: 'MTF → Regime → Safety → Coalition → Gov', status: 'neutral' as const },
                     { label: 'Promoted Pairs', value: `${promoted}`, status: promoted > 0 ? 'good' as const : 'neutral' as const },
                     { label: 'Restricted Pairs', value: `${restricted}`, status: restricted > 0 ? 'warn' as const : 'good' as const },
@@ -354,7 +356,7 @@ const ForexDashboard = () => {
                   const reasons = governanceDashboard.stateReasons ?? [];
                   return [
                     { label: 'Engine Mode', value: 'Dual-Edge (Long + Short)', status: 'neutral' as const },
-                    { label: 'Governance State', value: state, status: state === 'NORMAL' ? 'good' as const : state === 'DEFENSIVE' ? 'warn' as const : 'bad' as const },
+                    { label: 'Governance State', value: govStateDisplay(state), status: state === 'NORMAL' ? 'good' as const : state === 'DEFENSIVE' ? 'warn' as const : 'bad' as const },
                     { label: 'Promoted Pairs', value: promoted.length > 0 ? promoted.join(', ') : 'None', status: promoted.length > 0 ? 'good' as const : 'neutral' as const },
                     { label: 'Restricted Pairs', value: restricted.length > 0 ? restricted.join(', ') : 'None', status: restricted.length > 0 ? 'warn' as const : 'good' as const },
                     { label: 'Banned Pairs', value: banned.length > 0 ? banned.join(', ') : 'None', status: banned.length > 0 ? 'bad' as const : 'good' as const },
@@ -409,7 +411,7 @@ const ForexDashboard = () => {
                       { label: 'Record', value: `${wc}W / ${lc}L`, status: wc > lc ? 'good' as const : 'bad' as const },
                       { label: 'Win/Loss Ratio', value: pf > 0 ? pf.toFixed(2) : '—', status: pf > 1.5 ? 'good' as const : pf > 1 ? 'warn' as const : 'bad' as const },
                       { label: 'Realized P&L', value: `${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`, status: pnl >= 0 ? 'good' as const : 'bad' as const },
-                      { label: 'Governance State', value: govState, status: govState === 'NORMAL' ? 'good' as const : 'warn' as const },
+                      { label: 'Governance State', value: govStateDisplay(govState), status: govState === 'NORMAL' ? 'good' as const : 'warn' as const },
                       { label: 'Execution Quality', value: `${(executionMetrics?.avgExecutionQuality ?? 0).toFixed(0)}%`, status: (executionMetrics?.avgExecutionQuality ?? 0) >= 75 ? 'good' as const : 'warn' as const },
                     ];
                   })()}>
@@ -537,7 +539,7 @@ const ForexDashboard = () => {
                     const shadows = governanceDashboard.shadowCandidates.length;
                     const eligible = governanceDashboard.shadowCandidates.filter(c => c.eligible).length;
                     return [
-                      { label: 'Governance State', value: state, status: state === 'NORMAL' ? 'good' as const : state === 'DEFENSIVE' ? 'warn' as const : 'bad' as const },
+                      { label: 'Governance State', value: govStateDisplay(state), status: state === 'NORMAL' ? 'good' as const : state === 'DEFENSIVE' ? 'warn' as const : 'bad' as const },
                       { label: '20-Trade Win Rate', value: `${(w20.winRate * 100).toFixed(1)}%`, status: w20.winRate >= 0.55 ? 'good' as const : w20.winRate >= 0.45 ? 'warn' as const : 'bad' as const },
                       { label: '20-Trade Expectancy', value: `${w20.expectancy >= 0 ? '+' : ''}${w20.expectancy.toFixed(2)}p`, status: w20.expectancy > 0.5 ? 'good' as const : w20.expectancy >= 0 ? 'warn' as const : 'bad' as const },
                       { label: '50-Trade Expectancy', value: `${w50.expectancy >= 0 ? '+' : ''}${w50.expectancy.toFixed(2)}p`, status: w50.expectancy > 0.5 ? 'good' as const : w50.expectancy >= 0 ? 'warn' as const : 'bad' as const },
