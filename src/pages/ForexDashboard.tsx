@@ -34,6 +34,7 @@ import { PairPnLBreakdown } from '@/components/forex/PairPnLBreakdown';
 import { RollingSharpeChart } from '@/components/forex/RollingSharpeChart';
 import { ForexPerformanceOverview } from '@/components/forex/ForexPerformanceOverview';
 import { ForexTradeHistoryTable } from '@/components/forex/ForexTradeHistoryTable';
+import { IndicatorPerformancePanel } from '@/components/forex/IndicatorPerformancePanel';
 
 // Governance components
 import { AdaptiveGovernancePanel } from '@/components/forex/AdaptiveGovernancePanel';
@@ -547,6 +548,9 @@ const ForexDashboard = () => {
                       <PairPnLBreakdown pairs={tradeAnalytics.pairAnalytics} />
                     </PanelCheatSheet>
                   </div>
+
+                  {/* Indicator Performance Analytics */}
+                  <IndicatorPerformancePanel />
 
                   {/* Trade History Table */}
                   <PanelCheatSheet title="Trade History" lines={(() => {
