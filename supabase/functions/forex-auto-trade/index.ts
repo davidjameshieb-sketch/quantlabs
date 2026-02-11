@@ -1438,6 +1438,7 @@ Deno.serve(async (req) => {
       let direction: "long" | "short" = "long";
       let indicatorConsensusScore = 0;
       let indicatorDirection: "bullish" | "bearish" | "neutral" = "neutral";
+      let indicatorBreakdown: Record<string, string> | null = null;
       let mtfConfirmed = false;
       // ═══ EDGE PROOF: Per-timeframe MTF tracking ═══
       let mtf_1m_ignition = false;
@@ -1470,6 +1471,28 @@ Deno.serve(async (req) => {
           if (indicatorRes.ok) {
             const indicatorData = await indicatorRes.json();
             mtf_data_available = true;
+            // ═══ PERSIST: Store individual indicator signals for analytics ═══
+            if (indicatorData?.indicators) {
+              const ind = indicatorData.indicators;
+              indicatorBreakdown = {
+                ema50: ind.ema50?.signal || "neutral",
+                rsi: ind.rsi?.signal || "neutral",
+                supertrend: ind.supertrend?.signal || "neutral",
+                parabolicSAR: ind.parabolicSAR?.signal || "neutral",
+                ichimoku: ind.ichimoku?.signal || "neutral",
+                adx: ind.adx?.signal || "neutral",
+                bollingerBands: ind.bollingerBands?.signal || "neutral",
+                donchianChannels: ind.donchianChannels?.signal || "neutral",
+                stochastics: ind.stochastics?.signal || "neutral",
+                cci: ind.cci?.signal || "neutral",
+                keltnerChannels: ind.keltnerChannels?.signal || "neutral",
+                roc: ind.roc?.signal || "neutral",
+                elderForce: ind.elderForce?.signal || "neutral",
+                heikinAshi: ind.heikinAshi?.signal || "neutral",
+                pivotPoints: ind.pivotPoints?.signal || "neutral",
+                trendEfficiency: ind.trendEfficiency?.signal || "neutral",
+              };
+            }
             if (indicatorData?.consensus) {
               indicatorConsensusScore = indicatorData.consensus.score || 0;
               indicatorDirection = indicatorData.consensus.direction || "neutral";
@@ -1780,6 +1803,7 @@ Deno.serve(async (req) => {
             // Legacy fields (kept for backward compat)
             indicatorConsensus: indicatorConsensusScore,
             indicatorDirection,
+            indicatorBreakdown,
             mtfConfirmed,
             coalitionTier: snapshot.coalitionRequirement.tier,
             coalitionMinAgents: snapshot.coalitionRequirement.minAgents,
