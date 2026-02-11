@@ -852,12 +852,165 @@ function isWeekend(): boolean {
   return false;
 }
 
+// TIME-BASED REGIME — used ONLY as fallback when indicator regime unavailable
+// Primary regime should ALWAYS come from forex-indicators (indicator-derived)
 function getRegimeLabel(): string {
   const hour = new Date().getUTCHours();
   if (hour >= 7 && hour < 10) return "ignition";
   if (hour >= 10 && hour < 16) return "expansion";
   if (hour >= 16 && hour < 20) return "exhaustion";
   return "compression";
+}
+
+// ═══════════════════════════════════════════════════════════════
+// LONG-SIDE ADAPTIVE LEARNING ENGINE
+// Mirrors short learning: tracks regime/session/pair outcomes for longs
+// Auto-adjusts bullish momentum thresholds and blocks destructive sessions
+// ═══════════════════════════════════════════════════════════════
+
+interface LongLearningProfile {
+  learningMaturity: string;
+  totalLongTrades: number;
+  overallLongWR: number;
+  overallLongExpectancy: number;
+  adaptiveBullishThreshold: number;
+  adaptiveRegimeStrengthMin: number;
+  bestRegimes: string[];
+  worstRegimes: string[];
+  regimeStats: Record<string, { wins: number; losses: number; totalPips: number; avgDuration: number }>;
+  sessionStats: Record<string, { wins: number; losses: number; totalPips: number }>;
+  pairStats: Record<string, { wins: number; losses: number; totalPips: number }>;
+}
+
+function buildLongLearningProfile(orders: Array<Record<string, unknown>>): LongLearningProfile {
+  const longOrders = orders.filter(o =>
+    o.direction === "long" &&
+    (o.status === "closed" || o.status === "filled") &&
+    o.entry_price != null && o.exit_price != null
+  );
+
+  const totalLongTrades = longOrders.length;
+  let totalWins = 0, totalPips = 0;
+  const regimeStats: Record<string, { wins: number; losses: number; totalPips: number; avgDuration: number }> = {};
+  const sessionStats: Record<string, { wins: number; losses: number; totalPips: number }> = {};
+  const pairStats: Record<string, { wins: number; losses: number; totalPips: number }> = {};
+
+  for (const o of longOrders) {
+    const pair = o.currency_pair as string;
+    const entry = o.entry_price as number;
+    const exit = o.exit_price as number;
+    const pipDiv = pair?.includes("JPY") ? 0.01 : 0.0001;
+    const pips = (exit - entry) / pipDiv;
+    const won = pips > 0;
+    const regime = (o.regime_label as string) || "unknown";
+    const sess = (o.session_label as string) || "unknown";
+
+    totalPips += pips;
+    if (won) totalWins++;
+
+    // Regime stats
+    if (!regimeStats[regime]) regimeStats[regime] = { wins: 0, losses: 0, totalPips: 0, avgDuration: 0 };
+    if (won) regimeStats[regime].wins++;
+    else regimeStats[regime].losses++;
+    regimeStats[regime].totalPips += pips;
+
+    // Session stats
+    if (!sessionStats[sess]) sessionStats[sess] = { wins: 0, losses: 0, totalPips: 0 };
+    if (won) sessionStats[sess].wins++;
+    else sessionStats[sess].losses++;
+    sessionStats[sess].totalPips += pips;
+
+    // Pair stats
+    if (!pairStats[pair]) pairStats[pair] = { wins: 0, losses: 0, totalPips: 0 };
+    if (won) pairStats[pair].wins++;
+    else pairStats[pair].losses++;
+    pairStats[pair].totalPips += pips;
+  }
+
+  const overallWR = totalLongTrades > 0 ? totalWins / totalLongTrades : 0.5;
+  const overallExp = totalLongTrades > 0 ? totalPips / totalLongTrades : 0;
+
+  // Learning maturity
+  let maturity = "bootstrap";
+  if (totalLongTrades >= 200) maturity = "mature";
+  else if (totalLongTrades >= 75) maturity = "converging";
+  else if (totalLongTrades >= 20) maturity = "growing";
+  else if (totalLongTrades >= 5) maturity = "early";
+
+  // Adaptive bullish momentum threshold: start permissive (3/7), tighten to 5/7 as data grows
+  let adaptiveBullishThreshold = 4; // Default: require 4/7 bullish indicators
+  if (totalLongTrades >= 20 && overallWR < 0.35) adaptiveBullishThreshold = 5; // Tighten if losing
+  else if (totalLongTrades >= 50 && overallWR >= 0.55) adaptiveBullishThreshold = 3; // Relax if winning
+  else if (totalLongTrades >= 30 && overallWR < 0.40) adaptiveBullishThreshold = 5;
+
+  // Adaptive regime strength minimum
+  let adaptiveRegimeStrengthMin = 30;
+  if (totalLongTrades >= 20 && overallWR < 0.35) adaptiveRegimeStrengthMin = 45;
+  else if (totalLongTrades >= 50 && overallWR >= 0.55) adaptiveRegimeStrengthMin = 25;
+
+  // Best/worst regimes (by expectancy)
+  const regimeEntries = Object.entries(regimeStats)
+    .filter(([, s]) => (s.wins + s.losses) >= 3)
+    .map(([r, s]) => ({ regime: r, exp: s.totalPips / (s.wins + s.losses), wr: s.wins / (s.wins + s.losses) }));
+
+  const bestRegimes = regimeEntries.filter(r => r.exp > 0 && r.wr >= 0.35).map(r => r.regime);
+  const worstRegimes = regimeEntries.filter(r => r.exp < -2 || r.wr < 0.25).map(r => r.regime);
+
+  if (totalLongTrades >= 10) {
+    console.log(`[LONG-LEARN] Profile: ${maturity} | ${totalLongTrades} trades | WR=${(overallWR*100).toFixed(0)}% | exp=${overallExp.toFixed(1)}p | bullishThreshold=${adaptiveBullishThreshold} | regimeMin=${adaptiveRegimeStrengthMin}`);
+    if (bestRegimes.length) console.log(`[LONG-LEARN]   Best regimes: ${bestRegimes.join(", ")}`);
+    if (worstRegimes.length) console.log(`[LONG-LEARN]   Worst regimes: ${worstRegimes.join(", ")}`);
+    // Log session stats
+    for (const [sess, s] of Object.entries(sessionStats)) {
+      const total = s.wins + s.losses;
+      if (total >= 5) {
+        const sessExp = s.totalPips / total;
+        const sessWR = s.wins / total;
+        if (sessExp < -2 || sessWR < 0.25) {
+          console.log(`[LONG-LEARN]   ⚠ Session ${sess}: WR=${(sessWR*100).toFixed(0)}%, exp=${sessExp.toFixed(1)}p — AUTO-BLOCK candidate`);
+        }
+      }
+    }
+  }
+
+  return {
+    learningMaturity: maturity,
+    totalLongTrades: totalLongTrades,
+    overallLongWR: overallWR,
+    overallLongExpectancy: overallExp,
+    adaptiveBullishThreshold,
+    adaptiveRegimeStrengthMin,
+    bestRegimes,
+    worstRegimes,
+    regimeStats,
+    sessionStats,
+    pairStats,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════
+// STOP-LOSS CALCULATION — prevents catastrophic single-trade losses
+// ═══════════════════════════════════════════════════════════════
+
+function computeStopLossPips(pair: string, direction: "long" | "short"): number {
+  const atrMult = PAIR_ATR_MULT[pair] || 1.0;
+  // Base stop: 8 pips, adjusted for pair volatility
+  // Shorts get wider stops (1.35x) per stop geometry rules
+  const basePips = 8 * atrMult;
+  const directionMult = direction === "short" ? 1.35 : 1.0;
+  const stopPips = Math.round(basePips * directionMult * 10) / 10;
+  // Cap at 15 pips max to prevent catastrophic single-trade losses
+  return Math.min(15, Math.max(3, stopPips));
+}
+
+function computeStopLossPrice(pair: string, direction: "long" | "short", entryPrice: number): number {
+  const stopPips = computeStopLossPips(pair, direction);
+  const pipValue = pair.includes("JPY") ? 0.01 : 0.0001;
+  if (direction === "long") {
+    return Math.round((entryPrice - stopPips * pipValue) * 100000) / 100000;
+  } else {
+    return Math.round((entryPrice + stopPips * pipValue) * 100000) / 100000;
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1394,6 +1547,11 @@ Deno.serve(async (req) => {
     console.log(`[INDICATOR-LEARN] Learning profiles computed for ${indicatorLearningProfiles.size} pairs from ${closedWithIndicators.length} trades with indicator data`);
 
     // ═══════════════════════════════════════════════════════════
+    // PHASE 1.6: Long-Side Adaptive Learning Engine
+    // ═══════════════════════════════════════════════════════════
+    const longLearningProfile = buildLongLearningProfile(orders);
+
+    // ═══════════════════════════════════════════════════════════
     // PHASE 2: Degradation Autopilot + Governance State Machine
     // ═══════════════════════════════════════════════════════════
 
@@ -1672,12 +1830,17 @@ Deno.serve(async (req) => {
                   // Mirrors short-side logic: regime must be longFriendly + bullish momentum threshold.
                   
                   const LONG_FRIENDLY_REGIMES = ["expansion", "momentum", "exhaustion"];
-                  const MIN_BULLISH_MOMENTUM = 4; // Require 4/7 bullish indicators
+                  // ═══ ADAPTIVE LONG LEARNING: Use learned thresholds ═══
+                  const MIN_BULLISH_MOMENTUM = longLearningProfile.adaptiveBullishThreshold;
+                  const longRegimeStrengthMin = longLearningProfile.adaptiveRegimeStrengthMin;
                   
                   if (!indicatorLongFriendly) {
-                    // Check if regime could still support longs (transition with strong bullish momentum)
+                    // Check if learning has identified this regime as profitable for longs
+                    const regimeLearned = longLearningProfile.bestRegimes.includes(indicatorRegime);
                     if (indicatorRegime === "transition" && indicatorBullishMomentum >= 5) {
                       console.log(`[LONG-REGIME] ${pair}: Transition regime overridden — strong bullish momentum (${indicatorBullishMomentum}/7)`);
+                    } else if (regimeLearned) {
+                      console.log(`[LONG-LEARN] ${pair}: Regime ${indicatorRegime} overridden by learning — historically profitable for longs`);
                     } else {
                       console.log(`[SCALP-TRADE] ${pair}: Bullish consensus but indicatorRegime=${indicatorRegime} (strength=${indicatorRegimeStrength}) is NOT long-friendly — skipping`);
                       results.push({ pair, direction: "long", status: "regime-not-long-friendly", govState, agentId,
@@ -1686,23 +1849,42 @@ Deno.serve(async (req) => {
                     }
                   }
                   
-                  // Require minimum bullish momentum confirmation
+                  // Check if this regime is in the worst list (auto-blocked by learning)
+                  if (longLearningProfile.worstRegimes.includes(indicatorRegime)) {
+                    console.log(`[LONG-LEARN] ${pair}: Regime ${indicatorRegime} AUTO-BLOCKED by learning — historically destructive for longs`);
+                    results.push({ pair, direction: "long", status: "regime-learned-destructive", govState, agentId });
+                    continue;
+                  }
+                  
+                  // Require minimum bullish momentum confirmation (adaptive)
                   if (indicatorBullishMomentum < MIN_BULLISH_MOMENTUM) {
-                    console.log(`[SCALP-TRADE] ${pair}: bullishMomentum=${indicatorBullishMomentum} < ${MIN_BULLISH_MOMENTUM} — insufficient long conviction`);
+                    console.log(`[SCALP-TRADE] ${pair}: bullishMomentum=${indicatorBullishMomentum} < adaptive threshold ${MIN_BULLISH_MOMENTUM} — insufficient long conviction`);
                     results.push({ pair, direction: "long", status: "weak-bullish-momentum", govState, agentId });
                     continue;
                   }
                   
-                  // Require minimum regime strength
-                  if (indicatorRegimeStrength < 30) {
-                    console.log(`[SCALP-TRADE] ${pair}: Regime strength ${indicatorRegimeStrength} < 30 — too weak for long entry`);
+                  // Require minimum regime strength (adaptive)
+                  if (indicatorRegimeStrength < longRegimeStrengthMin) {
+                    console.log(`[SCALP-TRADE] ${pair}: Regime strength ${indicatorRegimeStrength} < adaptive min ${longRegimeStrengthMin} — too weak for long entry`);
                     results.push({ pair, direction: "long", status: "weak-regime-strength", govState, agentId });
                     continue;
                   }
                   
+                  // ═══ LONG SESSION AUTO-BLOCKING (learned from data) ═══
+                  const longSessStats = longLearningProfile.sessionStats[session];
+                  if (longSessStats && (longSessStats.wins + longSessStats.losses) >= 5) {
+                    const longSessExp = longSessStats.totalPips / (longSessStats.wins + longSessStats.losses);
+                    const longSessWR = longSessStats.wins / (longSessStats.wins + longSessStats.losses);
+                    if (longSessExp < -2 || longSessWR < 0.25) {
+                      console.log(`[LONG-LEARN] ${pair}: Session ${session} AUTO-BLOCKED for longs — WR=${(longSessWR*100).toFixed(0)}%, exp=${longSessExp.toFixed(1)}p (learned)`);
+                      results.push({ pair, direction: "long", status: "session-learned-destructive", govState, agentId });
+                      continue;
+                    }
+                  }
+                  
                   direction = "long";
                   mtfConfirmed = true;
-                  console.log(`[SCALP-TRADE] ${pair}: LONG authorized — indicatorRegime=${indicatorRegime} (strength=${indicatorRegimeStrength}, bullishMom=${indicatorBullishMomentum}) + consensus=${indicatorConsensusScore}`);
+                  console.log(`[SCALP-TRADE] ${pair}: LONG authorized — indicatorRegime=${indicatorRegime} (strength=${indicatorRegimeStrength}, bullishMom=${indicatorBullishMomentum}, adaptiveThreshold=${MIN_BULLISH_MOMENTUM}) + consensus=${indicatorConsensusScore} | learning=${longLearningProfile.learningMaturity}`);
                 } else if (indicatorDirection === "bearish") {
                   // ═══ SHORT DIRECTION: Uses INDICATOR-DERIVED regime (not time-based) ═══
                   // Shorts only authorized when real market structure confirms bearish conditions.
@@ -1905,7 +2087,9 @@ Deno.serve(async (req) => {
       let discoveryRiskLabel = "NORMAL";
       let discoveryMultiplier = 1.0;
       let discoveryBlocked = false;
-      const envKey = `${session}|${regime}|${pair}|${direction}|${agentId}`;
+      // ═══ USE INDICATOR-DERIVED REGIME as primary (not time-based) ═══
+      const effectiveRegime = indicatorRegime !== "unknown" ? indicatorRegime : regime;
+      const envKey = `${session}|${effectiveRegime}|${pair}|${direction}|${agentId}`;
       const explainReasons: string[] = [];
 
       if (DISCOVERY_RISK_MODE && !forceMode && ADAPTIVE_EDGE_ENABLED) {
