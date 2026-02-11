@@ -1546,6 +1546,11 @@ Deno.serve(async (req) => {
       let mtf_5m_momentum = false;
       let mtf_15m_bias = false;
       let mtf_data_available = false;
+      // ═══ INDICATOR-DERIVED REGIME (replaces time-based for short decisions) ═══
+      let indicatorRegime = "unknown";
+      let indicatorRegimeStrength = 0;
+      let indicatorShortFriendly = false;
+      let indicatorBearishMomentum = 0;
 
       if (forceMode) {
         direction = reqBody.direction || "long";
@@ -1597,6 +1602,15 @@ Deno.serve(async (req) => {
             if (indicatorData?.consensus) {
               indicatorConsensusScore = indicatorData.consensus.score || 0;
               indicatorDirection = indicatorData.consensus.direction || "neutral";
+
+              // ═══ PARSE INDICATOR-DERIVED REGIME ═══
+              if (indicatorData?.regime) {
+                indicatorRegime = indicatorData.regime.label || "unknown";
+                indicatorRegimeStrength = indicatorData.regime.strength || 0;
+                indicatorShortFriendly = indicatorData.regime.shortFriendly === true;
+                indicatorBearishMomentum = indicatorData.regime.bearishMomentum || 0;
+                console.log(`[REGIME-INDICATOR] ${pair}: regime=${indicatorRegime} strength=${indicatorRegimeStrength} shortFriendly=${indicatorShortFriendly} bearishMomentum=${indicatorBearishMomentum}`);
+              }
 
               // ═══ INDICATOR LEARNING: Apply noise filtering ═══
               pairLearningProfile = indicatorLearningProfiles.get(pair) || null;
@@ -1650,27 +1664,32 @@ Deno.serve(async (req) => {
                   direction = "long";
                   mtfConfirmed = true;
                 } else if (indicatorDirection === "bearish") {
-                  // ═══ SHORT DIRECTION FIX: Indicator consensus does NOT trigger shorts ═══
-                  // Data proves indicator "bearish" = "not bullish", not a genuine short signal.
-                  // 15,322 shorts in "expansion" regime all lost (-2.01p avg, 33% WR).
-                  // Shorts now require a BEARISH REGIME (compression/contraction) — not indicator inversion.
-                  const SHORT_REGIMES = ["compression", "contraction", "shock", "breakdown", "risk-off", "flat"];
-                  const isShortRegime = SHORT_REGIMES.includes(regime);
+                  // ═══ SHORT DIRECTION: Uses INDICATOR-DERIVED regime (not time-based) ═══
+                  // Shorts only authorized when real market structure confirms bearish conditions.
+                  // Indicator regime uses ADX, ROC, trend efficiency, Bollinger, momentum counts.
                   
-                  if (!isShortRegime) {
-                    // Bearish indicator in expansion/momentum regime → skip, don't short
-                    console.log(`[SCALP-TRADE] ${pair}: Bearish consensus but regime=${regime} is NOT short-friendly — skipping (no indicator-driven shorts)`);
-                    results.push({ pair, direction: "short", status: "regime-not-short-friendly", govState, agentId });
+                  if (!indicatorShortFriendly) {
+                    // Market structure is NOT bearish — skip short
+                    console.log(`[SCALP-TRADE] ${pair}: Bearish consensus but indicatorRegime=${indicatorRegime} (strength=${indicatorRegimeStrength}) is NOT short-friendly — skipping`);
+                    results.push({ pair, direction: "short", status: "regime-not-short-friendly", govState, agentId,
+                      error: `indicatorRegime=${indicatorRegime},bearishMomentum=${indicatorBearishMomentum}` });
                     continue;
                   }
                   
-                  // Short regime confirmed — now check pair + session eligibility
+                  // Require minimum bearish momentum count (at least 4 of 7 bearish indicators)
+                  if (indicatorBearishMomentum < 4) {
+                    console.log(`[SCALP-TRADE] ${pair}: Short-friendly regime but bearishMomentum=${indicatorBearishMomentum} < 4 — insufficient conviction`);
+                    results.push({ pair, direction: "short", status: "weak-bearish-momentum", govState, agentId });
+                    continue;
+                  }
+                  
+                  // Short regime + momentum confirmed — check pair + session eligibility
                   if (SHORT_ELIGIBLE_PAIRS.includes(pair) && SHORT_ELIGIBLE_SESSIONS.includes(session)) {
                     direction = "short";
                     mtfConfirmed = true;
-                    console.log(`[SCALP-TRADE] ${pair}: SHORT authorized — regime=${regime} is short-friendly + bearish consensus=${indicatorConsensusScore}`);
+                    console.log(`[SCALP-TRADE] ${pair}: SHORT authorized — indicatorRegime=${indicatorRegime} (strength=${indicatorRegimeStrength}, bearishMom=${indicatorBearishMomentum}) + consensus=${indicatorConsensusScore}`);
                   } else {
-                    console.log(`[SCALP-TRADE] ${pair}: Short regime but pair/session not eligible — skipping`);
+                    console.log(`[SCALP-TRADE] ${pair}: Short regime confirmed but pair/session not eligible — skipping`);
                     results.push({ pair, direction: "short", status: "direction-mismatch", govState, agentId });
                     continue;
                   }
@@ -1942,6 +1961,10 @@ Deno.serve(async (req) => {
               mtf_15m_bias: mtf_15m_bias ? "PASS" : "FAIL",
               mtf_data_available: mtf_data_available,
               regime_detected: regime,
+              indicator_regime: indicatorRegime,
+              indicator_regime_strength: indicatorRegimeStrength,
+              indicator_short_friendly: indicatorShortFriendly,
+              indicator_bearish_momentum: indicatorBearishMomentum,
               regime_authorized: regimeAuthorized ? "PASS" : "FAIL",
               spread_check: gate.pass ? "PASS" : "FAIL",
               slippage_check: gate.pass ? "PASS" : "FAIL",
