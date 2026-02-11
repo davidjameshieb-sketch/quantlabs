@@ -173,7 +173,7 @@ const ForexDashboard = () => {
             executionMetrics={executionMetrics}
             connected={connected}
             governanceState={governanceDashboard.currentState}
-            totalClosedTrades={tradeAnalytics.totalClosedTrades}
+            totalClosedTrades={(executionMetrics?.winCount ?? 0) + (executionMetrics?.lossCount ?? 0)}
             totalPnlPips={tradeAnalytics.totalPnlPips}
             overallSharpe={tradeAnalytics.overallSharpe}
           />
@@ -232,7 +232,7 @@ const ForexDashboard = () => {
                     { label: 'Win Rate', value: (executionMetrics?.winRate ?? 0) * 100 },
                     { label: 'Exec Quality', value: executionMetrics?.avgExecutionQuality ?? 0 },
                     { label: 'Margin Health', value: account ? Math.max(0, 100 - (parseFloat(account.marginUsed ?? '0') / Math.max(parseFloat(account.balance ?? '1'), 1)) * 100) : 0 },
-                    { label: 'Positions', value: Math.max(0, 100 - (openTrades.length / 6) * 100) },
+                    { label: 'Capacity', value: Math.max(0, 100 - (openTrades.length / 6) * 100) },
                   ]} />
                 </PanelCheatSheet>
 
