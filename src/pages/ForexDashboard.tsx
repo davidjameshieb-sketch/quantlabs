@@ -94,6 +94,24 @@ const ForexDashboard = () => {
   const governanceStats = useMemo(() => getLastGovernanceStats(), [allTrades]);
 
   const governanceDashboard = useMemo(() => {
+    // Prefer real OANDA orders for governance dashboard if available
+    const realOrders = executionMetrics?.recentOrders ?? [];
+    if (realOrders.length > 0) {
+      const orderRecords = realOrders
+        .filter(o => o.entry_price != null)
+        .map(o => ({
+          currency_pair: o.currency_pair,
+          direction: o.direction,
+          status: o.status === 'closed' || (o.exit_price != null) ? 'closed' : o.status,
+          entry_price: o.entry_price,
+          exit_price: o.exit_price ?? null,
+          execution_quality_score: o.execution_quality_score ?? null,
+          slippage_pips: o.slippage_pips ?? null,
+          session_label: o.session_label ?? null,
+        }));
+      return computeGovernanceDashboard(orderRecords);
+    }
+    // Fallback to simulated trades
     const orderRecords = filteredTrades
       .filter(t => t.outcome !== 'avoided')
       .map(t => ({
@@ -107,7 +125,7 @@ const ForexDashboard = () => {
         session_label: null,
       }));
     return computeGovernanceDashboard(orderRecords);
-  }, [filteredTrades]);
+  }, [filteredTrades, executionMetrics]);
 
   return (
     <LongOnlyFilterProvider value={{ longOnlyFilter }}>
@@ -348,38 +366,144 @@ const ForexDashboard = () => {
               <LazyTabContent label="Performance">
                 <div className="space-y-4">
                   {/* Equity Curve */}
-                  <EquityCurveChart
-                    data={tradeAnalytics.rollingSharpe}
-                    totalPnlPips={tradeAnalytics.totalPnlPips}
-                    totalTrades={tradeAnalytics.totalClosedTrades}
-                  />
+                  <PanelCheatSheet title="Equity Curve" lines={(() => {
+                    const pnl = tradeAnalytics.totalPnlPips;
+                    const trades = tradeAnalytics.totalClosedTrades;
+                    const sharpeData = tradeAnalytics.rollingSharpe ?? [];
+                    const latestSharpe = sharpeData.length > 0 ? sharpeData[sharpeData.length - 1]?.sharpe ?? 0 : 0;
+                    const peakPnl = sharpeData.reduce((max, d) => Math.max(max, d.cumPnlPips ?? 0), 0);
+                    const drawdown = peakPnl > 0 ? ((peakPnl - pnl) / peakPnl * 100) : 0;
+                    return [
+                      { label: 'Net P&L (Pips)', value: `${pnl >= 0 ? '+' : ''}${pnl.toFixed(1)}p`, status: pnl >= 0 ? 'good' as const : 'bad' as const },
+                      { label: 'Total Closed Trades', value: `${trades}`, status: trades > 20 ? 'good' as const : 'neutral' as const },
+                      { label: 'Peak P&L', value: `${peakPnl.toFixed(1)}p`, status: 'neutral' as const },
+                      { label: 'Drawdown from Peak', value: `${drawdown.toFixed(1)}%`, status: drawdown > 10 ? 'bad' as const : drawdown > 5 ? 'warn' as const : 'good' as const },
+                      { label: 'Rolling Sharpe (Latest)', value: latestSharpe.toFixed(2), status: latestSharpe > 1.5 ? 'good' as const : latestSharpe > 0.5 ? 'warn' as const : 'bad' as const },
+                      { label: 'Curve Trend', value: pnl > 0 ? 'POSITIVE' : 'NEGATIVE', status: pnl > 0 ? 'good' as const : 'bad' as const },
+                    ];
+                  })()}>
+                    <EquityCurveChart
+                      data={tradeAnalytics.rollingSharpe}
+                      totalPnlPips={tradeAnalytics.totalPnlPips}
+                      totalTrades={tradeAnalytics.totalClosedTrades}
+                    />
+                  </PanelCheatSheet>
 
                   {/* Performance Overview */}
-                  <ForexPerformanceOverview
-                    metrics={performance}
-                    governanceStats={governanceStats}
-                    trades={filteredTrades}
-                    realMetrics={executionMetrics}
-                    tradeAnalytics={tradeAnalytics}
-                  />
+                  <PanelCheatSheet title="Performance Overview" lines={(() => {
+                    const wr = executionMetrics?.winRate ?? 0;
+                    const wc = executionMetrics?.winCount ?? 0;
+                    const lc = executionMetrics?.lossCount ?? 0;
+                    const pf = wc > 0 && lc > 0 ? (wc / lc) : 0;
+                    const pnl = executionMetrics?.realizedPnl ?? 0;
+                    const govState = governanceDashboard.currentState;
+                    return [
+                      { label: 'Win Rate', value: `${(wr * 100).toFixed(1)}%`, status: wr >= 0.55 ? 'good' as const : wr >= 0.45 ? 'warn' as const : 'bad' as const },
+                      { label: 'Record', value: `${wc}W / ${lc}L`, status: wc > lc ? 'good' as const : 'bad' as const },
+                      { label: 'Win/Loss Ratio', value: pf > 0 ? pf.toFixed(2) : '—', status: pf > 1.5 ? 'good' as const : pf > 1 ? 'warn' as const : 'bad' as const },
+                      { label: 'Realized P&L', value: `${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`, status: pnl >= 0 ? 'good' as const : 'bad' as const },
+                      { label: 'Governance State', value: govState, status: govState === 'NORMAL' ? 'good' as const : 'warn' as const },
+                      { label: 'Execution Quality', value: `${(executionMetrics?.avgExecutionQuality ?? 0).toFixed(0)}%`, status: (executionMetrics?.avgExecutionQuality ?? 0) >= 75 ? 'good' as const : 'warn' as const },
+                    ];
+                  })()}>
+                    <ForexPerformanceOverview
+                      metrics={performance}
+                      governanceStats={governanceStats}
+                      trades={filteredTrades}
+                      realMetrics={executionMetrics}
+                      tradeAnalytics={tradeAnalytics}
+                    />
+                  </PanelCheatSheet>
 
                   {/* Agent Accountability */}
-                  <AgentAccountabilityPanel metrics={executionMetrics} />
+                  <PanelCheatSheet title="Agent Accountability" lines={(() => {
+                    const agents = Object.values(executionMetrics?.agentBreakdown ?? {});
+                    const totalFilled = agents.reduce((s, a) => s + a.filled, 0);
+                    const topAgent = agents.length > 0 ? agents.reduce((a, b) => a.filled > b.filled ? a : b) : null;
+                    const avgQuality = agents.length > 0 ? agents.reduce((s, a) => s + a.avgQuality, 0) / agents.length : 0;
+                    return [
+                      { label: 'Active Agents', value: `${agents.length}`, status: agents.length >= 3 ? 'good' as const : 'neutral' as const },
+                      { label: 'Total Agent Fills', value: `${totalFilled}`, status: totalFilled > 20 ? 'good' as const : 'neutral' as const },
+                      { label: 'Top Agent', value: topAgent ? `${topAgent.agentId} (${topAgent.filled})` : '—', status: 'neutral' as const },
+                      { label: 'Avg Agent Quality', value: `${avgQuality.toFixed(0)}%`, status: avgQuality >= 75 ? 'good' as const : avgQuality >= 50 ? 'warn' as const : 'bad' as const },
+                    ];
+                  })()}>
+                    <AgentAccountabilityPanel metrics={executionMetrics} />
+                  </PanelCheatSheet>
 
                   {/* Rolling Sharpe */}
-                  <RollingSharpeChart
-                    data={tradeAnalytics.rollingSharpe}
-                    overallSharpe={tradeAnalytics.overallSharpe}
-                  />
+                  <PanelCheatSheet title="Rolling Sharpe" lines={(() => {
+                    const sharpe = tradeAnalytics.overallSharpe;
+                    const data = tradeAnalytics.rollingSharpe ?? [];
+                    const latest = data.length > 0 ? data[data.length - 1]?.sharpe ?? 0 : 0;
+                    const peak = data.reduce((max, d) => Math.max(max, d.sharpe ?? 0), 0);
+                    const trough = data.reduce((min, d) => Math.min(min, d.sharpe ?? 99), 99);
+                    return [
+                      { label: 'Overall Sharpe', value: sharpe.toFixed(2), status: sharpe > 1.5 ? 'good' as const : sharpe > 0.5 ? 'warn' as const : 'bad' as const },
+                      { label: 'Latest Rolling', value: latest.toFixed(2), status: latest > 1.0 ? 'good' as const : latest > 0 ? 'warn' as const : 'bad' as const },
+                      { label: 'Peak Sharpe', value: peak < 99 ? peak.toFixed(2) : '—', status: 'good' as const },
+                      { label: 'Trough Sharpe', value: trough < 99 ? trough.toFixed(2) : '—', status: trough < 0 ? 'bad' as const : 'warn' as const },
+                      { label: 'Data Points', value: `${data.length}`, status: data.length > 10 ? 'good' as const : 'neutral' as const },
+                    ];
+                  })()}>
+                    <RollingSharpeChart
+                      data={tradeAnalytics.rollingSharpe}
+                      overallSharpe={tradeAnalytics.overallSharpe}
+                    />
+                  </PanelCheatSheet>
 
                   {/* Session Heatmap & Pair P&L */}
                   <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                    <SessionHeatmap sessions={tradeAnalytics.sessionAnalytics} />
-                    <PairPnLBreakdown pairs={tradeAnalytics.pairAnalytics} />
+                    <PanelCheatSheet title="Session Performance" lines={(() => {
+                      const sessions = tradeAnalytics.sessionAnalytics ?? [];
+                      const best = sessions.length > 0 ? sessions.reduce((a, b) => a.netPnlPips > b.netPnlPips ? a : b) : null;
+                      const worst = sessions.length > 0 ? sessions.reduce((a, b) => a.netPnlPips < b.netPnlPips ? a : b) : null;
+                      const totalTrades = sessions.reduce((s, se) => s + se.tradeCount, 0);
+                      return [
+                        { label: 'Sessions Tracked', value: `${sessions.length}`, status: sessions.length > 0 ? 'good' as const : 'neutral' as const },
+                        { label: 'Total Session Trades', value: `${totalTrades}`, status: totalTrades > 20 ? 'good' as const : 'neutral' as const },
+                        { label: 'Best Session', value: best ? `${best.session} (+${best.netPnlPips.toFixed(1)}p)` : '—', status: 'good' as const },
+                        { label: 'Worst Session', value: worst ? `${worst.session} (${worst.netPnlPips.toFixed(1)}p)` : '—', status: 'bad' as const },
+                      ];
+                    })()}>
+                      <SessionHeatmap sessions={tradeAnalytics.sessionAnalytics} />
+                    </PanelCheatSheet>
+                    <PanelCheatSheet title="Pair P&L Breakdown" lines={(() => {
+                      const pairs = tradeAnalytics.pairAnalytics ?? [];
+                      const profitable = pairs.filter(p => p.netPnlPips > 0).length;
+                      const losing = pairs.filter(p => p.netPnlPips < 0).length;
+                      const best = pairs.length > 0 ? pairs.reduce((a, b) => a.netPnlPips > b.netPnlPips ? a : b) : null;
+                      const worst = pairs.length > 0 ? pairs.reduce((a, b) => a.netPnlPips < b.netPnlPips ? a : b) : null;
+                      const totalNet = pairs.reduce((s, p) => s + p.netPnlPips, 0);
+                      return [
+                        { label: 'Active Pairs', value: `${pairs.length}`, status: pairs.length >= 3 ? 'good' as const : 'neutral' as const },
+                        { label: 'Profitable / Losing', value: `${profitable} / ${losing}`, status: profitable > losing ? 'good' as const : 'bad' as const },
+                        { label: 'Total Net P&L', value: `${totalNet >= 0 ? '+' : ''}${totalNet.toFixed(1)}p`, status: totalNet >= 0 ? 'good' as const : 'bad' as const },
+                        { label: 'Best Pair', value: best ? `${best.pair} (+${best.netPnlPips.toFixed(1)}p)` : '—', status: 'good' as const },
+                        { label: 'Worst Pair', value: worst ? `${worst.pair} (${worst.netPnlPips.toFixed(1)}p)` : '—', status: 'bad' as const },
+                      ];
+                    })()}>
+                      <PairPnLBreakdown pairs={tradeAnalytics.pairAnalytics} />
+                    </PanelCheatSheet>
                   </div>
 
                   {/* Trade History Table */}
-                  <ForexTradeHistoryTable trades={filteredTrades} />
+                  <PanelCheatSheet title="Trade History" lines={(() => {
+                    const total = filteredTrades.length;
+                    const executed = filteredTrades.filter(t => t.outcome !== 'avoided').length;
+                    const blocked = filteredTrades.filter(t => t.outcome === 'avoided').length;
+                    const wins = filteredTrades.filter(t => t.outcome === 'win').length;
+                    const losses = filteredTrades.filter(t => t.outcome === 'loss').length;
+                    return [
+                      { label: 'Total Records', value: `${total}`, status: 'neutral' as const },
+                      { label: 'Executed', value: `${executed}`, status: executed > 0 ? 'good' as const : 'neutral' as const },
+                      { label: 'Blocked by Governance', value: `${blocked}`, status: blocked > executed ? 'warn' as const : 'neutral' as const },
+                      { label: 'Record', value: `${wins}W / ${losses}L`, status: wins > losses ? 'good' as const : 'bad' as const },
+                      { label: 'Active Filters', value: filters.period, status: 'neutral' as const },
+                    ];
+                  })()}>
+                    <ForexTradeHistoryTable trades={filteredTrades} />
+                  </PanelCheatSheet>
                 </div>
               </LazyTabContent>
             </TabsContent>
@@ -388,9 +512,51 @@ const ForexDashboard = () => {
             <TabsContent value="governance" className="space-y-4">
               <LazyTabContent label="Governance">
                 <div className="space-y-4">
-                  <LongOnlySettingsPanel />
-                  <AdaptiveGovernancePanel data={governanceDashboard} />
-                  <GovernanceHealthDashboard trades={filteredTrades} />
+                  <PanelCheatSheet title="Long-Only Settings" lines={[
+                    { label: 'Mode', value: longOnlyFilter ? 'LONG ONLY' : 'DUAL (Long + Short)', status: longOnlyFilter ? 'warn' as const : 'good' as const },
+                    { label: 'Short Eligible Pairs', value: 'EUR/GBP, USD/CAD, AUD/USD', status: 'neutral' as const },
+                    { label: 'Configuration', value: 'User-controlled override', status: 'neutral' as const },
+                  ]}>
+                    <LongOnlySettingsPanel />
+                  </PanelCheatSheet>
+                  <PanelCheatSheet title="Adaptive Governance" lines={(() => {
+                    const state = governanceDashboard.currentState;
+                    const w20 = governanceDashboard.windows.w20;
+                    const w50 = governanceDashboard.windows.w50;
+                    const pairCount = governanceDashboard.pairAllocations.length;
+                    const promoted = governanceDashboard.promotedPairs.length;
+                    const restricted = governanceDashboard.restrictedPairs.length;
+                    const banned = governanceDashboard.bannedPairs.length;
+                    const shadows = governanceDashboard.shadowCandidates.length;
+                    const eligible = governanceDashboard.shadowCandidates.filter(c => c.eligible).length;
+                    return [
+                      { label: 'Governance State', value: state, status: state === 'NORMAL' ? 'good' as const : state === 'DEFENSIVE' ? 'warn' as const : 'bad' as const },
+                      { label: '20-Trade Win Rate', value: `${(w20.winRate * 100).toFixed(1)}%`, status: w20.winRate >= 0.55 ? 'good' as const : w20.winRate >= 0.45 ? 'warn' as const : 'bad' as const },
+                      { label: '20-Trade Expectancy', value: `${w20.expectancy >= 0 ? '+' : ''}${w20.expectancy.toFixed(2)}p`, status: w20.expectancy > 0.5 ? 'good' as const : w20.expectancy >= 0 ? 'warn' as const : 'bad' as const },
+                      { label: '50-Trade Expectancy', value: `${w50.expectancy >= 0 ? '+' : ''}${w50.expectancy.toFixed(2)}p`, status: w50.expectancy > 0.5 ? 'good' as const : w50.expectancy >= 0 ? 'warn' as const : 'bad' as const },
+                      { label: 'Slippage Drift', value: w20.slippageDrift ? 'DETECTED' : 'None', status: w20.slippageDrift ? 'bad' as const : 'good' as const },
+                      { label: 'Active Pairs', value: `${pairCount}`, status: pairCount > 0 ? 'good' as const : 'warn' as const },
+                      { label: 'Promoted / Restricted / Banned', value: `${promoted} / ${restricted} / ${banned}`, status: banned > 0 ? 'bad' as const : restricted > 0 ? 'warn' as const : 'good' as const },
+                      { label: 'Shadow Candidates', value: `${shadows} (${eligible} eligible)`, status: eligible > 0 ? 'good' as const : 'neutral' as const },
+                    ];
+                  })()}>
+                    <AdaptiveGovernancePanel data={governanceDashboard} />
+                  </PanelCheatSheet>
+                  <PanelCheatSheet title="Governance Health" lines={(() => {
+                    const executed = filteredTrades.filter(t => t.outcome !== 'avoided').length;
+                    const total = filteredTrades.length;
+                    const blocked = total - executed;
+                    const blockRate = total > 0 ? (blocked / total * 100) : 0;
+                    return [
+                      { label: 'Total Evaluations', value: `${total}`, status: total > 50 ? 'good' as const : 'neutral' as const },
+                      { label: 'Executed', value: `${executed}`, status: executed > 0 ? 'good' as const : 'warn' as const },
+                      { label: 'Blocked', value: `${blocked}`, status: blocked > executed ? 'warn' as const : 'good' as const },
+                      { label: 'Block Rate', value: `${blockRate.toFixed(1)}%`, status: blockRate > 60 ? 'bad' as const : blockRate > 40 ? 'warn' as const : 'good' as const },
+                      { label: 'Health Monitor', value: 'ACTIVE', status: 'good' as const },
+                    ];
+                  })()}>
+                    <GovernanceHealthDashboard trades={filteredTrades} />
+                  </PanelCheatSheet>
                 </div>
               </LazyTabContent>
             </TabsContent>
