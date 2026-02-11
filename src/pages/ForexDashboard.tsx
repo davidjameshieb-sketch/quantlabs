@@ -54,7 +54,8 @@ import { IndicatorComparisonDashboard } from '@/components/forex/indicators/Indi
 import { ClusterMiningDashboard } from '@/components/forex/cluster-mining/ClusterMiningDashboard';
 import { PairDarwinismDashboard } from '@/components/forex/PairDarwinismDashboard';
 import { LiveTradingProofPanel } from '@/components/forex/EnvironmentGuards';
-import { Pickaxe, Dna } from 'lucide-react';
+import { ShortEngineDashboard } from '@/components/forex/shorts/ShortEngineDashboard';
+import { Pickaxe, Dna, ArrowDownRight } from 'lucide-react';
 import { LazyTabContent } from '@/components/forex/LazyTabContent';
 import {
   generateForexTrades,
@@ -201,6 +202,7 @@ const ForexDashboard = () => {
             <TabsTrigger value="indicators" className="text-xs gap-1.5"><Activity className="w-3.5 h-3.5" />Indicators</TabsTrigger>
             <TabsTrigger value="cluster-mining" className="text-xs gap-1.5"><Pickaxe className="w-3.5 h-3.5" />Cluster Mining</TabsTrigger>
             <TabsTrigger value="darwinism" className="text-xs gap-1.5"><Dna className="w-3.5 h-3.5" />Pair Darwinism</TabsTrigger>
+            <TabsTrigger value="short-engine" className="text-xs gap-1.5"><ArrowDownRight className="w-3.5 h-3.5" />Short Engine</TabsTrigger>
           </TabsList>
 
           {/* Focus Pairs — loads immediately */}
@@ -399,6 +401,12 @@ const ForexDashboard = () => {
           <TabsContent value="darwinism" className="space-y-4">
             <LazyTabContent label="Pair Darwinism">
               <PairDarwinismDashboard />
+            </LazyTabContent>
+          </TabsContent>
+
+          <TabsContent value="short-engine" className="space-y-4">
+            <LazyTabContent label="Short Engine">
+              <ShortEngineDashboard />
             </LazyTabContent>
           </TabsContent>
         </Tabs>
