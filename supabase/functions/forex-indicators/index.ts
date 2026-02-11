@@ -359,6 +359,75 @@ Deno.serve(async (req) => {
     const bearish = signals.filter(s => s < 0).length;
     const consensusScore = ((bullish - bearish) / signals.length) * 100;
 
+    // ═══ INDICATOR-DERIVED REGIME CLASSIFICATION ═══
+    // Uses real market structure instead of time-of-day
+    const adxVal = indicators.adx.value || 0;
+    const adxTrending = adxVal > 25;
+    const adxStrong = adxVal > 35;
+    const trendEff = indicators.trendEfficiency.value || 0;
+    const bbWidth = indicators.bollingerBands.bandwidth || 0;
+    const rsiVal = indicators.rsi.value || 50;
+    const rocVal = indicators.roc.value || 0;
+    const pctB = indicators.bollingerBands.pctB ?? 0.5;
+    const stkK = indicators.stochastics.k ?? 50;
+    
+    // Classify bearish momentum strength
+    const bearishMomentum = (
+      (indicators.roc.signal === "bearish" ? 1 : 0) +
+      (indicators.elderForce.signal === "bearish" ? 1 : 0) +
+      (indicators.ema50.signal === "bearish" ? 1 : 0) +
+      (indicators.supertrend.signal === "bearish" ? 1 : 0) +
+      (indicators.parabolicSAR.signal === "bearish" ? 1 : 0) +
+      (indicators.ichimoku.signal === "bearish" ? 1 : 0) +
+      (indicators.heikinAshi.signal === "bearish" ? 1 : 0)
+    );
+    const bullishMomentum = (
+      (indicators.roc.signal === "bullish" ? 1 : 0) +
+      (indicators.elderForce.signal === "bullish" ? 1 : 0) +
+      (indicators.ema50.signal === "bullish" ? 1 : 0) +
+      (indicators.supertrend.signal === "bullish" ? 1 : 0) +
+      (indicators.parabolicSAR.signal === "bullish" ? 1 : 0) +
+      (indicators.ichimoku.signal === "bullish" ? 1 : 0) +
+      (indicators.heikinAshi.signal === "bullish" ? 1 : 0)
+    );
+
+    let marketRegime: string;
+    let regimeStrength: number; // 0-100
+    
+    if (adxStrong && bearishMomentum >= 5 && rocVal < -0.1 && pctB < 0.2) {
+      // Strong bearish trend with breakdown characteristics
+      marketRegime = "breakdown";
+      regimeStrength = Math.min(100, Math.round(adxVal * 1.5 + bearishMomentum * 8));
+    } else if (adxTrending && bearishMomentum >= 4 && rocVal < 0) {
+      // Moderate bearish with selling pressure
+      marketRegime = "risk-off";
+      regimeStrength = Math.min(100, Math.round(adxVal + bearishMomentum * 10));
+    } else if (rsiVal > 70 && stkK > 80 && rocVal < 0.05) {
+      // Overbought exhaustion — potential reversal
+      marketRegime = "exhaustion";
+      regimeStrength = Math.min(100, Math.round(rsiVal - 20));
+    } else if (!adxTrending && trendEff < 0.3 && bbWidth < 0.01) {
+      // Low volatility squeeze — compression
+      marketRegime = "compression";
+      regimeStrength = Math.min(100, Math.round((1 - trendEff) * 50 + (1 - bbWidth * 100) * 20));
+    } else if (adxStrong && bullishMomentum >= 5 && rocVal > 0.1) {
+      // Strong bullish expansion
+      marketRegime = "expansion";
+      regimeStrength = Math.min(100, Math.round(adxVal * 1.5 + bullishMomentum * 8));
+    } else if (adxTrending && bullishMomentum >= 4 && rocVal > 0) {
+      // Moderate bullish momentum
+      marketRegime = "momentum";
+      regimeStrength = Math.min(100, Math.round(adxVal + bullishMomentum * 10));
+    } else if (trendEff < 0.25) {
+      // Choppy / flat
+      marketRegime = "flat";
+      regimeStrength = Math.min(100, Math.round((1 - trendEff) * 40));
+    } else {
+      // Neutral / transitional
+      marketRegime = "transition";
+      regimeStrength = 30;
+    }
+
     const lastCandle = candles[candles.length - 1];
 
     return new Response(JSON.stringify({
@@ -376,6 +445,17 @@ Deno.serve(async (req) => {
         bullishCount: bullish,
         bearishCount: bearish,
         neutralCount: signals.length - bullish - bearish,
+      },
+      // ═══ NEW: Market regime from actual indicator data ═══
+      regime: {
+        label: marketRegime,
+        strength: regimeStrength,
+        bearishMomentum,
+        bullishMomentum,
+        adx: adxVal,
+        trendEfficiency: trendEff,
+        bollingerWidth: bbWidth,
+        shortFriendly: ["breakdown", "risk-off", "exhaustion", "compression"].includes(marketRegime),
       },
     }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
