@@ -1,12 +1,48 @@
 // Data Readiness Card — shows forex pipeline health
-import { useMemo } from 'react';
+// Now properly awaits live OANDA prices before checking readiness
+import { useState, useEffect, useCallback } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Database, CheckCircle, XCircle, AlertTriangle } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Database, CheckCircle, XCircle, AlertTriangle, RefreshCw } from 'lucide-react';
 import { checkForexDataReadiness, type ForexDataReadinessResult } from '@/lib/forex/forexDataReadiness';
+import { fetchOandaLivePrices, hasLivePrices } from '@/lib/forex/oandaPricingService';
+import { cn } from '@/lib/utils';
 
 export function DataReadinessCard() {
-  const readiness: ForexDataReadinessResult = useMemo(() => checkForexDataReadiness(), []);
+  const [readiness, setReadiness] = useState<ForexDataReadinessResult | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    try {
+      // Ensure live prices are fetched before checking readiness
+      await fetchOandaLivePrices();
+      const result = checkForexDataReadiness();
+      setReadiness(result);
+    } catch (e) {
+      console.warn('[DataReadiness] refresh error:', e);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    refresh();
+    // Re-check every 2 minutes
+    const id = setInterval(refresh, 120_000);
+    return () => clearInterval(id);
+  }, [refresh]);
+
+  if (!readiness) {
+    return (
+      <Card className="bg-card/60 border-border/50">
+        <CardContent className="py-6 flex items-center justify-center gap-2 text-xs text-muted-foreground">
+          <RefreshCw className="w-3.5 h-3.5 animate-spin" /> Loading price data…
+        </CardContent>
+      </Card>
+    );
+  }
 
   const { summary, results } = readiness;
   const blockedPairs = results.filter(r => r.blockingReason);
@@ -14,19 +50,24 @@ export function DataReadinessCard() {
   return (
     <Card className="bg-card/60 border-border/50">
       <CardHeader className="pb-2 pt-3 px-3">
-        <CardTitle className="text-xs flex items-center gap-2">
-          <Database className="w-3.5 h-3.5 text-primary" />
-          Data Readiness
-          {summary.blockedCount === 0 ? (
-            <Badge variant="outline" className="text-[9px] bg-emerald-500/10 text-emerald-400 border-emerald-500/30">
-              <CheckCircle className="w-2.5 h-2.5 mr-0.5" /> All Clear
-            </Badge>
-          ) : (
-            <Badge variant="outline" className="text-[9px] bg-amber-500/10 text-amber-400 border-amber-500/30">
-              <AlertTriangle className="w-2.5 h-2.5 mr-0.5" /> {summary.blockedCount} blocked
-            </Badge>
-          )}
-        </CardTitle>
+        <div className="flex items-center justify-between">
+          <CardTitle className="text-xs flex items-center gap-2">
+            <Database className="w-3.5 h-3.5 text-primary" />
+            Data Readiness
+            {summary.blockedCount === 0 ? (
+              <Badge variant="outline" className="text-[9px] bg-emerald-500/10 text-emerald-400 border-emerald-500/30">
+                <CheckCircle className="w-2.5 h-2.5 mr-0.5" /> All Clear
+              </Badge>
+            ) : (
+              <Badge variant="outline" className="text-[9px] bg-amber-500/10 text-amber-400 border-amber-500/30">
+                <AlertTriangle className="w-2.5 h-2.5 mr-0.5" /> {summary.blockedCount} blocked
+              </Badge>
+            )}
+          </CardTitle>
+          <Button size="sm" variant="ghost" onClick={refresh} disabled={loading} className="h-6 w-6 p-0">
+            <RefreshCw className={cn('w-3 h-3', loading && 'animate-spin')} />
+          </Button>
+        </div>
       </CardHeader>
       <CardContent className="px-3 pb-3 space-y-2">
         {/* Summary Stats */}
@@ -78,7 +119,7 @@ export function DataReadinessCard() {
           </div>
         )}
 
-        {/* Candle Coverage */}
+        {/* Last check */}
         <div className="text-[9px] text-muted-foreground">
           Last check: {new Date(readiness.ts).toLocaleTimeString()}
         </div>
