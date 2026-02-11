@@ -96,7 +96,7 @@ export function useOandaExecution() {
     return data;
   }, [getValidSession]);
 
-  const fetchAccountSummary = useCallback(async (environment: OandaEnvironment = 'practice') => {
+  const fetchAccountSummary = useCallback(async (environment: OandaEnvironment = 'live') => {
     setLoading(true);
     try {
       const data = await callOanda({ action: 'account-summary', environment });
@@ -127,7 +127,7 @@ export function useOandaExecution() {
     }
   }, [callOanda]);
 
-  const fetchOrderHistory = useCallback(async (environment: OandaEnvironment = 'practice') => {
+  const fetchOrderHistory = useCallback(async (environment: OandaEnvironment = 'live') => {
     try {
       const data = await callOanda({ action: 'status', environment });
       if (data.success) {
@@ -150,7 +150,7 @@ export function useOandaExecution() {
     setLoading(true);
     try {
       // Router hard guard: validate environment alignment
-      const env = params.environment || 'practice';
+      const env = params.environment || 'live';
       const guardResult = validateLiveExecution({
         accountType: env as AccountType,
         brokerEnvironment: env === 'live' ? 'live' : 'practice',
@@ -172,8 +172,8 @@ export function useOandaExecution() {
         toast.success(`Order filled: ${params.direction.toUpperCase()} ${params.units} ${params.currencyPair}`);
         // Refresh data
         await Promise.all([
-          fetchAccountSummary(params.environment || 'practice'),
-          fetchOrderHistory(params.environment || 'practice'),
+          fetchAccountSummary(env),
+          fetchOrderHistory(env),
         ]);
       }
       return data;
@@ -185,7 +185,7 @@ export function useOandaExecution() {
     }
   }, [callOanda, fetchAccountSummary, fetchOrderHistory]);
 
-  const closeTrade = useCallback(async (oandaTradeId: string, environment: OandaEnvironment = 'practice') => {
+  const closeTrade = useCallback(async (oandaTradeId: string, environment: OandaEnvironment = 'live') => {
     setLoading(true);
     try {
       const data = await callOanda({ action: 'close', oandaTradeId, environment });
