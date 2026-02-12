@@ -35,6 +35,14 @@ const SECONDARY_PAIRS = [
 
 const ALL_PAIRS = [...SCALP_PAIRS, ...SECONDARY_PAIRS];
 const BASE_UNITS = 1000;
+
+// ─── GOVERNANCE: Agents suspended from LIVE execution ───
+// Must be checked by coalition promotion, agent selection, AND canPlaceLiveOrder.
+const SUSPENDED_AGENTS: Record<string, string> = {
+  "support-mtf-confirmer": "shadow",
+  "sentiment-reactor": "disabled",
+  "range-navigator": "disabled",
+};
 const USER_ID = "11edc350-4c81-4d9f-82ae-cd2209b7581d";
 
 // ─── Pair ATR Multipliers (relative volatility) ───
@@ -420,6 +428,7 @@ function resolveAgentSnapshot(stats: Array<{
   if (eligible.length < minRequired) {
     // STEP 3: SUPPORT AGENT FALLBACK — inject virtual confirmer agents
     // These only confirm MTF direction + regime, they cannot override edge layers
+    // CRITICAL: Skip agents in SUSPENDED_AGENTS — promoting then blocking wastes signal slots
     const supportAgents: AgentSnapshot[] = [
       {
         agentId: "support-mtf-confirmer",
@@ -447,6 +456,11 @@ function resolveAgentSnapshot(stats: Array<{
 
     for (const sa of supportAgents) {
       if (eligible.length >= minRequired) break;
+      // GOVERNANCE FIX: Do NOT promote agents that are suspended from live execution
+      if (SUSPENDED_AGENTS[sa.agentId]) {
+        promotionLog.push(`[AUTO-PROMOTE] SKIPPED ${sa.agentId} — suspended (mode=${SUSPENDED_AGENTS[sa.agentId]})`);
+        continue;
+      }
       agents.push(sa);
       eligible.push(sa);
       promotionLog.push(`[AUTO-PROMOTE] SUPPORT AGENT activated: ${sa.agentId}`);
@@ -509,13 +523,15 @@ function selectAgentFromSnapshot(snapshot: ExecutionSnapshot, pair: string): Age
   const eligible = snapshot.eligibleAgents;
   if (eligible.length === 0) return null;
 
-  // Classify and filter out diluters
+  // Classify and filter out diluters AND suspended agents
   const classified = eligible.map(a => ({ agent: a, ...classifyAgentRole(a) }))
-    .filter(c => c.role !== "diluter");
+    .filter(c => c.role !== "diluter")
+    .filter(c => !SUSPENDED_AGENTS[c.agent.agentId]);
 
   if (classified.length === 0) {
-    // Fallback: use first eligible even if diluter
-    const first = eligible[0];
+    // Fallback: use first eligible that is NOT suspended
+    const nonSuspended = eligible.filter(a => !SUSPENDED_AGENTS[a.agentId]);
+    const first = nonSuspended.length > 0 ? nonSuspended[0] : eligible[0];
     return { ...first, role: "stabilizer" as AgentLiveRole, roleMult: 0.95 };
   }
 
@@ -1355,12 +1371,7 @@ function canPlaceLiveOrder(
     return { allowed: false, reason_code: "GOV_BLOCK_SESSION", metadata: { session_label: tradeIntent.session } };
   }
 
-  // ─── CHECK 3: AGENT SUSPENSION ───
-  const SUSPENDED_AGENTS: Record<string, string> = {
-    "support-mtf-confirmer": "shadow",
-    "sentiment-reactor": "disabled",
-    "range-navigator": "disabled",
-  };
+  // ─── CHECK 3: AGENT SUSPENSION (uses module-level SUSPENDED_AGENTS) ───
   if (SUSPENDED_AGENTS[tradeIntent.agentId]) {
     console.log(`[GOV_BLOCK_AGENT] agent_id=${tradeIntent.agentId} mode=${SUSPENDED_AGENTS[tradeIntent.agentId]} — suspended from live execution`);
     return { allowed: false, reason_code: "GOV_BLOCK_AGENT", metadata: { agent_id: tradeIntent.agentId, mode: SUSPENDED_AGENTS[tradeIntent.agentId] } };
