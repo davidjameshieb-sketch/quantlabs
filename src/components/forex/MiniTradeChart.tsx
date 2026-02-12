@@ -74,7 +74,7 @@ export function MiniTradeChart({ entryPrice, exitPrice, direction, className }: 
   const strokeColor = isScratch
     ? 'hsl(var(--muted-foreground))'
     : isWin
-    ? '#34d399'
+    ? '#60a5fa'
     : '#f87171';
 
   const entryColor = '#60a5fa'; // blue for entry
