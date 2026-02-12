@@ -154,10 +154,11 @@ function computeCoalitionRequirement(agents: AgentSnapshot[]): CoalitionRequirem
   // Aggregate survivorship score from eligible agents' metrics
   const totalTrades = eligible.reduce((s, a) => s + a.metrics.totalTrades, 0);
 
-  // ─── BOOTSTRAP PHASE: < 10 trades = cold start, default to DUO ───
-  // No evidence of degradation yet — requiring TRIO would deadlock the system
-  if (totalTrades < 10) {
-    reasons.push(`Bootstrap phase: ${totalTrades} trades < 10 — defaulting to DUO`);
+  // ─── LEARNING PHASE: < 500 trades = force DUO ───
+  // During learning, TRIO escalation would deadlock the system with only 2 support agents.
+  // Once we have 500+ trades, survivorship metrics become meaningful for TRIO gating.
+  if (totalTrades < 500) {
+    reasons.push(`Learning phase: ${totalTrades} trades < 500 — forcing DUO (no TRIO escalation)`);
     return {
       tier: "duo", minAgents: 2, survivorshipScore: 0, rollingPF: 0,
       expectancySlope: 0, stabilityTrend: "flat",
@@ -2431,12 +2432,27 @@ Deno.serve(async (req) => {
       const indicatorRegimeAuthorized = indicatorRegime === "unknown" || (direction === "long"
         ? LONG_AUTHORIZED_REGIMES.includes(indicatorRegime)
         : SHORT_AUTHORIZED_REGIMES.includes(indicatorRegime));
-      // LEARNING PHASE: indicator regime is primary when available; ATR is fallback
+      // LEARNING PHASE: indicator regime is SOLE authority when available
+      // ATR regime measures volatility magnitude, NOT direction — it can say "expansion" during a clear breakdown.
+      // Only the 16-indicator composite regime has directional awareness.
       const isLearningPhase = (rawOrders || []).length < 500;
-      const regimeAuthorized = indicatorRegime !== "unknown" && isLearningPhase
-        ? indicatorRegimeAuthorized   // Trust indicator regime during learning
-        : (atrRegimeAuthorized && indicatorRegimeAuthorized); // Both must agree post-maturity
-      const effectiveRegimeForAuth = indicatorRegime !== "unknown" ? indicatorRegime : regime;
+      const hasIndicatorRegime = indicatorRegime !== "unknown";
+      let regimeAuthorized: boolean;
+      let effectiveRegimeForAuth: string;
+      if (hasIndicatorRegime && isLearningPhase) {
+        // Learning: trust indicator regime exclusively — ATR is directionally blind
+        regimeAuthorized = indicatorRegimeAuthorized;
+        effectiveRegimeForAuth = indicatorRegime;
+      } else if (hasIndicatorRegime) {
+        // Post-maturity: both must agree
+        regimeAuthorized = atrRegimeAuthorized && indicatorRegimeAuthorized;
+        effectiveRegimeForAuth = indicatorRegime;
+      } else {
+        // No indicator data: ATR is the only signal
+        regimeAuthorized = atrRegimeAuthorized;
+        effectiveRegimeForAuth = regime;
+      }
+      console.log(`[REGIME-AUTH] ${pair} ${direction}: atr=${regime}(${atrRegimeAuthorized}) ind=${indicatorRegime}(${indicatorRegimeAuthorized}) learning=${isLearningPhase} → auth=${regimeAuthorized} effective=${effectiveRegimeForAuth}`);
       const coalitionMet = snapshot.eligibleCount >= snapshot.coalitionRequirement.minAgents;
       const autoPromotionEvent = (snapshot.promotionLog || []).length > 0
         ? (snapshot.promotionLog.some(l => l.includes("SUPPORT")) ? "support"
