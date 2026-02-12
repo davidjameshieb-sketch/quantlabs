@@ -2287,8 +2287,8 @@ Deno.serve(async (req) => {
       // ═══ STRATEGY REVAMP: No secondary pair cap — all pairs use discovery multiplier ═══
       let deploymentMultiplier = discoveryMultiplier;
 
-      // ─── SHORT CAPITAL CAP: 25% of long allocation during learning phase ───
-      const shortCapMultiplier = direction === "short" ? 0.25 : 1.0;
+      // ─── SHORT CAPITAL: Equal allocation to longs ───
+      const shortCapMultiplier = 1.0;
       const tradeUnits = Math.max(500, Math.round(baseTradeUnits * deploymentMultiplier * shortCapMultiplier));
 
       console.log(`[SCALP-TRADE] ${pair} (${isPrimaryPair ? 'SCALP' : 'SECONDARY'}): sized ${tradeUnits}u (gov=${govConfig.sizingMultiplier}, pair=${(pairAlloc as PairRollingMetrics).capitalMultiplier?.toFixed(2)}, session=${sessionBudget.capitalBudgetPct}, agent=${agentSizeMult}, discovery=${discoveryMultiplier}, deployment=${deploymentMultiplier.toFixed(2)}, shortCap=${shortCapMultiplier})`);
