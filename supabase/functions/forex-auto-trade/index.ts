@@ -974,6 +974,122 @@ function buildLongLearningProfile(orders: Array<Record<string, unknown>>): LongL
 }
 
 // ═══════════════════════════════════════════════════════════════
+// SHORT-SIDE ADAPTIVE LEARNING ENGINE
+// Mirrors long learning: tracks regime/session/pair outcomes for shorts
+// Auto-adjusts bearish momentum thresholds and blocks destructive sessions
+// ═══════════════════════════════════════════════════════════════
+
+interface ShortLearningProfile {
+  learningMaturity: string;
+  totalShortTrades: number;
+  overallShortWR: number;
+  overallShortExpectancy: number;
+  adaptiveBearishThreshold: number;
+  adaptiveRegimeStrengthMin: number;
+  bestRegimes: string[];
+  worstRegimes: string[];
+  regimeStats: Record<string, { wins: number; losses: number; totalPips: number; avgDuration: number }>;
+  sessionStats: Record<string, { wins: number; losses: number; totalPips: number }>;
+  pairStats: Record<string, { wins: number; losses: number; totalPips: number }>;
+}
+
+function buildShortLearningProfile(orders: Array<Record<string, unknown>>): ShortLearningProfile {
+  const shortOrders = orders.filter(o =>
+    o.direction === "short" &&
+    (o.status === "closed" || o.status === "filled") &&
+    o.entry_price != null && o.exit_price != null
+  );
+
+  const totalShortTrades = shortOrders.length;
+  let totalWins = 0, totalPips = 0;
+  const regimeStats: Record<string, { wins: number; losses: number; totalPips: number; avgDuration: number }> = {};
+  const sessionStats: Record<string, { wins: number; losses: number; totalPips: number }> = {};
+  const pairStats: Record<string, { wins: number; losses: number; totalPips: number }> = {};
+
+  for (const o of shortOrders) {
+    const pair = o.currency_pair as string;
+    const entry = o.entry_price as number;
+    const exit = o.exit_price as number;
+    const pipDiv = pair?.includes("JPY") ? 0.01 : 0.0001;
+    const pips = (entry - exit) / pipDiv; // Short P&L: entry - exit
+    const won = pips > 0;
+    const regime = (o.regime_label as string) || "unknown";
+    const sess = (o.session_label as string) || "unknown";
+
+    totalPips += pips;
+    if (won) totalWins++;
+
+    if (!regimeStats[regime]) regimeStats[regime] = { wins: 0, losses: 0, totalPips: 0, avgDuration: 0 };
+    if (won) regimeStats[regime].wins++; else regimeStats[regime].losses++;
+    regimeStats[regime].totalPips += pips;
+
+    if (!sessionStats[sess]) sessionStats[sess] = { wins: 0, losses: 0, totalPips: 0 };
+    if (won) sessionStats[sess].wins++; else sessionStats[sess].losses++;
+    sessionStats[sess].totalPips += pips;
+
+    if (!pairStats[pair]) pairStats[pair] = { wins: 0, losses: 0, totalPips: 0 };
+    if (won) pairStats[pair].wins++; else pairStats[pair].losses++;
+    pairStats[pair].totalPips += pips;
+  }
+
+  const overallWR = totalShortTrades > 0 ? totalWins / totalShortTrades : 0.5;
+  const overallExp = totalShortTrades > 0 ? totalPips / totalShortTrades : 0;
+
+  let maturity = "bootstrap";
+  if (totalShortTrades >= 200) maturity = "mature";
+  else if (totalShortTrades >= 75) maturity = "converging";
+  else if (totalShortTrades >= 20) maturity = "growing";
+  else if (totalShortTrades >= 5) maturity = "early";
+
+  // Adaptive bearish momentum threshold: start permissive (4/7), tighten if losing
+  let adaptiveBearishThreshold = 4;
+  if (totalShortTrades >= 20 && overallWR < 0.35) adaptiveBearishThreshold = 5;
+  else if (totalShortTrades >= 50 && overallWR >= 0.55) adaptiveBearishThreshold = 3;
+  else if (totalShortTrades >= 30 && overallWR < 0.40) adaptiveBearishThreshold = 5;
+
+  let adaptiveRegimeStrengthMin = 30;
+  if (totalShortTrades >= 20 && overallWR < 0.35) adaptiveRegimeStrengthMin = 45;
+  else if (totalShortTrades >= 50 && overallWR >= 0.55) adaptiveRegimeStrengthMin = 25;
+
+  const regimeEntries = Object.entries(regimeStats)
+    .filter(([, s]) => (s.wins + s.losses) >= 3)
+    .map(([r, s]) => ({ regime: r, exp: s.totalPips / (s.wins + s.losses), wr: s.wins / (s.wins + s.losses) }));
+
+  const bestRegimes = regimeEntries.filter(r => r.exp > 0 && r.wr >= 0.35).map(r => r.regime);
+  const worstRegimes = regimeEntries.filter(r => r.exp < -2 || r.wr < 0.25).map(r => r.regime);
+
+  if (totalShortTrades >= 5) {
+    console.log(`[SHORT-LEARN] Profile: ${maturity} | ${totalShortTrades} trades | WR=${(overallWR*100).toFixed(0)}% | exp=${overallExp.toFixed(1)}p | bearishThreshold=${adaptiveBearishThreshold} | regimeMin=${adaptiveRegimeStrengthMin}`);
+    if (bestRegimes.length) console.log(`[SHORT-LEARN]   Best regimes: ${bestRegimes.join(", ")}`);
+    if (worstRegimes.length) console.log(`[SHORT-LEARN]   Worst regimes: ${worstRegimes.join(", ")}`);
+    for (const [sess, s] of Object.entries(sessionStats)) {
+      const total = s.wins + s.losses;
+      if (total >= 5) {
+        const sessExp = s.totalPips / total;
+        const sessWR = s.wins / total;
+        if (sessExp < -2 || sessWR < 0.25) {
+          console.log(`[SHORT-LEARN]   ⚠ Session ${sess}: WR=${(sessWR*100).toFixed(0)}%, exp=${sessExp.toFixed(1)}p — AUTO-BLOCK candidate`);
+        }
+      }
+    }
+  }
+
+  return {
+    learningMaturity: maturity,
+    totalShortTrades,
+    overallShortWR: overallWR,
+    overallShortExpectancy: overallExp,
+    adaptiveBearishThreshold,
+    adaptiveRegimeStrengthMin,
+    bestRegimes,
+    worstRegimes,
+    regimeStats,
+    sessionStats,
+    pairStats,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════
 // STOP-LOSS CALCULATION — prevents catastrophic single-trade losses
 // ═══════════════════════════════════════════════════════════════
 
@@ -1536,6 +1652,12 @@ Deno.serve(async (req) => {
     // PHASE 1.6: Long-Side Adaptive Learning Engine
     // ═══════════════════════════════════════════════════════════
     const longLearningProfile = buildLongLearningProfile(orders);
+
+    // ═══════════════════════════════════════════════════════════
+    // PHASE 1.7: Short-Side Adaptive Learning Engine
+    // Mirrors long learning: tracks regime/session/pair outcomes for shorts
+    // ═══════════════════════════════════════════════════════════
+    const shortLearningProfile = buildShortLearningProfile(orders);
 
     // ═══════════════════════════════════════════════════════════
     // PHASE 2: Degradation Autopilot + Governance State Machine
@@ -2107,7 +2229,7 @@ Deno.serve(async (req) => {
         } else if (isEdge) {
           discoveryRiskLabel = "EDGE_BOOST";
           discoveryMultiplier = EDGE_BOOST_MULTIPLIER;
-          explainReasons.push(`Edge candidate: ${session} ${regime} ${direction}`);
+          explainReasons.push(`Edge candidate: ${session} ${effectiveRegime} ${direction}`);
         } else {
           discoveryRiskLabel = "BASELINE";
           discoveryMultiplier = BASELINE_REDUCTION_MULTIPLIER;
@@ -2339,6 +2461,7 @@ Deno.serve(async (req) => {
         // ═══ STOP-LOSS: Dynamic ATR-based stop-loss wired into OANDA order ═══
         // Fetches current price to compute stop-loss level
         let stopLossPrice: number | undefined;
+        let entryEstimate = 0; // Pre-order price for slippage calculation
         try {
           const priceRes = await oandaRequest(
             `/v3/accounts/{accountId}/pricing?instruments=${pair}`, "GET",
@@ -2346,7 +2469,7 @@ Deno.serve(async (req) => {
           ) as { prices?: Array<{ asks?: Array<{ price: string }>; bids?: Array<{ price: string }> }> };
           const currentPrice = priceRes.prices?.[0];
           if (currentPrice) {
-            const entryEstimate = direction === "long"
+            entryEstimate = direction === "long"
               ? parseFloat(currentPrice.asks?.[0]?.price || "0")
               : parseFloat(currentPrice.bids?.[0]?.price || "0");
             if (entryEstimate > 0) {
@@ -2391,7 +2514,8 @@ Deno.serve(async (req) => {
         const finalStatus = wasCancelled ? "rejected" : "filled";
         const errorMsg = wasCancelled ? `OANDA: ${cancelReason}` : null;
 
-        const requestedPrice = filledPrice;
+        // FIX: Use pre-order entryEstimate as requestedPrice (not filledPrice which makes slippage always 0)
+        const requestedPrice = entryEstimate > 0 ? entryEstimate : filledPrice;
         const spreadAtEntry = halfSpread != null ? halfSpread * 2 : (PAIR_BASE_SPREADS[pair] || 1.0) * 0.0001;
         // REAL SLIPPAGE: computed from actual fill price vs requested price (not random)
         let slippagePips: number | null = null;
