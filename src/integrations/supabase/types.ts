@@ -123,6 +123,7 @@ export type Database = {
           slippage_pips: number | null
           spread_at_entry: number | null
           status: string
+          time_to_mfe_bars: number | null
           trade_health_score: number | null
           ue_r: number | null
           units: number
@@ -175,6 +176,7 @@ export type Database = {
           slippage_pips?: number | null
           spread_at_entry?: number | null
           status?: string
+          time_to_mfe_bars?: number | null
           trade_health_score?: number | null
           ue_r?: number | null
           units: number
@@ -227,6 +229,7 @@ export type Database = {
           slippage_pips?: number | null
           spread_at_entry?: number | null
           status?: string
+          time_to_mfe_bars?: number | null
           trade_health_score?: number | null
           ue_r?: number | null
           units?: number

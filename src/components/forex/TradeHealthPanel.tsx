@@ -148,13 +148,13 @@ function TradeHealthCard({ order, health, livePrice, index }: TradeHealthCardPro
         </div>
       </div>
 
-      {/* Component Breakdown */}
       <div className="grid grid-cols-1 gap-1.5">
-        <ComponentBar label="Progress (P)" value={health.components.P} />
-        <ComponentBar label="Persistence (D_pers)" value={health.components.D_pers} />
-        <ComponentBar label="Acceleration (D_acc)" value={health.components.D_acc} />
-        <ComponentBar label="Regime Stability (S)" value={health.components.S_regime} />
-        <ComponentBar label="Drift Penalty (A)" value={health.components.A_drift} />
+        <ComponentBar label="Progress (P) 28%" value={health.components.P} />
+        <ComponentBar label="Time-to-MFE (T) 10%" value={health.components.T_mfe ?? 50} />
+        <ComponentBar label="Persistence (D_pers) 16%" value={health.components.D_pers} />
+        <ComponentBar label="Acceleration (D_acc) 12%" value={health.components.D_acc} />
+        <ComponentBar label="Regime Stability (S) 22%" value={health.components.S_regime} />
+        <ComponentBar label="Drift Penalty (A) 12%" value={health.components.A_drift} />
       </div>
 
       {/* Governance Action */}
@@ -356,9 +356,10 @@ export function TradeHealthPanel({ metrics }: TradeHealthPanelProps) {
           <BarChart3 className="w-3 h-3" /> Component Weights
         </p>
         <div className="flex flex-wrap gap-3 text-[10px] text-muted-foreground">
-          <span><strong>P</strong> Progress 34%</span>
-          <span><strong>D_pers</strong> Persistence 18%</span>
-          <span><strong>D_acc</strong> Acceleration 14%</span>
+          <span><strong>P</strong> Progress 28%</span>
+          <span><strong>T</strong> Time-to-MFE 10%</span>
+          <span><strong>D_pers</strong> Persistence 16%</span>
+          <span><strong>D_acc</strong> Acceleration 12%</span>
           <span><strong>S</strong> Regime 22%</span>
           <span><strong>A</strong> Drift 12%</span>
         </div>
