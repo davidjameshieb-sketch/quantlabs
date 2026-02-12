@@ -174,6 +174,124 @@ async function oandaRequest(path: string, method: string, body?: Record<string, 
   return data;
 }
 
+// ─── Post-Entry Trade Health Engine (inline) ───
+// Computes a composite health score (0-100) for open trades.
+// Drives trailing stop tightening — NEVER triggers forced exits.
+
+type HealthBand = 'healthy' | 'caution' | 'sick' | 'critical';
+
+interface TradeHealthResult {
+  tradeHealthScore: number;
+  healthBand: HealthBand;
+  progressFail: boolean;
+  rPips: number;
+  mfeR: number;
+  ueR: number;
+  validationWindow: number;
+  components: { P: number; D_pers: number; D_acc: number; S_regime: number; A_drift: number };
+  trailingTightenFactor: number;
+  governanceActionType: string;
+  governanceReason: string;
+}
+
+function clamp(v: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, v));
+}
+
+function computeTradeHealthScore(
+  direction: string,
+  entryPrice: number,
+  currentPrice: number,
+  initialSlPrice: number,
+  mfePrice: number,
+  pair: string,
+  barsSinceEntry: number,
+  volatilityScore: number,
+  persistenceNow: number,
+  persistenceAtEntry: number,
+  volAccNow: number,
+  volAccAtEntry: number,
+  regimeConfirmed: boolean,
+  regimeEarlyWarning: boolean,
+  regimeDiverging: boolean,
+): TradeHealthResult {
+  const pipMult = getPipMultiplier(pair);
+  const rPips = Math.max(Math.abs(entryPrice - initialSlPrice) * pipMult, 0.1);
+
+  const mfePips = direction === "long"
+    ? Math.max(0, (mfePrice - entryPrice) * pipMult)
+    : Math.max(0, (entryPrice - mfePrice) * pipMult);
+  const mfeR = mfePips / rPips;
+
+  const uePips = direction === "long"
+    ? (currentPrice - entryPrice) * pipMult
+    : (entryPrice - currentPrice) * pipMult;
+  const ueR = uePips / rPips;
+
+  let validationWindow = 3;
+  if (volatilityScore < 30) validationWindow = 4;
+  validationWindow = clamp(validationWindow, 3, 4);
+
+  const progressFail = barsSinceEntry >= validationWindow && mfeR < 0.25;
+
+  // Components
+  const P = clamp(100 * (mfeR / 0.60), 0, 100);
+  const D_pers = clamp(50 + 1.25 * (persistenceNow - persistenceAtEntry), 0, 100);
+  const D_acc = clamp(50 + 1.0 * (volAccNow - volAccAtEntry), 0, 100);
+
+  let S_regime = 50;
+  if (regimeConfirmed) S_regime = 100;
+  if (regimeEarlyWarning) S_regime = Math.max(0, S_regime - 35);
+  if (regimeDiverging) S_regime = Math.max(0, S_regime - 70);
+  S_regime = clamp(S_regime, 0, 100);
+
+  let A_drift: number;
+  if (barsSinceEntry < validationWindow) {
+    A_drift = 50;
+  } else {
+    A_drift = clamp(100 - 120 * Math.max(0, -ueR) - 60 * Math.max(0, 0.20 - mfeR), 0, 100);
+  }
+
+  const raw = 0.34 * P + 0.18 * D_pers + 0.14 * D_acc + 0.22 * S_regime + 0.12 * A_drift;
+  const tradeHealthScore = Math.round(clamp(raw, 0, 100));
+
+  let healthBand: HealthBand;
+  if (tradeHealthScore >= 70) healthBand = 'healthy';
+  else if (tradeHealthScore >= 45) healthBand = 'caution';
+  else if (tradeHealthScore >= 30) healthBand = 'sick';
+  else healthBand = 'critical';
+
+  if (progressFail && (regimeDiverging || regimeEarlyWarning)) healthBand = 'critical';
+
+  let trailingTightenFactor = 1.0;
+  let governanceActionType = 'maintain';
+  let governanceReason = 'Trade healthy — normal trailing';
+
+  if (healthBand === 'caution') {
+    trailingTightenFactor = 0.80;
+    governanceActionType = 'tighten-light';
+    governanceReason = `Caution THS=${tradeHealthScore} — tightening 20%`;
+  } else if (healthBand === 'sick') {
+    trailingTightenFactor = 0.60;
+    governanceActionType = 'tighten-heavy';
+    governanceReason = `Sick THS=${tradeHealthScore} — tightening 40%`;
+  } else if (healthBand === 'critical') {
+    trailingTightenFactor = 0.50;
+    governanceActionType = ueR < -0.35 ? 'consider-exit' : 'tighten-aggressive';
+    governanceReason = `Critical THS=${tradeHealthScore}${progressFail ? '+progFail' : ''} — ${ueR < -0.35 ? 'consider exit' : 'aggressive tighten'}`;
+  }
+
+  return {
+    tradeHealthScore, healthBand, progressFail,
+    rPips: Math.round(rPips * 10) / 10,
+    mfeR: Math.round(mfeR * 100) / 100,
+    ueR: Math.round(ueR * 100) / 100,
+    validationWindow,
+    components: { P: Math.round(P), D_pers: Math.round(D_pers), D_acc: Math.round(D_acc), S_regime: Math.round(S_regime), A_drift: Math.round(A_drift) },
+    trailingTightenFactor, governanceActionType, governanceReason,
+  };
+}
+
 // ─── Exit Decision Engine ───
 // ═══ EXIT RULE PRIORITY (STRICT, INVIOLABLE ORDER) ═══
 // 1. TP hit          → CLOSE immediately
@@ -200,7 +318,8 @@ function evaluateExit(
   pair: string,
   tradeAgeMinutes: number,
   dynamicSl: DynamicSL,
-  governancePayload?: Record<string, unknown>
+  governancePayload?: Record<string, unknown>,
+  healthTrailingFactor = 1.0,
 ): ExitDecision {
   const pipMult = getPipMultiplier(pair);
   const thresholds = getExitThresholds(pair);
@@ -222,9 +341,11 @@ function evaluateExit(
     };
   }
 
-  // ═══ PRIORITY 2: Trailing stop ═══
+  // ═══ PRIORITY 2: Trailing stop (with health-based tightening) ═══
   const entryRegimeDiverging = governancePayload?.regimeEarlyWarning === true;
-  const trailingTriggerRatio = entryRegimeDiverging ? 0.40 : 0.60;
+  let trailingTriggerRatio = entryRegimeDiverging ? 0.40 : 0.60;
+  // Health governance tightening: reduce trigger ratio further
+  trailingTriggerRatio *= healthTrailingFactor;
   const trailing = computeTrailingStop(direction, entryPrice, currentPrice, pair, thresholds.tpPips, trailingTriggerRatio);
   if (trailing.isTrailing) {
     const trailingSlPips = direction === "long"
@@ -454,10 +575,45 @@ Deno.serve(async (req) => {
         ind?.atr ?? null,
       );
 
-      // Evaluate exit decision
+      // ═══ Compute Trade Health Score ═══
       const govPayload = (order.governance_payload && typeof order.governance_payload === 'object')
         ? order.governance_payload as Record<string, unknown>
         : undefined;
+
+      const barsSinceEntry = Math.max(1, Math.round(tradeAgeMinutes));
+
+      // MFE tracking: use the max of current price and any previously recorded MFE
+      const prevMfeR = typeof order.mfe_r === 'number' ? order.mfe_r : 0;
+      const pipMult = getPipMultiplier(order.currency_pair);
+      const currentMfePips = order.direction === "long"
+        ? Math.max(0, (currentPrice - entryPrice) * pipMult)
+        : Math.max(0, (entryPrice - currentPrice) * pipMult);
+      const rPipsEst = Math.max(dynamicSl.slDistancePips, 0.1);
+      const currentMfeR = currentMfePips / rPipsEst;
+      const bestMfeR = Math.max(prevMfeR, currentMfeR);
+      const mfePrice = order.direction === "long"
+        ? entryPrice + bestMfeR * rPipsEst / pipMult
+        : entryPrice - bestMfeR * rPipsEst / pipMult;
+
+      const healthResult = computeTradeHealthScore(
+        order.direction,
+        entryPrice,
+        currentPrice,
+        dynamicSl.slPrice,
+        mfePrice,
+        order.currency_pair,
+        barsSinceEntry,
+        (govPayload?.volatilityScore as number) ?? 50,
+        (govPayload?.persistenceNow as number) ?? 50,
+        (govPayload?.persistenceAtEntry as number) ?? 50,
+        (govPayload?.volAccNow as number) ?? 50,
+        (govPayload?.volAccAtEntry as number) ?? 50,
+        govPayload?.regimeConfirmed === true || (!govPayload?.regimeEarlyWarning && !govPayload?.regimeDiverging),
+        govPayload?.regimeEarlyWarning === true,
+        govPayload?.regimeDiverging === true,
+      );
+
+      // Apply health-based trailing tightening to exit evaluation
       const decision = evaluateExit(
         order.direction,
         entryPrice,
@@ -465,17 +621,32 @@ Deno.serve(async (req) => {
         order.currency_pair,
         tradeAgeMinutes,
         dynamicSl,
-        govPayload
+        govPayload,
+        healthResult.trailingTightenFactor, // pass tightening factor
       );
+
+      // Persist health telemetry on every cycle
+      await supabase
+        .from("oanda_orders")
+        .update({
+          trade_health_score: healthResult.tradeHealthScore,
+          health_band: healthResult.healthBand,
+          mfe_r: healthResult.mfeR,
+          ue_r: healthResult.ueR,
+          bars_since_entry: barsSinceEntry,
+          progress_fail: healthResult.progressFail,
+          health_governance_action: healthResult.governanceActionType,
+        })
+        .eq("id", order.id);
 
       if (decision.action === "hold") {
         heldCount++;
-        console.log(`[TRADE-MONITOR] ${order.currency_pair} ${order.direction}: ${decision.reason}`);
+        console.log(`[TRADE-MONITOR] ${order.currency_pair} ${order.direction}: THS=${healthResult.tradeHealthScore} [${healthResult.healthBand}] | ${decision.reason}`);
         results.push({
           pair: order.currency_pair,
           direction: order.direction,
           action: "hold",
-          reason: decision.reason,
+          reason: `THS=${healthResult.tradeHealthScore} [${healthResult.healthBand}] | ${decision.reason}`,
           pnlPips: decision.currentPnlPips,
         });
         continue;
@@ -514,6 +685,13 @@ Deno.serve(async (req) => {
             exit_price: exitPrice,
             closed_at: new Date().toISOString(),
             governance_payload: updatedPayload,
+            trade_health_score: healthResult.tradeHealthScore,
+            health_band: healthResult.healthBand,
+            mfe_r: healthResult.mfeR,
+            ue_r: healthResult.ueR,
+            bars_since_entry: barsSinceEntry,
+            progress_fail: healthResult.progressFail,
+            health_governance_action: healthResult.governanceActionType,
           })
           .eq("id", order.id);
 

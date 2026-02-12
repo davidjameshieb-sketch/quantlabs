@@ -6,7 +6,7 @@ import { useState, useMemo, useEffect, useCallback } from 'react';
 import { LongOnlyFilterProvider } from '@/contexts/LongOnlyFilterContext';
 import { motion } from 'framer-motion';
 import {
-  Globe, TrendingUp, ChevronDown, BookOpen, Archive, Brain,
+  Globe, TrendingUp, ChevronDown, BookOpen, Archive, Brain, HeartPulse,
 } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { DashboardLayout } from '@/components/dashboard/DashboardLayout';
@@ -15,6 +15,7 @@ import { LongOnlyBadge } from '@/components/forex/LongOnlyBanner';
 import { LazyTabContent } from '@/components/forex/LazyTabContent';
 import { LiveTradeBook } from '@/components/forex/LiveTradeBook';
 import { ThinkingBrainPanel } from '@/components/forex/ThinkingBrainPanel';
+import { TradeHealthPanel } from '@/components/forex/TradeHealthPanel';
 import { SystemLearningPanel } from '@/components/forex/SystemLearningPanel';
 import { SystemConfidenceMeter } from '@/components/forex/SystemConfidenceMeter';
 import { GovernanceStateBanner } from '@/components/forex/GovernanceStateBanner';
@@ -204,6 +205,9 @@ const ForexDashboard = () => {
               <TabsTrigger value="thinking-brain" className="text-xs gap-1.5 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
                 <Brain className="w-3.5 h-3.5" />Thinking Brain
               </TabsTrigger>
+              <TabsTrigger value="trade-health" className="text-xs gap-1.5 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
+                <HeartPulse className="w-3.5 h-3.5" />Trade Health
+              </TabsTrigger>
               <TabsTrigger value="archive" className="text-xs gap-1.5 text-muted-foreground">
                 <Archive className="w-3.5 h-3.5" />Archive
               </TabsTrigger>
@@ -221,6 +225,13 @@ const ForexDashboard = () => {
             <TabsContent value="thinking-brain" className="space-y-4">
               <LazyTabContent label="Thinking Brain">
                 <ThinkingBrainPanel executionMetrics={executionMetrics} />
+              </LazyTabContent>
+            </TabsContent>
+
+            {/* ─── TAB 3: Trade Health ─── */}
+            <TabsContent value="trade-health" className="space-y-4">
+              <LazyTabContent label="Trade Health">
+                <TradeHealthPanel metrics={executionMetrics} />
               </LazyTabContent>
             </TabsContent>
 
