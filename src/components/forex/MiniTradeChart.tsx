@@ -11,19 +11,28 @@ interface MiniTradeChartProps {
   className?: string;
 }
 
-function generatePricePath(entry: number, exit: number, points: number = 20): number[] {
+// Simple seeded PRNG for deterministic per-trade randomness
+function seededRandom(seed: number) {
+  let s = seed;
+  return () => {
+    s = (s * 16807 + 0) % 2147483647;
+    return (s & 0x7fffffff) / 0x7fffffff;
+  };
+}
+
+function generatePricePath(entry: number, exit: number, seed: number, points: number = 24): number[] {
   const path: number[] = [entry];
-  const range = Math.abs(exit - entry);
-  const trend = exit > entry ? 1 : -1;
+  const range = Math.abs(exit - entry) || entry * 0.0001;
+  const rng = seededRandom(Math.abs(Math.round(seed * 100000)));
   
+  let current = entry;
   for (let i = 1; i < points - 1; i++) {
     const progress = i / (points - 1);
-    // Base trend movement with noise
-    const trendComponent = entry + (exit - entry) * progress;
-    const noise = (Math.sin(i * 2.7) * 0.3 + Math.cos(i * 1.3) * 0.2) * range;
-    // Add some mean-reverting noise
-    const overshoot = Math.sin(progress * Math.PI * 2) * range * 0.15;
-    path.push(trendComponent + noise * (1 - progress * 0.5) + overshoot);
+    // Interpolate toward exit with random walk noise
+    const target = entry + (exit - entry) * progress;
+    const noise = (rng() - 0.5) * range * 1.2;
+    current = target + noise * (1 - progress * 0.6);
+    path.push(current);
   }
   path.push(exit);
   return path;
@@ -38,7 +47,9 @@ export function MiniTradeChart({ entryPrice, exitPrice, direction, className }: 
     const w = 140;
     const h = 40;
     const padding = 4;
-    const points = generatePricePath(entryPrice, exit, 24);
+    // Use entry+exit as seed so each trade gets a unique chart
+    const seed = entryPrice * 1000 + exit * 7919;
+    const points = generatePricePath(entryPrice, exit, seed, 24);
     
     const min = Math.min(...points);
     const max = Math.max(...points);
