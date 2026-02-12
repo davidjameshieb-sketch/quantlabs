@@ -1408,7 +1408,275 @@ function canPlaceLiveOrder(
 }
 
 // ═══════════════════════════════════════════════════════════════
-// §KELLY — ROLLING KELLY-INFORMED POSITION SIZING
+// §AGENT-EXPECTANCY — ROLLING AGENT-LEVEL ADAPTIVE CAPITAL ALLOCATION
+// Computes per-agent×direction×regime expectancy and maps to Kelly sizing.
+// Replaces binary enable/disable with probabilistic capital routing.
+// ═══════════════════════════════════════════════════════════════
+
+interface AgentExpectancyProfile {
+  agentId: string;
+  direction: string;
+  regime: string;
+  session: string;
+  // Core metrics
+  expectancy: number;       // (WR × AvgWin) - (LR × AvgLoss)
+  winRate: number;
+  avgWin: number;
+  avgLoss: number;
+  sampleSize: number;
+  // Kelly outputs
+  kellyFraction: number;
+  halfKelly: number;
+  sizingMultiplier: number;  // 0.0 to 1.0
+  // Throttle classification
+  throttleClass: "full" | "moderate" | "breakeven" | "reduced" | "shadow";
+  throttleReason: string;
+  // Momentum
+  recentMomentum: number;    // expectancy delta last 20 vs last 50 trades
+  isRecovering: boolean;
+}
+
+interface AgentKellyAllocation {
+  agentMultiplier: number;           // final sizing multiplier for this agent
+  globalExpectancy: AgentExpectancyProfile;    // agent-level (all regimes)
+  regimeExpectancy: AgentExpectancyProfile | null;  // agent×regime specific
+  directionExpectancy: AgentExpectancyProfile | null; // agent×direction specific
+  compositeExpectancy: AgentExpectancyProfile | null; // agent×regime×direction
+  routingScore: number;              // 0-100 composite for capital priority
+  shadowMode: boolean;
+  reasonCodes: string[];
+}
+
+const AGENT_KELLY_CONFIG = {
+  minSampleSize: 15,          // minimum trades before Kelly activation
+  strongPositiveExp: 0.8,     // expectancy > this → full allocation
+  moderatePositiveExp: 0.3,   // expectancy > this → 0.50x
+  breakEvenExp: 0.0,          // expectancy > this → 0.35x
+  recoverableNegExp: -1.0,    // expectancy > this → 0.25x
+  // below recoverableNeg → 0.0x (shadow mode)
+  maxKellyMultiplier: 1.0,    // half-Kelly capped
+  minKellyMultiplier: 0.0,    // floor
+  smoothingFactor: 0.7,       // EMA decay for anti-oscillation
+  momentumWindow: 20,         // recent trades for momentum calc
+  globalMaxRiskPct: 0.005,    // 0.5% equity per trade absolute cap
+};
+
+/**
+ * Compute rolling expectancy for a specific agent + optional direction/regime/session filter.
+ */
+function computeAgentExpectancy(
+  orders: Array<Record<string, unknown>>,
+  agentId: string,
+  direction: string = "all",
+  regime: string = "all",
+  session: string = "all",
+  windowSize: number = 200
+): AgentExpectancyProfile {
+  const filtered = orders.filter(o => {
+    if (o.agent_id !== agentId) return false;
+    if (o.status !== "closed") return false;
+    if (o.entry_price == null || o.exit_price == null) return false;
+    if (direction !== "all" && o.direction !== direction) return false;
+    if (regime !== "all" && o.regime_label !== regime) return false;
+    if (session !== "all" && o.session_label !== session) return false;
+    return true;
+  }).slice(0, windowSize);
+
+  const sampleSize = filtered.length;
+
+  if (sampleSize < 3) {
+    return {
+      agentId, direction, regime, session,
+      expectancy: 0, winRate: 0, avgWin: 0, avgLoss: 0, sampleSize,
+      kellyFraction: 0, halfKelly: 0, sizingMultiplier: 0.35,
+      throttleClass: "breakeven", throttleReason: "Insufficient sample",
+      recentMomentum: 0, isRecovering: false,
+    };
+  }
+
+  let wins = 0, totalWinPips = 0, totalLossPips = 0;
+  const pnls: number[] = [];
+  for (const o of filtered) {
+    const pair = o.currency_pair as string;
+    const entry = o.entry_price as number;
+    const exit = o.exit_price as number;
+    const dir = o.direction as string;
+    const pipDiv = pair?.includes("JPY") ? 0.01 : 0.0001;
+    const pips = dir === "long" ? (exit - entry) / pipDiv : (entry - exit) / pipDiv;
+    pnls.push(pips);
+    if (pips > 0) { wins++; totalWinPips += pips; }
+    else { totalLossPips += Math.abs(pips); }
+  }
+
+  const winRate = wins / sampleSize;
+  const losses = sampleSize - wins;
+  const avgWin = wins > 0 ? totalWinPips / wins : 0;
+  const avgLoss = losses > 0 ? totalLossPips / losses : 1;
+  const expectancy = (winRate * avgWin) - ((1 - winRate) * avgLoss);
+
+  // Kelly criterion: f* = (WR × payoff - (1-WR)) / payoff
+  const payoffRatio = avgLoss > 0 ? avgWin / avgLoss : 0;
+  const kellyFraction = payoffRatio > 0 ? (winRate * payoffRatio - (1 - winRate)) / payoffRatio : 0;
+  const halfKelly = Math.max(0, kellyFraction / 2);
+
+  // Recent momentum: compare last 20 vs overall
+  let recentMomentum = 0;
+  let isRecovering = false;
+  if (pnls.length >= AGENT_KELLY_CONFIG.momentumWindow) {
+    const recentPnls = pnls.slice(0, AGENT_KELLY_CONFIG.momentumWindow);
+    const recentExp = recentPnls.reduce((a, b) => a + b, 0) / recentPnls.length;
+    recentMomentum = recentExp - expectancy;
+    isRecovering = expectancy < 0 && recentMomentum > 0.5;
+  }
+
+  // Throttle classification based on expectancy
+  let throttleClass: AgentExpectancyProfile["throttleClass"];
+  let sizingMultiplier: number;
+  let throttleReason: string;
+
+  if (sampleSize < AGENT_KELLY_CONFIG.minSampleSize) {
+    throttleClass = "breakeven";
+    sizingMultiplier = 0.35;
+    throttleReason = `Sample ${sampleSize} < ${AGENT_KELLY_CONFIG.minSampleSize} — conservative sizing`;
+  } else if (expectancy >= AGENT_KELLY_CONFIG.strongPositiveExp) {
+    throttleClass = "full";
+    // Use half-Kelly but cap at 1.0
+    sizingMultiplier = Math.min(AGENT_KELLY_CONFIG.maxKellyMultiplier, Math.max(0.75, halfKelly * 10));
+    throttleReason = `Strong edge (exp=${expectancy.toFixed(2)}p) — full Kelly allocation`;
+  } else if (expectancy >= AGENT_KELLY_CONFIG.moderatePositiveExp) {
+    throttleClass = "moderate";
+    sizingMultiplier = Math.min(0.65, Math.max(0.40, halfKelly * 8));
+    throttleReason = `Moderate edge (exp=${expectancy.toFixed(2)}p) — 0.50x allocation`;
+  } else if (expectancy >= AGENT_KELLY_CONFIG.breakEvenExp) {
+    throttleClass = "breakeven";
+    sizingMultiplier = 0.35;
+    throttleReason = `Breakeven (exp=${expectancy.toFixed(2)}p) — 0.35x learning allocation`;
+  } else if (expectancy >= AGENT_KELLY_CONFIG.recoverableNegExp) {
+    throttleClass = "reduced";
+    sizingMultiplier = isRecovering ? 0.30 : 0.25;
+    throttleReason = `Negative but recoverable (exp=${expectancy.toFixed(2)}p)${isRecovering ? " — recovery detected, slight boost" : ""} — 0.25x sampling`;
+  } else {
+    throttleClass = "shadow";
+    sizingMultiplier = 0.0;
+    throttleReason = `Significantly negative (exp=${expectancy.toFixed(2)}p) — shadow mode, zero execution`;
+  }
+
+  return {
+    agentId, direction, regime, session,
+    expectancy: Math.round(expectancy * 100) / 100,
+    winRate: Math.round(winRate * 1000) / 1000,
+    avgWin: Math.round(avgWin * 10) / 10,
+    avgLoss: Math.round(avgLoss * 10) / 10,
+    sampleSize,
+    kellyFraction: Math.round(kellyFraction * 10000) / 10000,
+    halfKelly: Math.round(halfKelly * 10000) / 10000,
+    sizingMultiplier: Math.round(sizingMultiplier * 100) / 100,
+    throttleClass, throttleReason,
+    recentMomentum: Math.round(recentMomentum * 100) / 100,
+    isRecovering,
+  };
+}
+
+// Previous agent Kelly allocations for smoothing (anti-oscillation)
+const _prevAgentKelly = new Map<string, number>();
+
+/**
+ * Compute full multi-dimensional Kelly allocation for an agent executing a specific trade.
+ * Combines: agent-global, agent×direction, agent×regime, agent×regime×direction
+ */
+function computeAgentKellyAllocation(
+  orders: Array<Record<string, unknown>>,
+  agentId: string,
+  direction: string,
+  regime: string,
+  session: string,
+): AgentKellyAllocation {
+  const reasonCodes: string[] = [];
+
+  // Layer 1: Global agent expectancy (all directions, all regimes)
+  const globalExp = computeAgentExpectancy(orders, agentId, "all", "all", "all");
+
+  // Layer 2: Agent × direction
+  const dirExp = computeAgentExpectancy(orders, agentId, direction, "all", "all");
+
+  // Layer 3: Agent × regime
+  const regimeExp = computeAgentExpectancy(orders, agentId, "all", regime, "all");
+
+  // Layer 4: Agent × regime × direction (most specific)
+  const compositeExp = computeAgentExpectancy(orders, agentId, direction, regime, "all");
+
+  // Weighted composite sizing:
+  // Most specific dimension with enough data wins, falling back to broader views
+  let primaryMultiplier: number;
+  let primarySource: string;
+
+  if (compositeExp.sampleSize >= AGENT_KELLY_CONFIG.minSampleSize) {
+    primaryMultiplier = compositeExp.sizingMultiplier;
+    primarySource = `agent×regime×direction (n=${compositeExp.sampleSize})`;
+    reasonCodes.push(`COMPOSITE: ${compositeExp.throttleClass} exp=${compositeExp.expectancy}p`);
+  } else if (dirExp.sampleSize >= AGENT_KELLY_CONFIG.minSampleSize) {
+    primaryMultiplier = dirExp.sizingMultiplier;
+    primarySource = `agent×direction (n=${dirExp.sampleSize})`;
+    reasonCodes.push(`DIRECTION: ${dirExp.throttleClass} exp=${dirExp.expectancy}p`);
+  } else if (regimeExp.sampleSize >= AGENT_KELLY_CONFIG.minSampleSize) {
+    primaryMultiplier = regimeExp.sizingMultiplier;
+    primarySource = `agent×regime (n=${regimeExp.sampleSize})`;
+    reasonCodes.push(`REGIME: ${regimeExp.throttleClass} exp=${regimeExp.expectancy}p`);
+  } else {
+    primaryMultiplier = globalExp.sizingMultiplier;
+    primarySource = `agent-global (n=${globalExp.sampleSize})`;
+    reasonCodes.push(`GLOBAL: ${globalExp.throttleClass} exp=${globalExp.expectancy}p`);
+  }
+
+  // Session adjustment: if session-specific data shows edge, boost; if toxic, penalize
+  const sessionExp = computeAgentExpectancy(orders, agentId, direction, "all", session);
+  if (sessionExp.sampleSize >= 10) {
+    if (sessionExp.expectancy < -1.0) {
+      primaryMultiplier *= 0.5;
+      reasonCodes.push(`SESSION_PENALTY: ${session} exp=${sessionExp.expectancy}p`);
+    } else if (sessionExp.expectancy > 1.0) {
+      primaryMultiplier = Math.min(1.0, primaryMultiplier * 1.2);
+      reasonCodes.push(`SESSION_BOOST: ${session} exp=${sessionExp.expectancy}p`);
+    }
+  }
+
+  // Anti-oscillation smoothing: EMA toward new value
+  const prevMult = _prevAgentKelly.get(`${agentId}_${direction}_${regime}`) ?? primaryMultiplier;
+  const smoothedMultiplier = prevMult * (1 - AGENT_KELLY_CONFIG.smoothingFactor) + primaryMultiplier * AGENT_KELLY_CONFIG.smoothingFactor;
+  _prevAgentKelly.set(`${agentId}_${direction}_${regime}`, smoothedMultiplier);
+
+  const finalMultiplier = Math.round(Math.max(0, Math.min(1.0, smoothedMultiplier)) * 100) / 100;
+  const shadowMode = finalMultiplier === 0 || globalExp.throttleClass === "shadow";
+
+  // Routing score: 0-100 composite for capital priority ranking
+  const routingScore = Math.round(
+    Math.max(0, Math.min(100,
+      (globalExp.expectancy + 2) * 15 +  // expectancy weight
+      globalExp.winRate * 30 +             // win rate weight
+      (globalExp.isRecovering ? 10 : 0) +  // recovery bonus
+      Math.min(20, globalExp.sampleSize / 10) + // sample confidence
+      (compositeExp.sampleSize >= 15 ? 10 : 0) // dimensional specificity bonus
+    ))
+  );
+
+  if (shadowMode) reasonCodes.push("SHADOW_MODE_ACTIVE");
+
+  console.log(`[AGENT-KELLY] ${agentId} ${direction}/${regime}/${session}: global_exp=${globalExp.expectancy}p(${globalExp.throttleClass}) dir_exp=${dirExp.expectancy}p(n=${dirExp.sampleSize}) regime_exp=${regimeExp.expectancy}p(n=${regimeExp.sampleSize}) composite_exp=${compositeExp.expectancy}p(n=${compositeExp.sampleSize}) → mult=${finalMultiplier} (${primarySource}) routing=${routingScore} ${shadowMode ? "SHADOW" : "LIVE"}`);
+
+  return {
+    agentMultiplier: finalMultiplier,
+    globalExpectancy: globalExp,
+    regimeExpectancy: regimeExp.sampleSize >= 3 ? regimeExp : null,
+    directionExpectancy: dirExp.sampleSize >= 3 ? dirExp : null,
+    compositeExpectancy: compositeExp.sampleSize >= 3 ? compositeExp : null,
+    routingScore,
+    shadowMode,
+    reasonCodes,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════
+// §KELLY — ROLLING KELLY-INFORMED POSITION SIZING (REGIME-LEVEL)
 // Computes half-Kelly fraction by regime+direction from last N trades.
 // ═══════════════════════════════════════════════════════════════
 
@@ -2940,39 +3208,38 @@ Deno.serve(async (req) => {
         console.log(`[SCALP-TRADE] ${pair}: Regime ${effectiveRegimeForSizing} sizing multiplier: ${regimeSizingMult}x (Kelly-informed)`);
       }
 
-      // ═══ PHASE D: ROLLING KELLY-INFORMED SIZING ═══
-      // Replaces static regime multipliers with data-driven half-Kelly fractions
+      // ═══ PHASE D: ROLLING KELLY-INFORMED SIZING (REGIME-LEVEL) ═══
       const kellyResult = computeRollingKelly(orders, effectiveRegimeForSizing, direction, 200);
       if (kellyResult.sampleSize >= 10) {
-        // Override static regime multiplier with Kelly-derived sizing
         const kellyOverride = kellyResult.sizingMultiplier;
         deploymentMultiplier = discoveryMultiplier * kellyOverride;
         if (neutralRegimeReducedSizing) deploymentMultiplier *= 0.5;
         console.log(`[KELLY-SIZING] ${pair} ${direction} regime=${effectiveRegimeForSizing}: Kelly f*=${kellyResult.kellyFraction.toFixed(4)} half=${kellyResult.halfKelly.toFixed(4)} → mult=${kellyOverride.toFixed(2)}x (WR=${(kellyResult.winRate*100).toFixed(0)}% exp=${kellyResult.expectancy.toFixed(1)}p n=${kellyResult.sampleSize})`);
       }
 
-      // ═══ PHASE 9: AGENT ACCOUNTABILITY ═══
-      // Penalize support-mtf-confirmer specifically — 14.6% WR, -170.2 pips
-      // NOTE: Agent suspension is also enforced in canPlaceLiveOrder() choke point (double-lock)
-      const AGENT_PENALTY_MULTIPLIER: Record<string, number> = {
-        "support-mtf-confirmer": 0.0,   // Phase 3: SUSPENDED — shadow only, zero execution
-        "sentiment-reactor": 0.0,       // Already blocked by discovery risk
-        "range-navigator": 0.0,         // Already blocked by discovery risk
-      };
-      const agentPenalty = AGENT_PENALTY_MULTIPLIER[agentId] ?? 1.0;
-      if (agentPenalty === 0 && !forceMode) {
-        console.log(`[GOV_BLOCK_AGENT] ${pair}: Agent ${agentId} SUSPENDED (double-lock: choke point + penalty) — skipping execution`);
+      // ═══ AGENT-LEVEL ADAPTIVE CAPITAL ALLOCATION (Expectancy-Weighted Kelly) ═══
+      // Replaces binary agent enable/disable with probabilistic capital routing.
+      // Each agent gets a sizing multiplier based on their rolling expectancy profile.
+      const agentKelly = computeAgentKellyAllocation(orders, agentId, direction, effectiveRegimeForSizing, session);
+      
+      // Hard block agents that Kelly puts into shadow mode (significantly negative expectancy)
+      if (agentKelly.shadowMode && !forceMode) {
+        console.log(`[GOV_BLOCK_AGENT_KELLY] ${pair}: Agent ${agentId} → SHADOW MODE (exp=${agentKelly.globalExpectancy.expectancy}p, routing=${agentKelly.routingScore}) — ${agentKelly.reasonCodes.join(", ")}`);
         results.push({ pair, direction, status: "GOV_BLOCK_AGENT", agentId, govState });
         continue;
       }
-      deploymentMultiplier *= agentPenalty;
+
+      // Apply agent Kelly multiplier to sizing
+      deploymentMultiplier *= agentKelly.agentMultiplier;
+      
+      // Log agent capital allocation decision for governance audit
+      console.log(`[AGENT-ALLOC] ${pair} ${direction}: agent=${agentId} kelly_mult=${agentKelly.agentMultiplier} class=${agentKelly.globalExpectancy.throttleClass} routing=${agentKelly.routingScore} momentum=${agentKelly.globalExpectancy.recentMomentum} recovering=${agentKelly.globalExpectancy.isRecovering}`);
 
       // ─── SHORT CAPITAL: Equal allocation to longs ───
       const shortCapMultiplier = 1.0;
       const tradeUnits = Math.max(500, Math.round(baseTradeUnits * deploymentMultiplier * shortCapMultiplier));
 
-      console.log(`[SCALP-TRADE] ${pair} (${isPrimaryPair ? 'SCALP' : 'SECONDARY'}): sized ${tradeUnits}u (gov=${govConfig.sizingMultiplier}, pair=${(pairAlloc as PairRollingMetrics).capitalMultiplier?.toFixed(2)}, session=${sessionBudget.capitalBudgetPct}, agent=${agentSizeMult}, discovery=${discoveryMultiplier}, deployment=${deploymentMultiplier.toFixed(2)}, shortCap=${shortCapMultiplier})`);
-
+      console.log(`[SCALP-TRADE] ${pair} (${isPrimaryPair ? 'SCALP' : 'SECONDARY'}): sized ${tradeUnits}u (gov=${govConfig.sizingMultiplier}, pair=${(pairAlloc as PairRollingMetrics).capitalMultiplier?.toFixed(2)}, session=${sessionBudget.capitalBudgetPct}, agent=${agentSizeMult}, agentKelly=${agentKelly.agentMultiplier}, discovery=${discoveryMultiplier}, deployment=${deploymentMultiplier.toFixed(2)}, shortCap=${shortCapMultiplier})`);
       // ─── Determine execution environment ───
       const executionEnv = execConfig.oandaEnv;
       const shouldExecute = execConfig.oandaEnv === "practice" || execConfig.liveTradingEnabled;
@@ -3079,6 +3346,24 @@ Deno.serve(async (req) => {
               adaptiveRegimeStrengthMin: shortLearningProfile.adaptiveRegimeStrengthMin,
               bestRegimes: shortLearningProfile.bestRegimes,
               worstRegimes: shortLearningProfile.worstRegimes,
+            },
+            // ═══ AGENT KELLY ALLOCATION (Section 5 Governance Audit) ═══
+            agentKellyAllocation: {
+              agentId,
+              agentMultiplier: agentKelly.agentMultiplier,
+              routingScore: agentKelly.routingScore,
+              shadowMode: agentKelly.shadowMode,
+              reasonCodes: agentKelly.reasonCodes,
+              globalExpectancy: agentKelly.globalExpectancy.expectancy,
+              globalThrottleClass: agentKelly.globalExpectancy.throttleClass,
+              globalWinRate: agentKelly.globalExpectancy.winRate,
+              globalSampleSize: agentKelly.globalExpectancy.sampleSize,
+              globalKellyFraction: agentKelly.globalExpectancy.kellyFraction,
+              directionExpectancy: agentKelly.directionExpectancy?.expectancy ?? null,
+              regimeExpectancy: agentKelly.regimeExpectancy?.expectancy ?? null,
+              compositeExpectancy: agentKelly.compositeExpectancy?.expectancy ?? null,
+              recentMomentum: agentKelly.globalExpectancy.recentMomentum,
+              isRecovering: agentKelly.globalExpectancy.isRecovering,
             },
           },
         })
