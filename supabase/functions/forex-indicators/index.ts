@@ -359,19 +359,17 @@ Deno.serve(async (req) => {
     const bearish = signals.filter(s => s < 0).length;
     const consensusScore = ((bullish - bearish) / signals.length) * 100;
 
-    // ═══ INDICATOR-DERIVED REGIME CLASSIFICATION ═══
-    // Uses real market structure instead of time-of-day
+    // ═══ COMPOSITE REGIME CLASSIFICATION ═══
+    // Two-axis scoring: Volatility Score + Directional Persistence Score
     const adxVal = indicators.adx.value || 0;
-    const adxTrending = adxVal > 25;
-    const adxStrong = adxVal > 35;
     const trendEff = indicators.trendEfficiency.value || 0;
     const bbWidth = indicators.bollingerBands.bandwidth || 0;
     const rsiVal = indicators.rsi.value || 50;
     const rocVal = indicators.roc.value || 0;
     const pctB = indicators.bollingerBands.pctB ?? 0.5;
     const stkK = indicators.stochastics.k ?? 50;
-    
-    // Classify bearish momentum strength
+
+    // Classify bearish/bullish momentum strength (same as before)
     const bearishMomentum = (
       (indicators.roc.signal === "bearish" ? 1 : 0) +
       (indicators.elderForce.signal === "bearish" ? 1 : 0) +
@@ -391,42 +389,147 @@ Deno.serve(async (req) => {
       (indicators.heikinAshi.signal === "bullish" ? 1 : 0)
     );
 
-    let marketRegime: string;
-    let regimeStrength: number; // 0-100
-    
-    if (adxStrong && bearishMomentum >= 5 && rocVal < -0.1 && pctB < 0.2) {
-      // Strong bearish trend with breakdown characteristics
-      marketRegime = "breakdown";
-      regimeStrength = Math.min(100, Math.round(adxVal * 1.5 + bearishMomentum * 8));
-    } else if (adxTrending && bearishMomentum >= 4 && rocVal < 0) {
-      // Moderate bearish with selling pressure
-      marketRegime = "risk-off";
-      regimeStrength = Math.min(100, Math.round(adxVal + bearishMomentum * 10));
-    } else if (rsiVal > 70 && stkK > 80 && rocVal < 0.05) {
-      // Overbought exhaustion — potential reversal
-      marketRegime = "exhaustion";
-      regimeStrength = Math.min(100, Math.round(rsiVal - 20));
-    } else if (!adxTrending && trendEff < 0.3 && bbWidth < 0.01) {
-      // Low volatility squeeze — compression
-      marketRegime = "compression";
-      regimeStrength = Math.min(100, Math.round((1 - trendEff) * 50 + (1 - bbWidth * 100) * 20));
-    } else if (adxStrong && bullishMomentum >= 5 && rocVal > 0.1) {
-      // Strong bullish expansion
-      marketRegime = "expansion";
-      regimeStrength = Math.min(100, Math.round(adxVal * 1.5 + bullishMomentum * 8));
-    } else if (adxTrending && bullishMomentum >= 4 && rocVal > 0) {
-      // Moderate bullish momentum
-      marketRegime = "momentum";
-      regimeStrength = Math.min(100, Math.round(adxVal + bullishMomentum * 10));
-    } else if (trendEff < 0.25) {
-      // Choppy / flat
-      marketRegime = "flat";
-      regimeStrength = Math.min(100, Math.round((1 - trendEff) * 40));
-    } else {
-      // Neutral / transitional
-      marketRegime = "transition";
-      regimeStrength = 30;
+    // ── AXIS 1: VOLATILITY SCORE (0-100) ──
+    // Component A: ATR Ratio (current ATR vs longer-term baseline)
+    const atrVals = atr(candles, 14);
+    const currentATR = atrVals[atrVals.length - 1] || 0;
+    // Use ATR(50) as the baseline — compare short-term vol to medium-term
+    const atrLong = atrVals.length >= 50
+      ? atrVals.slice(-50).reduce((a, b) => a + b, 0) / 50
+      : atrVals.reduce((a, b) => a + b, 0) / Math.max(atrVals.length, 1);
+    const atrRatio = atrLong > 0 ? currentATR / atrLong : 1;
+    // Map: <0.7 = low vol (0-20), 0.7-1.3 = normal (30-60), >1.3 = high vol (70-100)
+    const atrRatioScore = atrRatio < 0.7
+      ? Math.round((atrRatio / 0.7) * 20)
+      : atrRatio <= 1.3
+        ? Math.round(30 + ((atrRatio - 0.7) / 0.6) * 30)
+        : Math.min(100, Math.round(60 + ((atrRatio - 1.3) / 0.7) * 40));
+
+    // Component B: Normalized BB Width (pair-relative via percentile against own history)
+    const closes20 = closes.slice(-100);
+    const bbWidths: number[] = [];
+    for (let i = 20; i <= closes20.length; i++) {
+      const slice = closes20.slice(i - 20, i);
+      const m = slice.reduce((a, b) => a + b, 0) / 20;
+      const sd = Math.sqrt(slice.reduce((a, v) => a + (v - m) ** 2, 0) / 20);
+      if (m > 0) bbWidths.push((2 * 2 * sd) / m); // 2*mult*stddev/mid
     }
+    let bbPercentile = 50;
+    if (bbWidths.length > 10) {
+      const sorted = [...bbWidths].sort((a, b) => a - b);
+      const rank = sorted.filter(w => w <= bbWidth).length;
+      bbPercentile = Math.round((rank / sorted.length) * 100);
+    }
+
+    // Component C: Historical Percentile of ATR (current ATR rank in last 100 ATR values)
+    const atrWindow = atrVals.slice(-100);
+    let atrPercentile = 50;
+    if (atrWindow.length > 10) {
+      const sorted = [...atrWindow].sort((a, b) => a - b);
+      const rank = sorted.filter(v => v <= currentATR).length;
+      atrPercentile = Math.round((rank / sorted.length) * 100);
+    }
+
+    // Composite Volatility Score: weighted blend
+    const volatilityScore = Math.round(
+      atrRatioScore * 0.40 +
+      bbPercentile * 0.30 +
+      atrPercentile * 0.30
+    );
+
+    // ── AXIS 2: DIRECTIONAL PERSISTENCE SCORE (0-100) ──
+    // Component A: Efficiency Ratio (already computed as trendEff, 0-1)
+    const efficiencyScore = Math.round(trendEff * 100);
+
+    // Component B: ADX Slope (is ADX rising or falling?)
+    // Compute ADX over two windows to get slope
+    const adxPlusDI = (indicators.adx as any).plusDI || 0;
+    const adxMinusDI = (indicators.adx as any).minusDI || 0;
+    // ADX slope proxy: compare current ADX to what we'd get from older window
+    // Since we only have the current ADX value, use ROC as a proxy for momentum direction persistence
+    const adxNormalized = Math.min(100, Math.round(adxVal * 2)); // ADX 0-50 → 0-100
+
+    // Component C: Structure Validation — do trend-following indicators agree?
+    const trendIndicatorCount = 5; // EMA, Supertrend, PSAR, Ichimoku, Heikin-Ashi
+    const dominantDir = bullishMomentum >= bearishMomentum ? "bullish" : "bearish";
+    const structureCount = dominantDir === "bullish" ? bullishMomentum : bearishMomentum;
+    const structureScore = Math.round((structureCount / 7) * 100); // 7 total momentum indicators
+
+    // Composite Directional Persistence Score
+    const directionalPersistence = Math.round(
+      efficiencyScore * 0.40 +
+      adxNormalized * 0.35 +
+      structureScore * 0.25
+    );
+
+    // ── REGIME CLASSIFICATION from composite scores ──
+    let marketRegime: string;
+    let regimeStrength: number;
+
+    // Volatility axis: Low (<30), Normal (30-65), High (>65)
+    // Persistence axis: Weak (<30), Moderate (30-60), Strong (>60)
+    const volLevel = volatilityScore < 30 ? "low" : volatilityScore <= 65 ? "normal" : "high";
+    const persLevel = directionalPersistence < 30 ? "weak" : directionalPersistence <= 60 ? "moderate" : "strong";
+
+    if (volLevel === "low" && persLevel === "weak") {
+      marketRegime = "compression";
+      regimeStrength = Math.max(10, 100 - volatilityScore - directionalPersistence);
+    } else if (volLevel === "low" && persLevel === "moderate") {
+      marketRegime = "flat";
+      regimeStrength = Math.round(directionalPersistence * 0.5 + (100 - volatilityScore) * 0.3);
+    } else if (volLevel === "low" && persLevel === "strong") {
+      // Low vol but strong directional persistence = emerging breakout / transition
+      marketRegime = "transition";
+      regimeStrength = directionalPersistence;
+    } else if (volLevel === "normal" && persLevel === "weak") {
+      marketRegime = "flat";
+      regimeStrength = Math.round((100 - directionalPersistence) * 0.4);
+    } else if (volLevel === "normal" && persLevel === "moderate") {
+      // Check directional bias for momentum vs transition
+      if (dominantDir === "bearish" && bearishMomentum >= 4) {
+        marketRegime = "risk-off";
+        regimeStrength = Math.round(directionalPersistence * 0.6 + volatilityScore * 0.3);
+      } else if (dominantDir === "bullish" && bullishMomentum >= 4) {
+        marketRegime = "momentum";
+        regimeStrength = Math.round(directionalPersistence * 0.6 + volatilityScore * 0.3);
+      } else {
+        marketRegime = "transition";
+        regimeStrength = 40;
+      }
+    } else if (volLevel === "normal" && persLevel === "strong") {
+      if (dominantDir === "bearish") {
+        marketRegime = bearishMomentum >= 5 ? "breakdown" : "risk-off";
+      } else {
+        marketRegime = bullishMomentum >= 5 ? "expansion" : "momentum";
+      }
+      regimeStrength = Math.round(directionalPersistence * 0.5 + volatilityScore * 0.3);
+    } else if (volLevel === "high" && persLevel === "weak") {
+      // High vol, no direction = exhaustion/chop
+      if (rsiVal > 70 || rsiVal < 30) {
+        marketRegime = "exhaustion";
+        regimeStrength = Math.round(volatilityScore * 0.6);
+      } else {
+        marketRegime = "ignition"; // vol spike without direction yet
+        regimeStrength = Math.round(volatilityScore * 0.5);
+      }
+    } else if (volLevel === "high" && persLevel === "moderate") {
+      if (dominantDir === "bearish") {
+        marketRegime = "risk-off";
+      } else {
+        marketRegime = "expansion";
+      }
+      regimeStrength = Math.round(volatilityScore * 0.4 + directionalPersistence * 0.4);
+    } else {
+      // high vol + strong persistence = full trend
+      if (dominantDir === "bearish") {
+        marketRegime = bearishMomentum >= 5 ? "breakdown" : "risk-off";
+      } else {
+        marketRegime = "expansion";
+      }
+      regimeStrength = Math.min(100, Math.round(volatilityScore * 0.4 + directionalPersistence * 0.5));
+    }
+
+    console.log(`[REGIME-COMPOSITE] ${instrument}/${timeframe}: volScore=${volatilityScore} (atrRatio=${atrRatio.toFixed(2)}, bbPctl=${bbPercentile}, atrPctl=${atrPercentile}) | persScore=${directionalPersistence} (eff=${efficiencyScore}, adx=${adxNormalized}, struct=${structureScore}) → ${marketRegime} (${regimeStrength})`);
 
     const lastCandle = candles[candles.length - 1];
 
@@ -446,10 +549,17 @@ Deno.serve(async (req) => {
         bearishCount: bearish,
         neutralCount: signals.length - bullish - bearish,
       },
-      // ═══ NEW: Market regime from actual indicator data ═══
+      // ═══ COMPOSITE REGIME: Volatility Score + Directional Persistence ═══
       regime: {
         label: marketRegime,
         strength: regimeStrength,
+        volatilityScore,
+        directionalPersistence,
+        atrRatio: Math.round(atrRatio * 100) / 100,
+        bbPercentile,
+        atrPercentile,
+        efficiencyScore,
+        structureScore,
         bearishMomentum,
         bullishMomentum,
         adx: adxVal,
