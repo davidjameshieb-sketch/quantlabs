@@ -53,7 +53,8 @@ function computeTrailingStop(
   direction: string,
   entryPrice: number,
   currentPrice: number,
-  pair: string
+  pair: string,
+  triggerRatio = 0.60  // Can be tightened by divergence defense (e.g., 0.40)
 ): { adjustedSlPrice: number; isTrailing: boolean } {
   const pipMult = getPipMultiplier(pair);
   const thresholds = getExitThresholds(pair);
@@ -74,8 +75,10 @@ function computeTrailingStop(
   
   const progressRatio = totalDistance > 0 ? currentDistance / totalDistance : 0;
 
-  // If >60% to TP, move SL to breakeven + 1 pip
-  if (progressRatio >= 0.6) {
+  // If progress exceeds trigger ratio, move SL to breakeven + 1 pip
+  // NOTE: triggerRatio can be tightened by divergence defense (40% instead of 60%)
+  //       but NEVER loosened beyond default. This ensures divergence only protects profits.
+  if (progressRatio >= triggerRatio) {
     const breakEvenPlus = direction === "long"
       ? entryPrice + 1 * pipMult
       : entryPrice - 1 * pipMult;
@@ -122,6 +125,20 @@ async function oandaRequest(path: string, method: string, body?: Record<string, 
 }
 
 // ─── Exit Decision Engine ───
+// ═══ EXIT RULE PRIORITY (STRICT, INVIOLABLE ORDER) ═══
+// 1. TP hit          → CLOSE immediately (hard rule, nothing overrides)
+// 2. Trailing stop   → CLOSE immediately (hard rule)
+// 3. SL hit          → CLOSE immediately (hard rule)
+// 4. Time-decay exit → CLOSE if flat/negative (last-resort cleanup)
+// 5. Hold            → Continue monitoring
+//
+// DIVERGENCE DEFENSE (from regime engine) is SUBORDINATE to all hard rules:
+//   ✅ Can tighten trailing stops (reduce trailing trigger from 60% → 40% of TP)
+//   ✅ Can block NEW entries (handled in forex-auto-trade, not here)
+//   ❌ NEVER widens stops
+//   ❌ NEVER delays or prevents TP/SL/trailing exits
+//   ❌ NEVER overrides any exit action above
+// This ensures divergence logic is purely defensive and cannot cause profit leakage.
 
 interface ExitDecision {
   action: "hold" | "close-tp" | "close-sl" | "close-time" | "close-trailing";
@@ -136,7 +153,8 @@ function evaluateExit(
   entryPrice: number,
   currentPrice: number,
   pair: string,
-  tradeAgeMinutes: number
+  tradeAgeMinutes: number,
+  governancePayload?: Record<string, unknown>
 ): ExitDecision {
   const pipMult = getPipMultiplier(pair);
   const thresholds = getExitThresholds(pair);
@@ -149,7 +167,7 @@ function evaluateExit(
   // Progress toward TP
   const progressToTp = currentPnlPips / thresholds.tpPips;
 
-  // Check TP hit
+  // ═══ PRIORITY 1: TP hit — ALWAYS wins, nothing can override ═══
   if (currentPnlPips >= thresholds.tpPips) {
     return {
       action: "close-tp",
@@ -160,8 +178,13 @@ function evaluateExit(
     };
   }
 
-  // Check trailing stop (if >60% to TP, SL moves to breakeven+1)
-  const trailing = computeTrailingStop(direction, entryPrice, currentPrice, pair);
+  // ═══ PRIORITY 2: Trailing stop — hard rule, divergence can only TIGHTEN this ═══
+  // Check if regime was diverging at entry (stored in governance_payload)
+  // If diverging, tighten trailing trigger from 60% → 40% of TP progress
+  const entryRegimeDiverging = governancePayload?.regimeEarlyWarning === true;
+  const trailingTriggerRatio = entryRegimeDiverging ? 0.40 : 0.60;
+
+  const trailing = computeTrailingStop(direction, entryPrice, currentPrice, pair, trailingTriggerRatio);
   if (trailing.isTrailing) {
     const trailingSlPips = direction === "long"
       ? (currentPrice - trailing.adjustedSlPrice) / pipMult
@@ -170,7 +193,7 @@ function evaluateExit(
     if (trailingSlPips <= 0) {
       return {
         action: "close-trailing",
-        reason: `Trailing stop hit after reaching ${(progressToTp * 100).toFixed(0)}% of TP`,
+        reason: `Trailing stop hit after reaching ${(progressToTp * 100).toFixed(0)}% of TP${entryRegimeDiverging ? ' (tightened: regime early-warn)' : ''}`,
         currentPnlPips,
         progressToTp,
         tradeAgeMinutes,
@@ -178,7 +201,7 @@ function evaluateExit(
     }
   }
 
-  // Check SL hit
+  // ═══ PRIORITY 3: SL hit — ALWAYS wins, divergence NEVER widens this ═══
   if (currentPnlPips <= -thresholds.slPips) {
     return {
       action: "close-sl",
@@ -189,9 +212,8 @@ function evaluateExit(
     };
   }
 
-  // Check time-based exit — LAST RESORT cleanup only
+  // ═══ PRIORITY 4: Time-based exit — LAST RESORT cleanup only ═══
   if (tradeAgeMinutes >= thresholds.maxAgeMinutes) {
-    // If trade is profitable (even slightly), let TP/trailing handle it — don't force-close winners
     if (currentPnlPips <= 0) {
       return {
         action: "close-time",
@@ -201,7 +223,6 @@ function evaluateExit(
         tradeAgeMinutes,
       };
     }
-    // If profitable but under 50% TP, warn but keep holding — trailing will protect
     console.log(`[TRADE-MONITOR] ${pair}: Age ${tradeAgeMinutes.toFixed(0)}min exceeds max but trade is +${currentPnlPips.toFixed(1)}p — holding for TP/trailing`);
   }
 
@@ -374,13 +395,17 @@ Deno.serve(async (req) => {
       const tradeAgeMs = Date.now() - new Date(order.created_at).getTime();
       const tradeAgeMinutes = tradeAgeMs / 60000;
 
-      // Evaluate exit decision
+      // Evaluate exit decision — pass governance_payload for divergence-aware trailing
+      const govPayload = (order.governance_payload && typeof order.governance_payload === 'object')
+        ? order.governance_payload as Record<string, unknown>
+        : undefined;
       const decision = evaluateExit(
         order.direction,
         entryPrice,
         currentPrice,
         order.currency_pair,
-        tradeAgeMinutes
+        tradeAgeMinutes,
+        govPayload
       );
 
       if (decision.action === "hold") {
