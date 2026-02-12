@@ -2098,18 +2098,46 @@ Deno.serve(async (req) => {
                 }
 
                 // ═══ ANTI-FLICKER GATE 2: Trade regimes must hold 3+ bars (direction-aware family) ═══
+                // WHIPSAW DEFENSE: If this pair recently had a divergence block, require EXTENDED
+                // re-confirmation (familyHold >= 5 instead of 3) to prevent churn during chop.
+                // Check recent orders for this pair with regime-diverging status.
                 const HOLD_REQUIRED_REGIMES = ["expansion", "momentum", "breakdown", "risk-off"];
-                if (HOLD_REQUIRED_REGIMES.includes(indicatorRegime) && !regimeFamilyConfirmed) {
-                  console.log(`[REGIME-FLICKER] ${pair}: ${indicatorRegime} (family=${familyLabel}) NOT confirmed (familyHold=${regimeFamilyHoldBars}<3, recent=[${recentRegimes.join(',')}]) — BLOCKING to prevent flicker entry`);
-                  results.push({ pair, direction: "none", status: "regime-not-confirmed", govState, agentId,
-                    error: `regime=${indicatorRegime},family=${familyLabel},familyHold=${regimeFamilyHoldBars},recentRegimes=[${recentRegimes.join(',')}]` });
-                  continue;
+                const WHIPSAW_COOLDOWN_MINUTES = 15; // ~3 bars on 5m timeframe
+                let requiredFamilyHold = 3; // default entry threshold
+
+                if (HOLD_REQUIRED_REGIMES.includes(indicatorRegime)) {
+                  // Check if this pair had a divergence block recently (whipsaw cooldown)
+                  const recentDivergenceBlock = orders.find((o: Record<string, unknown>) =>
+                    o.currency_pair === pair &&
+                    o.status === "regime-diverging" &&
+                    o.created_at &&
+                    (Date.now() - new Date(o.created_at as string).getTime()) < WHIPSAW_COOLDOWN_MINUTES * 60 * 1000
+                  );
+
+                  if (recentDivergenceBlock) {
+                    requiredFamilyHold = 5; // extended re-confirmation after whipsaw
+                    console.log(`[WHIPSAW-COOLDOWN] ${pair}: Recent divergence block found — requiring familyHold >= ${requiredFamilyHold} for re-entry (anti-churn)`);
+                  }
+
+                  if (regimeFamilyHoldBars < requiredFamilyHold) {
+                    const cooldownTag = requiredFamilyHold > 3 ? " [WHIPSAW-COOLDOWN]" : "";
+                    console.log(`[REGIME-FLICKER] ${pair}: ${indicatorRegime} (family=${familyLabel}) NOT confirmed (familyHold=${regimeFamilyHoldBars}<${requiredFamilyHold}, recent=[${recentRegimes.join(',')}])${cooldownTag} — BLOCKING to prevent flicker entry`);
+                    results.push({ pair, direction: "none", status: "regime-not-confirmed", govState, agentId,
+                      error: `regime=${indicatorRegime},family=${familyLabel},familyHold=${regimeFamilyHoldBars},required=${requiredFamilyHold},recentRegimes=[${recentRegimes.join(',')}]` });
+                    continue;
+                  }
                 }
 
                 // ═══ ASYMMETRIC PERSISTENCE GATE: 1-2 bars divergence → fast defense ═══
                 // Slow to enter (3+ bars), quick to back off (2 divergent bars = throttle)
+                // IMPORTANT: This gate ONLY blocks NEW entries. It does NOT affect open trade exits.
+                // Exit rule priority: SL/TP/Trailing ALWAYS win. Divergence can only:
+                //   ✅ Block new entries
+                //   ✅ Tighten trailing stops (via monitor)
+                //   ✅ Reduce position sizing
+                //   ❌ NEVER widen stops or delay exits
                 if (regimeDiverging) {
-                  console.log(`[REGIME-DIVERGE] ${pair}: ${indicatorRegime} regime DIVERGING (${divergentBars} of last 5 bars disagree with ${familyLabel} family) — BLOCKING for fast defense`);
+                  console.log(`[REGIME-DIVERGE] ${pair}: ${indicatorRegime} regime DIVERGING (${divergentBars} of last 5 bars disagree with ${familyLabel} family) — BLOCKING new entry for fast defense`);
                   results.push({ pair, direction: "none", status: "regime-diverging", govState, agentId,
                     error: `regime=${indicatorRegime},family=${familyLabel},divergentBars=${divergentBars}` });
                   continue;
