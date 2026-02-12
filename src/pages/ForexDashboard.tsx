@@ -14,6 +14,7 @@ import { IntelligenceModeBadge } from '@/components/dashboard/IntelligenceModeBa
 import { LongOnlyBadge } from '@/components/forex/LongOnlyBanner';
 import { LazyTabContent } from '@/components/forex/LazyTabContent';
 import { LiveTradeBook } from '@/components/forex/LiveTradeBook';
+import { SystemLearningPanel } from '@/components/forex/SystemLearningPanel';
 import { SystemConfidenceMeter } from '@/components/forex/SystemConfidenceMeter';
 import { GovernanceStateBanner } from '@/components/forex/GovernanceStateBanner';
 
@@ -158,7 +159,8 @@ const ForexDashboard = () => {
 
             {/* ─── TAB 1: Trade Book ─── */}
             <TabsContent value="trade-book" className="space-y-4">
-              <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+              <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-4">
+                <SystemLearningPanel executionMetrics={executionMetrics} />
                 <LiveTradeBook metrics={executionMetrics} />
               </motion.div>
             </TabsContent>
