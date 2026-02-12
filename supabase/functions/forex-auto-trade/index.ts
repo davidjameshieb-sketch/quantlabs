@@ -2906,6 +2906,16 @@ Deno.serve(async (req) => {
           spreadInPips, baseSpread
         );
 
+        // ─── Compute r_pips (true risk at entry) ───
+        const pipDiv = pair.includes("JPY") ? 0.01 : 0.0001;
+        let rPipsAtEntry: number | null = null;
+        if (!wasCancelled && filledPrice && stopLossPrice) {
+          rPipsAtEntry = Math.round(Math.abs(filledPrice - stopLossPrice) / pipDiv * 10) / 10;
+        }
+
+        // Determine entry timeframe from indicator data
+        const entryTf = "1m"; // Primary scalping timeframe
+
         await supabase
           .from("oanda_orders")
           .update({
@@ -2919,6 +2929,11 @@ Deno.serve(async (req) => {
             fill_latency_ms: fillLatencyMs,
             spread_at_entry: spreadAtEntry,
             execution_quality_score: execQuality,
+            // ═══ NEW: True risk + watermark initialization ═══
+            r_pips: rPipsAtEntry,
+            entry_tf: entryTf,
+            mfe_price: filledPrice, // initialize watermarks to entry
+            mae_price: filledPrice,
           })
           .eq("id", order.id);
 

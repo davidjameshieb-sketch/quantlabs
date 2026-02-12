@@ -622,22 +622,44 @@ Deno.serve(async (req) => {
         ? order.governance_payload as Record<string, unknown>
         : undefined;
 
-      const barsSinceEntry = Math.max(1, Math.round(tradeAgeMinutes));
+      // ─── FIX: Compute bars from entry timeframe, not raw minutes ───
+      const entryTf = (order as Record<string, unknown>).entry_tf as string | null;
+      const tfMinutes = entryTf === '5m' ? 5 : entryTf === '15m' ? 15 : 1; // default 1m
+      const barsSinceEntry = Math.max(1, Math.floor(tradeAgeMinutes / tfMinutes));
 
-      // MFE tracking: use the max of current price and any previously recorded MFE
-      // Cap prevMfeR to sane range — guards against corrupted DB values from prior bugs
-      const rawPrevMfeR = typeof order.mfe_r === 'number' ? order.mfe_r : 0;
-      const prevMfeR = Math.min(rawPrevMfeR, 10); // No trade legitimately exceeds 10R MFE in scalping
+      // ─── FIX: MFE/MAE watermark tracking using stored prices ───
+      // Uses persistent mfe_price/mae_price columns as true watermarks
       const pipMult = getPipMultiplier(order.currency_pair);
-      const currentMfePips = order.direction === "long"
-        ? Math.max(0, (currentPrice - entryPrice) / pipMult)
-        : Math.max(0, (entryPrice - currentPrice) / pipMult);
-      const rPipsEst = Math.max(dynamicSl.slDistancePips, 0.1);
-      const currentMfeR = currentMfePips / rPipsEst;
-      const bestMfeR = Math.max(prevMfeR, currentMfeR);
-      const mfePrice = order.direction === "long"
-        ? entryPrice + bestMfeR * rPipsEst * pipMult
-        : entryPrice - bestMfeR * rPipsEst * pipMult;
+      const storedMfePrice = typeof (order as Record<string, unknown>).mfe_price === 'number' ? (order as Record<string, unknown>).mfe_price as number : entryPrice;
+      const storedMaePrice = typeof (order as Record<string, unknown>).mae_price === 'number' ? (order as Record<string, unknown>).mae_price as number : entryPrice;
+
+      // Get BOTH bid and ask for correct watermark tracking
+      const liveBid = bidPriceMap.get(order.currency_pair) ?? currentPrice;
+      const liveAsk = askPriceMap.get(order.currency_pair) ?? currentPrice;
+
+      let updatedMfePrice: number;
+      let updatedMaePrice: number;
+      if (order.direction === "long") {
+        // Long: favorable = highest bid, adverse = lowest bid
+        updatedMfePrice = Math.max(storedMfePrice, liveBid);
+        updatedMaePrice = Math.min(storedMaePrice, liveBid);
+      } else {
+        // Short: favorable = lowest ask, adverse = highest ask
+        updatedMfePrice = Math.min(storedMfePrice, liveAsk);
+        updatedMaePrice = Math.max(storedMaePrice, liveAsk);
+      }
+
+      // Use real r_pips if available, else fall back to dynamic SL distance
+      const rPipsReal = typeof (order as Record<string, unknown>).r_pips === 'number' ? (order as Record<string, unknown>).r_pips as number : null;
+      const rPipsEst = rPipsReal ?? Math.max(dynamicSl.slDistancePips, 0.1);
+
+      // Compute MFE/MAE/UE in R-multiples using watermark prices
+      const mfePips = order.direction === "long"
+        ? Math.max(0, (updatedMfePrice - entryPrice) / pipMult)
+        : Math.max(0, (entryPrice - updatedMfePrice) / pipMult);
+      const currentMfeR = mfePips / rPipsEst;
+
+      const mfePrice = updatedMfePrice; // pass watermark price to health engine
 
       const prevTimeToMfeBars = typeof order.time_to_mfe_bars === 'number' ? order.time_to_mfe_bars : null;
 
@@ -675,30 +697,42 @@ Deno.serve(async (req) => {
       // ─── THS Expectancy Tracking ───
       // entry_ths: set once on first health evaluation (bars=1)
       // peak_ths: rolling max of THS across trade lifetime
-      // mae_r: Maximum Adverse Excursion in R-multiples
+      // mae_r: Maximum Adverse Excursion in R-multiples (from watermark prices)
       const prevEntryThs = typeof order.entry_ths === 'number' ? order.entry_ths : null;
       const prevPeakThs = typeof order.peak_ths === 'number' ? order.peak_ths : 0;
-      const prevMaeR = typeof order.mae_r === 'number' ? order.mae_r : 0;
 
       const entryThsValue = prevEntryThs ?? healthResult.tradeHealthScore; // lock on first eval
       const peakThsValue = Math.max(prevPeakThs, healthResult.tradeHealthScore);
-      const maeRValue = Math.round(Math.max(prevMaeR, Math.abs(Math.min(0, healthResult.ueR))) * 100) / 100;
 
-      // Persist health telemetry on every cycle
+      // MAE from watermark prices (true worst-case drawdown)
+      const maePips = order.direction === "long"
+        ? Math.max(0, (entryPrice - updatedMaePrice) / pipMult)
+        : Math.max(0, (updatedMaePrice - entryPrice) / pipMult);
+      const maeRValue = Math.round((maePips / rPipsEst) * 100) / 100;
+
+      // UE from correct bid/ask
+      const ueRPips = order.direction === "long"
+        ? (liveBid - entryPrice) / pipMult
+        : (entryPrice - liveAsk) / pipMult;
+      const ueRValue = Math.round((ueRPips / rPipsEst) * 100) / 100;
+
+      // Persist health telemetry + watermark prices on every cycle
       await supabase
         .from("oanda_orders")
         .update({
           trade_health_score: healthResult.tradeHealthScore,
           health_band: healthResult.healthBand,
-          mfe_r: healthResult.mfeR,
-          ue_r: healthResult.ueR,
+          mfe_r: Math.round(currentMfeR * 100) / 100,
+          ue_r: ueRValue,
+          mae_r: maeRValue,
           bars_since_entry: barsSinceEntry,
           progress_fail: healthResult.progressFail,
           health_governance_action: healthResult.governanceActionType,
           time_to_mfe_bars: healthResult.timeToMfeBars,
           entry_ths: entryThsValue,
           peak_ths: peakThsValue,
-          mae_r: maeRValue,
+          mfe_price: updatedMfePrice,
+          mae_price: updatedMaePrice,
         })
         .eq("id", order.id);
 
@@ -750,8 +784,9 @@ Deno.serve(async (req) => {
             governance_payload: updatedPayload,
             trade_health_score: healthResult.tradeHealthScore,
             health_band: healthResult.healthBand,
-            mfe_r: healthResult.mfeR,
-            ue_r: healthResult.ueR,
+            mfe_r: Math.round(currentMfeR * 100) / 100,
+            ue_r: ueRValue,
+            mae_r: maeRValue,
             bars_since_entry: barsSinceEntry,
             progress_fail: healthResult.progressFail,
             health_governance_action: healthResult.governanceActionType,
@@ -759,7 +794,8 @@ Deno.serve(async (req) => {
             entry_ths: entryThsValue,
             peak_ths: peakThsValue,
             exit_ths: healthResult.tradeHealthScore,
-            mae_r: maeRValue,
+            mfe_price: updatedMfePrice,
+            mae_price: updatedMaePrice,
           })
           .eq("id", order.id);
 
