@@ -33,7 +33,7 @@ function getExitThresholds(pair: string): { tpPips: number; slPips: number; maxA
   
   // Volatility classes
   const highVol = ["GBP_JPY", "GBP_AUD", "EUR_AUD", "AUD_NZD"];
-  const medVol = ["GBP_USD", "EUR_JPY", "AUD_JPY", "USD_CAD", "EUR_GBP"];
+  const medVol = ["GBP_USD", "EUR_JPY", "AUD_JPY", "USD_CAD", "EUR_GBP", "USD_JPY"];
   // Low vol: EUR_USD, USD_JPY, AUD_USD, NZD_USD, etc.
 
   if (highVol.includes(pair)) {
