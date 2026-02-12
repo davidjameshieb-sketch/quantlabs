@@ -77,6 +77,7 @@ export function useOandaPerformance() {
         .from('oanda_orders')
         .select('*')
         .eq('user_id', user.id)
+        .eq('environment', 'live')
         .in('status', ['filled', 'closed', 'rejected', 'submitted', 'pending'])
         .gte('created_at', cutoff)
         .order('created_at', { ascending: false })
