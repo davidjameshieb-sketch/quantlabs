@@ -279,6 +279,29 @@ Deno.serve(async (req) => {
       oandaTradeMap.set(t.id, t);
     }
 
+    // ═══ FIX: Fetch CURRENT market prices for all instruments with open trades ═══
+    // CRITICAL: oandaTrade.price is the ENTRY price, NOT the current market price!
+    // Without this, all TP/SL/trailing evaluations see ~0 pips P&L and never trigger.
+    const instrumentsNeeded = new Set(openOrders.map(o => o.currency_pair));
+    const currentPriceMap = new Map<string, number>();
+    if (instrumentsNeeded.size > 0) {
+      try {
+        const instruments = [...instrumentsNeeded].join(",");
+        const priceRes = await oandaRequest(
+          `/v3/accounts/{accountId}/pricing?instruments=${instruments}`, "GET", undefined, "live"
+        ) as { prices?: Array<{ instrument: string; asks?: Array<{ price: string }>; bids?: Array<{ price: string }> }> };
+        for (const p of (priceRes.prices || [])) {
+          const ask = parseFloat(p.asks?.[0]?.price || "0");
+          const bid = parseFloat(p.bids?.[0]?.price || "0");
+          const mid = (ask + bid) / 2;
+          if (mid > 0) currentPriceMap.set(p.instrument, mid);
+        }
+        console.log(`[TRADE-MONITOR] Fetched live prices for ${currentPriceMap.size} instruments`);
+      } catch (priceErr) {
+        console.error(`[TRADE-MONITOR] Failed to fetch current prices:`, priceErr);
+      }
+    }
+
     // 3. Evaluate each open order
     const results: Array<{
       pair: string; direction: string; action: string; reason: string;
@@ -335,8 +358,14 @@ Deno.serve(async (req) => {
         continue;
       }
 
-      // Get current price from live trade
-      const currentPrice = parseFloat(oandaTrade.price);
+      // FIX: Use LIVE market price from pricing endpoint, NOT oandaTrade.price (which is the entry price!)
+      // oandaTrade.price is the average entry price of the trade, not the current market price.
+      // Using entry price made all TP/SL evaluations see ~0 pips P&L and never trigger exits.
+      const livePrice = currentPriceMap.get(order.currency_pair);
+      const currentPrice = livePrice || parseFloat(oandaTrade.price); // fallback to entry only if pricing unavailable
+      if (!livePrice) {
+        console.warn(`[TRADE-MONITOR] ${order.currency_pair}: No live price available, using trade entry price as fallback (exit decisions may be inaccurate)`);
+      }
       const entryPrice = order.entry_price!;
       const tradeAgeMs = Date.now() - new Date(order.created_at).getTime();
       const tradeAgeMinutes = tradeAgeMs / 60000;
