@@ -36,6 +36,7 @@ const INDICATOR_NAMES: Record<string, string> = {
 const MIN_TRADES_FOR_LEARNING = 10;
 const NOISE_LIFT_THRESHOLD = -0.03; // < -3% lift = noise
 const SIGNAL_LIFT_THRESHOLD = 0.02; // > +2% lift = signal
+const NOISE_FLOOR_WEIGHT = 0.05;   // soft floor — never fully excluded
 
 /**
  * Compute adaptive consensus threshold based on learning maturity.
@@ -137,10 +138,40 @@ export function computeIndicatorProfile(
  * Noise indicators are excluded from the score.
  * Returns an adjusted consensus and the list of excluded indicators.
  */
+/**
+ * Compute soft indicator weights from reliability profiles.
+ * Noise indicators get near-zero weight (0.05) instead of hard exclusion.
+ * Signal indicators get boosted weight (up to 1.0).
+ * Neutral indicators stay at baseline (0.5).
+ */
+export function computeSoftWeights(
+  indicators: IndicatorReliability[]
+): Record<string, number> {
+  const weights: Record<string, number> = {};
+  for (const ind of indicators) {
+    if (ind.quality === 'signal') {
+      // Scale weight by lift magnitude, capped at 1.0
+      weights[ind.key] = Math.min(1.0, 0.6 + ind.lift * 5);
+    } else if (ind.quality === 'noise') {
+      // Near-zero but never fully excluded — can recover if regime flips
+      weights[ind.key] = Math.max(NOISE_FLOOR_WEIGHT, 0.15 + ind.lift * 2);
+    } else {
+      weights[ind.key] = 0.5; // Neutral / insufficient data
+    }
+  }
+  return weights;
+}
+
+/**
+ * Compute a weighted consensus score using soft indicator weights.
+ * Noise indicators contribute near-zero weight instead of being excluded.
+ * Returns a weighted directional score and metadata.
+ */
 export function computeFilteredConsensus(
   indicatorBreakdown: Record<string, string>,
   direction: 'long' | 'short',
-  noiseIndicators: string[]
+  noiseIndicators: string[],
+  softWeights?: Record<string, number>
 ): {
   filteredScore: number;
   filteredDirection: 'bullish' | 'bearish' | 'neutral';
@@ -148,22 +179,34 @@ export function computeFilteredConsensus(
   totalUsed: number;
   bullishCount: number;
   bearishCount: number;
+  weightedBullish: number;
+  weightedBearish: number;
 } {
-  let bullish = 0;
-  let bearish = 0;
-  let total = 0;
+  let bullishW = 0;
+  let bearishW = 0;
+  let totalW = 0;
+  let bullishCount = 0;
+  let bearishCount = 0;
+  let totalUsed = 0;
 
   for (const [key, sig] of Object.entries(indicatorBreakdown)) {
-    if (noiseIndicators.includes(key)) continue; // Skip noise
     if (sig === 'neutral') continue;
 
-    total++;
-    if (sig === 'bullish' || sig === 'oversold') bullish++;
-    else if (sig === 'bearish' || sig === 'overbought') bearish++;
+    const w = softWeights?.[key] ?? (noiseIndicators.includes(key) ? NOISE_FLOOR_WEIGHT : 0.5);
+    totalW += w;
+    totalUsed++;
+
+    if (sig === 'bullish' || sig === 'oversold') {
+      bullishW += w;
+      bullishCount++;
+    } else if (sig === 'bearish' || sig === 'overbought') {
+      bearishW += w;
+      bearishCount++;
+    }
   }
 
-  const filteredScore = total > 0
-    ? Math.round(((bullish - bearish) / total) * 100)
+  const filteredScore = totalW > 0
+    ? Math.round(((bullishW - bearishW) / totalW) * 100)
     : 0;
 
   const filteredDirection: 'bullish' | 'bearish' | 'neutral' =
@@ -174,8 +217,10 @@ export function computeFilteredConsensus(
     filteredScore,
     filteredDirection,
     excludedCount: noiseIndicators.filter(k => indicatorBreakdown[k] && indicatorBreakdown[k] !== 'neutral').length,
-    totalUsed: total,
-    bullishCount: bullish,
-    bearishCount: bearish,
+    totalUsed,
+    bullishCount,
+    bearishCount,
+    weightedBullish: Math.round(bullishW * 100) / 100,
+    weightedBearish: Math.round(bearishW * 100) / 100,
   };
 }
