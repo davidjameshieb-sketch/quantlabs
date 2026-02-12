@@ -1,6 +1,6 @@
 // Indicator Learning Engine
-// Computes per-pair indicator reliability from historical trade outcomes.
-// Used by the trade engine to filter noise indicators and require quality consensus.
+// Computes per-pair, per-regime indicator reliability from historical trade outcomes.
+// Used by the trade engine to soft-weight indicators and require quality consensus.
 
 export interface IndicatorReliability {
   key: string;
@@ -9,7 +9,51 @@ export interface IndicatorReliability {
   confirmedWins: number;
   winRate: number;
   lift: number; // vs baseline win rate
-  quality: 'signal' | 'noise' | 'neutral'; // signal = positive lift, noise = negative, neutral = insufficient data
+  quality: 'signal' | 'noise' | 'neutral';
+}
+
+// ─── Regime Buckets ───
+// Volatility: compression / expansion / ignition / exhaustion
+// Trend: trending / ranging
+export type VolatilityBucket = 'compression' | 'expansion' | 'ignition' | 'exhaustion';
+export type TrendBucket = 'trending' | 'ranging';
+export type RegimeBucketKey = `${TrendBucket}_${VolatilityBucket}`;
+
+export const ALL_REGIME_BUCKETS: RegimeBucketKey[] = [
+  'trending_compression', 'trending_expansion', 'trending_ignition', 'trending_exhaustion',
+  'ranging_compression', 'ranging_expansion', 'ranging_ignition', 'ranging_exhaustion',
+];
+
+/**
+ * Map a regime label (from governance) to a structured bucket key.
+ * Falls back to 'ranging_expansion' if unrecognizable.
+ */
+export function classifyRegimeBucket(regimeLabel: string): RegimeBucketKey {
+  const lower = (regimeLabel || '').toLowerCase();
+
+  // Volatility bucket
+  let vol: VolatilityBucket = 'expansion';
+  if (lower.includes('compress') || lower === 'quiet') vol = 'compression';
+  else if (lower.includes('ignit') || lower.includes('breakout') || lower.includes('momentum')) vol = 'ignition';
+  else if (lower.includes('exhaust') || lower.includes('risk-off')) vol = 'exhaustion';
+  else if (lower.includes('expan') || lower.includes('breakdown')) vol = 'expansion';
+
+  // Trend bucket
+  let trend: TrendBucket = 'ranging';
+  if (lower.includes('trend') || lower.includes('momentum') || lower.includes('breakout') || lower.includes('breakdown')) trend = 'trending';
+  else if (lower.includes('rang') || lower.includes('compress') || lower.includes('quiet') || lower.includes('chop')) trend = 'ranging';
+  // Expansion/ignition typically trending
+  if (vol === 'ignition') trend = 'trending';
+
+  return `${trend}_${vol}`;
+}
+
+export interface RegimeIndicatorProfile {
+  regime: RegimeBucketKey;
+  totalTrades: number;
+  baselineWinRate: number;
+  indicators: IndicatorReliability[];
+  softWeights: Record<string, number>;
 }
 
 export interface PairIndicatorProfile {
@@ -17,11 +61,15 @@ export interface PairIndicatorProfile {
   totalTrades: number;
   baselineWinRate: number;
   indicators: IndicatorReliability[];
-  signalIndicators: string[]; // keys with positive lift (quality = 'signal')
-  noiseIndicators: string[];  // keys with negative lift (quality = 'noise')
-  qualityScore: number;       // 0-100, how much edge the signal indicators add
+  signalIndicators: string[];
+  noiseIndicators: string[];
+  qualityScore: number;
   minSampleSize: number;
   lastUpdated: string;
+  // Regime-specific profiles
+  regimeProfiles: Record<RegimeBucketKey, RegimeIndicatorProfile>;
+  // Global soft weights (fallback when regime-specific data is insufficient)
+  globalSoftWeights: Record<string, number>;
 }
 
 const INDICATOR_NAMES: Record<string, string> = {
@@ -34,13 +82,13 @@ const INDICATOR_NAMES: Record<string, string> = {
 };
 
 const MIN_TRADES_FOR_LEARNING = 10;
-const NOISE_LIFT_THRESHOLD = -0.03; // < -3% lift = noise
-const SIGNAL_LIFT_THRESHOLD = 0.02; // > +2% lift = signal
-const NOISE_FLOOR_WEIGHT = 0.05;   // soft floor — never fully excluded
+const MIN_TRADES_PER_REGIME = 5; // Lower threshold per regime bucket
+const NOISE_LIFT_THRESHOLD = -0.03;
+const SIGNAL_LIFT_THRESHOLD = 0.02;
+const NOISE_FLOOR_WEIGHT = 0.05;
 
 /**
  * Compute adaptive consensus threshold based on learning maturity.
- * More data + more noise identified = higher bar for entry.
  */
 export function computeAdaptiveThreshold(profile: PairIndicatorProfile): number {
   const BASE = 25;
@@ -54,9 +102,66 @@ export function computeAdaptiveThreshold(profile: PairIndicatorProfile): number 
 }
 
 /**
- * Compute indicator reliability profile for a given pair from historical trades.
- * This is the core learning function — runs either client-side for dashboard
- * or server-side in the edge function.
+ * Compute soft weights from indicator reliabilities.
+ */
+function computeWeightsFromReliabilities(indicators: IndicatorReliability[]): Record<string, number> {
+  const weights: Record<string, number> = {};
+  for (const ind of indicators) {
+    if (ind.quality === 'signal') {
+      weights[ind.key] = Math.min(1.0, 0.6 + ind.lift * 5);
+    } else if (ind.quality === 'noise') {
+      weights[ind.key] = Math.max(NOISE_FLOOR_WEIGHT, 0.15 + ind.lift * 2);
+    } else {
+      weights[ind.key] = 0.5;
+    }
+  }
+  return weights;
+}
+
+/**
+ * Core indicator reliability computation for a set of trades.
+ */
+function computeReliabilities(
+  trades: Array<{ direction: string; won: boolean; indicators: Record<string, string> }>,
+  baselineWinRate: number,
+  minSample: number
+): IndicatorReliability[] {
+  const indicators: IndicatorReliability[] = [];
+
+  for (const [key, name] of Object.entries(INDICATOR_NAMES)) {
+    let confirmedTrades = 0;
+    let confirmedWins = 0;
+
+    for (const t of trades) {
+      const sig = t.indicators[key];
+      if (!sig || sig === 'neutral') continue;
+      const isConfirming = (
+        (t.direction === 'long' && (sig === 'bullish' || sig === 'oversold')) ||
+        (t.direction === 'short' && (sig === 'bearish' || sig === 'overbought'))
+      );
+      if (isConfirming) {
+        confirmedTrades++;
+        if (t.won) confirmedWins++;
+      }
+    }
+
+    const winRate = confirmedTrades > 0 ? confirmedWins / confirmedTrades : 0;
+    const lift = confirmedTrades >= minSample ? winRate - baselineWinRate : 0;
+
+    let quality: 'signal' | 'noise' | 'neutral' = 'neutral';
+    if (confirmedTrades >= minSample) {
+      if (lift >= SIGNAL_LIFT_THRESHOLD) quality = 'signal';
+      else if (lift <= NOISE_LIFT_THRESHOLD) quality = 'noise';
+    }
+
+    indicators.push({ key, name, confirmedTrades, confirmedWins, winRate, lift, quality });
+  }
+  return indicators;
+}
+
+/**
+ * Compute regime-aware indicator profile for a given pair.
+ * Trades must include a `regime` field for bucketing.
  */
 export function computeIndicatorProfile(
   trades: Array<{
@@ -64,6 +169,7 @@ export function computeIndicatorProfile(
     direction: string;
     won: boolean;
     indicators: Record<string, string>;
+    regime?: string; // Optional — if missing, only global profile is built
   }>,
   pair: string
 ): PairIndicatorProfile {
@@ -73,51 +179,43 @@ export function computeIndicatorProfile(
     ? pairTrades.filter(t => t.won).length / totalTrades
     : 0.5;
 
-  const indicators: IndicatorReliability[] = [];
-
-  for (const [key, name] of Object.entries(INDICATOR_NAMES)) {
-    let confirmedTrades = 0;
-    let confirmedWins = 0;
-
-    for (const t of pairTrades) {
-      const sig = t.indicators[key];
-      if (!sig || sig === 'neutral') continue;
-
-      const isConfirming = (
-        (t.direction === 'long' && (sig === 'bullish' || sig === 'oversold')) ||
-        (t.direction === 'short' && (sig === 'bearish' || sig === 'overbought'))
-      );
-
-      if (isConfirming) {
-        confirmedTrades++;
-        if (t.won) confirmedWins++;
-      }
-    }
-
-    const winRate = confirmedTrades > 0 ? confirmedWins / confirmedTrades : 0;
-    const lift = confirmedTrades >= MIN_TRADES_FOR_LEARNING
-      ? winRate - baselineWinRate
-      : 0;
-
-    let quality: 'signal' | 'noise' | 'neutral' = 'neutral';
-    if (confirmedTrades >= MIN_TRADES_FOR_LEARNING) {
-      if (lift >= SIGNAL_LIFT_THRESHOLD) quality = 'signal';
-      else if (lift <= NOISE_LIFT_THRESHOLD) quality = 'noise';
-    }
-
-    indicators.push({ key, name, confirmedTrades, confirmedWins, winRate, lift, quality });
-  }
+  // Global indicators (across all regimes)
+  const indicators = computeReliabilities(pairTrades, baselineWinRate, MIN_TRADES_FOR_LEARNING);
+  const globalSoftWeights = computeWeightsFromReliabilities(indicators);
 
   const signalIndicators = indicators.filter(i => i.quality === 'signal').map(i => i.key);
   const noiseIndicators = indicators.filter(i => i.quality === 'noise').map(i => i.key);
 
-  // Quality score: weighted average lift of signal indicators (0-100)
+  // Regime-specific profiles
+  const regimeProfiles = {} as Record<RegimeBucketKey, RegimeIndicatorProfile>;
+  const regimeBuckets = new Map<RegimeBucketKey, typeof pairTrades>();
+
+  for (const t of pairTrades) {
+    if (!t.regime) continue;
+    const bucket = classifyRegimeBucket(t.regime);
+    if (!regimeBuckets.has(bucket)) regimeBuckets.set(bucket, []);
+    regimeBuckets.get(bucket)!.push(t);
+  }
+
+  for (const [bucket, bucketTrades] of regimeBuckets) {
+    if (bucketTrades.length < MIN_TRADES_PER_REGIME) continue;
+    const bucketBaseWR = bucketTrades.filter(t => t.won).length / bucketTrades.length;
+    const bucketIndicators = computeReliabilities(bucketTrades, bucketBaseWR, MIN_TRADES_PER_REGIME);
+    regimeProfiles[bucket] = {
+      regime: bucket,
+      totalTrades: bucketTrades.length,
+      baselineWinRate: bucketBaseWR,
+      indicators: bucketIndicators,
+      softWeights: computeWeightsFromReliabilities(bucketIndicators),
+    };
+  }
+
+  // Quality score
   const signalLiftSum = indicators
     .filter(i => i.quality === 'signal')
     .reduce((s, i) => s + i.lift, 0);
   const qualityScore = Math.min(100, Math.round(
-    (signalIndicators.length / 16) * 50 +
-    Math.min(50, signalLiftSum * 500)
+    (signalIndicators.length / 16) * 50 + Math.min(50, signalLiftSum * 500)
   ));
 
   return {
@@ -130,42 +228,42 @@ export function computeIndicatorProfile(
     qualityScore,
     minSampleSize: MIN_TRADES_FOR_LEARNING,
     lastUpdated: new Date().toISOString(),
+    regimeProfiles,
+    globalSoftWeights,
   };
 }
 
 /**
- * Compute a filtered consensus score using only "signal" indicators.
- * Noise indicators are excluded from the score.
- * Returns an adjusted consensus and the list of excluded indicators.
+ * Get the best available soft weights for a given regime.
+ * Uses regime-specific weights if enough data, otherwise falls back to global.
  */
+export function getRegimeAwareWeights(
+  profile: PairIndicatorProfile,
+  currentRegime?: string
+): { weights: Record<string, number>; source: 'regime' | 'global'; regime?: RegimeBucketKey } {
+  if (currentRegime) {
+    const bucket = classifyRegimeBucket(currentRegime);
+    const regimeProfile = profile.regimeProfiles[bucket];
+    if (regimeProfile && regimeProfile.totalTrades >= MIN_TRADES_PER_REGIME) {
+      return { weights: regimeProfile.softWeights, source: 'regime', regime: bucket };
+    }
+  }
+  return { weights: profile.globalSoftWeights, source: 'global' };
+}
+
 /**
  * Compute soft indicator weights from reliability profiles.
- * Noise indicators get near-zero weight (0.05) instead of hard exclusion.
- * Signal indicators get boosted weight (up to 1.0).
- * Neutral indicators stay at baseline (0.5).
+ * @deprecated Use computeWeightsFromReliabilities or getRegimeAwareWeights instead
  */
 export function computeSoftWeights(
   indicators: IndicatorReliability[]
 ): Record<string, number> {
-  const weights: Record<string, number> = {};
-  for (const ind of indicators) {
-    if (ind.quality === 'signal') {
-      // Scale weight by lift magnitude, capped at 1.0
-      weights[ind.key] = Math.min(1.0, 0.6 + ind.lift * 5);
-    } else if (ind.quality === 'noise') {
-      // Near-zero but never fully excluded — can recover if regime flips
-      weights[ind.key] = Math.max(NOISE_FLOOR_WEIGHT, 0.15 + ind.lift * 2);
-    } else {
-      weights[ind.key] = 0.5; // Neutral / insufficient data
-    }
-  }
-  return weights;
+  return computeWeightsFromReliabilities(indicators);
 }
 
 /**
  * Compute a weighted consensus score using soft indicator weights.
  * Noise indicators contribute near-zero weight instead of being excluded.
- * Returns a weighted directional score and metadata.
  */
 export function computeFilteredConsensus(
   indicatorBreakdown: Record<string, string>,
