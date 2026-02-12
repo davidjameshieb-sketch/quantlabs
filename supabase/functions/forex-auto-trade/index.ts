@@ -2060,7 +2060,10 @@ Deno.serve(async (req) => {
                 const regimeConfirmed = indicatorData.regime.regimeConfirmed === true;
                 const regimeFamilyConfirmed = indicatorData.regime.regimeFamilyConfirmed === true;
                 const recentRegimes = indicatorData.regime.recentRegimes || [];
-                console.log(`[REGIME-INDICATOR] ${pair}: regime=${indicatorRegime} strength=${indicatorRegimeStrength} longFriendly=${indicatorLongFriendly} shortFriendly=${indicatorShortFriendly} bullishMom=${indicatorBullishMomentum} bearishMom=${indicatorBearishMomentum} hold=${regimeHoldBars} familyHold=${regimeFamilyHoldBars} confirmed=${regimeConfirmed} recentRegimes=[${recentRegimes.join(',')}]`);
+                // ═══ VOLATILITY ACCELERATION: Anti-false-expansion fields ═══
+                const volAcceleration = indicatorData.regime.volAcceleration || 0;
+                const accelLevel = indicatorData.regime.accelLevel || "stable";
+                console.log(`[REGIME-INDICATOR] ${pair}: regime=${indicatorRegime} strength=${indicatorRegimeStrength} longFriendly=${indicatorLongFriendly} shortFriendly=${indicatorShortFriendly} bullishMom=${indicatorBullishMomentum} bearishMom=${indicatorBearishMomentum} hold=${regimeHoldBars} familyHold=${regimeFamilyHoldBars} confirmed=${regimeConfirmed} accel=${volAcceleration}(${accelLevel}) recentRegimes=[${recentRegimes.join(',')}]`);
 
                 // ═══ ANTI-FLICKER GATE 1: Transition regimes CANNOT authorize trades ═══
                 if (indicatorRegime === "transition") {
@@ -2076,6 +2079,16 @@ Deno.serve(async (req) => {
                   console.log(`[REGIME-FLICKER] ${pair}: ${indicatorRegime} detected but NOT confirmed (familyHold=${regimeFamilyHoldBars}<3, recent=[${recentRegimes.join(',')}]) — BLOCKING to prevent flicker entry`);
                   results.push({ pair, direction: "none", status: "regime-not-confirmed", govState, agentId,
                     error: `regime=${indicatorRegime},familyHold=${regimeFamilyHoldBars},recentRegimes=[${recentRegimes.join(',')}]` });
+                  continue;
+                }
+
+                // ═══ ANTI-FLICKER GATE 3: Expansion/breakdown require vol acceleration ═══
+                // Prevents false expansions (vol static/declining) and late trend entries (vol fading)
+                const ACCEL_REQUIRED_REGIMES = ["expansion", "breakdown"];
+                if (ACCEL_REQUIRED_REGIMES.includes(indicatorRegime) && accelLevel === "decelerating") {
+                  console.log(`[REGIME-ACCEL] ${pair}: ${indicatorRegime} regime but vol DECELERATING (accel=${volAcceleration}) — downgrading to prevent false ${indicatorRegime} entry`);
+                  results.push({ pair, direction: "none", status: "regime-vol-decelerating", govState, agentId,
+                    error: `regime=${indicatorRegime},volAccel=${volAcceleration},accelLevel=${accelLevel}` });
                   continue;
                 }
               }

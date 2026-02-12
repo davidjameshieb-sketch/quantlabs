@@ -437,23 +437,75 @@ Deno.serve(async (req) => {
       atrPercentile * 0.30
     );
 
-    // ── AXIS 2: DIRECTIONAL PERSISTENCE SCORE (0-100) ──
+    // ── AXIS 2: VOLATILITY ACCELERATION (0-100) ──
+    // Measures the RATE OF CHANGE of volatility — are ATR, BB width, and range expanding or contracting?
+    // Prevents: false expansions, late trend entries, exhaustion traps
+    
+    // Component A: ATR acceleration (compare last 3-bar ATR avg vs prior 3-bar ATR avg)
+    const atrRecent3 = atrVals.length >= 6
+      ? (atrVals[atrVals.length - 1] + atrVals[atrVals.length - 2] + atrVals[atrVals.length - 3]) / 3
+      : currentATR;
+    const atrPrior3 = atrVals.length >= 6
+      ? (atrVals[atrVals.length - 4] + atrVals[atrVals.length - 5] + atrVals[atrVals.length - 6]) / 3
+      : currentATR;
+    const atrAccelRatio = atrPrior3 > 0 ? atrRecent3 / atrPrior3 : 1;
+    // Map: <0.9 = decelerating (0-30), 0.9-1.1 = stable (30-50), >1.1 = accelerating (50-100)
+    const atrAccelScore = atrAccelRatio < 0.9
+      ? Math.round((atrAccelRatio / 0.9) * 30)
+      : atrAccelRatio <= 1.1
+        ? Math.round(30 + ((atrAccelRatio - 0.9) / 0.2) * 20)
+        : Math.min(100, Math.round(50 + ((atrAccelRatio - 1.1) / 0.4) * 50));
+
+    // Component B: BB width acceleration (compare current BB width vs 5-bar-ago BB width)
+    const bbWidthPrev = bbWidths.length >= 6 ? bbWidths[bbWidths.length - 6] : bbWidth;
+    const bbAccelRatio = bbWidthPrev > 0 ? bbWidth / bbWidthPrev : 1;
+    const bbAccelScore = bbAccelRatio < 0.9
+      ? Math.round((bbAccelRatio / 0.9) * 30)
+      : bbAccelRatio <= 1.1
+        ? Math.round(30 + ((bbAccelRatio - 0.9) / 0.2) * 20)
+        : Math.min(100, Math.round(50 + ((bbAccelRatio - 1.1) / 0.4) * 50));
+
+    // Component C: Range expansion (compare last 3 bars' high-low range vs prior 3 bars)
+    const rangeRecent3 = candles.length >= 6
+      ? ((candles[candles.length - 1].h - candles[candles.length - 1].l) +
+         (candles[candles.length - 2].h - candles[candles.length - 2].l) +
+         (candles[candles.length - 3].h - candles[candles.length - 3].l)) / 3
+      : 0;
+    const rangePrior3 = candles.length >= 6
+      ? ((candles[candles.length - 4].h - candles[candles.length - 4].l) +
+         (candles[candles.length - 5].h - candles[candles.length - 5].l) +
+         (candles[candles.length - 6].h - candles[candles.length - 6].l)) / 3
+      : 0;
+    const rangeAccelRatio = rangePrior3 > 0 ? rangeRecent3 / rangePrior3 : 1;
+    const rangeAccelScore = rangeAccelRatio < 0.9
+      ? Math.round((rangeAccelRatio / 0.9) * 30)
+      : rangeAccelRatio <= 1.1
+        ? Math.round(30 + ((rangeAccelRatio - 0.9) / 0.2) * 20)
+        : Math.min(100, Math.round(50 + ((rangeAccelRatio - 1.1) / 0.4) * 50));
+
+    // Composite Volatility Acceleration Score
+    const volAcceleration = Math.round(
+      atrAccelScore * 0.40 +
+      bbAccelScore * 0.30 +
+      rangeAccelScore * 0.30
+    );
+    // Classify: decelerating (<35), stable (35-55), accelerating (>55)
+    const accelLevel = volAcceleration < 35 ? "decelerating" : volAcceleration <= 55 ? "stable" : "accelerating";
+
+    // ── AXIS 3: DIRECTIONAL PERSISTENCE SCORE (0-100) ──
     // Component A: Efficiency Ratio (already computed as trendEff, 0-1)
     const efficiencyScore = Math.round(trendEff * 100);
 
     // Component B: ADX Slope (is ADX rising or falling?)
-    // Compute ADX over two windows to get slope
     const adxPlusDI = (indicators.adx as any).plusDI || 0;
     const adxMinusDI = (indicators.adx as any).minusDI || 0;
-    // ADX slope proxy: compare current ADX to what we'd get from older window
-    // Since we only have the current ADX value, use ROC as a proxy for momentum direction persistence
     const adxNormalized = Math.min(100, Math.round(adxVal * 2)); // ADX 0-50 → 0-100
 
     // Component C: Structure Validation — do trend-following indicators agree?
-    const trendIndicatorCount = 5; // EMA, Supertrend, PSAR, Ichimoku, Heikin-Ashi
+    const trendIndicatorCount = 5;
     const dominantDir = bullishMomentum >= bearishMomentum ? "bullish" : "bearish";
     const structureCount = dominantDir === "bullish" ? bullishMomentum : bearishMomentum;
-    const structureScore = Math.round((structureCount / 7) * 100); // 7 total momentum indicators
+    const structureScore = Math.round((structureCount / 7) * 100);
 
     // Composite Directional Persistence Score
     const directionalPersistence = Math.round(
@@ -462,12 +514,13 @@ Deno.serve(async (req) => {
       structureScore * 0.25
     );
 
-    // ── REGIME CLASSIFICATION from composite scores ──
+    // ── REGIME CLASSIFICATION from three-axis composite ──
     let marketRegime: string;
     let regimeStrength: number;
 
     // Volatility axis: Low (<30), Normal (30-65), High (>65)
     // Persistence axis: Weak (<30), Moderate (30-60), Strong (>60)
+    // Acceleration axis modifies regime confidence and prevents false classifications
     const volLevel = volatilityScore < 30 ? "low" : volatilityScore <= 65 ? "normal" : "high";
     const persLevel = directionalPersistence < 30 ? "weak" : directionalPersistence <= 60 ? "moderate" : "strong";
 
@@ -478,55 +531,78 @@ Deno.serve(async (req) => {
       marketRegime = "flat";
       regimeStrength = Math.round(directionalPersistence * 0.5 + (100 - volatilityScore) * 0.3);
     } else if (volLevel === "low" && persLevel === "strong") {
-      // Low vol but strong directional persistence = emerging breakout / transition
-      marketRegime = "transition";
-      regimeStrength = directionalPersistence;
+      // Low vol + strong direction: if vol is accelerating → transition to breakout; if decelerating → still flat
+      if (accelLevel === "accelerating") {
+        marketRegime = "transition"; // vol catching up to direction — breakout forming
+        regimeStrength = directionalPersistence;
+      } else {
+        marketRegime = "flat"; // strong direction but vol dying — no real breakout
+        regimeStrength = Math.round(directionalPersistence * 0.4);
+      }
     } else if (volLevel === "normal" && persLevel === "weak") {
       marketRegime = "flat";
       regimeStrength = Math.round((100 - directionalPersistence) * 0.4);
     } else if (volLevel === "normal" && persLevel === "moderate") {
-      // Check directional bias for momentum vs transition
       if (dominantDir === "bearish" && bearishMomentum >= 4) {
-        marketRegime = "risk-off";
-        regimeStrength = Math.round(directionalPersistence * 0.6 + volatilityScore * 0.3);
+        // Only classify as risk-off if vol is NOT decelerating (prevents late entries)
+        marketRegime = accelLevel === "decelerating" ? "flat" : "risk-off";
+        regimeStrength = Math.round(directionalPersistence * 0.5 + volatilityScore * 0.2 + volAcceleration * 0.2);
       } else if (dominantDir === "bullish" && bullishMomentum >= 4) {
-        marketRegime = "momentum";
-        regimeStrength = Math.round(directionalPersistence * 0.6 + volatilityScore * 0.3);
+        // Only classify as momentum if vol is NOT decelerating
+        marketRegime = accelLevel === "decelerating" ? "flat" : "momentum";
+        regimeStrength = Math.round(directionalPersistence * 0.5 + volatilityScore * 0.2 + volAcceleration * 0.2);
       } else {
         marketRegime = "transition";
         regimeStrength = 40;
       }
     } else if (volLevel === "normal" && persLevel === "strong") {
       if (dominantDir === "bearish") {
-        marketRegime = bearishMomentum >= 5 ? "breakdown" : "risk-off";
+        // Acceleration confirms real breakdown vs fading sell-off
+        if (accelLevel === "decelerating") {
+          marketRegime = "exhaustion"; // sellers losing steam despite strong persistence
+        } else {
+          marketRegime = bearishMomentum >= 5 ? "breakdown" : "risk-off";
+        }
       } else {
-        marketRegime = bullishMomentum >= 5 ? "expansion" : "momentum";
+        if (accelLevel === "decelerating") {
+          marketRegime = "exhaustion"; // buyers losing steam
+        } else {
+          marketRegime = bullishMomentum >= 5 ? "expansion" : "momentum";
+        }
       }
-      regimeStrength = Math.round(directionalPersistence * 0.5 + volatilityScore * 0.3);
+      regimeStrength = Math.round(directionalPersistence * 0.4 + volatilityScore * 0.2 + volAcceleration * 0.3);
     } else if (volLevel === "high" && persLevel === "weak") {
-      // High vol, no direction = exhaustion/chop
-      if (rsiVal > 70 || rsiVal < 30) {
+      // High vol + no direction: if decelerating → exhaustion confirmed; if accelerating → ignition
+      if (accelLevel === "decelerating") {
         marketRegime = "exhaustion";
-        regimeStrength = Math.round(volatilityScore * 0.6);
+        regimeStrength = Math.round(volatilityScore * 0.5 + (100 - volAcceleration) * 0.3);
       } else {
-        marketRegime = "ignition"; // vol spike without direction yet
-        regimeStrength = Math.round(volatilityScore * 0.5);
+        marketRegime = "ignition";
+        regimeStrength = Math.round(volatilityScore * 0.4 + volAcceleration * 0.3);
       }
     } else if (volLevel === "high" && persLevel === "moderate") {
-      if (dominantDir === "bearish") {
-        marketRegime = "risk-off";
+      if (accelLevel === "decelerating") {
+        // High vol decelerating with moderate direction = exhaustion trap
+        marketRegime = "exhaustion";
+        regimeStrength = Math.round(volatilityScore * 0.4 + (100 - volAcceleration) * 0.3);
       } else {
-        marketRegime = "expansion";
+        marketRegime = dominantDir === "bearish" ? "risk-off" : "expansion";
+        regimeStrength = Math.round(volatilityScore * 0.3 + directionalPersistence * 0.3 + volAcceleration * 0.3);
       }
-      regimeStrength = Math.round(volatilityScore * 0.4 + directionalPersistence * 0.4);
     } else {
-      // high vol + strong persistence = full trend
-      if (dominantDir === "bearish") {
-        marketRegime = bearishMomentum >= 5 ? "breakdown" : "risk-off";
+      // high vol + strong persistence
+      if (accelLevel === "decelerating") {
+        // Late entry trap: trend is strong but vol fading → exhaustion
+        marketRegime = "exhaustion";
+        regimeStrength = Math.round(volatilityScore * 0.3 + directionalPersistence * 0.3);
       } else {
-        marketRegime = "expansion";
+        if (dominantDir === "bearish") {
+          marketRegime = bearishMomentum >= 5 ? "breakdown" : "risk-off";
+        } else {
+          marketRegime = "expansion";
+        }
+        regimeStrength = Math.min(100, Math.round(volatilityScore * 0.3 + directionalPersistence * 0.3 + volAcceleration * 0.3));
       }
-      regimeStrength = Math.min(100, Math.round(volatilityScore * 0.4 + directionalPersistence * 0.5));
     }
 
     // ═══ REGIME STABILITY: Check if regime has held for last N bars ═══
@@ -627,7 +703,7 @@ Deno.serve(async (req) => {
     const regimeConfirmed = holdBars >= 3; // exact match held 3+ bars
     const regimeFamilyConfirmed = familyHoldBars >= 3; // family held 3+ bars
 
-    console.log(`[REGIME-COMPOSITE] ${instrument}/${timeframe}: volScore=${volatilityScore} (atrRatio=${atrRatio.toFixed(2)}, bbPctl=${bbPercentile}, atrPctl=${atrPercentile}) | persScore=${directionalPersistence} (eff=${efficiencyScore}, adx=${adxNormalized}, struct=${structureScore}) → ${marketRegime} (${regimeStrength}) | hold=${holdBars}/${STABILITY_LOOKBACK} familyHold=${familyHoldBars} confirmed=${regimeConfirmed} recentRegimes=[${recentRegimes.join(',')}]`);
+    console.log(`[REGIME-COMPOSITE] ${instrument}/${timeframe}: volScore=${volatilityScore} | accel=${volAcceleration}(${accelLevel}) [atr=${atrAccelScore},bb=${bbAccelScore},range=${rangeAccelScore}] | persScore=${directionalPersistence} (eff=${efficiencyScore}, adx=${adxNormalized}, struct=${structureScore}) → ${marketRegime} (${regimeStrength}) | hold=${holdBars}/${STABILITY_LOOKBACK} familyHold=${familyHoldBars} confirmed=${regimeConfirmed} recentRegimes=[${recentRegimes.join(',')}]`);
 
     const lastCandle = candles[candles.length - 1];
 
@@ -647,11 +723,16 @@ Deno.serve(async (req) => {
         bearishCount: bearish,
         neutralCount: signals.length - bullish - bearish,
       },
-      // ═══ COMPOSITE REGIME: Volatility Score + Directional Persistence + Stability ═══
+      // ═══ COMPOSITE REGIME: Volatility Score + Acceleration + Directional Persistence + Stability ═══
       regime: {
         label: marketRegime,
         strength: regimeStrength,
         volatilityScore,
+        volAcceleration,
+        accelLevel,
+        atrAccelRatio: Math.round(atrAccelRatio * 1000) / 1000,
+        bbAccelRatio: Math.round(bbAccelRatio * 1000) / 1000,
+        rangeAccelRatio: Math.round(rangeAccelRatio * 1000) / 1000,
         directionalPersistence,
         atrRatio: Math.round(atrRatio * 100) / 100,
         bbPercentile,
