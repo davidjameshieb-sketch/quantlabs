@@ -92,6 +92,7 @@ const ForexDashboard = () => {
     fetchAccountSummary('live');
   }, [fetchAccountSummary]);
 
+  // --- Legacy simulated trades kept ONLY for Archive tab ---
   const agents = useMemo(() => createAgents(), []);
   const allTrades = useMemo(() => generateForexTrades(agents), [agents, livePricesReady]);
   const filteredTrades = useMemo(() => filterForexTrades(allTrades, filters), [allTrades, filters]);
@@ -99,7 +100,7 @@ const ForexDashboard = () => {
   const governanceStats = useMemo(() => getLastGovernanceStats(), [allTrades]);
 
   const governanceDashboard = useMemo(() => {
-    // Prefer real OANDA orders for governance dashboard if available
+    // Use real OANDA orders — no simulated fallback for live tabs
     const realOrders = executionMetrics?.recentOrders ?? [];
     if (realOrders.length > 0) {
       const orderRecords = realOrders
@@ -116,21 +117,14 @@ const ForexDashboard = () => {
         }));
       return computeGovernanceDashboard(orderRecords);
     }
-    // Fallback to simulated trades
-    const orderRecords = filteredTrades
-      .filter(t => t.outcome !== 'avoided')
-      .map(t => ({
-        currency_pair: t.currencyPair.replace('/', '_'),
-        direction: t.direction,
-        status: t.outcome === 'win' || t.outcome === 'loss' ? 'closed' : 'filled',
-        entry_price: t.entryPrice,
-        exit_price: t.exitPrice ?? null,
-        execution_quality_score: Math.round(t.captureRatio * 100),
-        slippage_pips: t.frictionCost * 10000,
-        session_label: null,
-      }));
-    return computeGovernanceDashboard(orderRecords);
-  }, [filteredTrades, executionMetrics]);
+    // No real data yet — return empty governance dashboard
+    return computeGovernanceDashboard([]);
+  }, [executionMetrics]);
+
+  // Real order counts for cheat sheets
+  const realFilled = executionMetrics ? (executionMetrics.winCount + executionMetrics.lossCount) : 0;
+  const realRejected = executionMetrics?.totalRejected ?? 0;
+  const realTotal = realFilled + realRejected;
 
   return (
     <LongOnlyFilterProvider value={{ longOnlyFilter }}>
@@ -248,7 +242,6 @@ const ForexDashboard = () => {
                   const friction = executionMetrics?.avgFrictionScore ?? 0;
                   const pairCount = Object.keys(executionMetrics?.pairBreakdown ?? {}).length;
                   const maturity = total >= 500 ? 'Mature' : total >= 200 ? 'Converging' : total >= 75 ? 'Growing' : total >= 20 ? 'Early' : 'Bootstrap';
-                  // Derive best/worst pair from pairBreakdown by win rate, with trade count tiebreaker
                   const pairEntries = Object.values(executionMetrics?.pairBreakdown ?? {}).filter(p => p.filled >= 5);
                   const pairWR = (p: typeof pairEntries[0]) => p.winCount / Math.max(p.filled, 1);
                   const bestPair = pairEntries.length > 0 ? pairEntries.reduce((a, b) => {
@@ -343,22 +336,15 @@ const ForexDashboard = () => {
                   ]} />
                 </PanelCheatSheet>
 
-                {/* Counterfactual */}
+                {/* Counterfactual — now server-side tracked */}
                 <PanelCheatSheet title="Counterfactual Tracker" lines={(() => {
-                  const avoided = allTrades.filter(t => t.outcome === 'avoided');
-                  const totalBlocked = avoided.length;
-                  const wouldHaveWon = avoided.filter(t => (t as any).counterfactualResult === 'would_have_won').length;
-                  const wouldHaveLost = avoided.filter(t => (t as any).counterfactualResult === 'would_have_lost').length;
-                  const pending = totalBlocked - wouldHaveWon - wouldHaveLost;
-                  const overFilterRate = totalBlocked > 0 ? ((wouldHaveWon / totalBlocked) * 100) : 0;
+                  const rejected = executionMetrics?.totalRejected ?? 0;
                   return [
-                    { label: 'Total Blocked Trades', value: `${totalBlocked}`, status: totalBlocked > 10 ? 'warn' as const : 'neutral' as const },
-                    { label: 'Would Have Won', value: `${wouldHaveWon}`, status: wouldHaveWon > 0 ? 'warn' as const : 'good' as const },
-                    { label: 'Would Have Lost', value: `${wouldHaveLost}`, status: wouldHaveLost > 0 ? 'good' as const : 'neutral' as const },
-                    { label: 'Pending Resolution', value: `${pending}`, status: pending > 5 ? 'warn' as const : 'neutral' as const },
-                    { label: 'Over-Filter Rate', value: `${overFilterRate.toFixed(1)}%`, status: overFilterRate > 30 ? 'bad' as const : overFilterRate > 15 ? 'warn' as const : 'good' as const },
+                    { label: 'Total Blocked (OANDA)', value: `${rejected}`, status: rejected > 10 ? 'warn' as const : 'neutral' as const },
+                    { label: 'Resolution Engine', value: 'Server-side (edge function)', status: 'good' as const },
                     { label: 'Resolution Window', value: '15min after rejection', status: 'neutral' as const },
                     { label: 'Cron Schedule', value: 'Every 5 minutes', status: 'good' as const },
+                    { label: 'Data Source', value: 'Real OANDA orders', status: 'good' as const },
                   ];
                 })()}>
                   <CounterfactualPanel />
@@ -438,7 +424,7 @@ const ForexDashboard = () => {
                     ]} />
                   </PanelCheatSheet>
 
-                  {/* Performance Overview */}
+                  {/* Performance Overview — real data only */}
                   <PanelCheatSheet title="Performance Overview" lines={(() => {
                     const wr = executionMetrics?.winRate ?? 0;
                     const wc = executionMetrics?.winCount ?? 0;
@@ -447,6 +433,7 @@ const ForexDashboard = () => {
                     const pnl = executionMetrics?.realizedPnl ?? 0;
                     const govState = governanceDashboard.currentState;
                     return [
+                      { label: 'Data Source', value: 'LIVE OANDA', status: executionMetrics?.hasData ? 'good' as const : 'warn' as const },
                       { label: 'Win Rate', value: `${(wr * 100).toFixed(1)}%`, status: wr >= 0.55 ? 'good' as const : wr >= 0.45 ? 'warn' as const : 'bad' as const },
                       { label: 'Record', value: `${wc}W / ${lc}L`, status: wc > lc ? 'good' as const : 'bad' as const },
                       { label: 'Win/Loss Ratio', value: pf > 0 ? pf.toFixed(2) : '—', status: pf > 1.5 ? 'good' as const : pf > 1 ? 'warn' as const : 'bad' as const },
@@ -456,9 +443,6 @@ const ForexDashboard = () => {
                     ];
                   })()}>
                      <ForexPerformanceOverview
-                      metrics={performance}
-                      governanceStats={governanceStats}
-                      trades={filteredTrades}
                       realMetrics={executionMetrics}
                       tradeAnalytics={tradeAnalytics}
                     />
@@ -552,22 +536,18 @@ const ForexDashboard = () => {
                   {/* Indicator Performance Analytics */}
                   <IndicatorPerformancePanel />
 
-                  {/* Trade History Table */}
+                  {/* Trade History Table — real OANDA orders */}
                   <PanelCheatSheet title="Trade History" lines={(() => {
-                    const total = filteredTrades.length;
-                    const executed = filteredTrades.filter(t => t.outcome !== 'avoided').length;
-                    const blocked = filteredTrades.filter(t => t.outcome === 'avoided').length;
-                    const wins = filteredTrades.filter(t => t.outcome === 'win').length;
-                    const losses = filteredTrades.filter(t => t.outcome === 'loss').length;
+                    const total = realFilled + realRejected;
                     return [
-                      { label: 'Total Records', value: `${total}`, status: 'neutral' as const },
-                      { label: 'Executed', value: `${executed}`, status: executed > 0 ? 'good' as const : 'neutral' as const },
-                      { label: 'Blocked by Governance', value: `${blocked}`, status: blocked > executed ? 'warn' as const : 'neutral' as const },
-                      { label: 'Record', value: `${wins}W / ${losses}L`, status: wins > losses ? 'good' as const : 'bad' as const },
-                      { label: 'Active Filters', value: filters.period, status: 'neutral' as const },
+                      { label: 'Data Source', value: 'LIVE OANDA', status: 'good' as const },
+                      { label: 'Total Records', value: `${total}`, status: total > 0 ? 'good' as const : 'neutral' as const },
+                      { label: 'Filled/Closed', value: `${realFilled}`, status: realFilled > 0 ? 'good' as const : 'warn' as const },
+                      { label: 'Rejected', value: `${realRejected}`, status: realRejected > realFilled ? 'warn' as const : 'neutral' as const },
+                      { label: 'Record', value: `${executionMetrics?.winCount ?? 0}W / ${executionMetrics?.lossCount ?? 0}L`, status: (executionMetrics?.winCount ?? 0) > (executionMetrics?.lossCount ?? 0) ? 'good' as const : 'bad' as const },
                     ];
                   })()}>
-                    <ForexTradeHistoryTable trades={filteredTrades} />
+                    <ForexTradeHistoryTable trades={[]} />
                   </PanelCheatSheet>
                 </div>
               </LazyTabContent>
@@ -613,11 +593,12 @@ const ForexDashboard = () => {
                     ]} />
                   </PanelCheatSheet>
                   <PanelCheatSheet title="Governance Health" lines={(() => {
-                    const executed = filteredTrades.filter(t => t.outcome !== 'avoided').length;
-                    const total = filteredTrades.length;
-                    const blocked = total - executed;
+                    const executed = realFilled;
+                    const blocked = realRejected;
+                    const total = realTotal;
                     const blockRate = total > 0 ? (blocked / total * 100) : 0;
                     return [
+                      { label: 'Data Source', value: 'LIVE OANDA', status: 'good' as const },
                       { label: 'Total Evaluations', value: `${total}`, status: total > 50 ? 'good' as const : 'neutral' as const },
                       { label: 'Executed', value: `${executed}`, status: executed > 0 ? 'good' as const : 'warn' as const },
                       { label: 'Blocked', value: `${blocked}`, status: blocked > executed ? 'warn' as const : 'good' as const },
@@ -625,17 +606,17 @@ const ForexDashboard = () => {
                       { label: 'Health Monitor', value: 'ACTIVE', status: 'good' as const },
                     ];
                   })()}>
-                    <GovernanceHealthDashboard trades={filteredTrades} />
+                    <GovernanceHealthDashboard />
                     <StatusMeterRow meters={[
-                      { label: 'Pass Rate', value: (() => { const exec = filteredTrades.filter(t => t.outcome !== 'avoided').length; const tot = filteredTrades.length; return tot > 0 ? (exec / tot) * 100 : 0; })() },
-                      { label: 'Block Rate', value: (() => { const exec = filteredTrades.filter(t => t.outcome !== 'avoided').length; const tot = filteredTrades.length; return tot > 0 ? ((tot - exec) / tot) * 100 : 0; })() },
+                      { label: 'Pass Rate', value: realTotal > 0 ? (realFilled / realTotal) * 100 : 0 },
+                      { label: 'Block Rate', value: realTotal > 0 ? (realRejected / realTotal) * 100 : 0 },
                     ]} />
                   </PanelCheatSheet>
                 </div>
               </LazyTabContent>
             </TabsContent>
 
-            {/* ─── TAB 4: Archive ─── */}
+            {/* ─── TAB 4: Archive (legacy simulated data — explicitly labeled) ─── */}
             <TabsContent value="archive" className="space-y-4">
               <LazyTabContent label="Archive">
                 <ForexArchiveDashboards

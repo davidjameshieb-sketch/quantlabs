@@ -8,7 +8,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/integrations/supabase/client';
 import { resolveAgentStatesFromStats, type AgentEffectiveState, type EffectiveTier } from '@/lib/agents/agentStateResolver';
 import { EffectiveTierBadge } from '@/components/forex/AgentStateBadges';
-import { TrendingUp, TrendingDown, ArrowUp, ArrowDown, Clock, Layers, Users } from 'lucide-react';
+import { TrendingUp, TrendingDown, ArrowUp, ArrowDown, Clock, Layers, Users, Zap } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 const dot: Record<HealthColor, string> = {
@@ -30,9 +30,9 @@ const text: Record<HealthColor, string> = {
 };
 
 const BADGE_RULES: Record<HealthColor, string> = {
-  green: 'PF≥1.5 · Exp>0.3 · ShortWR>45%',
-  yellow: 'PF 1.0–1.5 or developing',
-  red: 'PF<1.0 or Exp≤0 or ShortWR<35%',
+  green: 'PF≥1.5 · Exp>0.3 · Post-revamp data only',
+  yellow: 'PF 1.0–1.5 or developing · Post-revamp data only',
+  red: 'PF<1.0 or Exp≤0 · Post-revamp data only',
 };
 
 // ─── Agent Tier Summary Hook ─────────────────────────────────────
@@ -167,6 +167,14 @@ export const EdgeHealthSidebar = () => {
           {longOnlyFilter ? 'Long-Only Mode Active' : BADGE_RULES[effectiveStats.status]}
         </p>
       </div>
+
+      {/* Strategy Revamp indicator */}
+      {effectiveStats.dataEra === 'post-revamp' && (
+        <div className="flex items-center gap-1.5 text-[9px] px-2 py-1 rounded bg-primary/10 border border-primary/20">
+          <Zap className="w-3 h-3 text-primary" />
+          <span className="text-primary font-medium">Strategy Revamp · Post-revamp data only</span>
+        </div>
+      )}
 
       {/* 4-Layer stack indicator */}
       <div className="flex items-center gap-1.5 text-[9px] text-muted-foreground/70">
