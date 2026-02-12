@@ -579,7 +579,7 @@ const ForexDashboard = () => {
                 <div className="space-y-4">
                   <PanelCheatSheet title="Long-Only Settings" lines={[
                     { label: 'Mode', value: longOnlyFilter ? 'LONG ONLY' : 'DUAL (Long + Short)', status: longOnlyFilter ? 'warn' as const : 'good' as const },
-                    { label: 'Short Eligible Pairs', value: 'EUR/GBP, USD/CAD, AUD/USD', status: 'neutral' as const },
+                    { label: 'Short Eligible Pairs', value: 'ALL pairs (strategy revamp)', status: 'good' as const },
                     { label: 'Configuration', value: 'User-controlled override', status: 'neutral' as const },
                   ]}>
                     <LongOnlySettingsPanel />

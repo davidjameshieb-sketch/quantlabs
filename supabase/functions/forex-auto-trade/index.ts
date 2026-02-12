@@ -2082,15 +2082,16 @@ Deno.serve(async (req) => {
           spreadPips > SPREAD_BLOCK_THRESHOLD ||
           (effectiveRegime === "ignition" && approxComposite < IGNITION_MIN_COMPOSITE);
 
+        // FIX: Use indicator-derived effectiveRegime (not time-based) for edge boost decisions
         const isEdge =
-          (session === "ny-overlap" && regime === "expansion") ||
-          (session === "asian" && sym === "USD_CAD" && regime === "expansion") ||
-          (session === "asian" && sym === "USD_CAD" && regime === "compression") ||
+          (session === "ny-overlap" && effectiveRegime === "expansion") ||
+          (session === "asian" && sym === "USD_CAD" && effectiveRegime === "expansion") ||
+          (session === "asian" && sym === "USD_CAD" && effectiveRegime === "compression") ||
           (session === "london-open" && sym === "USD_CAD") ||
-          (session === "late-ny" && sym === "USD_CAD" && regime !== "ignition") ||
-          (session === "london-open" && sym === "AUD_USD" && regime === "expansion") ||
+          (session === "late-ny" && sym === "USD_CAD" && effectiveRegime !== "ignition") ||
+          (session === "london-open" && sym === "AUD_USD" && effectiveRegime === "expansion") ||
           (sym === "EUR_GBP") ||
-          (sym === "USD_JPY" && regime === "compression");
+          (sym === "USD_JPY" && effectiveRegime === "compression");
 
         if (isDestructive) {
           // GRACEFUL DEGRADATION: reduce allocation to 20% instead of blocking
@@ -2253,7 +2254,7 @@ Deno.serve(async (req) => {
         edgeLockReasons.push(`MTF FAIL: 1m=${mtf_1m_ignition} 5m=${mtf_5m_momentum} 15m=${mtf_15m_bias}`);
       }
       if (!regimeAuthorized && !forceMode) {
-        edgeLockReasons.push(`Regime FAIL: '${regime}' not authorized`);
+        edgeLockReasons.push(`Regime FAIL: '${effectiveRegimeForAuth}' not authorized for ${direction}`);
       }
       if (!gate.pass && !forceMode) {
         edgeLockReasons.push(`Safety FAIL: ${gate.reasons.join(', ')}`);
@@ -2392,7 +2393,14 @@ Deno.serve(async (req) => {
 
         const requestedPrice = filledPrice;
         const spreadAtEntry = halfSpread != null ? halfSpread * 2 : (PAIR_BASE_SPREADS[pair] || 1.0) * 0.0001;
-        const slippagePips = wasCancelled ? null : Math.random() * 0.3;
+        // REAL SLIPPAGE: computed from actual fill price vs requested price (not random)
+        let slippagePips: number | null = null;
+        if (!wasCancelled && filledPrice && requestedPrice) {
+          const pipDiv = pair.includes("JPY") ? 0.01 : 0.0001;
+          slippagePips = Math.abs(filledPrice - requestedPrice) / pipDiv;
+        } else if (!wasCancelled) {
+          slippagePips = 0; // No price data available — assume zero slippage
+        }
 
         const baseSpread = PAIR_BASE_SPREADS[pair] || 1.0;
         const execQuality = wasCancelled ? 0 : scoreExecution(
