@@ -1,74 +1,67 @@
 
+# Update Forex Command Center to Use Only Real Trade Data
 
-# Landing Page Restructure: Fleet-First Layout
+## Problem
+The Forex Command Center, Performance tab, Governance tab, and Edge Health sidebar still reference **simulated/generated trade data** from `generateForexTrades()`. This legacy data pipeline produces fabricated trades that contaminate dashboards with outdated, inaccurate metrics. Since the trading system was revamped to use indicator-confirmed, directional-regime-gated entries, all UI components must reflect only real OANDA execution data.
 
 ## What Changes
 
-The landing page will be reorganized so visitors immediately see the **AI Trading Fleet** grid the moment they arrive -- no scrolling required. The current full-screen hero section will be condensed into a compact intro header that sits just below the navbar, followed immediately by the fleet grid and a prominent "Explore Free Dashboard" call-to-action underneath.
+### 1. Remove Simulated Trade Generation from ForexDashboard
+**File:** `src/pages/ForexDashboard.tsx`
 
-## New Visual Flow
+- Remove `generateForexTrades`, `filterForexTrades`, `computeForexPerformance`, `getLastGovernanceStats` imports and usage
+- Remove `createAgents` import and `agents` / `allTrades` / `filteredTrades` / `performance` / `governanceStats` memos
+- All panels that currently receive `filteredTrades` or `allTrades` will instead use real OANDA data from `executionMetrics` and `tradeAnalytics`
 
-```text
-+--------------------------------------------------+
-|  Navbar (fixed, 64px)                            |
-+--------------------------------------------------+
-|  Compact Hero Header                             |
-|  - "AI-Powered Quantitative Trading Intelligence"|
-|  - One-line subtitle                             |
-|  - Trust badges (inline)                         |
-+--------------------------------------------------+
-|  AI Fleet Showcase Grid (10 agent cards)         |
-|  - Immediately visible, no scroll needed         |
-+--------------------------------------------------+
-|  "Explore Free Dashboard" CTA Banner             |
-|  - Large, highlighted button                     |
-|  - "Preview Edge Access" secondary button        |
-|  - Trust micro-copy below                        |
-+--------------------------------------------------+
-|  Demonstration Section                           |
-|  Trust Flow Section                              |
-|  ... (rest of page unchanged)                    |
-+--------------------------------------------------+
-```
+### 2. Update Command Center Tab (Tab 1)
+- **Counterfactual Panel cheat sheet**: Replace simulated `allTrades.filter(avoided)` stats with a note that counterfactual tracking is now handled server-side via the `forex-counterfactual-resolver` edge function. Show real counts from `executionMetrics` if available, or display "Server-side tracking active"
+- **Trade Quality Watchdog cheat sheet**: Already uses `realMetrics` -- no change needed
+
+### 3. Update Performance Tab (Tab 2)
+- **ForexPerformanceOverview**: Remove `trades={filteredTrades}` and `metrics={performance}` props. The component already has `realMetrics` and `tradeAnalytics` -- make it show "Waiting for real data" instead of falling back to simulated data
+- **ForexTradeHistoryTable**: Remove `trades={filteredTrades}` -- replace with a real OANDA order history table that reads from `executionMetrics.recentOrders`
+- **Trade History cheat sheet**: Stats derived from `filteredTrades` replaced with `executionMetrics` counts
+
+### 4. Update Governance Tab (Tab 3)
+- **GovernanceHealthDashboard**: Remove `trades={filteredTrades}` prop. The governance health monitor uses in-memory governance analytics (pass rates, gate frequency) which are independent of trade data. For the `ExecutionPerformancePanel`, pass real orders from `executionMetrics`
+- **Governance Health cheat sheet**: Replace `filteredTrades` stats with real order counts from `executionMetrics`
+- **Governance pass/block rate meters**: Derive from real orders instead of simulated trades
+
+### 5. Update Edge Health Sidebar
+**File:** `src/components/dashboard/EdgeHealthSidebar.tsx`
+
+- The sidebar reads from the `edge_health_summary` snapshot. Add a "Strategy Revamp" indicator showing that data reflects only post-revamp trades
+- Update the `BADGE_RULES` tooltip to note "Post-revamp data only"
+
+### 6. Update Edge Health Stats Hook
+**File:** `src/hooks/useEdgeHealthStats.ts`
+
+- The snapshot scope key `all:30` already limits to 30-day window which should contain mostly post-revamp data
+- Add a `dataEra` field to indicate "post-revamp" status
+
+### 7. Clean Up ForexPerformanceOverview Simulated Fallback
+**File:** `src/components/forex/ForexPerformanceOverview.tsx`
+
+- Remove the simulated fallback paths in `headlineMetrics` and `scalpForensics`
+- When no real data is available, show a clear "Awaiting real trade data" message instead of fake numbers
+
+### 8. Update GovernanceHealthDashboard
+**File:** `src/components/forex/GovernanceHealthDashboard.tsx`
+
+- Make the `trades` prop optional and default to empty
+- When no real trades provided, show governance analytics (pass rates, gate frequency, alerts) without the execution performance section
 
 ## Technical Details
 
-### 1. Restructure `HeroSection.tsx`
-
-Transform from a full-screen (`min-h-screen`) centered hero into a compact header:
-- Remove `min-h-screen` and vertical centering
-- Add top padding to account for the fixed navbar (pt-24)
-- Keep the headline, subtitle, and trust badges but reduce spacing significantly
-- Remove the CTA buttons from the hero (they move below the fleet)
-- Reduce heading sizes slightly for a tighter layout (e.g., `text-3xl md:text-5xl` instead of `text-4xl md:text-6xl lg:text-7xl`)
-- Keep the EdgePreviewModal state and rendering
-
-### 2. Update `AIFleetShowcase.tsx`
-
-- Reduce top padding from `py-24` to `py-8` so the grid appears immediately below the compact hero
-- Keep all existing card content, sparklines, and animations unchanged
-- Add a prominent CTA block at the bottom of the section with:
-  - "Explore Free Dashboard" primary button (large, glowing)
-  - "Preview Edge Access" secondary outline button
-  - Trust micro-copy underneath
-- The EdgePreviewModal trigger will need to be handled -- either pass the `setPreviewOpen` callback as a prop or manage modal state within the showcase component
-
-### 3. Update `Index.tsx`
-
-- Section order stays the same: `HeroSection` then `AIFleetShowcase`
-- No reordering needed since the hero is now compact and the fleet is immediately visible
-
-### 4. CTA Relocation Strategy
-
-Since the "Explore Free Dashboard" and "Preview Edge Access" buttons are moving from the hero into the bottom of the fleet showcase:
-- The `EdgePreviewModal` state and component will move into `AIFleetShowcase.tsx`
-- The hero section becomes a pure heading/intro without interactive buttons
-- The fleet section gains a visually prominent CTA block after the card grid
-
 ### Files Modified
+1. `src/pages/ForexDashboard.tsx` -- Remove simulated trade pipeline, wire all panels to real data
+2. `src/components/forex/ForexPerformanceOverview.tsx` -- Remove simulated fallbacks, show "awaiting data" state
+3. `src/components/forex/GovernanceHealthDashboard.tsx` -- Decouple from simulated trade dependency
+4. `src/components/dashboard/EdgeHealthSidebar.tsx` -- Add post-revamp data indicator
+5. `src/hooks/useEdgeHealthStats.ts` -- Add data era metadata
 
-| File | Change |
-|------|--------|
-| `src/components/landing/HeroSection.tsx` | Compact layout: remove `min-h-screen`, tighten spacing, remove CTA buttons |
-| `src/components/landing/AIFleetShowcase.tsx` | Reduce top padding, add CTA buttons + EdgePreviewModal below the grid |
-
+### What Stays
+- `generateForexTrades` and `forexEngine.ts` remain in the codebase for the Archive tab and ForexOanda page (legacy reference)
+- The Archive tab continues to show historical/simulated data explicitly labeled as "Archive"
+- All real-time panels (Command Center, Performance, Governance) use only OANDA execution data
+- The `governanceDashboard` computation already prefers real OANDA orders -- this stays and the simulated fallback is removed
