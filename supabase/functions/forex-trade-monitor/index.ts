@@ -623,12 +623,22 @@ Deno.serve(async (req) => {
               ? parseFloat(tradeDetails.trade.averageClosePrice) 
               : null;
             
+            // ═══ FIX: Compute realized pips from actual prices ═══
+            let realizedPips: number | null = null;
+            if (exitPrice != null && order.entry_price != null) {
+              const pipDiv = JPY_PAIRS.includes(order.currency_pair) ? 0.01 : 0.0001;
+              realizedPips = order.direction === "long"
+                ? Math.round(((exitPrice - order.entry_price) / pipDiv) * 10) / 10
+                : Math.round(((order.entry_price - exitPrice) / pipDiv) * 10) / 10;
+            }
+            
             await supabase
               .from("oanda_orders")
               .update({
                 status: "closed",
                 exit_price: exitPrice,
                 closed_at: tradeDetails.trade.closeTime || new Date().toISOString(),
+                r_pips: realizedPips,
               })
               .eq("id", order.id);
 
@@ -834,12 +844,19 @@ Deno.serve(async (req) => {
           exitTradeAgeMin: parseFloat(decision.tradeAgeMinutes.toFixed(1)),
         };
 
+        // ═══ FIX: Compute realized pips from actual fill prices ═══
+        const realizedPipDiv = JPY_PAIRS.includes(order.currency_pair) ? 0.01 : 0.0001;
+        const realizedPips = order.direction === "long"
+          ? Math.round(((exitPrice - entryPrice) / realizedPipDiv) * 10) / 10
+          : Math.round(((entryPrice - exitPrice) / realizedPipDiv) * 10) / 10;
+
         await supabase
           .from("oanda_orders")
           .update({
             status: "closed",
             exit_price: exitPrice,
             closed_at: new Date().toISOString(),
+            r_pips: realizedPips,
             governance_payload: updatedPayload,
             trade_health_score: healthResult.tradeHealthScore,
             health_band: healthResult.healthBand,
