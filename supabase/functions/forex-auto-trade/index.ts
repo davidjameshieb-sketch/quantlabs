@@ -2046,7 +2046,7 @@ Deno.serve(async (req) => {
               indicatorConsensusScore = indicatorData.consensus.score || 0;
               indicatorDirection = indicatorData.consensus.direction || "neutral";
 
-              // ═══ PARSE INDICATOR-DERIVED REGIME ═══
+               // ═══ PARSE INDICATOR-DERIVED REGIME ═══
               if (indicatorData?.regime) {
                 indicatorRegime = indicatorData.regime.label || "unknown";
                 indicatorRegimeStrength = indicatorData.regime.strength || 0;
@@ -2054,7 +2054,30 @@ Deno.serve(async (req) => {
                 indicatorLongFriendly = indicatorData.regime.longFriendly === true;
                 indicatorBearishMomentum = indicatorData.regime.bearishMomentum || 0;
                 indicatorBullishMomentum = indicatorData.regime.bullishMomentum || 0;
-                console.log(`[REGIME-INDICATOR] ${pair}: regime=${indicatorRegime} strength=${indicatorRegimeStrength} longFriendly=${indicatorLongFriendly} shortFriendly=${indicatorShortFriendly} bullishMom=${indicatorBullishMomentum} bearishMom=${indicatorBearishMomentum}`);
+                // ═══ REGIME STABILITY: Anti-flicker fields ═══
+                const regimeHoldBars = indicatorData.regime.holdBars || 0;
+                const regimeFamilyHoldBars = indicatorData.regime.familyHoldBars || 0;
+                const regimeConfirmed = indicatorData.regime.regimeConfirmed === true;
+                const regimeFamilyConfirmed = indicatorData.regime.regimeFamilyConfirmed === true;
+                const recentRegimes = indicatorData.regime.recentRegimes || [];
+                console.log(`[REGIME-INDICATOR] ${pair}: regime=${indicatorRegime} strength=${indicatorRegimeStrength} longFriendly=${indicatorLongFriendly} shortFriendly=${indicatorShortFriendly} bullishMom=${indicatorBullishMomentum} bearishMom=${indicatorBearishMomentum} hold=${regimeHoldBars} familyHold=${regimeFamilyHoldBars} confirmed=${regimeConfirmed} recentRegimes=[${recentRegimes.join(',')}]`);
+
+                // ═══ ANTI-FLICKER GATE 1: Transition regimes CANNOT authorize trades ═══
+                if (indicatorRegime === "transition") {
+                  console.log(`[REGIME-FLICKER] ${pair}: Transition regime detected — BLOCKING trade authorization (transition cannot authorize)`);
+                  results.push({ pair, direction: "none", status: "transition-regime-blocked", govState, agentId,
+                    error: `regime=transition,recentRegimes=[${recentRegimes.join(',')}]` });
+                  continue;
+                }
+
+                // ═══ ANTI-FLICKER GATE 2: Expansion/momentum must hold 3+ bars ═══
+                const HOLD_REQUIRED_REGIMES = ["expansion", "momentum", "breakdown", "risk-off"];
+                if (HOLD_REQUIRED_REGIMES.includes(indicatorRegime) && !regimeFamilyConfirmed) {
+                  console.log(`[REGIME-FLICKER] ${pair}: ${indicatorRegime} detected but NOT confirmed (familyHold=${regimeFamilyHoldBars}<3, recent=[${recentRegimes.join(',')}]) — BLOCKING to prevent flicker entry`);
+                  results.push({ pair, direction: "none", status: "regime-not-confirmed", govState, agentId,
+                    error: `regime=${indicatorRegime},familyHold=${regimeFamilyHoldBars},recentRegimes=[${recentRegimes.join(',')}]` });
+                  continue;
+                }
               }
 
               // ═══ INDICATOR LEARNING: Regime-aware soft-weighted consensus ═══
@@ -2132,8 +2155,8 @@ Deno.serve(async (req) => {
                   if (!indicatorLongFriendly) {
                     // Check if learning has identified this regime as profitable for longs
                     const regimeLearned = longLearningProfile.bestRegimes.includes(indicatorRegime);
-                    if (indicatorRegime === "transition" && indicatorBullishMomentum >= 5) {
-                      console.log(`[LONG-REGIME] ${pair}: Transition regime overridden — strong bullish momentum (${indicatorBullishMomentum}/7)`);
+                    if (false) {
+                      // REMOVED: Transition regime can no longer override — blocked by anti-flicker gate
                     } else if (regimeLearned) {
                       console.log(`[LONG-LEARN] ${pair}: Regime ${indicatorRegime} overridden by learning — historically profitable for longs`);
                     } else {
@@ -2283,7 +2306,7 @@ Deno.serve(async (req) => {
       // ═══ EDGE PROOF: Build per-signal proof record ═══
       // FIX: Both ATR regime AND indicator regime must authorize the direction.
       // Prevents indicator regime ("momentum") from overriding ATR regime ("compression") to leak trades.
-      const LONG_AUTHORIZED_REGIMES = ["expansion", "momentum", "exhaustion", "ignition", "transition"];
+      const LONG_AUTHORIZED_REGIMES = ["expansion", "momentum", "exhaustion", "ignition"];
       const SHORT_AUTHORIZED_REGIMES = ["breakdown", "risk-off", "exhaustion", "shock-breakdown", "risk-off-impulse", "liquidity-vacuum", "breakdown-continuation"];
       const atrRegimeAuthorized = direction === "long"
         ? LONG_AUTHORIZED_REGIMES.includes(regime)
