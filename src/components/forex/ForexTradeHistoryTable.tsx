@@ -69,6 +69,25 @@ export const ForexTradeHistoryTable = ({ trades }: ForexTradeHistoryTableProps) 
   const [pageSize] = useState(20);
   const [page, setPage] = useState(0);
 
+  // When no trades (post-revamp), show awaiting message
+  if (trades.length === 0) {
+    return (
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-display font-bold">Forex Trade History</h3>
+          <span className="text-[9px] px-1.5 py-0.5 rounded bg-neural-green/20 text-neural-green font-medium">LIVE DATA</span>
+        </div>
+        <div className="p-6 rounded-xl bg-card/50 border border-border/50 text-center space-y-2">
+          <p className="text-sm font-medium text-muted-foreground">Real Trade History</p>
+          <p className="text-xs text-muted-foreground/70">
+            Detailed trade history is available in the OANDA Execution Log on the Command Center tab.
+            Simulated trade data has been removed from this view.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   const paged = trades.slice(page * pageSize, (page + 1) * pageSize);
   const totalPages = Math.ceil(trades.length / pageSize);
 

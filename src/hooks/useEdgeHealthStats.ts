@@ -38,6 +38,8 @@ export interface EdgeHealthStats {
   topPairs: PairStat[];
   worstPairs: PairStat[];
   lastUpdated: Date | null;
+  /** Indicates data era — 'post-revamp' means only indicator-confirmed trades */
+  dataEra: 'post-revamp' | 'legacy' | 'unknown';
 }
 
 const EMPTY: EdgeHealthStats = {
@@ -55,6 +57,7 @@ const EMPTY: EdgeHealthStats = {
   topPairs: [],
   worstPairs: [],
   lastUpdated: null,
+  dataEra: 'unknown',
 };
 
 export function useEdgeHealthStats(pollIntervalMs = 60_000): EdgeHealthStats {
@@ -84,5 +87,6 @@ export function useEdgeHealthStats(pollIntervalMs = 60_000): EdgeHealthStats {
     topPairs: [],
     worstPairs: [],
     lastUpdated: snapshot.asOf,
+    dataEra: 'post-revamp',
   };
 }
