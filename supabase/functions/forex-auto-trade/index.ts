@@ -1303,6 +1303,179 @@ function runFrictionGate(
   };
 }
 
+// ═══════════════════════════════════════════════════════════════
+// §CHOKE — CENTRALIZED PRE-TRADE ELIGIBILITY GATE
+// Single function ALL agents/executors MUST pass before order placement.
+// No agent can bypass this — it is the ONE choke point.
+// ═══════════════════════════════════════════════════════════════
+
+interface PreTradeEligibility {
+  allowed: boolean;
+  reason_code: string;
+  metadata: Record<string, unknown>;
+}
+
+function canPlaceLiveOrder(
+  tradeIntent: {
+    pair: string;
+    direction: "long" | "short";
+    agentId: string;
+    session: SessionWindow;
+    regime: string;
+    indicatorRegime: string;
+    hourUtc: number;
+    regimeFamilyHoldBars: number;
+    indicatorBullishMomentum: number;
+    indicatorBearishMomentum: number;
+  },
+  context: {
+    forceMode: boolean;
+    longLearningProfile: LongLearningProfile;
+    shortLearningProfile: ShortLearningProfile;
+    totalOrders: number;
+  }
+): PreTradeEligibility {
+  if (context.forceMode) {
+    return { allowed: true, reason_code: "FORCE_MODE", metadata: {} };
+  }
+
+  // ─── CHECK 1: TOXIC HOURS (13-14 UTC) ───
+  if (tradeIntent.hourUtc === 13 || tradeIntent.hourUtc === 14) {
+    console.log(`[GOV_BLOCK_TOXIC_HOUR] hour_utc=${tradeIntent.hourUtc} — NY lunch liquidity vacuum`);
+    return { allowed: false, reason_code: "GOV_BLOCK_TOXIC_HOUR", metadata: { hour_utc: tradeIntent.hourUtc, zone: "NY-lunch" } };
+  }
+
+  // ─── CHECK 2: SESSION HARD-BLOCKS (asian + late-ny) ───
+  if (tradeIntent.session === "asian") {
+    console.log(`[GOV_BLOCK_SESSION] session_label=${tradeIntent.session} — 15.8% WR, destructive`);
+    return { allowed: false, reason_code: "GOV_BLOCK_SESSION", metadata: { session_label: tradeIntent.session } };
+  }
+  if (tradeIntent.session === "late-ny") {
+    console.log(`[GOV_BLOCK_SESSION] session_label=${tradeIntent.session} — 12.5% WR, destructive`);
+    return { allowed: false, reason_code: "GOV_BLOCK_SESSION", metadata: { session_label: tradeIntent.session } };
+  }
+
+  // ─── CHECK 3: AGENT SUSPENSION ───
+  const SUSPENDED_AGENTS: Record<string, string> = {
+    "support-mtf-confirmer": "shadow",
+    "sentiment-reactor": "disabled",
+    "range-navigator": "disabled",
+  };
+  if (SUSPENDED_AGENTS[tradeIntent.agentId]) {
+    console.log(`[GOV_BLOCK_AGENT] agent_id=${tradeIntent.agentId} mode=${SUSPENDED_AGENTS[tradeIntent.agentId]} — suspended from live execution`);
+    return { allowed: false, reason_code: "GOV_BLOCK_AGENT", metadata: { agent_id: tradeIntent.agentId, mode: SUSPENDED_AGENTS[tradeIntent.agentId] } };
+  }
+
+  // ─── CHECK 4: REGIME-DIRECTION BLOCK (Longs in momentum/expansion) ───
+  const REGIME_LONG_BLOCKED = ["momentum", "expansion"];
+  if (tradeIntent.direction === "long" && REGIME_LONG_BLOCKED.includes(tradeIntent.indicatorRegime)) {
+    const regimeData = context.longLearningProfile.regimeStats[tradeIntent.indicatorRegime];
+    const regimeTotal = regimeData ? regimeData.wins + regimeData.losses : 0;
+    const regimeWR = regimeTotal > 0 ? regimeData!.wins / regimeTotal : 0;
+    // Block until N=200 trades in this regime AND WR > 30%
+    if (regimeTotal < 200 || regimeWR < 0.30) {
+      console.log(`[GOV_BLOCK_REGIME_LONG] regime_label=${tradeIntent.indicatorRegime} direction=long WR=${(regimeWR*100).toFixed(1)}% trades=${regimeTotal} — blocked until WR>30% over 200 trades`);
+      return { allowed: false, reason_code: "GOV_BLOCK_REGIME_LONG", metadata: { regime_label: tradeIntent.indicatorRegime, regimeWR, regimeTotal, threshold: 0.30, minTrades: 200 } };
+    }
+  }
+
+  // ─── CHECK 5: EXPANDED TOXIC HOURS (Asian dead zone + late-NY hours) ───
+  const EXTENDED_TOXIC_HOURS = [1, 2, 3, 4, 18, 19, 20, 21];
+  if (EXTENDED_TOXIC_HOURS.includes(tradeIntent.hourUtc)) {
+    const zone = tradeIntent.hourUtc <= 4 ? "Asian-dead-zone" : "late-NY";
+    console.log(`[GOV_BLOCK_TOXIC_HOUR] hour_utc=${tradeIntent.hourUtc} zone=${zone} — extended toxic block`);
+    return { allowed: false, reason_code: "GOV_BLOCK_TOXIC_HOUR", metadata: { hour_utc: tradeIntent.hourUtc, zone } };
+  }
+
+  // ─── CHECK 6: REGIME INTELLIGENCE — higher consensus for momentum/expansion ───
+  const HIGH_CONSENSUS_REGIMES = ["momentum", "expansion"];
+  if (HIGH_CONSENSUS_REGIMES.includes(tradeIntent.indicatorRegime)) {
+    const requiredMomentum = 6; // 6/7 vs normal 4/7
+    const momentum = tradeIntent.direction === "long" ? tradeIntent.indicatorBullishMomentum : tradeIntent.indicatorBearishMomentum;
+    if (momentum < requiredMomentum) {
+      console.log(`[GOV_BLOCK_REGIME_CONSENSUS] regime=${tradeIntent.indicatorRegime} ${tradeIntent.direction} momentum=${momentum} < required ${requiredMomentum}/7`);
+      return { allowed: false, reason_code: "GOV_BLOCK_REGIME_CONSENSUS", metadata: { regime: tradeIntent.indicatorRegime, momentum, required: requiredMomentum } };
+    }
+  }
+
+  // ─── CHECK 7: REGIME TRANSITION AGE — prioritize age 1-3, block stale ───
+  if (tradeIntent.regimeFamilyHoldBars > 15) {
+    console.log(`[GOV_WARN_STALE_REGIME] regime_transition_age=${tradeIntent.regimeFamilyHoldBars} — stale regime, reducing priority (allowed but logged)`);
+    // Not blocked, just logged — sizing handles this via regime multipliers
+  }
+
+  return { allowed: true, reason_code: "PASS", metadata: {} };
+}
+
+// ═══════════════════════════════════════════════════════════════
+// §KELLY — ROLLING KELLY-INFORMED POSITION SIZING
+// Computes half-Kelly fraction by regime+direction from last N trades.
+// ═══════════════════════════════════════════════════════════════
+
+interface KellyResult {
+  kellyFraction: number;
+  halfKelly: number;
+  sizingMultiplier: number;
+  expectancy: number;
+  winRate: number;
+  avgWin: number;
+  avgLoss: number;
+  sampleSize: number;
+  regime: string;
+  direction: string;
+}
+
+function computeRollingKelly(
+  orders: Array<Record<string, unknown>>,
+  regime: string,
+  direction: string,
+  windowSize: number = 200
+): KellyResult {
+  const filtered = orders.filter(o =>
+    o.direction === direction &&
+    (o.regime_label === regime || regime === "all") &&
+    (o.status === "closed") &&
+    o.entry_price != null && o.exit_price != null
+  ).slice(0, windowSize);
+
+  if (filtered.length < 10) {
+    return { kellyFraction: 0, halfKelly: 0, sizingMultiplier: 0.5, expectancy: 0, winRate: 0, avgWin: 0, avgLoss: 0, sampleSize: filtered.length, regime, direction };
+  }
+
+  let wins = 0, totalWinPips = 0, totalLossPips = 0;
+  for (const o of filtered) {
+    const pair = o.currency_pair as string;
+    const entry = o.entry_price as number;
+    const exit = o.exit_price as number;
+    const pipDiv = pair?.includes("JPY") ? 0.01 : 0.0001;
+    const pips = direction === "long" ? (exit - entry) / pipDiv : (entry - exit) / pipDiv;
+    if (pips > 0) { wins++; totalWinPips += pips; }
+    else { totalLossPips += Math.abs(pips); }
+  }
+
+  const winRate = wins / filtered.length;
+  const losses = filtered.length - wins;
+  const avgWin = wins > 0 ? totalWinPips / wins : 0;
+  const avgLoss = losses > 0 ? totalLossPips / losses : 1;
+  const payoffRatio = avgLoss > 0 ? avgWin / avgLoss : 0;
+
+  // Kelly: f* = (WR × payoff - (1-WR)) / payoff
+  const kellyFraction = payoffRatio > 0 ? (winRate * payoffRatio - (1 - winRate)) / payoffRatio : 0;
+  const halfKelly = Math.max(0, kellyFraction / 2);
+  const expectancy = (winRate * avgWin) - ((1 - winRate) * avgLoss);
+
+  // Map half-Kelly to sizing multiplier: 0→0.25x, 0.05→1.0x, 0.10→2.0x (capped)
+  let sizingMultiplier = 0.25; // Floor
+  if (halfKelly > 0) {
+    sizingMultiplier = Math.min(2.0, Math.max(0.25, halfKelly * 20));
+  }
+  // Max risk cap: 0.5% equity per trade enforced externally
+  // If expectancy negative, force minimum sizing
+  if (expectancy <= 0) sizingMultiplier = 0.25;
+
+  return { kellyFraction, halfKelly, sizingMultiplier, expectancy, winRate, avgWin, avgLoss, sampleSize: filtered.length, regime, direction };
+}
+
 // ─── Execution Quality Scorer ───
 
 function scoreExecution(slippagePips: number, fillLatencyMs: number, spreadAtEntry: number, expectedSpread: number): number {
@@ -2065,7 +2238,30 @@ Deno.serve(async (req) => {
         continue;
       }
 
-      // ═══ INDICATOR-CONFIRMED DIRECTION (Multi-Timeframe Consensus) ═══
+      // ═══ CENTRALIZED CHOKE POINT — PRE-INDICATOR CHECKS ═══
+      // These checks don't need indicator data and save expensive API calls.
+      // Session, hour, and agent blocks fire here BEFORE any indicator fetch.
+      {
+        const preCheck = canPlaceLiveOrder(
+          {
+            pair,
+            direction: "long", // placeholder — direction not yet known
+            agentId,
+            session,
+            regime,
+            indicatorRegime: "unknown", // not yet fetched
+            hourUtc: currentHourUTC,
+            regimeFamilyHoldBars: 0,
+            indicatorBullishMomentum: 99, // don't trigger momentum check pre-indicator
+            indicatorBearishMomentum: 99,
+          },
+          { forceMode, longLearningProfile, shortLearningProfile, totalOrders: orders.length }
+        );
+        if (!preCheck.allowed) {
+          results.push({ pair, direction: "none", status: preCheck.reason_code, agentId, govState });
+          continue;
+        }
+      }
       // Direction is ONLY authorized when MTF consensus aligns. Random selection prohibited.
       let direction: "long" | "short" = "long";
       let indicatorConsensusScore = 0;
@@ -2523,6 +2719,37 @@ Deno.serve(async (req) => {
         }
       }
 
+      // ═══ CENTRALIZED CHOKE POINT — POST-INDICATOR CHECK ═══
+      // Now we have direction + indicator regime — run full eligibility check.
+      {
+        const regimeFamilyHoldBars = (() => {
+          try {
+            const gp = indicatorBreakdown ? indicatorBreakdown : {};
+            return 0; // Will be refined below from parsed regime data
+          } catch { return 0; }
+        })();
+        
+        const postCheck = canPlaceLiveOrder(
+          {
+            pair,
+            direction,
+            agentId,
+            session,
+            regime,
+            indicatorRegime: indicatorRegime !== "unknown" ? indicatorRegime : regime,
+            hourUtc: currentHourUTC,
+            regimeFamilyHoldBars: regimeFamilyHoldBars,
+            indicatorBullishMomentum,
+            indicatorBearishMomentum,
+          },
+          { forceMode, longLearningProfile, shortLearningProfile, totalOrders: orders.length }
+        );
+        if (!postCheck.allowed) {
+          results.push({ pair, direction, status: postCheck.reason_code, agentId, govState });
+          continue;
+        }
+      }
+
       const confidence = forceMode ? 90 : Math.round(
         mtfConfirmed ? (60 + Math.abs(indicatorConsensusScore) * 0.3) : (50 + Math.random() * 20)
       );
@@ -2713,8 +2940,20 @@ Deno.serve(async (req) => {
         console.log(`[SCALP-TRADE] ${pair}: Regime ${effectiveRegimeForSizing} sizing multiplier: ${regimeSizingMult}x (Kelly-informed)`);
       }
 
+      // ═══ PHASE D: ROLLING KELLY-INFORMED SIZING ═══
+      // Replaces static regime multipliers with data-driven half-Kelly fractions
+      const kellyResult = computeRollingKelly(orders, effectiveRegimeForSizing, direction, 200);
+      if (kellyResult.sampleSize >= 10) {
+        // Override static regime multiplier with Kelly-derived sizing
+        const kellyOverride = kellyResult.sizingMultiplier;
+        deploymentMultiplier = discoveryMultiplier * kellyOverride;
+        if (neutralRegimeReducedSizing) deploymentMultiplier *= 0.5;
+        console.log(`[KELLY-SIZING] ${pair} ${direction} regime=${effectiveRegimeForSizing}: Kelly f*=${kellyResult.kellyFraction.toFixed(4)} half=${kellyResult.halfKelly.toFixed(4)} → mult=${kellyOverride.toFixed(2)}x (WR=${(kellyResult.winRate*100).toFixed(0)}% exp=${kellyResult.expectancy.toFixed(1)}p n=${kellyResult.sampleSize})`);
+      }
+
       // ═══ PHASE 9: AGENT ACCOUNTABILITY ═══
       // Penalize support-mtf-confirmer specifically — 14.6% WR, -170.2 pips
+      // NOTE: Agent suspension is also enforced in canPlaceLiveOrder() choke point (double-lock)
       const AGENT_PENALTY_MULTIPLIER: Record<string, number> = {
         "support-mtf-confirmer": 0.0,   // Phase 3: SUSPENDED — shadow only, zero execution
         "sentiment-reactor": 0.0,       // Already blocked by discovery risk
@@ -2722,8 +2961,8 @@ Deno.serve(async (req) => {
       };
       const agentPenalty = AGENT_PENALTY_MULTIPLIER[agentId] ?? 1.0;
       if (agentPenalty === 0 && !forceMode) {
-        console.log(`[SCALP-TRADE] ${pair}: Agent ${agentId} SUSPENDED (Phase 3: shadow-only) — skipping execution`);
-        results.push({ pair, direction, status: "agent-suspended", agentId, govState });
+        console.log(`[GOV_BLOCK_AGENT] ${pair}: Agent ${agentId} SUSPENDED (double-lock: choke point + penalty) — skipping execution`);
+        results.push({ pair, direction, status: "GOV_BLOCK_AGENT", agentId, govState });
         continue;
       }
       deploymentMultiplier *= agentPenalty;
