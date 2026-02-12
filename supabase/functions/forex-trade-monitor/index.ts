@@ -26,6 +26,8 @@ function getPipMultiplier(pair: string): number {
 }
 
 // TP/SL in pips per pair volatility class
+// Time limits are generous — let trades develop; TP/SL/trailing handle exits.
+// Time-exit is a last-resort cleanup, not a primary exit strategy.
 function getExitThresholds(pair: string): { tpPips: number; slPips: number; maxAgeMinutes: number } {
   const pipMult = getPipMultiplier(pair);
   
@@ -35,13 +37,13 @@ function getExitThresholds(pair: string): { tpPips: number; slPips: number; maxA
   // Low vol: EUR_USD, USD_JPY, AUD_USD, NZD_USD, etc.
 
   if (highVol.includes(pair)) {
-    return { tpPips: 20, slPips: 8, maxAgeMinutes: 12 };
+    return { tpPips: 20, slPips: 8, maxAgeMinutes: 45 };
   }
   if (medVol.includes(pair)) {
-    return { tpPips: 15, slPips: 6, maxAgeMinutes: 10 };
+    return { tpPips: 15, slPips: 6, maxAgeMinutes: 35 };
   }
-  // Low volatility majors — tighter scalping
-  return { tpPips: 10, slPips: 5, maxAgeMinutes: 8 };
+  // Low volatility majors
+  return { tpPips: 10, slPips: 5, maxAgeMinutes: 30 };
 }
 
 // ─── Trailing stop logic ───
@@ -187,18 +189,20 @@ function evaluateExit(
     };
   }
 
-  // Check time-based exit
+  // Check time-based exit — LAST RESORT cleanup only
   if (tradeAgeMinutes >= thresholds.maxAgeMinutes) {
-    // Only time-exit if trade is not strongly profitable
-    if (currentPnlPips < thresholds.tpPips * 0.5) {
+    // If trade is profitable (even slightly), let TP/trailing handle it — don't force-close winners
+    if (currentPnlPips <= 0) {
       return {
         action: "close-time",
-        reason: `Time exit: ${tradeAgeMinutes.toFixed(0)}min (max: ${thresholds.maxAgeMinutes}min), P&L: ${currentPnlPips.toFixed(1)}p`,
+        reason: `Time exit: ${tradeAgeMinutes.toFixed(0)}min (max: ${thresholds.maxAgeMinutes}min), P&L: ${currentPnlPips.toFixed(1)}p — flat/negative, cleaning up`,
         currentPnlPips,
         progressToTp,
         tradeAgeMinutes,
       };
     }
+    // If profitable but under 50% TP, warn but keep holding — trailing will protect
+    console.log(`[TRADE-MONITOR] ${pair}: Age ${tradeAgeMinutes.toFixed(0)}min exceeds max but trade is +${currentPnlPips.toFixed(1)}p — holding for TP/trailing`);
   }
 
   return {
@@ -407,13 +411,24 @@ Deno.serve(async (req) => {
           ? parseFloat(closeResult.orderFillTransaction.price)
           : currentPrice;
 
-        // Update the order with exit data
+        // Update the order with exit data + exit reason for auditability
+        const existingPayload = order.governance_payload || {};
+        const updatedPayload = {
+          ...(typeof existingPayload === 'object' ? existingPayload : {}),
+          exitReason: decision.action,
+          exitDetail: decision.reason,
+          exitPnlPips: parseFloat(decision.currentPnlPips.toFixed(2)),
+          exitProgressToTp: parseFloat((decision.progressToTp * 100).toFixed(1)),
+          exitTradeAgeMin: parseFloat(decision.tradeAgeMinutes.toFixed(1)),
+        };
+
         await supabase
           .from("oanda_orders")
           .update({
             status: "closed",
             exit_price: exitPrice,
             closed_at: new Date().toISOString(),
+            governance_payload: updatedPayload,
           })
           .eq("id", order.id);
 
