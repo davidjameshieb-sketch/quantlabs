@@ -1956,7 +1956,8 @@ Deno.serve(async (req) => {
     const SHORT_ELIGIBLE_PAIRS = ALL_PAIRS;
     // ═══ ADAPTIVE SHORT LEARNING: No session restriction — learn from all sessions ═══
     // Session performance is tracked per-regime and auto-adjusted via shortLearningProfile
-    const SHORT_ELIGIBLE_SESSIONS: SessionWindow[] = ["london-open", "ny-overlap", "asian", "late-ny"];
+    // FIX: Added "rollover" during learning phase — was blocking all rollover shorts, starving trade density
+    const SHORT_ELIGIBLE_SESSIONS: SessionWindow[] = ["london-open", "ny-overlap", "asian", "late-ny", "rollover"];
 
     // ─── FIFO Guard: Fetch open trades from OANDA to prevent duplicate positions ───
     const openPairSet = new Set<string>();
@@ -2124,7 +2125,8 @@ Deno.serve(async (req) => {
 
                 // ═══ ANTI-FLICKER GATE 0: NEUTRAL family regimes ═══
                 // Post-learning: hard block. During learning: allow at 0.5x for trade density.
-                const NEUTRAL_BLOCKED_REGIMES = ["compression", "flat", "exhaustion", "ignition", "transition"];
+                // FIX: Removed "ignition" — it's a directional breakout regime, not neutral
+                const NEUTRAL_BLOCKED_REGIMES = ["compression", "flat", "exhaustion", "transition"];
                 const isInLearningPhase = (rawOrders||[]).length < 500;
                 if (NEUTRAL_BLOCKED_REGIMES.includes(indicatorRegime) || familyLabel === "neutral") {
                   if (isInLearningPhase) {
