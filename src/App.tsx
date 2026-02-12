@@ -38,7 +38,7 @@ const App = () => (
               <FloatingCommandWidget />
               <Routes>
                 <Route path="/" element={<Navigate to="/dashboard" replace />} />
-                <Route path="/auth" element={<Navigate to="/dashboard" replace />} />
+                <Route path="/auth" element={<Auth />} />
                 <Route path="/dashboard" element={<Dashboard />} />
                 <Route path="/dashboard/ticker/:symbol" element={<Ticker />} />
                 <Route path="/dashboard/agents" element={<AIAgents />} />
