@@ -3,7 +3,6 @@
 
 import { useEffect, useRef } from 'react';
 import { supabase } from '@/integrations/supabase/client';
-import { useAuth } from '@/contexts/AuthContext';
 import { toast } from 'sonner';
 
 interface RealtimeOrderPayload {
@@ -26,13 +25,10 @@ interface UseRealtimeOrdersOptions {
 }
 
 export function useRealtimeOrders({ onOrderChange, enableAlerts = true }: UseRealtimeOrdersOptions = {}) {
-  const { user } = useAuth();
   const onChangeRef = useRef(onOrderChange);
   onChangeRef.current = onOrderChange;
 
   useEffect(() => {
-    if (!user) return;
-
     const channel = supabase
       .channel('oanda-orders-realtime')
       .on(
@@ -41,7 +37,6 @@ export function useRealtimeOrders({ onOrderChange, enableAlerts = true }: UseRea
           event: '*',
           schema: 'public',
           table: 'oanda_orders',
-          filter: `user_id=eq.${user.id}`,
         },
         (payload) => {
           const newRecord = payload.new as RealtimeOrderPayload | undefined;
@@ -132,5 +127,5 @@ export function useRealtimeOrders({ onOrderChange, enableAlerts = true }: UseRea
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [user, enableAlerts]);
+  }, [enableAlerts]);
 }

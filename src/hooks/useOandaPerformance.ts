@@ -3,7 +3,6 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '@/integrations/supabase/client';
-import { useAuth } from '@/contexts/AuthContext';
 import { useRealtimeOrders } from '@/hooks/useRealtimeOrders';
 
 export interface RealExecutionMetrics {
@@ -62,12 +61,10 @@ export interface RealOrder {
 }
 
 export function useOandaPerformance() {
-  const { user } = useAuth();
   const [metrics, setMetrics] = useState<RealExecutionMetrics | null>(null);
   const [loading, setLoading] = useState(false);
 
   const fetchPerformance = useCallback(async () => {
-    if (!user) return;
     setLoading(true);
 
     try {
@@ -76,7 +73,6 @@ export function useOandaPerformance() {
       const { data: orders, error } = await supabase
         .from('oanda_orders')
         .select('*')
-        .eq('user_id', user.id)
         .eq('environment', 'live')
         .in('status', ['filled', 'closed', 'rejected', 'submitted', 'pending'])
         .gte('created_at', cutoff)
@@ -188,7 +184,7 @@ export function useOandaPerformance() {
     } finally {
       setLoading(false);
     }
-  }, [user]);
+  }, []);
 
   useRealtimeOrders({ onOrderChange: fetchPerformance });
 
