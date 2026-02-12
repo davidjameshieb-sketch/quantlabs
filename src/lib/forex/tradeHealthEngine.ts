@@ -6,69 +6,49 @@
 export type HealthBand = 'healthy' | 'caution' | 'sick' | 'critical';
 
 export interface TradeHealthInput {
-  /** Current price */
   currentPrice: number;
-  /** Entry price */
   entryPrice: number;
-  /** Initial stop-loss price (at entry) */
   initialSlPrice: number;
-  /** Trade direction */
   direction: 'long' | 'short';
-  /** Currency pair (for pip multiplier) */
   pair: string;
-  /** Bars elapsed since entry (1m candles) */
   barsSinceEntry: number;
-  /** Max favorable excursion price since entry */
   mfePrice: number;
-  /** Regime context */
   regimeConfirmed: boolean;
   regimeEarlyWarning: boolean;
   regimeDiverging: boolean;
-  /** Directional persistence score now vs at entry (0-100) */
   persistenceNow: number;
   persistenceAtEntry: number;
-  /** Volatility acceleration score now vs at entry (0-100) */
   volAccNow: number;
   volAccAtEntry: number;
-  /** Volatility score (0-100) for adaptive window */
   volatilityScore: number;
+  /** Previous time_to_mfe_bars value (null if MFE never achieved) */
+  prevTimeToMfeBars?: number | null;
 }
 
 export interface TradeHealthResult {
-  /** Composite trade health score 0-100 */
   tradeHealthScore: number;
-  /** Health band classification */
   healthBand: HealthBand;
-  /** Whether progress validation failed */
   progressFail: boolean;
-  /** R = initial risk in pips */
   rPips: number;
-  /** MFE in R-multiples */
   mfeR: number;
-  /** Unrealized excursion in R-multiples */
   ueR: number;
-  /** Validation window (candles) */
   validationWindow: number;
-  /** Component scores for telemetry */
+  timeToMfeBars: number | null;
   components: {
     P: number;
+    T_mfe: number;
     D_pers: number;
     D_acc: number;
     S_regime: number;
     A_drift: number;
   };
-  /** Governance action to apply */
   governanceAction: TradeGovernanceAction;
 }
 
 export interface TradeGovernanceAction {
-  /** Action type */
   type: 'maintain' | 'tighten-light' | 'tighten-heavy' | 'tighten-aggressive' | 'consider-exit';
-  /** Trailing stop tightening multiplier (1.0 = no change, 0.7 = tighten 30%) */
   trailingTightenFactor: number;
-  /** Block position adds */
   blockAdds: boolean;
-  /** Human-readable reason */
   reason: string;
 }
 
@@ -84,85 +64,89 @@ function clamp(v: number, min: number, max: number): number {
 export function computeTradeHealth(input: TradeHealthInput): TradeHealthResult {
   const pipMult = getPipMultiplier(input.pair);
 
-  // ─── R = initial risk in pips ───
   const rPips = Math.abs(input.entryPrice - input.initialSlPrice) * pipMult;
-  const rSafe = Math.max(rPips, 0.1); // prevent division by zero
+  const rSafe = Math.max(rPips, 0.1);
 
-  // ─── MFE in R-multiples ───
   const mfePips = input.direction === 'long'
     ? (input.mfePrice - input.entryPrice) * pipMult
     : (input.entryPrice - input.mfePrice) * pipMult;
   const mfeR = Math.max(0, mfePips) / rSafe;
 
-  // ─── UE (unrealized excursion) in R-multiples ───
   const uePips = input.direction === 'long'
     ? (input.currentPrice - input.entryPrice) * pipMult
     : (input.entryPrice - input.currentPrice) * pipMult;
   const ueR = uePips / rSafe;
 
-  // ─── Adaptive validation window ───
   let validationWindow = 3;
   if (input.volatilityScore < 30) validationWindow = 4;
-  if (input.volatilityScore > 65) validationWindow = 3; // already default
+  if (input.volatilityScore > 65) validationWindow = 3;
   validationWindow = clamp(validationWindow, 3, 4);
 
-  // ─── Progress failure ───
   const progressFail = input.barsSinceEntry >= validationWindow && mfeR < 0.25;
 
-  // ─── Component A: Favorable Progress Score ───
+  // ─── Time-to-MFE tracking ───
+  let timeToMfeBars: number | null = input.prevTimeToMfeBars ?? null;
+  if (timeToMfeBars === null && mfeR > 0) {
+    timeToMfeBars = input.barsSinceEntry;
+  }
+
+  // ─── Component A: Favorable Progress Score (28%) ───
   const P = clamp(100 * (mfeR / 0.60), 0, 100);
 
-  // ─── Component B: Persistence Delta ───
+  // ─── Component F: Time-to-MFE Score (10%) ───
+  let T_mfe: number;
+  if (timeToMfeBars !== null) {
+    if (timeToMfeBars <= 2) T_mfe = 100;
+    else if (timeToMfeBars <= validationWindow) T_mfe = 75;
+    else if (timeToMfeBars <= validationWindow * 2) T_mfe = 50;
+    else T_mfe = 30;
+  } else {
+    if (input.barsSinceEntry < validationWindow) T_mfe = 50;
+    else if (input.barsSinceEntry < validationWindow * 2) T_mfe = 25;
+    else T_mfe = 10;
+  }
+
+  // ─── Component B: Persistence Delta (16%) ───
   const deltaPers = input.persistenceNow - input.persistenceAtEntry;
   const D_pers = clamp(50 + 1.25 * deltaPers, 0, 100);
 
-  // ─── Component C: Acceleration Delta ───
+  // ─── Component C: Acceleration Delta (12%) ───
   const deltaAcc = input.volAccNow - input.volAccAtEntry;
   const D_acc = clamp(50 + 1.0 * deltaAcc, 0, 100);
 
-  // ─── Component D: Regime Confirmation Stability ───
-  let S_regime = 50; // neutral default
+  // ─── Component D: Regime Confirmation Stability (22%) ───
+  let S_regime = 50;
   if (input.regimeConfirmed) S_regime = 100;
   if (input.regimeEarlyWarning) S_regime = Math.max(0, S_regime - 35);
   if (input.regimeDiverging) S_regime = Math.max(0, S_regime - 70);
   S_regime = clamp(S_regime, 0, 100);
 
-  // ─── Component E: Drift / Adverse Movement Penalty ───
+  // ─── Component E: Drift / Adverse Movement Penalty (12%) ───
   let A_drift: number;
   if (input.barsSinceEntry < validationWindow) {
-    A_drift = 50; // grace period
+    A_drift = 50;
   } else {
     A_drift = clamp(
-      100
-      - 120 * Math.max(0, -ueR)
-      - 60 * Math.max(0, 0.20 - mfeR),
-      0,
-      100
+      100 - 120 * Math.max(0, -ueR) - 60 * Math.max(0, 0.20 - mfeR),
+      0, 100
     );
   }
 
-  // ─── Composite Trade Health Score ───
-  const raw = 0.34 * P + 0.18 * D_pers + 0.14 * D_acc + 0.22 * S_regime + 0.12 * A_drift;
+  // ─── Rebalanced Composite THS ───
+  // P:28% + T_mfe:10% + D_pers:16% + D_acc:12% + S_regime:22% + A_drift:12% = 100%
+  const raw = 0.28 * P + 0.10 * T_mfe + 0.16 * D_pers + 0.12 * D_acc + 0.22 * S_regime + 0.12 * A_drift;
   const tradeHealthScore = Math.round(clamp(raw, 0, 100));
 
-  // ─── Health Band ───
   let healthBand: HealthBand;
-  if (tradeHealthScore >= 70) {
-    healthBand = 'healthy';
-  } else if (tradeHealthScore >= 45) {
-    healthBand = 'caution';
-  } else if (tradeHealthScore >= 30) {
-    healthBand = 'sick';
-  } else {
-    healthBand = 'critical';
-  }
+  if (tradeHealthScore >= 70) healthBand = 'healthy';
+  else if (tradeHealthScore >= 45) healthBand = 'caution';
+  else if (tradeHealthScore >= 30) healthBand = 'sick';
+  else healthBand = 'critical';
 
-  // Override to critical if progressFail + weak regime
   if (progressFail && (input.regimeDiverging || input.regimeEarlyWarning)) {
     healthBand = 'critical';
   }
 
-  // ─── Governance Actions ───
   let governanceAction: TradeGovernanceAction;
   switch (healthBand) {
     case 'healthy':
@@ -176,7 +160,7 @@ export function computeTradeHealth(input: TradeHealthInput): TradeHealthResult {
     case 'caution':
       governanceAction = {
         type: 'tighten-light',
-        trailingTightenFactor: 0.80, // tighten 20%
+        trailingTightenFactor: 0.80,
         blockAdds: true,
         reason: `Caution: THS=${tradeHealthScore} — tightening trailing 20%, blocking adds`,
       };
@@ -184,7 +168,7 @@ export function computeTradeHealth(input: TradeHealthInput): TradeHealthResult {
     case 'sick':
       governanceAction = {
         type: 'tighten-heavy',
-        trailingTightenFactor: 0.60, // tighten 40%
+        trailingTightenFactor: 0.60,
         blockAdds: true,
         reason: `Sick: THS=${tradeHealthScore} — tightening trailing 40%${input.regimeDiverging ? ', regime diverging' : ''}`,
       };
@@ -192,7 +176,7 @@ export function computeTradeHealth(input: TradeHealthInput): TradeHealthResult {
     case 'critical':
       governanceAction = {
         type: ueR < -0.35 ? 'consider-exit' : 'tighten-aggressive',
-        trailingTightenFactor: 0.50, // tighten 50%
+        trailingTightenFactor: 0.50,
         blockAdds: true,
         reason: `Critical: THS=${tradeHealthScore}${progressFail ? ' + progressFail' : ''} — aggressive tightening${ueR < -0.35 ? ', consider exit' : ''}`,
       };
@@ -207,8 +191,10 @@ export function computeTradeHealth(input: TradeHealthInput): TradeHealthResult {
     mfeR: Math.round(mfeR * 100) / 100,
     ueR: Math.round(ueR * 100) / 100,
     validationWindow,
+    timeToMfeBars,
     components: {
       P: Math.round(P),
+      T_mfe: Math.round(T_mfe),
       D_pers: Math.round(D_pers),
       D_acc: Math.round(D_acc),
       S_regime: Math.round(S_regime),

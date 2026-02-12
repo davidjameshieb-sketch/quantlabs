@@ -188,7 +188,8 @@ interface TradeHealthResult {
   mfeR: number;
   ueR: number;
   validationWindow: number;
-  components: { P: number; D_pers: number; D_acc: number; S_regime: number; A_drift: number };
+  timeToMfeBars: number | null;
+  components: { P: number; T_mfe: number; D_pers: number; D_acc: number; S_regime: number; A_drift: number };
   trailingTightenFactor: number;
   governanceActionType: string;
   governanceReason: string;
@@ -214,6 +215,7 @@ function computeTradeHealthScore(
   regimeConfirmed: boolean,
   regimeEarlyWarning: boolean,
   regimeDiverging: boolean,
+  prevTimeToMfeBars: number | null,
 ): TradeHealthResult {
   const pipMult = getPipMultiplier(pair);
   // IMPORTANT: pipMult here is the pip SIZE (0.0001 for non-JPY, 0.01 for JPY)
@@ -236,17 +238,47 @@ function computeTradeHealthScore(
 
   const progressFail = barsSinceEntry >= validationWindow && mfeR < 0.25;
 
-  // Components
+  // ─── Time-to-MFE tracking ───
+  // Records the first bar where MFE goes positive (mfeR > 0).
+  // Once set, it never changes for the life of the trade.
+  let timeToMfeBars: number | null = prevTimeToMfeBars;
+  if (timeToMfeBars === null && mfeR > 0) {
+    timeToMfeBars = barsSinceEntry;
+  }
+
+  // ─── Component A: Favorable Progress Score (was 34%, now 28%) ───
   const P = clamp(100 * (mfeR / 0.60), 0, 100);
+
+  // ─── Component F: Time-to-MFE Score (new, 10%) ───
+  // Winning trades show MFE early. Penalize delayed or absent MFE.
+  let T_mfe: number;
+  if (timeToMfeBars !== null) {
+    // MFE achieved — score based on how quickly
+    if (timeToMfeBars <= 2) T_mfe = 100;        // excellent early conviction
+    else if (timeToMfeBars <= validationWindow) T_mfe = 75;  // acceptable
+    else if (timeToMfeBars <= validationWindow * 2) T_mfe = 50; // slow
+    else T_mfe = 30;                              // very late
+  } else {
+    // MFE never achieved yet
+    if (barsSinceEntry < validationWindow) T_mfe = 50; // grace period
+    else if (barsSinceEntry < validationWindow * 2) T_mfe = 25; // concerning
+    else T_mfe = 10; // very bad — no favorable move after extended time
+  }
+
+  // ─── Component B: Persistence Delta (was 18%, now 16%) ───
   const D_pers = clamp(50 + 1.25 * (persistenceNow - persistenceAtEntry), 0, 100);
+
+  // ─── Component C: Acceleration Delta (was 14%, now 12%) ───
   const D_acc = clamp(50 + 1.0 * (volAccNow - volAccAtEntry), 0, 100);
 
+  // ─── Component D: Regime Confirmation Stability (unchanged 22%) ───
   let S_regime = 50;
   if (regimeConfirmed) S_regime = 100;
   if (regimeEarlyWarning) S_regime = Math.max(0, S_regime - 35);
   if (regimeDiverging) S_regime = Math.max(0, S_regime - 70);
   S_regime = clamp(S_regime, 0, 100);
 
+  // ─── Component E: Drift / Adverse Movement Penalty (unchanged 12%) ───
   let A_drift: number;
   if (barsSinceEntry < validationWindow) {
     A_drift = 50;
@@ -254,7 +286,9 @@ function computeTradeHealthScore(
     A_drift = clamp(100 - 120 * Math.max(0, -ueR) - 60 * Math.max(0, 0.20 - mfeR), 0, 100);
   }
 
-  const raw = 0.34 * P + 0.18 * D_pers + 0.14 * D_acc + 0.22 * S_regime + 0.12 * A_drift;
+  // ─── Rebalanced Composite THS ───
+  // P:28% + T_mfe:10% + D_pers:16% + D_acc:12% + S_regime:22% + A_drift:12% = 100%
+  const raw = 0.28 * P + 0.10 * T_mfe + 0.16 * D_pers + 0.12 * D_acc + 0.22 * S_regime + 0.12 * A_drift;
   const tradeHealthScore = Math.round(clamp(raw, 0, 100));
 
   let healthBand: HealthBand;
@@ -289,7 +323,8 @@ function computeTradeHealthScore(
     mfeR: Math.round(mfeR * 100) / 100,
     ueR: Math.round(ueR * 100) / 100,
     validationWindow,
-    components: { P: Math.round(P), D_pers: Math.round(D_pers), D_acc: Math.round(D_acc), S_regime: Math.round(S_regime), A_drift: Math.round(A_drift) },
+    timeToMfeBars,
+    components: { P: Math.round(P), T_mfe: Math.round(T_mfe), D_pers: Math.round(D_pers), D_acc: Math.round(D_acc), S_regime: Math.round(S_regime), A_drift: Math.round(A_drift) },
     trailingTightenFactor, governanceActionType, governanceReason,
   };
 }
@@ -590,17 +625,21 @@ Deno.serve(async (req) => {
       const barsSinceEntry = Math.max(1, Math.round(tradeAgeMinutes));
 
       // MFE tracking: use the max of current price and any previously recorded MFE
-      const prevMfeR = typeof order.mfe_r === 'number' ? order.mfe_r : 0;
+      // Cap prevMfeR to sane range — guards against corrupted DB values from prior bugs
+      const rawPrevMfeR = typeof order.mfe_r === 'number' ? order.mfe_r : 0;
+      const prevMfeR = Math.min(rawPrevMfeR, 10); // No trade legitimately exceeds 10R MFE in scalping
       const pipMult = getPipMultiplier(order.currency_pair);
       const currentMfePips = order.direction === "long"
-        ? Math.max(0, (currentPrice - entryPrice) * pipMult)
-        : Math.max(0, (entryPrice - currentPrice) * pipMult);
+        ? Math.max(0, (currentPrice - entryPrice) / pipMult)
+        : Math.max(0, (entryPrice - currentPrice) / pipMult);
       const rPipsEst = Math.max(dynamicSl.slDistancePips, 0.1);
       const currentMfeR = currentMfePips / rPipsEst;
       const bestMfeR = Math.max(prevMfeR, currentMfeR);
       const mfePrice = order.direction === "long"
-        ? entryPrice + bestMfeR * rPipsEst / pipMult
-        : entryPrice - bestMfeR * rPipsEst / pipMult;
+        ? entryPrice + bestMfeR * rPipsEst * pipMult
+        : entryPrice - bestMfeR * rPipsEst * pipMult;
+
+      const prevTimeToMfeBars = typeof order.time_to_mfe_bars === 'number' ? order.time_to_mfe_bars : null;
 
       const healthResult = computeTradeHealthScore(
         order.direction,
@@ -618,6 +657,7 @@ Deno.serve(async (req) => {
         govPayload?.regimeConfirmed === true || (!govPayload?.regimeEarlyWarning && !govPayload?.regimeDiverging),
         govPayload?.regimeEarlyWarning === true,
         govPayload?.regimeDiverging === true,
+        prevTimeToMfeBars,
       );
 
       // Apply health-based trailing tightening to exit evaluation
@@ -643,6 +683,7 @@ Deno.serve(async (req) => {
           bars_since_entry: barsSinceEntry,
           progress_fail: healthResult.progressFail,
           health_governance_action: healthResult.governanceActionType,
+          time_to_mfe_bars: healthResult.timeToMfeBars,
         })
         .eq("id", order.id);
 
@@ -699,6 +740,7 @@ Deno.serve(async (req) => {
             bars_since_entry: barsSinceEntry,
             progress_fail: healthResult.progressFail,
             health_governance_action: healthResult.governanceActionType,
+            time_to_mfe_bars: healthResult.timeToMfeBars,
           })
           .eq("id", order.id);
 
