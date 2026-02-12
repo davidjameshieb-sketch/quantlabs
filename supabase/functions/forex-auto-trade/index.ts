@@ -2039,6 +2039,9 @@ Deno.serve(async (req) => {
       let indicatorLongFriendly = false;
       let indicatorBearishMomentum = 0;
       let indicatorBullishMomentum = 0;
+      let neutralRegimeReducedSizing = false;
+      let supertrendValue15m: number | null = null;
+      let atr15mValue: number | null = null;
 
       if (forceMode) {
         direction = reqBody.direction || "long";
@@ -2086,6 +2089,9 @@ Deno.serve(async (req) => {
                 pivotPoints: ind.pivotPoints?.signal || "neutral",
                 trendEfficiency: ind.trendEfficiency?.signal || "neutral",
               };
+              // Extract 15m Supertrend + ATR for dynamic SL/TP at entry
+              supertrendValue15m = ind.supertrend?.value ?? null;
+              atr15mValue = ind.atr?.value ?? null;
             }
             if (indicatorData?.consensus) {
               indicatorConsensusScore = indicatorData.consensus.score || 0;
@@ -2116,14 +2122,24 @@ Deno.serve(async (req) => {
                 const accelLevel = indicatorData.regime.accelLevel || "stable";
                 console.log(`[REGIME-INDICATOR] ${pair}: regime=${indicatorRegime} strength=${indicatorRegimeStrength} longFriendly=${indicatorLongFriendly} shortFriendly=${indicatorShortFriendly} bullishMom=${indicatorBullishMomentum} bearishMom=${indicatorBearishMomentum} hold=${regimeHoldBars} familyHold=${regimeFamilyHoldBars} family=${familyLabel} dir=${regimeDirection} confirmed=${regimeFamilyConfirmed} divergent=${divergentBars} diverging=${regimeDiverging} earlyWarn=${regimeEarlyWarning} accel=${volAcceleration}(${accelLevel}) recentRegimes=[${recentRegimes.join(',')}]`);
 
-                // ═══ ANTI-FLICKER GATE 0: NEUTRAL family regimes block ALL trades ═══
-                // Compression/flat/exhaustion/ignition/transition all grouped as NEUTRAL — no trade authorization
+                // ═══ ANTI-FLICKER GATE 0: NEUTRAL family regimes ═══
+                // Post-learning: hard block. During learning: allow at 0.5x for trade density.
                 const NEUTRAL_BLOCKED_REGIMES = ["compression", "flat", "exhaustion", "ignition", "transition"];
+                const isInLearningPhase = (rawOrders||[]).length < 500;
                 if (NEUTRAL_BLOCKED_REGIMES.includes(indicatorRegime) || familyLabel === "neutral") {
-                  console.log(`[REGIME-NEUTRAL] ${pair}: ${indicatorRegime} (family=${familyLabel}) — BLOCKING trade authorization (neutral/no-trade regime)`);
-                  results.push({ pair, direction: "none", status: "neutral-regime-blocked", govState, agentId,
-                    error: `regime=${indicatorRegime},family=${familyLabel},dir=${regimeDirection}` });
-                  continue;
+                  if (isInLearningPhase) {
+                    // LEARNING PHASE: Allow neutral regimes at 0.5x sizing for trade density
+                    neutralRegimeReducedSizing = true;
+                    // Override regime friendliness — consensus alone drives direction at reduced sizing
+                    indicatorLongFriendly = true;
+                    indicatorShortFriendly = true;
+                    console.log(`[REGIME-NEUTRAL-LEARN] ${pair}: ${indicatorRegime} (family=${familyLabel}) — allowed at 0.5x during learning (${(rawOrders||[]).length}/500 trades)`);
+                  } else {
+                    console.log(`[REGIME-NEUTRAL] ${pair}: ${indicatorRegime} (family=${familyLabel}) — BLOCKING trade authorization (neutral/no-trade regime)`);
+                    results.push({ pair, direction: "none", status: "neutral-regime-blocked", govState, agentId,
+                      error: `regime=${indicatorRegime},family=${familyLabel},dir=${regimeDirection}` });
+                    continue;
+                  }
                 }
 
                 // ═══ ANTI-FLICKER GATE 1: Direction mismatch blocks trade ═══
@@ -2598,6 +2614,7 @@ Deno.serve(async (req) => {
 
       // ═══ STRATEGY REVAMP: No secondary pair cap — all pairs use discovery multiplier ═══
       let deploymentMultiplier = discoveryMultiplier;
+      if (neutralRegimeReducedSizing) deploymentMultiplier *= 0.5;
 
       // ─── SHORT CAPITAL: Equal allocation to longs ───
       const shortCapMultiplier = 1.0;
@@ -2835,11 +2852,41 @@ Deno.serve(async (req) => {
               ? parseFloat(currentPrice.asks?.[0]?.price || "0")
               : parseFloat(currentPrice.bids?.[0]?.price || "0");
             if (entryEstimate > 0) {
-              stopLossPrice = computeStopLossPrice(pair, direction, entryEstimate);
-              takeProfitPrice = computeTakeProfitPrice(pair, direction, entryEstimate);
-              const stopPips = computeStopLossPips(pair, direction);
-              const tpPips = computeTakeProfitPips(pair, direction);
-              console.log(`[SCALP-TRADE] ${pair}: SL=${stopLossPrice} (${stopPips}p) | TP=${takeProfitPrice} (${tpPips}p) | R:R=1:1.5 | entry ~${entryEstimate}`);
+              // ═══ DYNAMIC SL/TP: Supertrend+ATR SL with 2.0× R:R TP ═══
+              const slPipMult = pair.includes("JPY") ? 0.01 : 0.0001;
+              if (supertrendValue15m !== null && atr15mValue !== null) {
+                const minBufferPrice = 5 * slPipMult;
+                const atrBufferPrice = 0.25 * atr15mValue;
+                const buffer = Math.max(minBufferPrice, atrBufferPrice);
+                if (direction === "long") {
+                  stopLossPrice = Math.round((supertrendValue15m - buffer) * 100000) / 100000;
+                  if (stopLossPrice >= entryEstimate) {
+                    stopLossPrice = Math.round((entryEstimate - 12 * slPipMult) * 100000) / 100000;
+                    console.log(`[SCALP-TRADE] ${pair}: Supertrend SL invalid (>= entry), using 12p fallback`);
+                  }
+                } else {
+                  stopLossPrice = Math.round((supertrendValue15m + buffer) * 100000) / 100000;
+                  if (stopLossPrice <= entryEstimate) {
+                    stopLossPrice = Math.round((entryEstimate + 12 * slPipMult) * 100000) / 100000;
+                    console.log(`[SCALP-TRADE] ${pair}: Supertrend SL invalid (<= entry), using 12p fallback`);
+                  }
+                }
+                const slDistPips = Math.abs(entryEstimate - stopLossPrice) / slPipMult;
+                const tpDistPips = slDistPips * 2.0;
+                takeProfitPrice = direction === "long"
+                  ? Math.round((entryEstimate + tpDistPips * slPipMult) * 100000) / 100000
+                  : Math.round((entryEstimate - tpDistPips * slPipMult) * 100000) / 100000;
+                console.log(`[SCALP-TRADE] ${pair}: DYNAMIC SL=${stopLossPrice} (${slDistPips.toFixed(1)}p, supertrend+atr) | TP=${takeProfitPrice} (${tpDistPips.toFixed(1)}p) | R:R=1:2.0 | entry ~${entryEstimate}`);
+              } else {
+                // Fallback: static SL with 2.0× R:R TP
+                stopLossPrice = computeStopLossPrice(pair, direction, entryEstimate);
+                const fallbackSlPips = computeStopLossPips(pair, direction);
+                const fallbackTpPips = fallbackSlPips * 2.0;
+                takeProfitPrice = direction === "long"
+                  ? Math.round((entryEstimate + fallbackTpPips * slPipMult) * 100000) / 100000
+                  : Math.round((entryEstimate - fallbackTpPips * slPipMult) * 100000) / 100000;
+                console.log(`[SCALP-TRADE] ${pair}: FALLBACK SL=${stopLossPrice} (${fallbackSlPips}p) | TP=${takeProfitPrice} (${fallbackTpPips.toFixed(1)}p) | R:R=1:2.0 | entry ~${entryEstimate}`);
+              }
             }
           }
         } catch (slErr) {

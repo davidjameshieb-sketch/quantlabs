@@ -357,42 +357,80 @@ function evaluateExit(
   dynamicSl: DynamicSL,
   governancePayload?: Record<string, unknown>,
   healthTrailingFactor = 1.0,
+  rPips?: number | null,
+  mfePriceWatermark?: number | null,
+  atr15m?: number | null,
 ): ExitDecision {
   const pipMult = getPipMultiplier(pair);
-  const thresholds = getExitThresholds(pair);
 
   // Current P&L in pips
   const currentPnlPips = direction === "long"
     ? (currentPrice - entryPrice) / pipMult
     : (entryPrice - currentPrice) / pipMult;
 
-  // Progress toward TP
-  const progressToTp = currentPnlPips / thresholds.tpPips;
+  // R-multiple based calculations
+  const effectiveRPips = rPips && rPips > 0 ? rPips : dynamicSl.slDistancePips;
+  const currentR = effectiveRPips > 0 ? currentPnlPips / effectiveRPips : 0;
 
-  // ═══ PRIORITY 1: TP hit ═══
-  if (currentPnlPips >= thresholds.tpPips) {
+  // MFE in R-multiples (from watermark prices)
+  const mfePips = mfePriceWatermark != null ? (direction === "long"
+    ? Math.max(0, (mfePriceWatermark - entryPrice) / pipMult)
+    : Math.max(0, (entryPrice - mfePriceWatermark) / pipMult)) : 0;
+  const mfeR = effectiveRPips > 0 ? mfePips / effectiveRPips : 0;
+
+  // Progress (TP target is 2R)
+  const progressToTp = currentR / 2.0;
+
+  // ═══ PRIORITY 1: TP safety ceiling (2R) — OANDA handles natively, but verify ═══
+  if (currentR >= 2.0) {
     return {
       action: "close-tp",
-      reason: `TP hit: +${currentPnlPips.toFixed(1)} pips (target: ${thresholds.tpPips})`,
+      reason: `TP hit: +${currentPnlPips.toFixed(1)}p (${currentR.toFixed(2)}R, target: 2.0R)`,
       currentPnlPips, progressToTp, tradeAgeMinutes,
     };
   }
 
-  // ═══ PRIORITY 2: Trailing stop (with health-based tightening) ═══
+  // ═══ PRIORITY 2: ATR-trailing stop (R-multiple based, 2 phases) ═══
   const entryRegimeDiverging = governancePayload?.regimeEarlyWarning === true;
-  let trailingTriggerRatio = entryRegimeDiverging ? 0.40 : 0.60;
-  // Health governance tightening: reduce trigger ratio further
-  trailingTriggerRatio *= healthTrailingFactor;
-  const trailing = computeTrailingStop(direction, entryPrice, currentPrice, pair, thresholds.tpPips, trailingTriggerRatio);
-  if (trailing.isTrailing) {
-    const trailingSlPips = direction === "long"
-      ? (currentPrice - trailing.adjustedSlPrice) / pipMult
-      : (trailing.adjustedSlPrice - currentPrice) / pipMult;
 
-    if (trailingSlPips <= 0) {
+  if (mfeR >= 2.0 && atr15m != null && atr15m > 0) {
+    // Phase 2: MFE reached 2R — trail at MFE - 0.75 × ATR(15m)
+    const trailDistance = 0.75 * atr15m * healthTrailingFactor;
+    const trailingSlPrice = direction === "long"
+      ? mfePriceWatermark! - trailDistance
+      : mfePriceWatermark! + trailDistance;
+
+    const trailingHit = direction === "long"
+      ? currentPrice <= trailingSlPrice
+      : currentPrice >= trailingSlPrice;
+
+    if (trailingHit) {
       return {
         action: "close-trailing",
-        reason: `Trailing stop hit after reaching ${(progressToTp * 100).toFixed(0)}% of TP${entryRegimeDiverging ? ' (tightened: regime early-warn)' : ''}`,
+        reason: `ATR-trailing hit: ${currentPnlPips.toFixed(1)}p (${currentR.toFixed(2)}R) | MFE=${mfeR.toFixed(2)}R | trail@MFE-0.75×ATR`,
+        currentPnlPips, progressToTp, tradeAgeMinutes,
+      };
+    }
+  } else if (mfeR >= 1.5) {
+    // Phase 1: MFE reached 1.5R — trail at entry + 1R (lock in profit)
+    const oneRDistance = effectiveRPips * pipMult;
+    let trailingSlPrice: number;
+    if (direction === "long") {
+      trailingSlPrice = entryPrice + oneRDistance * healthTrailingFactor;
+      if (entryRegimeDiverging) trailingSlPrice = entryPrice + oneRDistance * 0.75 * healthTrailingFactor;
+    } else {
+      trailingSlPrice = entryPrice - oneRDistance * healthTrailingFactor;
+      if (entryRegimeDiverging) trailingSlPrice = entryPrice - oneRDistance * 0.75 * healthTrailingFactor;
+    }
+
+    const trailingHit = direction === "long"
+      ? currentPrice <= trailingSlPrice
+      : currentPrice >= trailingSlPrice;
+
+    if (trailingHit) {
+      return {
+        action: "close-trailing",
+        reason: `R-trailing hit: ${currentPnlPips.toFixed(1)}p (${currentR.toFixed(2)}R) | MFE=${mfeR.toFixed(2)}R | trail@entry+1R${entryRegimeDiverging ? ' (regime early-warn)' : ''}`,
         currentPnlPips, progressToTp, tradeAgeMinutes,
       };
     }
@@ -406,14 +444,14 @@ function evaluateExit(
   if (slHit) {
     return {
       action: "close-sl",
-      reason: `SL hit (${dynamicSl.source}): ${currentPnlPips.toFixed(1)} pips | SL@${dynamicSl.slPrice.toFixed(5)} (${dynamicSl.slDistancePips.toFixed(1)}p from entry)`,
+      reason: `SL hit (${dynamicSl.source}): ${currentPnlPips.toFixed(1)}p (${currentR.toFixed(2)}R) | SL@${dynamicSl.slPrice.toFixed(5)} (${dynamicSl.slDistancePips.toFixed(1)}p)`,
       currentPnlPips, progressToTp, tradeAgeMinutes,
     };
   }
 
   return {
     action: "hold",
-    reason: `Holding: ${currentPnlPips.toFixed(1)}p P&L, ${(progressToTp * 100).toFixed(0)}% to TP, SL@${dynamicSl.slPrice.toFixed(5)} (${dynamicSl.slDistancePips.toFixed(1)}p), ${tradeAgeMinutes.toFixed(0)}min age [${dynamicSl.source}]`,
+    reason: `Holding: ${currentPnlPips.toFixed(1)}p (${currentR.toFixed(2)}R) | MFE=${mfeR.toFixed(2)}R | SL@${dynamicSl.slPrice.toFixed(5)} (${dynamicSl.slDistancePips.toFixed(1)}p) | ${tradeAgeMinutes.toFixed(0)}min [${dynamicSl.source}]`,
     currentPnlPips, progressToTp, tradeAgeMinutes,
   };
 }
@@ -691,7 +729,10 @@ Deno.serve(async (req) => {
         tradeAgeMinutes,
         dynamicSl,
         govPayload,
-        healthResult.trailingTightenFactor, // pass tightening factor
+        healthResult.trailingTightenFactor,
+        rPipsReal,           // true risk at entry (R-multiple denominator)
+        updatedMfePrice,     // MFE watermark price for trailing
+        ind?.atr ?? null,    // 15m ATR for Phase 2 trailing
       );
 
       // ─── THS Expectancy Tracking ───
