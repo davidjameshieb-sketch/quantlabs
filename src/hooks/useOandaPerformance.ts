@@ -176,7 +176,7 @@ export function useOandaPerformance() {
         avgFrictionScore: avg(frictions),
         pairBreakdown,
         agentBreakdown,
-        recentOrders: allOrders.slice(0, 50),
+        recentOrders: allOrders,
         hasData: filled.length > 0,
       });
     } catch (err) {

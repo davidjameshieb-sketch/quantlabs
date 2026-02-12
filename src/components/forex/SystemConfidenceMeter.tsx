@@ -26,7 +26,7 @@ export const SystemConfidenceMeter = ({
   totalPnlPips,
   overallSharpe,
 }: SystemConfidenceMeterProps) => {
-  const learningSummary = useMemo(() => getEdgeLearningSummary(), []);
+  const learningSummary = useMemo(() => getEdgeLearningSummary(), [totalClosedTrades, executionMetrics]);
 
   // Compute overall confidence score (0-100) toward prime directive
   const { score, factors } = useMemo(() => {

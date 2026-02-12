@@ -1,7 +1,7 @@
 // LiveTradeBook — Primary trade book dashboard
 // Shows each live trade with win/loss meter, expectation analysis, and learning notes
 
-import { useMemo } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { 
   TrendingUp, TrendingDown, Clock, Target, AlertTriangle,
@@ -12,6 +12,8 @@ import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { cn } from '@/lib/utils';
 import { RealOrder, RealExecutionMetrics } from '@/hooks/useOandaPerformance';
+import { MiniTradeChart } from './MiniTradeChart';
+import { supabase } from '@/integrations/supabase/client';
 
 // ─── Helpers ─────────────────────────────────────────────────────────
 
@@ -179,7 +181,14 @@ function TradeRow({ order, index }: { order: RealOrder; index: number }) {
           </Badge>
           <span className="text-[10px] text-muted-foreground">{time}</span>
         </div>
-        <WinLossMeter pips={pips} />
+        <div className="flex items-center gap-3">
+          <MiniTradeChart
+            entryPrice={order.entry_price!}
+            exitPrice={order.exit_price}
+            direction={order.direction}
+          />
+          <WinLossMeter pips={pips} />
+        </div>
       </div>
 
       {/* Row 2: Trade details */}
@@ -240,6 +249,41 @@ function OpenPositionRow({ order, index }: { order: RealOrder; index: number }) 
   });
   const ageMin = Math.round((Date.now() - new Date(order.created_at).getTime()) / 60000);
 
+  // Fetch live price for unrealized P&L
+  const [livePrice, setLivePrice] = useState<number | null>(null);
+  useEffect(() => {
+    let mounted = true;
+    const fetchLive = async () => {
+      try {
+        const { data } = await supabase.functions.invoke('oanda-pricing', {
+          body: { instruments: [order.currency_pair] },
+        });
+        if (!mounted) return;
+        const p = data?.prices?.[0];
+        if (p) {
+          // Use mid price
+          const mid = (parseFloat(p.asks?.[0]?.price || '0') + parseFloat(p.bids?.[0]?.price || '0')) / 2;
+          if (mid > 0) setLivePrice(mid);
+        }
+      } catch { /* silent */ }
+    };
+    fetchLive();
+    const iv = setInterval(fetchLive, 15000); // refresh every 15s
+    return () => { mounted = false; clearInterval(iv); };
+  }, [order.currency_pair]);
+
+  const unrealizedPips = useMemo(() => {
+    if (order.entry_price == null || livePrice == null) return null;
+    const mult = getPipMultiplier(order.currency_pair);
+    const raw = order.direction === 'long'
+      ? (livePrice - order.entry_price) * mult
+      : (order.entry_price - livePrice) * mult;
+    return Math.round(raw * 10) / 10;
+  }, [order, livePrice]);
+
+  const isProfit = unrealizedPips != null && unrealizedPips > 0;
+  const isLoss = unrealizedPips != null && unrealizedPips < 0;
+
   return (
     <motion.div
       initial={{ opacity: 0, x: -10 }}
@@ -262,7 +306,26 @@ function OpenPositionRow({ order, index }: { order: RealOrder; index: number }) 
           </Badge>
           <span className="text-[10px] text-muted-foreground">{time}</span>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
+          {/* Mini chart for open position */}
+          {livePrice != null && order.entry_price != null && (
+            <MiniTradeChart
+              entryPrice={order.entry_price}
+              exitPrice={livePrice}
+              direction={order.direction}
+            />
+          )}
+          {/* Unrealized P&L */}
+          {unrealizedPips != null ? (
+            <span className={cn(
+              "text-sm font-mono font-bold min-w-[60px] text-right",
+              isProfit ? "text-emerald-400" : isLoss ? "text-red-400" : "text-muted-foreground"
+            )}>
+              {unrealizedPips >= 0 ? '+' : ''}{unrealizedPips.toFixed(1)}p
+            </span>
+          ) : (
+            <span className="text-[10px] text-muted-foreground italic">loading...</span>
+          )}
           <Badge variant="outline" className="text-[9px] px-1.5 border-primary/30 text-primary">
             OPEN · {ageMin}m
           </Badge>
@@ -272,6 +335,9 @@ function OpenPositionRow({ order, index }: { order: RealOrder; index: number }) 
         <span className="flex items-center gap-1">
           <Target className="w-3 h-3" />
           Entry: {order.entry_price?.toFixed(5) ?? '—'}
+          {livePrice != null && (
+            <> → Now: <span className={cn('font-mono', isProfit ? 'text-emerald-400' : isLoss ? 'text-red-400' : '')}>{livePrice.toFixed(5)}</span></>
+          )}
         </span>
         <span>{order.units}u</span>
         <Badge variant="outline" className="text-[9px] px-1">
@@ -288,7 +354,6 @@ function OpenPositionRow({ order, index }: { order: RealOrder; index: number }) 
     </motion.div>
   );
 }
-
 // ─── Main Component ──────────────────────────────────────────────────
 
 interface LiveTradeBookProps {
