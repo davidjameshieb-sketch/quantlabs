@@ -1143,9 +1143,9 @@ function computeStopLossPips(pair: string, direction: "long" | "short"): number 
 
 function computeTakeProfitPips(pair: string, direction: "long" | "short"): number {
   const stopPips = computeStopLossPips(pair, direction);
-  // Target 1.5:1 reward-to-risk ratio as a baseline TP
-  // This ensures asymmetric payoffs even if the trade monitor doesn't intervene
-  return Math.round(stopPips * 1.5 * 10) / 10;
+  // PHASE 1: Fallback TP uses 2.5× R:R (compensates for lower WR with static SL)
+  // Dynamic SL orders use 5× R:R safety ceiling — ATR-trailing handles actual exits
+  return Math.round(stopPips * 2.5 * 10) / 10;
 }
 
 function computeTakeProfitPrice(pair: string, direction: "long" | "short", entryPrice: number): number {
@@ -2166,7 +2166,8 @@ Deno.serve(async (req) => {
                 // Check recent orders for this pair with regime-diverging status.
                 const HOLD_REQUIRED_REGIMES = ["expansion", "momentum", "breakdown", "risk-off"];
                 const WHIPSAW_COOLDOWN_MINUTES = 15; // ~3 bars on 5m timeframe
-                let requiredFamilyHold = 3; // default entry threshold
+                // PHASE 3: Reduced from 3→2 during learning to capture more moves at transition point
+                let requiredFamilyHold = isInLearningPhase ? 2 : 3;
 
                 if (HOLD_REQUIRED_REGIMES.includes(indicatorRegime)) {
                   // Check if this pair had a divergence block recently (whipsaw cooldown)
@@ -2838,8 +2839,8 @@ Deno.serve(async (req) => {
       try {
         const signedUnits = direction === "short" ? -tradeUnits : tradeUnits; // Negative for shorts
         
-        // ═══ STOP-LOSS + TAKE-PROFIT: Dynamic ATR-based levels wired into OANDA order ═══
-        // Fetches current price to compute SL and TP levels (1.5:1 R:R)
+        // ═══ PHASE 1+2: Dynamic SL + 5R SAFETY CEILING TP (ATR-trailing manages exits) ═══
+        // TP is NOT the target exit — it's an emergency ceiling. Monitor's ATR-trailing handles real exits.
         let stopLossPrice: number | undefined;
         let takeProfitPrice: number | undefined;
         let entryEstimate = 0; // Pre-order price for slippage calculation
@@ -2854,7 +2855,9 @@ Deno.serve(async (req) => {
               ? parseFloat(currentPrice.asks?.[0]?.price || "0")
               : parseFloat(currentPrice.bids?.[0]?.price || "0");
             if (entryEstimate > 0) {
-              // ═══ DYNAMIC SL/TP: Supertrend+ATR SL with 2.0× R:R TP ═══
+              // ═══ PHASE 2: DYNAMIC SL with 5R SAFETY CEILING TP ═══
+              // ATR-trailing in the trade monitor handles actual exits (1.5R→lock 1R, 2R→ATR trail)
+              // OANDA TP is set at 5R as emergency ceiling only — NOT the target exit
               const slPipMult = pair.includes("JPY") ? 0.01 : 0.0001;
               if (supertrendValue15m !== null && atr15mValue !== null) {
                 const minBufferPrice = 5 * slPipMult;
@@ -2874,20 +2877,21 @@ Deno.serve(async (req) => {
                   }
                 }
                 const slDistPips = Math.abs(entryEstimate - stopLossPrice) / slPipMult;
-                const tpDistPips = slDistPips * 2.0;
+                // PHASE 2: TP at 5R safety ceiling — ATR-trailing handles exits before this
+                const tpDistPips = slDistPips * 5.0;
                 takeProfitPrice = direction === "long"
                   ? Math.round((entryEstimate + tpDistPips * slPipMult) * 100000) / 100000
                   : Math.round((entryEstimate - tpDistPips * slPipMult) * 100000) / 100000;
-                console.log(`[SCALP-TRADE] ${pair}: DYNAMIC SL=${stopLossPrice} (${slDistPips.toFixed(1)}p, supertrend+atr) | TP=${takeProfitPrice} (${tpDistPips.toFixed(1)}p) | R:R=1:2.0 | entry ~${entryEstimate}`);
+                console.log(`[SCALP-TRADE] ${pair}: DYNAMIC SL=${stopLossPrice} (${slDistPips.toFixed(1)}p, supertrend+atr) | TP=${takeProfitPrice} (${tpDistPips.toFixed(1)}p, 5R safety ceiling) | ATR-trailing manages exits | entry ~${entryEstimate}`);
               } else {
-                // Fallback: static SL with 2.0× R:R TP
+                // Fallback: static SL with 2.5× R:R TP (higher ratio compensates for static geometry)
                 stopLossPrice = computeStopLossPrice(pair, direction, entryEstimate);
                 const fallbackSlPips = computeStopLossPips(pair, direction);
-                const fallbackTpPips = fallbackSlPips * 2.0;
+                const fallbackTpPips = fallbackSlPips * 2.5;
                 takeProfitPrice = direction === "long"
                   ? Math.round((entryEstimate + fallbackTpPips * slPipMult) * 100000) / 100000
                   : Math.round((entryEstimate - fallbackTpPips * slPipMult) * 100000) / 100000;
-                console.log(`[SCALP-TRADE] ${pair}: FALLBACK SL=${stopLossPrice} (${fallbackSlPips}p) | TP=${takeProfitPrice} (${fallbackTpPips.toFixed(1)}p) | R:R=1:2.0 | entry ~${entryEstimate}`);
+                console.log(`[SCALP-TRADE] ${pair}: FALLBACK SL=${stopLossPrice} (${fallbackSlPips}p) | TP=${takeProfitPrice} (${fallbackTpPips.toFixed(1)}p) | R:R=1:2.5 | entry ~${entryEstimate}`);
               }
             }
           }
