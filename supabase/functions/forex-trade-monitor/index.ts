@@ -79,9 +79,21 @@ function computeDynamicSL(
   if (direction === "long") {
     // SL below the Supertrend
     slPrice = supertrendValue - buffer;
+    // Sanity: SL must be BELOW entry for a long — otherwise it triggers immediately
+    if (slPrice >= entryPrice) {
+      const fallbackSlPips = 8;
+      slPrice = entryPrice - fallbackSlPips * pipMult;
+      console.log(`[DYNAMIC-SL] ${pair} long: Supertrend SL ${(supertrendValue - buffer).toFixed(5)} >= entry ${entryPrice.toFixed(5)}, using fallback ${slPrice.toFixed(5)}`);
+    }
   } else {
     // SL above the Supertrend
     slPrice = supertrendValue + buffer;
+    // Sanity: SL must be ABOVE entry for a short — otherwise it triggers immediately
+    if (slPrice <= entryPrice) {
+      const fallbackSlPips = 8;
+      slPrice = entryPrice + fallbackSlPips * pipMult;
+      console.log(`[DYNAMIC-SL] ${pair} short: Supertrend SL ${(supertrendValue + buffer).toFixed(5)} <= entry ${entryPrice.toFixed(5)}, using fallback ${slPrice.toFixed(5)}`);
+    }
   }
 
   const slDistancePips = direction === "long"
