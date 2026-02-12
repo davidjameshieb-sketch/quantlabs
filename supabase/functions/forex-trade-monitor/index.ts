@@ -16,8 +16,7 @@ const OANDA_HOSTS: Record<string, string> = {
 };
 const USER_ID = "11edc350-4c81-4d9f-82ae-cd2209b7581d";
 
-// ─── Pair-specific TP/SL thresholds (in price units, not pips) ───
-// Scalping profile: tight SL, asymmetric TP (~3:1 reward:risk)
+// ─── Pair-specific thresholds ───
 
 const JPY_PAIRS = ["USD_JPY", "EUR_JPY", "GBP_JPY", "AUD_JPY"];
 
@@ -25,25 +24,70 @@ function getPipMultiplier(pair: string): number {
   return JPY_PAIRS.includes(pair) ? 0.01 : 0.0001;
 }
 
-// TP/SL in pips per pair volatility class
-// Time limits are generous — let trades develop; TP/SL/trailing handle exits.
-// Time-exit is a last-resort cleanup, not a primary exit strategy.
-function getExitThresholds(pair: string): { tpPips: number; slPips: number; maxAgeMinutes: number } {
-  const pipMult = getPipMultiplier(pair);
-  
-  // Volatility classes
+// TP thresholds and max age by volatility class (SL is now dynamic via Supertrend+ATR)
+function getExitThresholds(pair: string): { tpPips: number; maxAgeMinutes: number } {
   const highVol = ["GBP_JPY", "GBP_AUD", "EUR_AUD", "AUD_NZD"];
   const medVol = ["GBP_USD", "EUR_JPY", "AUD_JPY", "USD_CAD", "EUR_GBP", "USD_JPY"];
-  // Low vol: EUR_USD, USD_JPY, AUD_USD, NZD_USD, etc.
 
   if (highVol.includes(pair)) {
-    return { tpPips: 25, slPips: 12, maxAgeMinutes: 50 };
+    return { tpPips: 25, maxAgeMinutes: 50 };
   }
   if (medVol.includes(pair)) {
-    return { tpPips: 18, slPips: 9, maxAgeMinutes: 40 };
+    return { tpPips: 18, maxAgeMinutes: 40 };
   }
-  // Low volatility majors
-  return { tpPips: 12, slPips: 7, maxAgeMinutes: 35 };
+  return { tpPips: 12, maxAgeMinutes: 35 };
+}
+
+// ─── Dynamic Stop Loss from 15m Supertrend + ATR ───
+// LONG: SL = supertrendValue - max(5 pips, 25% of 15m ATR)
+// SHORT: SL = supertrendValue + max(5 pips, 25% of 15m ATR)
+// Returns the SL price level and the distance in pips from entry
+
+interface DynamicSL {
+  slPrice: number;
+  slDistancePips: number;
+  source: "supertrend+atr" | "fallback";
+}
+
+function computeDynamicSL(
+  direction: string,
+  entryPrice: number,
+  pair: string,
+  supertrendValue: number | null,
+  atr15m: number | null,
+): DynamicSL {
+  const pipMult = getPipMultiplier(pair);
+
+  // Fallback if no indicator data available
+  if (supertrendValue === null || atr15m === null) {
+    const highVol = ["GBP_JPY", "GBP_AUD", "EUR_AUD", "AUD_NZD"];
+    const medVol = ["GBP_USD", "EUR_JPY", "AUD_JPY", "USD_CAD", "EUR_GBP", "USD_JPY"];
+    const fallbackSlPips = highVol.includes(pair) ? 12 : medVol.includes(pair) ? 9 : 7;
+    const slPrice = direction === "long"
+      ? entryPrice - fallbackSlPips * pipMult
+      : entryPrice + fallbackSlPips * pipMult;
+    return { slPrice, slDistancePips: fallbackSlPips, source: "fallback" };
+  }
+
+  // Buffer = max(5 pips, 25% of 15m ATR) converted to price units
+  const minBufferPrice = 5 * pipMult;
+  const atrBufferPrice = 0.25 * atr15m;
+  const buffer = Math.max(minBufferPrice, atrBufferPrice);
+
+  let slPrice: number;
+  if (direction === "long") {
+    // SL below the Supertrend
+    slPrice = supertrendValue - buffer;
+  } else {
+    // SL above the Supertrend
+    slPrice = supertrendValue + buffer;
+  }
+
+  const slDistancePips = direction === "long"
+    ? (entryPrice - slPrice) / pipMult
+    : (slPrice - entryPrice) / pipMult;
+
+  return { slPrice, slDistancePips: Math.abs(slDistancePips), source: "supertrend+atr" };
 }
 
 // ─── Trailing stop logic ───
@@ -54,30 +98,23 @@ function computeTrailingStop(
   entryPrice: number,
   currentPrice: number,
   pair: string,
-  triggerRatio = 0.60  // Can be tightened by divergence defense (e.g., 0.40)
+  tpPips: number,
+  triggerRatio = 0.60
 ): { adjustedSlPrice: number; isTrailing: boolean } {
   const pipMult = getPipMultiplier(pair);
-  const thresholds = getExitThresholds(pair);
-  
-  const tpPrice = direction === "long" 
-    ? entryPrice + thresholds.tpPips * pipMult 
-    : entryPrice - thresholds.tpPips * pipMult;
-  
-  const originalSlPrice = direction === "long"
-    ? entryPrice - thresholds.slPips * pipMult
-    : entryPrice + thresholds.slPips * pipMult;
+
+  const tpPrice = direction === "long"
+    ? entryPrice + tpPips * pipMult
+    : entryPrice - tpPips * pipMult;
 
   // Calculate progress toward TP
   const totalDistance = Math.abs(tpPrice - entryPrice);
   const currentDistance = direction === "long"
     ? currentPrice - entryPrice
     : entryPrice - currentPrice;
-  
+
   const progressRatio = totalDistance > 0 ? currentDistance / totalDistance : 0;
 
-  // If progress exceeds trigger ratio, move SL to breakeven + 1 pip
-  // NOTE: triggerRatio can be tightened by divergence defense (40% instead of 60%)
-  //       but NEVER loosened beyond default. This ensures divergence only protects profits.
   if (progressRatio >= triggerRatio) {
     const breakEvenPlus = direction === "long"
       ? entryPrice + 1 * pipMult
@@ -85,7 +122,7 @@ function computeTrailingStop(
     return { adjustedSlPrice: breakEvenPlus, isTrailing: true };
   }
 
-  return { adjustedSlPrice: originalSlPrice, isTrailing: false };
+  return { adjustedSlPrice: 0, isTrailing: false };
 }
 
 // ─── OANDA API Helper ───
@@ -128,17 +165,13 @@ async function oandaRequest(path: string, method: string, body?: Record<string, 
 // ═══ EXIT RULE PRIORITY (STRICT, INVIOLABLE ORDER) ═══
 // 1. TP hit          → CLOSE immediately (hard rule, nothing overrides)
 // 2. Trailing stop   → CLOSE immediately (hard rule)
-// 3. SL hit          → CLOSE immediately (hard rule)
+// 3. SL hit          → CLOSE immediately (hard rule, dynamic via Supertrend+ATR)
 // 4. Time-decay exit → CLOSE if flat/negative (last-resort cleanup)
 // 5. Hold            → Continue monitoring
 //
-// DIVERGENCE DEFENSE (from regime engine) is SUBORDINATE to all hard rules:
+// DIVERGENCE DEFENSE is SUBORDINATE to all hard rules:
 //   ✅ Can tighten trailing stops (reduce trailing trigger from 60% → 40% of TP)
-//   ✅ Can block NEW entries (handled in forex-auto-trade, not here)
-//   ❌ NEVER widens stops
-//   ❌ NEVER delays or prevents TP/SL/trailing exits
-//   ❌ NEVER overrides any exit action above
-// This ensures divergence logic is purely defensive and cannot cause profit leakage.
+//   ❌ NEVER widens stops or delays exits
 
 interface ExitDecision {
   action: "hold" | "close-tp" | "close-sl" | "close-time" | "close-trailing";
@@ -154,11 +187,12 @@ function evaluateExit(
   currentPrice: number,
   pair: string,
   tradeAgeMinutes: number,
+  dynamicSl: DynamicSL,
   governancePayload?: Record<string, unknown>
 ): ExitDecision {
   const pipMult = getPipMultiplier(pair);
   const thresholds = getExitThresholds(pair);
-  
+
   // Current P&L in pips
   const currentPnlPips = direction === "long"
     ? (currentPrice - entryPrice) / pipMult
@@ -167,71 +201,62 @@ function evaluateExit(
   // Progress toward TP
   const progressToTp = currentPnlPips / thresholds.tpPips;
 
-  // ═══ PRIORITY 1: TP hit — ALWAYS wins, nothing can override ═══
+  // ═══ PRIORITY 1: TP hit ═══
   if (currentPnlPips >= thresholds.tpPips) {
     return {
       action: "close-tp",
       reason: `TP hit: +${currentPnlPips.toFixed(1)} pips (target: ${thresholds.tpPips})`,
-      currentPnlPips,
-      progressToTp,
-      tradeAgeMinutes,
+      currentPnlPips, progressToTp, tradeAgeMinutes,
     };
   }
 
-  // ═══ PRIORITY 2: Trailing stop — hard rule, divergence can only TIGHTEN this ═══
-  // Check if regime was diverging at entry (stored in governance_payload)
-  // If diverging, tighten trailing trigger from 60% → 40% of TP progress
+  // ═══ PRIORITY 2: Trailing stop ═══
   const entryRegimeDiverging = governancePayload?.regimeEarlyWarning === true;
   const trailingTriggerRatio = entryRegimeDiverging ? 0.40 : 0.60;
-
-  const trailing = computeTrailingStop(direction, entryPrice, currentPrice, pair, trailingTriggerRatio);
+  const trailing = computeTrailingStop(direction, entryPrice, currentPrice, pair, thresholds.tpPips, trailingTriggerRatio);
   if (trailing.isTrailing) {
     const trailingSlPips = direction === "long"
       ? (currentPrice - trailing.adjustedSlPrice) / pipMult
       : (trailing.adjustedSlPrice - currentPrice) / pipMult;
-    
+
     if (trailingSlPips <= 0) {
       return {
         action: "close-trailing",
         reason: `Trailing stop hit after reaching ${(progressToTp * 100).toFixed(0)}% of TP${entryRegimeDiverging ? ' (tightened: regime early-warn)' : ''}`,
-        currentPnlPips,
-        progressToTp,
-        tradeAgeMinutes,
+        currentPnlPips, progressToTp, tradeAgeMinutes,
       };
     }
   }
 
-  // ═══ PRIORITY 3: SL hit — ALWAYS wins, divergence NEVER widens this ═══
-  if (currentPnlPips <= -thresholds.slPips) {
+  // ═══ PRIORITY 3: Dynamic SL hit (Supertrend + ATR based) ═══
+  const slHit = direction === "long"
+    ? currentPrice <= dynamicSl.slPrice
+    : currentPrice >= dynamicSl.slPrice;
+
+  if (slHit) {
     return {
       action: "close-sl",
-      reason: `SL hit: ${currentPnlPips.toFixed(1)} pips (limit: -${thresholds.slPips})`,
-      currentPnlPips,
-      progressToTp,
-      tradeAgeMinutes,
+      reason: `SL hit (${dynamicSl.source}): ${currentPnlPips.toFixed(1)} pips | SL@${dynamicSl.slPrice.toFixed(5)} (${dynamicSl.slDistancePips.toFixed(1)}p from entry)`,
+      currentPnlPips, progressToTp, tradeAgeMinutes,
     };
   }
 
-  // ═══ PRIORITY 4: Time-based exit — LAST RESORT cleanup only ═══
+  // ═══ PRIORITY 4: Time-based exit (last resort) ═══
   if (tradeAgeMinutes >= thresholds.maxAgeMinutes) {
     if (currentPnlPips <= 0) {
       return {
         action: "close-time",
-        reason: `Time exit: ${tradeAgeMinutes.toFixed(0)}min (max: ${thresholds.maxAgeMinutes}min), P&L: ${currentPnlPips.toFixed(1)}p — flat/negative, cleaning up`,
-        currentPnlPips,
-        progressToTp,
-        tradeAgeMinutes,
+        reason: `Time exit: ${tradeAgeMinutes.toFixed(0)}min (max: ${thresholds.maxAgeMinutes}min), P&L: ${currentPnlPips.toFixed(1)}p — flat/negative`,
+        currentPnlPips, progressToTp, tradeAgeMinutes,
       };
     }
-    console.log(`[TRADE-MONITOR] ${pair}: Age ${tradeAgeMinutes.toFixed(0)}min exceeds max but trade is +${currentPnlPips.toFixed(1)}p — holding for TP/trailing`);
+    console.log(`[TRADE-MONITOR] ${pair}: Age ${tradeAgeMinutes.toFixed(0)}min exceeds max but +${currentPnlPips.toFixed(1)}p — holding for TP/trailing`);
   }
 
   return {
     action: "hold",
-    reason: `Holding: ${currentPnlPips.toFixed(1)}p P&L, ${(progressToTp * 100).toFixed(0)}% to TP, ${tradeAgeMinutes.toFixed(0)}min age`,
-    currentPnlPips,
-    progressToTp,
-    tradeAgeMinutes,
+    reason: `Holding: ${currentPnlPips.toFixed(1)}p P&L, ${(progressToTp * 100).toFixed(0)}% to TP, SL@${dynamicSl.slPrice.toFixed(5)} (${dynamicSl.slDistancePips.toFixed(1)}p), ${tradeAgeMinutes.toFixed(0)}min age [${dynamicSl.source}]`,
+    currentPnlPips, progressToTp, tradeAgeMinutes,
   };
 }
 
@@ -327,6 +352,33 @@ Deno.serve(async (req) => {
       }
     }
 
+    // ═══ Fetch 15m Supertrend + ATR for dynamic stop loss ═══
+    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+    const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
+    const indicatorMap = new Map<string, { supertrend: number; atr: number }>();
+
+    // Fetch 15m indicators for each unique pair (parallel)
+    const indicatorPromises = [...instrumentsNeeded].map(async (pair) => {
+      try {
+        const url = `${supabaseUrl}/functions/v1/forex-indicators?instrument=${pair}&timeframe=15m`;
+        const res = await fetch(url, {
+          headers: { Authorization: `Bearer ${supabaseAnonKey}`, "Content-Type": "application/json" },
+        });
+        if (res.ok) {
+          const data = await res.json();
+          const stValue = data.indicators?.supertrend?.value;
+          const atrValue = data.indicators?.atr?.value;
+          if (stValue != null && atrValue != null) {
+            indicatorMap.set(pair, { supertrend: stValue, atr: atrValue });
+          }
+        }
+      } catch (err) {
+        console.warn(`[TRADE-MONITOR] Failed to fetch 15m indicators for ${pair}:`, (err as Error).message);
+      }
+    });
+    await Promise.all(indicatorPromises);
+    console.log(`[TRADE-MONITOR] Fetched 15m indicators (Supertrend+ATR) for ${indicatorMap.size}/${instrumentsNeeded.size} pairs`);
+
     // 3. Evaluate each open order
     const results: Array<{
       pair: string; direction: string; action: string; reason: string;
@@ -341,7 +393,6 @@ Deno.serve(async (req) => {
       
       // If trade is no longer on OANDA (already closed externally)
       if (!oandaTrade) {
-        // Try to get the trade details to find exit price
         try {
           const tradeDetails = await oandaRequest(
             `/v3/accounts/{accountId}/trades/${order.oanda_trade_id}`,
@@ -383,19 +434,26 @@ Deno.serve(async (req) => {
         continue;
       }
 
-      // FIX: Use LIVE market price from pricing endpoint, NOT oandaTrade.price (which is the entry price!)
-      // oandaTrade.price is the average entry price of the trade, not the current market price.
-      // Using entry price made all TP/SL evaluations see ~0 pips P&L and never trigger exits.
       const livePrice = currentPriceMap.get(order.currency_pair);
-      const currentPrice = livePrice || parseFloat(oandaTrade.price); // fallback to entry only if pricing unavailable
+      const currentPrice = livePrice || parseFloat(oandaTrade.price);
       if (!livePrice) {
-        console.warn(`[TRADE-MONITOR] ${order.currency_pair}: No live price available, using trade entry price as fallback (exit decisions may be inaccurate)`);
+        console.warn(`[TRADE-MONITOR] ${order.currency_pair}: No live price, using trade entry as fallback`);
       }
       const entryPrice = order.entry_price!;
       const tradeAgeMs = Date.now() - new Date(order.created_at).getTime();
       const tradeAgeMinutes = tradeAgeMs / 60000;
 
-      // Evaluate exit decision — pass governance_payload for divergence-aware trailing
+      // Compute dynamic SL from 15m Supertrend + ATR
+      const ind = indicatorMap.get(order.currency_pair);
+      const dynamicSl = computeDynamicSL(
+        order.direction,
+        entryPrice,
+        order.currency_pair,
+        ind?.supertrend ?? null,
+        ind?.atr ?? null,
+      );
+
+      // Evaluate exit decision
       const govPayload = (order.governance_payload && typeof order.governance_payload === 'object')
         ? order.governance_payload as Record<string, unknown>
         : undefined;
@@ -405,6 +463,7 @@ Deno.serve(async (req) => {
         currentPrice,
         order.currency_pair,
         tradeAgeMinutes,
+        dynamicSl,
         govPayload
       );
 

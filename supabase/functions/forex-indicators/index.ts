@@ -324,6 +324,10 @@ Deno.serve(async (req) => {
 
     const closes = candles.map(c => c.c);
 
+    // Compute raw ATR(14) for exposure in response
+    const atrVals14 = atr(candles, 14);
+    const currentATR = atrVals14[atrVals14.length - 1];
+
     const indicators = {
       ema50: computeEMA(closes, 50),
       rsi: computeRSI(closes, 14),
@@ -341,6 +345,7 @@ Deno.serve(async (req) => {
       heikinAshi: computeHeikinAshi(candles),
       pivotPoints: computePivotPoints(candles),
       trendEfficiency: computeTrendEfficiency(closes, 14),
+      atr: { value: currentATR, period: 14 },
     };
 
     // Consensus signal
