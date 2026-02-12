@@ -96,10 +96,12 @@ export type Database = {
           direction_engine: string
           direction_tf_used: string | null
           entry_price: number | null
+          entry_ths: number | null
           environment: string
           error_message: string | null
           execution_quality_score: number | null
           exit_price: number | null
+          exit_ths: number | null
           fill_latency_ms: number | null
           friction_score: number | null
           gate_reasons: string[] | null
@@ -110,9 +112,11 @@ export type Database = {
           health_governance_action: string | null
           id: string
           idempotency_key: string | null
+          mae_r: number | null
           mfe_r: number | null
           oanda_order_id: string | null
           oanda_trade_id: string | null
+          peak_ths: number | null
           progress_fail: boolean | null
           quantlabs_bias: string | null
           quantlabs_confidence: number | null
@@ -149,10 +153,12 @@ export type Database = {
           direction_engine?: string
           direction_tf_used?: string | null
           entry_price?: number | null
+          entry_ths?: number | null
           environment?: string
           error_message?: string | null
           execution_quality_score?: number | null
           exit_price?: number | null
+          exit_ths?: number | null
           fill_latency_ms?: number | null
           friction_score?: number | null
           gate_reasons?: string[] | null
@@ -163,9 +169,11 @@ export type Database = {
           health_governance_action?: string | null
           id?: string
           idempotency_key?: string | null
+          mae_r?: number | null
           mfe_r?: number | null
           oanda_order_id?: string | null
           oanda_trade_id?: string | null
+          peak_ths?: number | null
           progress_fail?: boolean | null
           quantlabs_bias?: string | null
           quantlabs_confidence?: number | null
@@ -202,10 +210,12 @@ export type Database = {
           direction_engine?: string
           direction_tf_used?: string | null
           entry_price?: number | null
+          entry_ths?: number | null
           environment?: string
           error_message?: string | null
           execution_quality_score?: number | null
           exit_price?: number | null
+          exit_ths?: number | null
           fill_latency_ms?: number | null
           friction_score?: number | null
           gate_reasons?: string[] | null
@@ -216,9 +226,11 @@ export type Database = {
           health_governance_action?: string | null
           id?: string
           idempotency_key?: string | null
+          mae_r?: number | null
           mfe_r?: number | null
           oanda_order_id?: string | null
           oanda_trade_id?: string | null
+          peak_ths?: number | null
           progress_fail?: boolean | null
           quantlabs_bias?: string | null
           quantlabs_confidence?: number | null
