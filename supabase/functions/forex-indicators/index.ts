@@ -689,21 +689,56 @@ Deno.serve(async (req) => {
 
     // Count how many of the last N bars share the current regime
     const holdBars = recentRegimes.filter(r => r === marketRegime).length;
-    // Also check "regime family" stability (e.g., expansion+momentum = bullish family)
-    const BULLISH_FAMILY = ["expansion", "momentum"];
-    const BEARISH_FAMILY = ["breakdown", "risk-off"];
-    const familyLabel = BULLISH_FAMILY.includes(marketRegime) ? "bullish"
-      : BEARISH_FAMILY.includes(marketRegime) ? "bearish" : "neutral";
-    const familyHoldBars = recentRegimes.filter(r => {
-      if (familyLabel === "bullish") return BULLISH_FAMILY.includes(r);
-      if (familyLabel === "bearish") return BEARISH_FAMILY.includes(r);
+
+    // ═══ DIRECTION-AWARE REGIME FAMILIES ═══
+    // Family grouping must encode bull/bear direction from persistence + momentum,
+    // NOT from the regime name alone. "Momentum" can be bullish or bearish.
+    const BULLISH_TRADE_REGIMES = ["expansion", "momentum"];
+    const BEARISH_TRADE_REGIMES = ["breakdown", "risk-off"];
+    const NEUTRAL_NO_TRADE_REGIMES = ["compression", "flat", "exhaustion", "ignition", "transition"];
+
+    // Derive family direction from 15m-equivalent persistence direction (dominantDir)
+    // and the regime label. This prevents bullish family from confirming bearish momentum.
+    const regimeDirection = dominantDir; // "bullish" or "bearish" — derived from indicator persistence
+    let familyLabel: string;
+    if (NEUTRAL_NO_TRADE_REGIMES.includes(marketRegime)) {
+      familyLabel = "neutral"; // All no-trade regimes grouped as one NEUTRAL family
+    } else if (BULLISH_TRADE_REGIMES.includes(marketRegime) && regimeDirection === "bullish") {
+      familyLabel = "bullish";
+    } else if (BEARISH_TRADE_REGIMES.includes(marketRegime) && regimeDirection === "bearish") {
+      familyLabel = "bearish";
+    } else {
+      // Direction mismatch: e.g., "momentum" label but bearish persistence → treat as neutral
+      // This catches the case where bullish family accidentally confirms bearish momentum
+      familyLabel = "neutral";
+    }
+
+    // Family hold: count bars where BOTH regime family AND direction match
+    const familyHoldBars = recentRegimes.filter((r, idx) => {
+      if (familyLabel === "neutral") return NEUTRAL_NO_TRADE_REGIMES.includes(r);
+      if (familyLabel === "bullish") return BULLISH_TRADE_REGIMES.includes(r);
+      if (familyLabel === "bearish") return BEARISH_TRADE_REGIMES.includes(r);
       return r === marketRegime;
     }).length;
 
+    // ═══ ASYMMETRIC PERSISTENCE ═══
+    // Entry: require 3+ bars confirmed (slow to enter)
+    // Exit/throttle: only 1-2 bars of divergence triggers defense (quick to back off)
     const regimeConfirmed = holdBars >= 3; // exact match held 3+ bars
-    const regimeFamilyConfirmed = familyHoldBars >= 3; // family held 3+ bars
+    const regimeFamilyConfirmed = familyHoldBars >= 3; // family held 3+ bars (entry gate)
 
-    console.log(`[REGIME-COMPOSITE] ${instrument}/${timeframe}: volScore=${volatilityScore} | accel=${volAcceleration}(${accelLevel}) [atr=${atrAccelScore},bb=${bbAccelScore},range=${rangeAccelScore}] | persScore=${directionalPersistence} (eff=${efficiencyScore}, adx=${adxNormalized}, struct=${structureScore}) → ${marketRegime} (${regimeStrength}) | hold=${holdBars}/${STABILITY_LOOKBACK} familyHold=${familyHoldBars} confirmed=${regimeConfirmed} recentRegimes=[${recentRegimes.join(',')}]`);
+    // Divergence detection: how many of last 5 bars DISAGREE with current family?
+    const divergentBars = recentRegimes.filter(r => {
+      if (familyLabel === "bullish") return !BULLISH_TRADE_REGIMES.includes(r);
+      if (familyLabel === "bearish") return !BEARISH_TRADE_REGIMES.includes(r);
+      return !NEUTRAL_NO_TRADE_REGIMES.includes(r); // for neutral, divergence = any trade regime appearing
+    }).length;
+    // If 2+ of last 5 bars diverge from current family → regime is unstable, throttle
+    const regimeDiverging = divergentBars >= 2;
+    // If 1+ bars diverge → early warning (can be used for tighter stops / reduced sizing)
+    const regimeEarlyWarning = divergentBars >= 1 && !regimeDiverging;
+
+    console.log(`[REGIME-COMPOSITE] ${instrument}/${timeframe}: volScore=${volatilityScore} | accel=${volAcceleration}(${accelLevel}) [atr=${atrAccelScore},bb=${bbAccelScore},range=${rangeAccelScore}] | persScore=${directionalPersistence} (eff=${efficiencyScore}, adx=${adxNormalized}, struct=${structureScore}) → ${marketRegime} (${regimeStrength}) | dir=${regimeDirection} family=${familyLabel} | hold=${holdBars}/${STABILITY_LOOKBACK} familyHold=${familyHoldBars} confirmed=${regimeFamilyConfirmed} divergent=${divergentBars} diverging=${regimeDiverging} earlyWarn=${regimeEarlyWarning} recentRegimes=[${recentRegimes.join(',')}]`);
 
     const lastCandle = candles[candles.length - 1];
 
@@ -744,11 +779,17 @@ Deno.serve(async (req) => {
         adx: adxVal,
         trendEfficiency: trendEff,
         bollingerWidth: bbWidth,
-        // ═══ REGIME STABILITY: Anti-flicker confirmation ═══
+        // ═══ REGIME STABILITY: Direction-aware anti-flicker confirmation ═══
         holdBars,
         familyHoldBars,
+        familyLabel,           // "bullish" | "bearish" | "neutral" — direction-aware
+        regimeDirection,       // persistence-derived direction ("bullish" | "bearish")
         regimeConfirmed,
         regimeFamilyConfirmed,
+        // ═══ ASYMMETRIC PERSISTENCE: Slow entry, fast exit ═══
+        divergentBars,         // how many of last 5 bars disagree with current family
+        regimeDiverging,       // 2+ bars diverge → throttle/exit signal
+        regimeEarlyWarning,    // 1 bar diverges → tighten stops / reduce sizing
         recentRegimes,
         shortFriendly: ["breakdown", "risk-off", "exhaustion"].includes(marketRegime),
         longFriendly: ["expansion", "momentum", "exhaustion"].includes(marketRegime),

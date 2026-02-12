@@ -2054,36 +2054,68 @@ Deno.serve(async (req) => {
                 indicatorLongFriendly = indicatorData.regime.longFriendly === true;
                 indicatorBearishMomentum = indicatorData.regime.bearishMomentum || 0;
                 indicatorBullishMomentum = indicatorData.regime.bullishMomentum || 0;
-                // ═══ REGIME STABILITY: Anti-flicker fields ═══
+                // ═══ REGIME STABILITY: Direction-aware anti-flicker fields ═══
                 const regimeHoldBars = indicatorData.regime.holdBars || 0;
                 const regimeFamilyHoldBars = indicatorData.regime.familyHoldBars || 0;
                 const regimeConfirmed = indicatorData.regime.regimeConfirmed === true;
                 const regimeFamilyConfirmed = indicatorData.regime.regimeFamilyConfirmed === true;
                 const recentRegimes = indicatorData.regime.recentRegimes || [];
+                const familyLabel = indicatorData.regime.familyLabel || "neutral";
+                const regimeDirection = indicatorData.regime.regimeDirection || "neutral";
+                // ═══ ASYMMETRIC PERSISTENCE: Fast exit fields ═══
+                const divergentBars = indicatorData.regime.divergentBars || 0;
+                const regimeDiverging = indicatorData.regime.regimeDiverging === true;
+                const regimeEarlyWarning = indicatorData.regime.regimeEarlyWarning === true;
                 // ═══ VOLATILITY ACCELERATION: Anti-false-expansion fields ═══
                 const volAcceleration = indicatorData.regime.volAcceleration || 0;
                 const accelLevel = indicatorData.regime.accelLevel || "stable";
-                console.log(`[REGIME-INDICATOR] ${pair}: regime=${indicatorRegime} strength=${indicatorRegimeStrength} longFriendly=${indicatorLongFriendly} shortFriendly=${indicatorShortFriendly} bullishMom=${indicatorBullishMomentum} bearishMom=${indicatorBearishMomentum} hold=${regimeHoldBars} familyHold=${regimeFamilyHoldBars} confirmed=${regimeConfirmed} accel=${volAcceleration}(${accelLevel}) recentRegimes=[${recentRegimes.join(',')}]`);
+                console.log(`[REGIME-INDICATOR] ${pair}: regime=${indicatorRegime} strength=${indicatorRegimeStrength} longFriendly=${indicatorLongFriendly} shortFriendly=${indicatorShortFriendly} bullishMom=${indicatorBullishMomentum} bearishMom=${indicatorBearishMomentum} hold=${regimeHoldBars} familyHold=${regimeFamilyHoldBars} family=${familyLabel} dir=${regimeDirection} confirmed=${regimeFamilyConfirmed} divergent=${divergentBars} diverging=${regimeDiverging} earlyWarn=${regimeEarlyWarning} accel=${volAcceleration}(${accelLevel}) recentRegimes=[${recentRegimes.join(',')}]`);
 
-                // ═══ ANTI-FLICKER GATE 1: Transition regimes CANNOT authorize trades ═══
-                if (indicatorRegime === "transition") {
-                  console.log(`[REGIME-FLICKER] ${pair}: Transition regime detected — BLOCKING trade authorization (transition cannot authorize)`);
-                  results.push({ pair, direction: "none", status: "transition-regime-blocked", govState, agentId,
-                    error: `regime=transition,recentRegimes=[${recentRegimes.join(',')}]` });
+                // ═══ ANTI-FLICKER GATE 0: NEUTRAL family regimes block ALL trades ═══
+                // Compression/flat/exhaustion/ignition/transition all grouped as NEUTRAL — no trade authorization
+                const NEUTRAL_BLOCKED_REGIMES = ["compression", "flat", "exhaustion", "ignition", "transition"];
+                if (NEUTRAL_BLOCKED_REGIMES.includes(indicatorRegime) || familyLabel === "neutral") {
+                  console.log(`[REGIME-NEUTRAL] ${pair}: ${indicatorRegime} (family=${familyLabel}) — BLOCKING trade authorization (neutral/no-trade regime)`);
+                  results.push({ pair, direction: "none", status: "neutral-regime-blocked", govState, agentId,
+                    error: `regime=${indicatorRegime},family=${familyLabel},dir=${regimeDirection}` });
                   continue;
                 }
 
-                // ═══ ANTI-FLICKER GATE 2: Expansion/momentum must hold 3+ bars ═══
+                // ═══ ANTI-FLICKER GATE 1: Direction mismatch blocks trade ═══
+                // If regime says "expansion" but persistence direction is bearish → family=neutral → already blocked above
+                // Additional safety: verify trade direction matches regime family direction
+                if (familyLabel === "bullish" && regimeDirection !== "bullish") {
+                  console.log(`[REGIME-DIR-MISMATCH] ${pair}: bullish family but persistence=${regimeDirection} — BLOCKING (direction mismatch)`);
+                  results.push({ pair, direction: "none", status: "regime-direction-mismatch", govState, agentId,
+                    error: `family=${familyLabel},persistenceDir=${regimeDirection}` });
+                  continue;
+                }
+                if (familyLabel === "bearish" && regimeDirection !== "bearish") {
+                  console.log(`[REGIME-DIR-MISMATCH] ${pair}: bearish family but persistence=${regimeDirection} — BLOCKING (direction mismatch)`);
+                  results.push({ pair, direction: "none", status: "regime-direction-mismatch", govState, agentId,
+                    error: `family=${familyLabel},persistenceDir=${regimeDirection}` });
+                  continue;
+                }
+
+                // ═══ ANTI-FLICKER GATE 2: Trade regimes must hold 3+ bars (direction-aware family) ═══
                 const HOLD_REQUIRED_REGIMES = ["expansion", "momentum", "breakdown", "risk-off"];
                 if (HOLD_REQUIRED_REGIMES.includes(indicatorRegime) && !regimeFamilyConfirmed) {
-                  console.log(`[REGIME-FLICKER] ${pair}: ${indicatorRegime} detected but NOT confirmed (familyHold=${regimeFamilyHoldBars}<3, recent=[${recentRegimes.join(',')}]) — BLOCKING to prevent flicker entry`);
+                  console.log(`[REGIME-FLICKER] ${pair}: ${indicatorRegime} (family=${familyLabel}) NOT confirmed (familyHold=${regimeFamilyHoldBars}<3, recent=[${recentRegimes.join(',')}]) — BLOCKING to prevent flicker entry`);
                   results.push({ pair, direction: "none", status: "regime-not-confirmed", govState, agentId,
-                    error: `regime=${indicatorRegime},familyHold=${regimeFamilyHoldBars},recentRegimes=[${recentRegimes.join(',')}]` });
+                    error: `regime=${indicatorRegime},family=${familyLabel},familyHold=${regimeFamilyHoldBars},recentRegimes=[${recentRegimes.join(',')}]` });
+                  continue;
+                }
+
+                // ═══ ASYMMETRIC PERSISTENCE GATE: 1-2 bars divergence → fast defense ═══
+                // Slow to enter (3+ bars), quick to back off (2 divergent bars = throttle)
+                if (regimeDiverging) {
+                  console.log(`[REGIME-DIVERGE] ${pair}: ${indicatorRegime} regime DIVERGING (${divergentBars} of last 5 bars disagree with ${familyLabel} family) — BLOCKING for fast defense`);
+                  results.push({ pair, direction: "none", status: "regime-diverging", govState, agentId,
+                    error: `regime=${indicatorRegime},family=${familyLabel},divergentBars=${divergentBars}` });
                   continue;
                 }
 
                 // ═══ ANTI-FLICKER GATE 3: Expansion/breakdown require vol acceleration ═══
-                // Prevents false expansions (vol static/declining) and late trend entries (vol fading)
                 const ACCEL_REQUIRED_REGIMES = ["expansion", "breakdown"];
                 if (ACCEL_REQUIRED_REGIMES.includes(indicatorRegime) && accelLevel === "decelerating") {
                   console.log(`[REGIME-ACCEL] ${pair}: ${indicatorRegime} regime but vol DECELERATING (accel=${volAcceleration}) — downgrading to prevent false ${indicatorRegime} entry`);
