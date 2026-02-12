@@ -1075,19 +1075,18 @@ function buildShortLearningProfile(orders: Array<Record<string, unknown>>): Shor
   else if (totalShortTrades >= 20) maturity = "growing";
   else if (totalShortTrades >= 5) maturity = "early";
 
-  // EMERGENCY FIX: Shorts losing across ALL pairs (-5,236p in 7 days).
-  // Default raised from 4/7 to 5/7 — require stronger bearish conviction before shorting.
-  // Only relax to 4 after PROVEN profitability (WR >= 55% over 50+ shorts).
-  // Adaptive bearish momentum: require 5/7 default, only tighten with 50+ trade evidence
-  let adaptiveBearishThreshold = 5;
-  if (totalShortTrades >= 75 && overallWR >= 0.55 && overallExp > 0) adaptiveBearishThreshold = 4;
-  else if (totalShortTrades >= 50 && overallWR < 0.30) adaptiveBearishThreshold = 6;
+  // EQUALIZED: Short thresholds now match longs during learning phase.
+  // Previous "EMERGENCY FIX" (5/7 bearish, regimeMin=45) was based on practice-era data
+  // poisoned by the 8-pip SL bug. With 12-pip fallback SL fix applied, shorts deserve
+  // the same signal density as longs to collect unbiased learning data.
+  let adaptiveBearishThreshold = 4; // Parity with longs (was 5)
+  if (totalShortTrades >= 50 && overallWR < 0.35) adaptiveBearishThreshold = 5;
+  else if (totalShortTrades >= 75 && overallWR >= 0.55) adaptiveBearishThreshold = 3;
 
-  // Regime strength minimum — PERMISSIVE during learning (was 45 "EMERGENCY FIX" but
-  // that was based on practice data, not live. Live shorts were killed by SL bug, not weak regimes)
-  let adaptiveRegimeStrengthMin = 30;
-  if (totalShortTrades >= 50 && overallWR < 0.30) adaptiveRegimeStrengthMin = 50;
-  else if (totalShortTrades >= 75 && overallWR >= 0.55 && overallExp > 0) adaptiveRegimeStrengthMin = 25;
+  // Regime strength minimum — PARITY with longs (was 30, longs are 25)
+  let adaptiveRegimeStrengthMin = 25; // Parity with longs (was 30)
+  if (totalShortTrades >= 50 && overallWR < 0.30) adaptiveRegimeStrengthMin = 40;
+  else if (totalShortTrades >= 75 && overallWR >= 0.55) adaptiveRegimeStrengthMin = 20;
 
   const regimeEntries = Object.entries(regimeStats)
     .filter(([, s]) => (s.wins + s.losses) >= 3)
