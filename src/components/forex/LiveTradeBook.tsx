@@ -231,6 +231,64 @@ function TradeRow({ order, index }: { order: RealOrder; index: number }) {
   );
 }
 
+// ─── Open Position Row ───────────────────────────────────────────────
+
+function OpenPositionRow({ order, index }: { order: RealOrder; index: number }) {
+  const pair = order.currency_pair.replace('_', '/');
+  const time = new Date(order.created_at).toLocaleString('en-US', {
+    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false
+  });
+  const ageMin = Math.round((Date.now() - new Date(order.created_at).getTime()) / 60000);
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, x: -10 }}
+      animate={{ opacity: 1, x: 0 }}
+      transition={{ delay: index * 0.03 }}
+      className="border rounded-lg p-3 space-y-1.5 border-primary/30 bg-primary/5"
+    >
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <span className="relative flex h-2.5 w-2.5">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-primary opacity-75" />
+            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-primary" />
+          </span>
+          <span className="font-mono font-bold text-sm text-foreground">{pair}</span>
+          <Badge variant="outline" className={cn(
+            "text-[9px] px-1.5",
+            order.direction === 'long' ? "text-emerald-400 border-emerald-400/30" : "text-red-400 border-red-400/30"
+          )}>
+            {order.direction.toUpperCase()}
+          </Badge>
+          <span className="text-[10px] text-muted-foreground">{time}</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <Badge variant="outline" className="text-[9px] px-1.5 border-primary/30 text-primary">
+            OPEN · {ageMin}m
+          </Badge>
+        </div>
+      </div>
+      <div className="flex items-center gap-3 text-[10px] text-muted-foreground flex-wrap">
+        <span className="flex items-center gap-1">
+          <Target className="w-3 h-3" />
+          Entry: {order.entry_price?.toFixed(5) ?? '—'}
+        </span>
+        <span>{order.units}u</span>
+        <Badge variant="outline" className="text-[9px] px-1">
+          {order.regime_label || '?'}
+        </Badge>
+        <Badge variant="outline" className="text-[9px] px-1">
+          {order.session_label || '?'}
+        </Badge>
+        <span>Agent: {order.agent_id || '?'}</span>
+        {order.execution_quality_score != null && (
+          <span>Quality: {order.execution_quality_score}%</span>
+        )}
+      </div>
+    </motion.div>
+  );
+}
+
 // ─── Main Component ──────────────────────────────────────────────────
 
 interface LiveTradeBookProps {
@@ -238,6 +296,18 @@ interface LiveTradeBookProps {
 }
 
 export function LiveTradeBook({ metrics }: LiveTradeBookProps) {
+  // Open positions: filled but no exit price
+  const openPositions = useMemo(() => {
+    if (!metrics?.recentOrders) return [];
+    return metrics.recentOrders
+      .filter(o =>
+        o.status === 'filled' &&
+        o.entry_price != null && o.exit_price == null
+      )
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+  }, [metrics]);
+
+  // Closed trades
   const trades = useMemo(() => {
     if (!metrics?.recentOrders) return [];
     return metrics.recentOrders
@@ -253,36 +323,24 @@ export function LiveTradeBook({ metrics }: LiveTradeBookProps) {
     const losses = trades.filter(t => computePnlPips(t) <= 0);
     const totalPips = trades.reduce((s, t) => s + computePnlPips(t), 0);
     const unexpectedCount = trades.filter(t => !analyzeExpectation(t, computePnlPips(t)).asExpected).length;
-    
-    // Key pattern: most common losing regime
     const regimeLosses: Record<string, number> = {};
-    losses.forEach(t => {
-      const r = t.regime_label || 'unknown';
-      regimeLosses[r] = (regimeLosses[r] || 0) + 1;
-    });
+    losses.forEach(t => { const r = t.regime_label || 'unknown'; regimeLosses[r] = (regimeLosses[r] || 0) + 1; });
     const worstRegime = Object.entries(regimeLosses).sort((a, b) => b[1] - a[1])[0];
-
-    // Key pattern: most common losing session
     const sessionLosses: Record<string, number> = {};
-    losses.forEach(t => {
-      const s = t.session_label || 'unknown';
-      sessionLosses[s] = (sessionLosses[s] || 0) + 1;
-    });
+    losses.forEach(t => { const s = t.session_label || 'unknown'; sessionLosses[s] = (sessionLosses[s] || 0) + 1; });
     const worstSession = Object.entries(sessionLosses).sort((a, b) => b[1] - a[1])[0];
-
     return {
-      total: trades.length,
-      wins: wins.length,
-      losses: losses.length,
+      total: trades.length, wins: wins.length, losses: losses.length,
       winRate: trades.length > 0 ? (wins.length / trades.length * 100) : 0,
-      totalPips: Math.round(totalPips * 10) / 10,
-      unexpectedCount,
+      totalPips: Math.round(totalPips * 10) / 10, unexpectedCount,
       worstRegime: worstRegime ? `${worstRegime[0]} (${worstRegime[1]} losses)` : null,
       worstSession: worstSession ? `${worstSession[0]} (${worstSession[1]} losses)` : null,
     };
   }, [trades]);
 
-  if (!metrics?.hasData || trades.length === 0) {
+  const hasAnyData = openPositions.length > 0 || trades.length > 0;
+
+  if (!metrics?.hasData || !hasAnyData) {
     return (
       <div className="flex flex-col items-center justify-center p-12 text-center border border-border/30 rounded-lg bg-card/30">
         <Activity className="w-8 h-8 text-muted-foreground mb-3" />
@@ -296,59 +354,84 @@ export function LiveTradeBook({ metrics }: LiveTradeBookProps) {
 
   return (
     <div className="space-y-4">
-      {/* Summary Bar */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-        <SummaryCard label="Trades" value={`${summary.total}`} />
-        <SummaryCard 
-          label="Record" 
-          value={`${summary.wins}W / ${summary.losses}L`} 
-          status={summary.wins > summary.losses ? 'good' : 'bad'} 
-        />
-        <SummaryCard 
-          label="Win Rate" 
-          value={`${summary.winRate.toFixed(1)}%`} 
-          status={summary.winRate >= 55 ? 'good' : summary.winRate >= 45 ? 'warn' : 'bad'} 
-        />
-        <SummaryCard 
-          label="Net P&L" 
-          value={`${summary.totalPips >= 0 ? '+' : ''}${summary.totalPips}p`} 
-          status={summary.totalPips >= 0 ? 'good' : 'bad'} 
-        />
-        <SummaryCard 
-          label="Unexpected" 
-          value={`${summary.unexpectedCount}/${summary.total}`} 
-          status={summary.unexpectedCount > summary.total * 0.5 ? 'bad' : 'warn'} 
-        />
-      </div>
-
-      {/* Key Insights */}
-      {(summary.worstRegime || summary.worstSession) && (
-        <div className="flex items-start gap-2 p-3 rounded-lg border border-amber-500/20 bg-amber-500/5">
-          <Brain className="w-4 h-4 text-amber-400 mt-0.5 shrink-0" />
-          <div className="space-y-1">
-            <span className="text-[10px] uppercase tracking-wider text-amber-400 font-bold">Key Pattern</span>
-            <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
-              {summary.worstRegime && (
-                <span>Worst regime: <strong className="text-foreground">{summary.worstRegime}</strong></span>
-              )}
-              {summary.worstSession && (
-                <span>Worst session: <strong className="text-foreground">{summary.worstSession}</strong></span>
-              )}
-            </div>
-            <div className="flex items-center gap-1 text-[10px] text-primary">
-              <ArrowRight className="w-3 h-3" />
-              <span>Strategy update: block these patterns in next iteration</span>
-            </div>
+      {/* Open Positions */}
+      {openPositions.length > 0 && (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <span className="relative flex h-2 w-2">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-primary opacity-75" />
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-primary" />
+            </span>
+            <h3 className="text-xs font-display font-bold uppercase tracking-wider text-foreground">
+              Open Positions ({openPositions.length})
+            </h3>
           </div>
+          {openPositions.map((order, i) => (
+            <OpenPositionRow key={order.id} order={order} index={i} />
+          ))}
         </div>
       )}
 
-      {/* Trade List */}
-      <div className="space-y-2">
-        {trades.map((order, i) => (
-          <TradeRow key={order.id} order={order} index={i} />
-        ))}
-      </div>
+      {/* Summary Bar (closed trades) */}
+      {trades.length > 0 && (
+        <>
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+            <SummaryCard label="Trades" value={`${summary.total}`} />
+            <SummaryCard 
+              label="Record" 
+              value={`${summary.wins}W / ${summary.losses}L`} 
+              status={summary.wins > summary.losses ? 'good' : 'bad'} 
+            />
+            <SummaryCard 
+              label="Win Rate" 
+              value={`${summary.winRate.toFixed(1)}%`} 
+              status={summary.winRate >= 55 ? 'good' : summary.winRate >= 45 ? 'warn' : 'bad'} 
+            />
+            <SummaryCard 
+              label="Net P&L" 
+              value={`${summary.totalPips >= 0 ? '+' : ''}${summary.totalPips}p`} 
+              status={summary.totalPips >= 0 ? 'good' : 'bad'} 
+            />
+            <SummaryCard 
+              label="Unexpected" 
+              value={`${summary.unexpectedCount}/${summary.total}`} 
+              status={summary.unexpectedCount > summary.total * 0.5 ? 'bad' : 'warn'} 
+            />
+          </div>
+
+          {/* Key Insights */}
+          {(summary.worstRegime || summary.worstSession) && (
+            <div className="flex items-start gap-2 p-3 rounded-lg border border-amber-500/20 bg-amber-500/5">
+              <Brain className="w-4 h-4 text-amber-400 mt-0.5 shrink-0" />
+              <div className="space-y-1">
+                <span className="text-[10px] uppercase tracking-wider text-amber-400 font-bold">Key Pattern</span>
+                <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
+                  {summary.worstRegime && (
+                    <span>Worst regime: <strong className="text-foreground">{summary.worstRegime}</strong></span>
+                  )}
+                  {summary.worstSession && (
+                    <span>Worst session: <strong className="text-foreground">{summary.worstSession}</strong></span>
+                  )}
+                </div>
+                <div className="flex items-center gap-1 text-[10px] text-primary">
+                  <ArrowRight className="w-3 h-3" />
+                  <span>Strategy update: block these patterns in next iteration</span>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Closed Trade List */}
+          <div className="space-y-2">
+            <h3 className="text-xs font-display font-bold uppercase tracking-wider text-muted-foreground">
+              Closed Trades ({trades.length})
+            </h3>
+            {trades.map((order, i) => (
+              <TradeRow key={order.id} order={order} index={i} />
+            ))}
+          </div>
+        </>
+      )}
     </div>
   );
 }
