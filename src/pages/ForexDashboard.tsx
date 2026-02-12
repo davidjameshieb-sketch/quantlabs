@@ -1,45 +1,21 @@
-// Forex Command Center — Consolidated live trading dashboard
-// 4 tabs: Command Center, Performance, Governance, Archive
+// Forex Command Center — Trade Book + Archive
+// Primary view: Live trade book with per-trade analysis
+// Archive: All legacy dashboards
 
 import { useState, useMemo, useEffect, useCallback } from 'react';
 import { LongOnlyFilterProvider } from '@/contexts/LongOnlyFilterContext';
 import { motion } from 'framer-motion';
 import {
-  Globe, TrendingUp, Shield, BarChart3, ChevronDown,
-  Zap, PieChart, Activity,
+  Globe, TrendingUp, ChevronDown, BookOpen, Archive,
 } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { DashboardLayout } from '@/components/dashboard/DashboardLayout';
 import { IntelligenceModeBadge } from '@/components/dashboard/IntelligenceModeBadge';
 import { LongOnlyBadge } from '@/components/forex/LongOnlyBanner';
 import { LazyTabContent } from '@/components/forex/LazyTabContent';
-
-// Command Center components
-import { ExecutionProofPanel } from '@/components/forex/ExecutionProofPanel';
-import { LiveEdgeExecutionDashboard } from '@/components/forex/LiveEdgeExecutionDashboard';
-import { LiveForexTradesPanel } from '@/components/forex/LiveForexTradesPanel';
-import { LiveExecutionHero } from '@/components/forex/LiveExecutionHero';
-import { GovernanceStateBanner } from '@/components/forex/GovernanceStateBanner';
-import { SystemLearningPanel } from '@/components/forex/SystemLearningPanel';
-import { CounterfactualPanel } from '@/components/forex/CounterfactualPanel';
-import { TradeQualityWatchdog } from '@/components/forex/TradeQualityWatchdog';
+import { LiveTradeBook } from '@/components/forex/LiveTradeBook';
 import { SystemConfidenceMeter } from '@/components/forex/SystemConfidenceMeter';
-import { StatusMeterRow } from '@/components/forex/StatusMeter';
-
-// Performance components
-import { EquityCurveChart } from '@/components/forex/EquityCurveChart';
-import { AgentAccountabilityPanel } from '@/components/forex/AgentAccountabilityPanel';
-import { SessionHeatmap } from '@/components/forex/SessionHeatmap';
-import { PairPnLBreakdown } from '@/components/forex/PairPnLBreakdown';
-import { RollingSharpeChart } from '@/components/forex/RollingSharpeChart';
-import { ForexPerformanceOverview } from '@/components/forex/ForexPerformanceOverview';
-import { ForexTradeHistoryTable } from '@/components/forex/ForexTradeHistoryTable';
-import { IndicatorPerformancePanel } from '@/components/forex/IndicatorPerformancePanel';
-
-// Governance components
-import { AdaptiveGovernancePanel } from '@/components/forex/AdaptiveGovernancePanel';
-import { GovernanceHealthDashboard } from '@/components/forex/GovernanceHealthDashboard';
-import { LongOnlySettingsPanel } from '@/components/forex/LongOnlySettingsPanel';
+import { GovernanceStateBanner } from '@/components/forex/GovernanceStateBanner';
 
 // Archive (lazy-loaded legacy dashboards)
 import { ForexArchiveDashboards } from '@/components/forex/ForexArchiveDashboards';
@@ -59,9 +35,6 @@ import { useOandaExecution } from '@/hooks/useOandaExecution';
 import { useOandaPerformance } from '@/hooks/useOandaPerformance';
 import { useTradeAnalytics } from '@/hooks/useTradeAnalytics';
 import { useRealtimeOrders } from '@/hooks/useRealtimeOrders';
-import { PanelCheatSheet, CheatSheetLine } from '@/components/forex/PanelCheatSheet';
-
-const govStateDisplay = (s: string) => s === 'HALT' ? 'COOLDOWN' : s;
 
 const ForexDashboard = () => {
   const [longOnlyFilter, setLongOnlyFilter] = useState(false);
@@ -100,7 +73,6 @@ const ForexDashboard = () => {
   const governanceStats = useMemo(() => getLastGovernanceStats(), [allTrades]);
 
   const governanceDashboard = useMemo(() => {
-    // Use real OANDA orders — no simulated fallback for live tabs
     const realOrders = executionMetrics?.recentOrders ?? [];
     if (realOrders.length > 0) {
       const orderRecords = realOrders
@@ -117,14 +89,8 @@ const ForexDashboard = () => {
         }));
       return computeGovernanceDashboard(orderRecords);
     }
-    // No real data yet — return empty governance dashboard
     return computeGovernanceDashboard([]);
   }, [executionMetrics]);
-
-  // Real order counts for cheat sheets
-  const realFilled = executionMetrics ? (executionMetrics.winCount + executionMetrics.lossCount) : 0;
-  const realRejected = executionMetrics?.totalRejected ?? 0;
-  const realTotal = realFilled + realRejected;
 
   return (
     <LongOnlyFilterProvider value={{ longOnlyFilter }}>
@@ -143,17 +109,17 @@ const ForexDashboard = () => {
                   <LongOnlyBadge />
                 </div>
                 <p className="text-muted-foreground text-sm">
-                  Live execution intelligence — indicator-confirmed, coalition-governed, safety-gated.
+                  Live trade book — every trade analyzed, scored, and learned from.
                 </p>
               </div>
               <div className="hidden md:flex items-center gap-2 text-[10px] text-muted-foreground">
                 <TrendingUp className="w-3.5 h-3.5 text-primary" />
-                <span>{tradeAnalytics.totalClosedTrades} closed trades · {tradeAnalytics.totalPnlPips >= 0 ? '+' : ''}{tradeAnalytics.totalPnlPips}p net</span>
+                <span>{tradeAnalytics.totalClosedTrades} live trades · {tradeAnalytics.totalPnlPips >= 0 ? '+' : ''}{tradeAnalytics.totalPnlPips}p net</span>
               </div>
             </div>
           </motion.div>
 
-          {/* Governance State Banner — always visible */}
+          {/* Governance State Banner */}
           <GovernanceStateBanner
             state={governanceDashboard.currentState}
             reasons={governanceDashboard.stateReasons}
@@ -173,450 +139,25 @@ const ForexDashboard = () => {
             overallSharpe={tradeAnalytics.overallSharpe}
           />
 
-          {/* 4-Tab Layout */}
-          <Tabs defaultValue="command-center" className="space-y-4">
+          {/* 2-Tab Layout: Trade Book + Archive */}
+          <Tabs defaultValue="trade-book" className="space-y-4">
             <TabsList className="bg-card/50 border border-border/30 h-auto gap-1 p-1">
-              <TabsTrigger value="command-center" className="text-xs gap-1.5 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
-                <Zap className="w-3.5 h-3.5" />Command Center
-              </TabsTrigger>
-              <TabsTrigger value="performance" className="text-xs gap-1.5 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
-                <BarChart3 className="w-3.5 h-3.5" />Performance
-              </TabsTrigger>
-              <TabsTrigger value="governance" className="text-xs gap-1.5 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
-                <Shield className="w-3.5 h-3.5" />Governance
+              <TabsTrigger value="trade-book" className="text-xs gap-1.5 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
+                <BookOpen className="w-3.5 h-3.5" />Trade Book
               </TabsTrigger>
               <TabsTrigger value="archive" className="text-xs gap-1.5 text-muted-foreground">
-                <ChevronDown className="w-3.5 h-3.5" />Archive
+                <Archive className="w-3.5 h-3.5" />Archive
               </TabsTrigger>
             </TabsList>
 
-            {/* ─── TAB 1: Command Center ─── */}
-            <TabsContent value="command-center" className="space-y-4">
-              <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-4">
-                {/* Live Execution Hero */}
-                <PanelCheatSheet title="Account & Execution" lines={(() => {
-                  const bal = account ? parseFloat(account.balance) : 0;
-                  const upl = account ? parseFloat(account.unrealizedPL) : 0;
-                  const rpl = account ? parseFloat(account.pl) : 0;
-                  const nav = bal + upl;
-                  const marginUsed = account ? parseFloat(account.marginUsed ?? '0') : 0;
-                  const marginAvail = account ? parseFloat(account.marginAvailable ?? '0') : 0;
-                  const marginPct = nav > 0 ? (marginUsed / nav) * 100 : 0;
-                  const wr = executionMetrics?.winRate ?? 0;
-                  const avgSlip = executionMetrics?.avgSlippage ?? 0;
-                  return [
-                    { label: 'NAV (Bal + UPL)', value: `$${nav.toFixed(2)}`, status: nav >= bal ? 'good' as const : 'warn' as const },
-                    { label: 'Balance', value: `$${bal.toFixed(2)}`, status: 'neutral' as const },
-                    { label: 'Unrealized P&L', value: `${upl >= 0 ? '+' : ''}$${upl.toFixed(2)}`, status: upl >= 0 ? 'good' as const : 'bad' as const },
-                    { label: 'Realized P&L', value: `${rpl >= 0 ? '+' : ''}$${rpl.toFixed(2)}`, status: rpl >= 0 ? 'good' as const : 'bad' as const },
-                    { label: 'Margin Used / Avail', value: `$${marginUsed.toFixed(0)} / $${marginAvail.toFixed(0)}`, status: marginPct > 50 ? 'bad' as const : marginPct > 25 ? 'warn' as const : 'good' as const },
-                    { label: 'Margin Utilization', value: `${marginPct.toFixed(1)}%`, status: marginPct > 50 ? 'bad' as const : marginPct > 25 ? 'warn' as const : 'good' as const },
-                    { label: 'Open Positions', value: `${openTrades.length}`, status: openTrades.length > 5 ? 'bad' as const : openTrades.length > 3 ? 'warn' as const : 'neutral' as const },
-                    { label: 'Win Rate', value: `${(wr * 100).toFixed(1)}%`, status: wr >= 0.55 ? 'good' as const : wr >= 0.45 ? 'warn' as const : 'bad' as const },
-                    { label: 'Avg Slippage', value: `${avgSlip.toFixed(2)}p`, status: avgSlip <= 0.3 ? 'good' as const : avgSlip <= 1 ? 'warn' as const : 'bad' as const },
-                    { label: 'Broker Link', value: connected ? 'LIVE' : 'OFFLINE', status: connected ? 'good' as const : 'bad' as const },
-                  ];
-                })()}>
-                  <LiveExecutionHero
-                    account={account}
-                    connected={connected}
-                    openTradeCount={openTrades.length}
-                    executionMetrics={executionMetrics}
-                  />
-                  <StatusMeterRow meters={[
-                    { label: 'Win Rate', value: (executionMetrics?.winRate ?? 0) * 100 },
-                    { label: 'Exec Quality', value: executionMetrics?.avgExecutionQuality ?? 0 },
-                    { label: 'Margin Health', value: account ? Math.max(0, 100 - (parseFloat(account.marginUsed ?? '0') / Math.max(parseFloat(account.balance ?? '1'), 1)) * 100) : 0 },
-                    { label: 'Capacity', value: Math.max(0, 100 - (openTrades.length / 6) * 100) },
-                  ]} />
-                </PanelCheatSheet>
-
-                {/* System Learning Status */}
-                <PanelCheatSheet title="Adaptation & Learning" lines={(() => {
-                  const total = executionMetrics ? (executionMetrics.winCount + executionMetrics.lossCount) : 0;
-                  const wc = executionMetrics?.winCount ?? 0;
-                  const lc = executionMetrics?.lossCount ?? 0;
-                  const quality = executionMetrics?.avgExecutionQuality ?? 0;
-                  const pnl = executionMetrics?.realizedPnl ?? 0;
-                  const latency = executionMetrics?.avgFillLatency ?? 0;
-                  const friction = executionMetrics?.avgFrictionScore ?? 0;
-                  const pairCount = Object.keys(executionMetrics?.pairBreakdown ?? {}).length;
-                  const maturity = total >= 500 ? 'Mature' : total >= 200 ? 'Converging' : total >= 75 ? 'Growing' : total >= 20 ? 'Early' : 'Bootstrap';
-                  const pairEntries = Object.values(executionMetrics?.pairBreakdown ?? {}).filter(p => p.filled >= 5);
-                  const pairWR = (p: typeof pairEntries[0]) => p.winCount / Math.max(p.filled, 1);
-                  const bestPair = pairEntries.length > 0 ? pairEntries.reduce((a, b) => {
-                    const diff = pairWR(b) - pairWR(a);
-                    return diff !== 0 ? (diff < 0 ? a : b) : (a.filled > b.filled ? a : b);
-                  }) : null;
-                  const worstPair = pairEntries.length > 0 ? pairEntries.reduce((a, b) => {
-                    const diff = pairWR(a) - pairWR(b);
-                    return diff !== 0 ? (diff < 0 ? a : b) : (a.filled > b.filled ? a : b);
-                  }) : null;
-                  return [
-                    { label: 'Learning Maturity', value: maturity, status: total >= 500 ? 'good' as const : total >= 75 ? 'warn' as const : 'neutral' as const },
-                    { label: 'Sample Size', value: `${total} trades`, status: total > 30 ? 'good' as const : total > 10 ? 'warn' as const : 'bad' as const },
-                    { label: 'Record', value: `${wc}W / ${lc}L`, status: wc > lc ? 'good' as const : wc === lc ? 'warn' as const : 'bad' as const },
-                    { label: 'Realized P&L', value: `${pnl >= 0 ? '+' : ''}${pnl.toFixed(1)}p`, status: pnl >= 0 ? 'good' as const : 'bad' as const },
-                    { label: 'Avg Execution Quality', value: `${quality.toFixed(0)}%`, status: quality >= 75 ? 'good' as const : quality >= 50 ? 'warn' as const : 'bad' as const },
-                    { label: 'Avg Fill Latency', value: `${latency.toFixed(0)}ms`, status: latency < 200 ? 'good' as const : latency < 500 ? 'warn' as const : 'bad' as const },
-                    { label: 'Avg Friction Score', value: friction > 1 ? `${friction.toFixed(1)}` : `${(friction * 100).toFixed(0)}%`, status: (friction > 1 ? friction < 30 : friction < 0.3) ? 'good' as const : (friction > 1 ? friction < 60 : friction < 0.6) ? 'warn' as const : 'bad' as const },
-                    { label: 'Pairs Traded', value: `${pairCount}`, status: pairCount >= 3 ? 'good' as const : 'neutral' as const },
-                    { label: 'Best Pair (WR)', value: bestPair ? bestPair.pair : '—', status: 'good' as const },
-                    { label: 'Worst Pair (WR)', value: worstPair ? worstPair.pair : '—', status: 'bad' as const },
-                    { label: 'Data Pipeline', value: executionMetrics?.hasData ? 'ACTIVE' : 'WAITING', status: executionMetrics?.hasData ? 'good' as const : 'warn' as const },
-                  ];
-                })()}>
-                  <SystemLearningPanel executionMetrics={executionMetrics} />
-                  <StatusMeterRow meters={[
-                    { label: 'Edge Confidence', value: Math.round((executionMetrics?.winRate ?? 0.5) * 100) },
-                    { label: 'Maturity', value: Math.min(100, Math.round((tradeAnalytics.totalClosedTrades / 500) * 100)) },
-                    { label: 'Exec Quality', value: executionMetrics?.avgExecutionQuality ?? 0 },
-                    { label: 'Latency', value: Math.max(0, 100 - (executionMetrics?.avgFillLatency ?? 0) / 5) },
-                  ]} />
-                </PanelCheatSheet>
-
-                {/* Trade Quality Watchdog */}
-                <PanelCheatSheet title="Quality & Risk Metrics" lines={(() => {
-                  const pnl = tradeAnalytics.totalPnlPips;
-                  const sharpe = tradeAnalytics.overallSharpe;
-                  const closed = tradeAnalytics.totalClosedTrades;
-                  const sessions = tradeAnalytics.sessionAnalytics ?? [];
-                  const bestSession = sessions.length > 0 ? sessions.reduce((a, b) => a.netPnlPips > b.netPnlPips ? a : b) : null;
-                  const worstSession = sessions.length > 0 ? sessions.reduce((a, b) => a.netPnlPips < b.netPnlPips ? a : b) : null;
-                  const pairs = tradeAnalytics.pairAnalytics ?? [];
-                  const activePairs = pairs.filter(p => p.tradeCount > 0).length;
-                  const avgPipsPerTrade = closed > 0 ? pnl / closed : 0;
-                  const bestPair = pairs.length > 0 ? pairs.reduce((a, b) => a.netPnlPips > b.netPnlPips ? a : b) : null;
-                  const worstPair = pairs.length > 0 ? pairs.reduce((a, b) => a.netPnlPips < b.netPnlPips ? a : b) : null;
-                  const avgWinRate = pairs.length > 0 ? pairs.reduce((s, p) => s + p.winRate, 0) / pairs.length : 0;
-                  return [
-                    { label: 'Net P&L', value: `${pnl >= 0 ? '+' : ''}${pnl.toFixed(1)}p`, status: pnl >= 0 ? 'good' as const : 'bad' as const },
-                    { label: 'Pips / Trade', value: `${avgPipsPerTrade >= 0 ? '+' : ''}${avgPipsPerTrade.toFixed(2)}p`, status: avgPipsPerTrade > 0 ? 'good' as const : 'bad' as const },
-                    { label: 'Sharpe Ratio', value: sharpe.toFixed(2), status: sharpe > 1.5 ? 'good' as const : sharpe > 0.5 ? 'warn' as const : 'bad' as const },
-                    { label: 'Closed Trades', value: `${closed}`, status: closed > 20 ? 'good' as const : 'neutral' as const },
-                    { label: 'Active Pairs', value: `${activePairs}`, status: activePairs >= 3 ? 'good' as const : 'neutral' as const },
-                    { label: 'Avg Win Rate', value: `${(avgWinRate * 100).toFixed(1)}%`, status: avgWinRate >= 0.55 ? 'good' as const : avgWinRate >= 0.45 ? 'warn' as const : 'bad' as const },
-                    { label: 'Best Pair', value: bestPair ? `${bestPair.pair} (${bestPair.netPnlPips >= 0 ? '+' : ''}${bestPair.netPnlPips.toFixed(1)}p)` : '—', status: 'good' as const },
-                    { label: 'Worst Pair', value: worstPair ? `${worstPair.pair} (${worstPair.netPnlPips >= 0 ? '+' : ''}${worstPair.netPnlPips.toFixed(1)}p)` : '—', status: 'bad' as const },
-                    { label: 'Best Session', value: bestSession ? `${bestSession.session} (${bestSession.netPnlPips >= 0 ? '+' : ''}${bestSession.netPnlPips.toFixed(1)}p)` : '—', status: 'good' as const },
-                    { label: 'Worst Session', value: worstSession ? `${worstSession.session} (${worstSession.netPnlPips >= 0 ? '+' : ''}${worstSession.netPnlPips.toFixed(1)}p)` : '—', status: 'bad' as const },
-                  ];
-                })()}>
-                  <TradeQualityWatchdog realMetrics={executionMetrics} />
-                  <StatusMeterRow meters={[
-                    { label: 'Sharpe', value: Math.min(100, Math.max(0, tradeAnalytics.overallSharpe * 33)) },
-                    { label: 'Win Rate', value: Math.round((tradeAnalytics.pairAnalytics.length > 0 ? tradeAnalytics.pairAnalytics.reduce((s, p) => s + p.winRate, 0) / tradeAnalytics.pairAnalytics.length : 0) * 100) },
-                    { label: 'P&L Health', value: Math.min(100, Math.max(0, 50 + tradeAnalytics.totalPnlPips / 2)) },
-                  ]} />
-                </PanelCheatSheet>
-
-                {/* Execution Proof — Integrity verification */}
-                <PanelCheatSheet title="Integrity Gate Stack" lines={(() => {
-                  const state = governanceDashboard.currentState;
-                  const promoted = governanceDashboard.promotedPairs.length;
-                  const restricted = governanceDashboard.restrictedPairs.length;
-                  const banned = governanceDashboard.bannedPairs.length;
-                  const budgets = governanceDashboard.sessionBudgets ?? {};
-                  const activeBudgets = Object.entries(budgets).filter(([, v]) => (v as any)?.remaining > 0).length;
-                  return [
-                    { label: 'Governance State', value: govStateDisplay(state), status: state === 'NORMAL' ? 'good' as const : state === 'DEFENSIVE' ? 'warn' as const : 'bad' as const },
-                    { label: 'Gate Layers', value: 'MTF → Regime → Safety → Coalition → Gov', status: 'neutral' as const },
-                    { label: 'Promoted Pairs', value: `${promoted}`, status: promoted > 0 ? 'good' as const : 'neutral' as const },
-                    { label: 'Restricted Pairs', value: `${restricted}`, status: restricted > 0 ? 'warn' as const : 'good' as const },
-                    { label: 'Banned Pairs', value: `${banned}`, status: banned > 0 ? 'bad' as const : 'good' as const },
-                    { label: 'Session Budgets Active', value: `${activeBudgets}`, status: activeBudgets > 0 ? 'good' as const : 'warn' as const },
-                    { label: 'All Layers Must Pass', value: 'YES — any fail = trade blocked', status: 'neutral' as const },
-                  ];
-                })()}>
-                  <ExecutionProofPanel />
-                  <StatusMeterRow meters={[
-                    { label: 'Gov Health', value: governanceDashboard.currentState === 'NORMAL' ? 90 : governanceDashboard.currentState === 'DEFENSIVE' ? 50 : 20 },
-                    { label: 'Promoted', value: Math.min(100, governanceDashboard.promotedPairs.length * 25) },
-                    { label: 'Safety', value: governanceDashboard.bannedPairs.length === 0 ? 95 : Math.max(10, 95 - governanceDashboard.bannedPairs.length * 20) },
-                  ]} />
-                </PanelCheatSheet>
-
-                {/* Counterfactual — now server-side tracked */}
-                <PanelCheatSheet title="Counterfactual Tracker" lines={(() => {
-                  const rejected = executionMetrics?.totalRejected ?? 0;
-                  return [
-                    { label: 'Total Blocked (OANDA)', value: `${rejected}`, status: rejected > 10 ? 'warn' as const : 'neutral' as const },
-                    { label: 'Resolution Engine', value: 'Server-side (edge function)', status: 'good' as const },
-                    { label: 'Resolution Window', value: '15min after rejection', status: 'neutral' as const },
-                    { label: 'Cron Schedule', value: 'Every 5 minutes', status: 'good' as const },
-                    { label: 'Data Source', value: 'Real OANDA orders', status: 'good' as const },
-                  ];
-                })()}>
-                  <CounterfactualPanel />
-                </PanelCheatSheet>
-
-                {/* Live Trades */}
-                <PanelCheatSheet title="Open Positions" lines={(() => {
-                  const totalUPL = openTrades.reduce((sum, t) => sum + (parseFloat(t.unrealizedPL ?? '0')), 0);
-                  const longCount = openTrades.filter(t => parseInt(t.currentUnits ?? '0') > 0).length;
-                  const shortCount = openTrades.filter(t => parseInt(t.currentUnits ?? '0') < 0).length;
-                  const pairs = [...new Set(openTrades.map(t => t.instrument))];
-                  return [
-                    { label: 'Open Positions', value: `${openTrades.length}`, status: openTrades.length > 5 ? 'bad' as const : openTrades.length > 3 ? 'warn' as const : 'good' as const },
-                    { label: 'Long / Short', value: `${longCount}L / ${shortCount}S`, status: 'neutral' as const },
-                    { label: 'Combined UPL', value: `${totalUPL >= 0 ? '+' : ''}$${totalUPL.toFixed(2)}`, status: totalUPL >= 0 ? 'good' as const : 'bad' as const },
-                    { label: 'Pairs Exposed', value: pairs.length > 0 ? pairs.join(', ') : 'None', status: pairs.length > 4 ? 'warn' as const : 'neutral' as const },
-                    { label: 'Broker Connection', value: connected ? 'LIVE' : 'OFFLINE', status: connected ? 'good' as const : 'bad' as const },
-                    { label: 'Max Concurrent Limit', value: '6 positions', status: openTrades.length >= 6 ? 'bad' as const : 'neutral' as const },
-                  ];
-                })()}>
-                  <LiveForexTradesPanel />
-                </PanelCheatSheet>
-
-                {/* Live Edge Execution */}
-                <PanelCheatSheet title="Edge Decision Engine" lines={(() => {
-                  const state = governanceDashboard.currentState;
-                  const promoted = governanceDashboard.promotedPairs;
-                  const restricted = governanceDashboard.restrictedPairs;
-                  const banned = governanceDashboard.bannedPairs;
-                  const reasons = governanceDashboard.stateReasons ?? [];
-                  return [
-                    { label: 'Engine Mode', value: 'Dual-Edge (Long + Short)', status: 'neutral' as const },
-                    { label: 'Governance State', value: govStateDisplay(state), status: state === 'NORMAL' ? 'good' as const : state === 'DEFENSIVE' ? 'warn' as const : 'bad' as const },
-                    { label: 'Promoted Pairs', value: promoted.length > 0 ? promoted.join(', ') : 'None', status: promoted.length > 0 ? 'good' as const : 'neutral' as const },
-                    { label: 'Restricted Pairs', value: restricted.length > 0 ? restricted.join(', ') : 'None', status: restricted.length > 0 ? 'warn' as const : 'good' as const },
-                    { label: 'Banned Pairs', value: banned.length > 0 ? banned.join(', ') : 'None', status: banned.length > 0 ? 'bad' as const : 'good' as const },
-                    { label: 'State Reasons', value: reasons.length > 0 ? reasons[0] : 'Normal operations', status: reasons.length > 0 ? 'warn' as const : 'good' as const },
-                    { label: 'Indicator Confirmation', value: 'Required before entry', status: 'neutral' as const },
-                    { label: 'Coalition Quorum', value: 'Required for execution', status: 'neutral' as const },
-                  ];
-                })()}>
-                  <LiveEdgeExecutionDashboard />
-                </PanelCheatSheet>
+            {/* ─── TAB 1: Trade Book ─── */}
+            <TabsContent value="trade-book" className="space-y-4">
+              <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+                <LiveTradeBook metrics={executionMetrics} />
               </motion.div>
             </TabsContent>
 
-            {/* ─── TAB 2: Performance ─── */}
-            <TabsContent value="performance" className="space-y-4">
-              <LazyTabContent label="Performance">
-                <div className="space-y-4">
-                  {/* Equity Curve */}
-                  <PanelCheatSheet title="Equity Curve" lines={(() => {
-                    const pnl = tradeAnalytics.totalPnlPips;
-                    const trades = tradeAnalytics.totalClosedTrades;
-                    const sharpeData = tradeAnalytics.rollingSharpe ?? [];
-                    const latestSharpe = sharpeData.length > 0 ? sharpeData[sharpeData.length - 1]?.sharpe ?? 0 : 0;
-                    const peakPnl = sharpeData.reduce((max, d) => Math.max(max, d.cumPnlPips ?? 0), 0);
-                    const drawdown = peakPnl > 0 ? ((peakPnl - pnl) / peakPnl * 100) : 0;
-                    return [
-                      { label: 'Net P&L (Pips)', value: `${pnl >= 0 ? '+' : ''}${pnl.toFixed(1)}p`, status: pnl >= 0 ? 'good' as const : 'bad' as const },
-                      { label: 'Total Closed Trades', value: `${trades}`, status: trades > 20 ? 'good' as const : 'neutral' as const },
-                      { label: 'Peak P&L', value: `${peakPnl.toFixed(1)}p`, status: 'neutral' as const },
-                      { label: 'Drawdown from Peak', value: `${drawdown.toFixed(1)}%`, status: drawdown > 10 ? 'bad' as const : drawdown > 5 ? 'warn' as const : 'good' as const },
-                      { label: 'Rolling Sharpe (Latest)', value: latestSharpe.toFixed(2), status: latestSharpe > 1.5 ? 'good' as const : latestSharpe > 0.5 ? 'warn' as const : 'bad' as const },
-                      { label: 'Curve Trend', value: pnl > 0 ? 'POSITIVE' : 'NEGATIVE', status: pnl > 0 ? 'good' as const : 'bad' as const },
-                    ];
-                  })()}>
-                   <EquityCurveChart
-                      data={tradeAnalytics.rollingSharpe}
-                      totalPnlPips={tradeAnalytics.totalPnlPips}
-                      totalTrades={tradeAnalytics.totalClosedTrades}
-                    />
-                    <StatusMeterRow meters={[
-                      { label: 'Net P&L', value: Math.min(100, Math.max(0, 50 + tradeAnalytics.totalPnlPips / 2)) },
-                      { label: 'Drawdown', value: Math.max(0, 100 - ((tradeAnalytics.rollingSharpe ?? []).reduce((max, d) => Math.max(max, d.cumPnlPips ?? 0), 0) > 0 ? (((tradeAnalytics.rollingSharpe ?? []).reduce((max, d) => Math.max(max, d.cumPnlPips ?? 0), 0) - tradeAnalytics.totalPnlPips) / (tradeAnalytics.rollingSharpe ?? []).reduce((max, d) => Math.max(max, d.cumPnlPips ?? 0), 1) * 100) : 0)) },
-                      { label: 'Sharpe', value: Math.min(100, Math.max(0, tradeAnalytics.overallSharpe * 33)) },
-                    ]} />
-                  </PanelCheatSheet>
-
-                  {/* Performance Overview — real data only */}
-                  <PanelCheatSheet title="Performance Overview" lines={(() => {
-                    const wr = executionMetrics?.winRate ?? 0;
-                    const wc = executionMetrics?.winCount ?? 0;
-                    const lc = executionMetrics?.lossCount ?? 0;
-                    const pf = wc > 0 && lc > 0 ? (wc / lc) : 0;
-                    const pnl = executionMetrics?.realizedPnl ?? 0;
-                    const govState = governanceDashboard.currentState;
-                    return [
-                      { label: 'Data Source', value: 'LIVE OANDA', status: executionMetrics?.hasData ? 'good' as const : 'warn' as const },
-                      { label: 'Win Rate', value: `${(wr * 100).toFixed(1)}%`, status: wr >= 0.55 ? 'good' as const : wr >= 0.45 ? 'warn' as const : 'bad' as const },
-                      { label: 'Record', value: `${wc}W / ${lc}L`, status: wc > lc ? 'good' as const : 'bad' as const },
-                      { label: 'Win/Loss Ratio', value: pf > 0 ? pf.toFixed(2) : '—', status: pf > 1.5 ? 'good' as const : pf > 1 ? 'warn' as const : 'bad' as const },
-                      { label: 'Realized P&L', value: `${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`, status: pnl >= 0 ? 'good' as const : 'bad' as const },
-                      { label: 'Governance State', value: govStateDisplay(govState), status: govState === 'NORMAL' ? 'good' as const : 'warn' as const },
-                      { label: 'Execution Quality', value: `${(executionMetrics?.avgExecutionQuality ?? 0).toFixed(0)}%`, status: (executionMetrics?.avgExecutionQuality ?? 0) >= 75 ? 'good' as const : 'warn' as const },
-                    ];
-                  })()}>
-                     <ForexPerformanceOverview
-                      realMetrics={executionMetrics}
-                      tradeAnalytics={tradeAnalytics}
-                    />
-                    <StatusMeterRow meters={[
-                      { label: 'Win Rate', value: (executionMetrics?.winRate ?? 0) * 100 },
-                      { label: 'W/L Ratio', value: Math.min(100, ((executionMetrics?.winCount ?? 0) / Math.max(executionMetrics?.lossCount ?? 1, 1)) * 33) },
-                      { label: 'Exec Quality', value: executionMetrics?.avgExecutionQuality ?? 0 },
-                    ]} />
-                  </PanelCheatSheet>
-
-                  {/* Agent Accountability */}
-                  <PanelCheatSheet title="Agent Accountability" lines={(() => {
-                    const agents = Object.values(executionMetrics?.agentBreakdown ?? {});
-                    const totalFilled = agents.reduce((s, a) => s + a.filled, 0);
-                    const topAgent = agents.length > 0 ? agents.reduce((a, b) => a.filled > b.filled ? a : b) : null;
-                    const avgQuality = agents.length > 0 ? agents.reduce((s, a) => s + a.avgQuality, 0) / agents.length : 0;
-                    return [
-                      { label: 'Active Agents', value: `${agents.length}`, status: agents.length >= 3 ? 'good' as const : 'neutral' as const },
-                      { label: 'Total Agent Fills', value: `${totalFilled}`, status: totalFilled > 20 ? 'good' as const : 'neutral' as const },
-                      { label: 'Top Agent', value: topAgent ? `${topAgent.agentId} (${topAgent.filled})` : '—', status: 'neutral' as const },
-                      { label: 'Avg Agent Quality', value: `${avgQuality.toFixed(0)}%`, status: avgQuality >= 75 ? 'good' as const : avgQuality >= 50 ? 'warn' as const : 'bad' as const },
-                    ];
-                  })()}>
-                    <AgentAccountabilityPanel metrics={executionMetrics} />
-                    <StatusMeterRow meters={[
-                      { label: 'Agents Active', value: Math.min(100, Object.keys(executionMetrics?.agentBreakdown ?? {}).length * 15) },
-                      { label: 'Avg Quality', value: (() => { const agents = Object.values(executionMetrics?.agentBreakdown ?? {}); return agents.length > 0 ? agents.reduce((s, a) => s + a.avgQuality, 0) / agents.length : 0; })() },
-                    ]} />
-                  </PanelCheatSheet>
-
-                  {/* Rolling Sharpe */}
-                  <PanelCheatSheet title="Rolling Sharpe" lines={(() => {
-                    const sharpe = tradeAnalytics.overallSharpe;
-                    const data = tradeAnalytics.rollingSharpe ?? [];
-                    const latest = data.length > 0 ? data[data.length - 1]?.sharpe ?? 0 : 0;
-                    const peak = data.reduce((max, d) => Math.max(max, d.sharpe ?? 0), 0);
-                    const trough = data.reduce((min, d) => Math.min(min, d.sharpe ?? 99), 99);
-                    return [
-                      { label: 'Overall Sharpe', value: sharpe.toFixed(2), status: sharpe > 1.5 ? 'good' as const : sharpe > 0.5 ? 'warn' as const : 'bad' as const },
-                      { label: 'Latest Rolling', value: latest.toFixed(2), status: latest > 1.0 ? 'good' as const : latest > 0 ? 'warn' as const : 'bad' as const },
-                      { label: 'Peak Sharpe', value: peak < 99 ? peak.toFixed(2) : '—', status: 'good' as const },
-                      { label: 'Trough Sharpe', value: trough < 99 ? trough.toFixed(2) : '—', status: trough < 0 ? 'bad' as const : 'warn' as const },
-                      { label: 'Data Points', value: `${data.length}`, status: data.length > 10 ? 'good' as const : 'neutral' as const },
-                    ];
-                  })()}>
-                    <RollingSharpeChart
-                      data={tradeAnalytics.rollingSharpe}
-                      overallSharpe={tradeAnalytics.overallSharpe}
-                    />
-                    <StatusMeterRow meters={[
-                      { label: 'Sharpe', value: Math.min(100, Math.max(0, tradeAnalytics.overallSharpe * 33)) },
-                      { label: 'Stability', value: Math.min(100, (tradeAnalytics.rollingSharpe ?? []).length * 5) },
-                    ]} />
-                  </PanelCheatSheet>
-
-                  {/* Session Heatmap & Pair P&L */}
-                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                    <PanelCheatSheet title="Session Performance" lines={(() => {
-                      const sessions = tradeAnalytics.sessionAnalytics ?? [];
-                      const best = sessions.length > 0 ? sessions.reduce((a, b) => a.netPnlPips > b.netPnlPips ? a : b) : null;
-                      const worst = sessions.length > 0 ? sessions.reduce((a, b) => a.netPnlPips < b.netPnlPips ? a : b) : null;
-                      const totalTrades = sessions.reduce((s, se) => s + se.tradeCount, 0);
-                      return [
-                        { label: 'Sessions Tracked', value: `${sessions.length}`, status: sessions.length > 0 ? 'good' as const : 'neutral' as const },
-                        { label: 'Total Session Trades', value: `${totalTrades}`, status: totalTrades > 20 ? 'good' as const : 'neutral' as const },
-                        { label: 'Best Session', value: best ? `${best.session} (+${best.netPnlPips.toFixed(1)}p)` : '—', status: 'good' as const },
-                        { label: 'Worst Session', value: worst ? `${worst.session} (${worst.netPnlPips.toFixed(1)}p)` : '—', status: 'bad' as const },
-                      ];
-                    })()}>
-                      <SessionHeatmap sessions={tradeAnalytics.sessionAnalytics} />
-                    </PanelCheatSheet>
-                    <PanelCheatSheet title="Pair P&L Breakdown" lines={(() => {
-                      const pairs = tradeAnalytics.pairAnalytics ?? [];
-                      const profitable = pairs.filter(p => p.netPnlPips > 0).length;
-                      const losing = pairs.filter(p => p.netPnlPips < 0).length;
-                      const best = pairs.length > 0 ? pairs.reduce((a, b) => a.netPnlPips > b.netPnlPips ? a : b) : null;
-                      const worst = pairs.length > 0 ? pairs.reduce((a, b) => a.netPnlPips < b.netPnlPips ? a : b) : null;
-                      const totalNet = pairs.reduce((s, p) => s + p.netPnlPips, 0);
-                      return [
-                        { label: 'Active Pairs', value: `${pairs.length}`, status: pairs.length >= 3 ? 'good' as const : 'neutral' as const },
-                        { label: 'Profitable / Losing', value: `${profitable} / ${losing}`, status: profitable > losing ? 'good' as const : 'bad' as const },
-                        { label: 'Total Net P&L', value: `${totalNet >= 0 ? '+' : ''}${totalNet.toFixed(1)}p`, status: totalNet >= 0 ? 'good' as const : 'bad' as const },
-                        { label: 'Best Pair', value: best ? `${best.pair} (+${best.netPnlPips.toFixed(1)}p)` : '—', status: 'good' as const },
-                        { label: 'Worst Pair', value: worst ? `${worst.pair} (${worst.netPnlPips.toFixed(1)}p)` : '—', status: 'bad' as const },
-                      ];
-                    })()}>
-                      <PairPnLBreakdown pairs={tradeAnalytics.pairAnalytics} />
-                    </PanelCheatSheet>
-                  </div>
-
-                  {/* Indicator Performance Analytics */}
-                  <IndicatorPerformancePanel />
-
-                  {/* Trade History Table — real OANDA orders */}
-                  <PanelCheatSheet title="Trade History" lines={(() => {
-                    const total = realFilled + realRejected;
-                    return [
-                      { label: 'Data Source', value: 'LIVE OANDA', status: 'good' as const },
-                      { label: 'Total Records', value: `${total}`, status: total > 0 ? 'good' as const : 'neutral' as const },
-                      { label: 'Filled/Closed', value: `${realFilled}`, status: realFilled > 0 ? 'good' as const : 'warn' as const },
-                      { label: 'Rejected', value: `${realRejected}`, status: realRejected > realFilled ? 'warn' as const : 'neutral' as const },
-                      { label: 'Record', value: `${executionMetrics?.winCount ?? 0}W / ${executionMetrics?.lossCount ?? 0}L`, status: (executionMetrics?.winCount ?? 0) > (executionMetrics?.lossCount ?? 0) ? 'good' as const : 'bad' as const },
-                    ];
-                  })()}>
-                    <ForexTradeHistoryTable trades={[]} />
-                  </PanelCheatSheet>
-                </div>
-              </LazyTabContent>
-            </TabsContent>
-
-            {/* ─── TAB 3: Governance ─── */}
-            <TabsContent value="governance" className="space-y-4">
-              <LazyTabContent label="Governance">
-                <div className="space-y-4">
-                  <PanelCheatSheet title="Long-Only Settings" lines={[
-                    { label: 'Mode', value: longOnlyFilter ? 'LONG ONLY' : 'DUAL (Long + Short)', status: longOnlyFilter ? 'warn' as const : 'good' as const },
-                    { label: 'Short Eligible Pairs', value: 'ALL pairs (strategy revamp)', status: 'good' as const },
-                    { label: 'Configuration', value: 'User-controlled override', status: 'neutral' as const },
-                  ]}>
-                    <LongOnlySettingsPanel />
-                  </PanelCheatSheet>
-                  <PanelCheatSheet title="Adaptive Governance" lines={(() => {
-                    const state = governanceDashboard.currentState;
-                    const w20 = governanceDashboard.windows.w20;
-                    const w50 = governanceDashboard.windows.w50;
-                    const pairCount = governanceDashboard.pairAllocations.length;
-                    const promoted = governanceDashboard.promotedPairs.length;
-                    const restricted = governanceDashboard.restrictedPairs.length;
-                    const banned = governanceDashboard.bannedPairs.length;
-                    const shadows = governanceDashboard.shadowCandidates.length;
-                    const eligible = governanceDashboard.shadowCandidates.filter(c => c.eligible).length;
-                    return [
-                      { label: 'Governance State', value: govStateDisplay(state), status: state === 'NORMAL' ? 'good' as const : state === 'DEFENSIVE' ? 'warn' as const : 'bad' as const },
-                      { label: '20-Trade Win Rate', value: `${(w20.winRate * 100).toFixed(1)}%`, status: w20.winRate >= 0.55 ? 'good' as const : w20.winRate >= 0.45 ? 'warn' as const : 'bad' as const },
-                      { label: '20-Trade Expectancy', value: `${w20.expectancy >= 0 ? '+' : ''}${w20.expectancy.toFixed(2)}p`, status: w20.expectancy > 0.5 ? 'good' as const : w20.expectancy >= 0 ? 'warn' as const : 'bad' as const },
-                      { label: '50-Trade Expectancy', value: `${w50.expectancy >= 0 ? '+' : ''}${w50.expectancy.toFixed(2)}p`, status: w50.expectancy > 0.5 ? 'good' as const : w50.expectancy >= 0 ? 'warn' as const : 'bad' as const },
-                      { label: 'Slippage Drift', value: w20.slippageDrift ? 'DETECTED' : 'None', status: w20.slippageDrift ? 'bad' as const : 'good' as const },
-                      { label: 'Active Pairs', value: `${pairCount}`, status: pairCount > 0 ? 'good' as const : 'warn' as const },
-                      { label: 'Promoted / Restricted / Banned', value: `${promoted} / ${restricted} / ${banned}`, status: banned > 0 ? 'bad' as const : restricted > 0 ? 'warn' as const : 'good' as const },
-                      { label: 'Shadow Candidates', value: `${shadows} (${eligible} eligible)`, status: eligible > 0 ? 'good' as const : 'neutral' as const },
-                    ];
-                  })()}>
-                    <AdaptiveGovernancePanel data={governanceDashboard} />
-                    <StatusMeterRow meters={[
-                      { label: 'Gov Health', value: governanceDashboard.currentState === 'NORMAL' ? 90 : governanceDashboard.currentState === 'DEFENSIVE' ? 50 : 20 },
-                      { label: 'Win Rate (20)', value: (governanceDashboard.windows.w20.winRate ?? 0) * 100 },
-                      { label: 'Expectancy', value: Math.min(100, Math.max(0, 50 + (governanceDashboard.windows.w50.expectancy ?? 0) * 20)) },
-                    ]} />
-                  </PanelCheatSheet>
-                  <PanelCheatSheet title="Governance Health" lines={(() => {
-                    const executed = realFilled;
-                    const blocked = realRejected;
-                    const total = realTotal;
-                    const blockRate = total > 0 ? (blocked / total * 100) : 0;
-                    return [
-                      { label: 'Data Source', value: 'LIVE OANDA', status: 'good' as const },
-                      { label: 'Total Evaluations', value: `${total}`, status: total > 50 ? 'good' as const : 'neutral' as const },
-                      { label: 'Executed', value: `${executed}`, status: executed > 0 ? 'good' as const : 'warn' as const },
-                      { label: 'Blocked', value: `${blocked}`, status: blocked > executed ? 'warn' as const : 'good' as const },
-                      { label: 'Block Rate', value: `${blockRate.toFixed(1)}%`, status: blockRate > 60 ? 'bad' as const : blockRate > 40 ? 'warn' as const : 'good' as const },
-                      { label: 'Health Monitor', value: 'ACTIVE', status: 'good' as const },
-                    ];
-                  })()}>
-                    <GovernanceHealthDashboard />
-                    <StatusMeterRow meters={[
-                      { label: 'Pass Rate', value: realTotal > 0 ? (realFilled / realTotal) * 100 : 0 },
-                      { label: 'Block Rate', value: realTotal > 0 ? (realRejected / realTotal) * 100 : 0 },
-                    ]} />
-                  </PanelCheatSheet>
-                </div>
-              </LazyTabContent>
-            </TabsContent>
-
-            {/* ─── TAB 4: Archive (legacy simulated data — explicitly labeled) ─── */}
+            {/* ─── TAB 2: Archive (all legacy dashboards) ─── */}
             <TabsContent value="archive" className="space-y-4">
               <LazyTabContent label="Archive">
                 <ForexArchiveDashboards
