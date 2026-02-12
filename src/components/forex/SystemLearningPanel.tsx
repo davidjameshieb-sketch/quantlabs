@@ -1,5 +1,6 @@
 // System Learning Status Panel
-// Shows edge learning progress, environment confidence, and governance recovery metrics
+// Shows edge learning progress, environment confidence, governance recovery metrics
+// Reflects revamped strategy: dynamic Supertrend+ATR SL, no time limits, strategy cutoff active
 
 import { useMemo } from 'react';
 import { motion } from 'framer-motion';
@@ -48,21 +49,27 @@ export const SystemLearningPanel = ({ executionMetrics }: SystemLearningPanelPro
 
   const deploymentInfo = deploymentModeLabels[summary.deploymentMode];
 
+  // Strategy cutoff — only post-revamp trades count
+  const STRATEGY_CUTOFF = new Date('2026-02-12T01:00:00Z');
+  const postRevampTrades = useMemo(() => {
+    if (!executionMetrics?.recentOrders) return 0;
+    return executionMetrics.recentOrders.filter(o =>
+      new Date(o.created_at) >= STRATEGY_CUTOFF &&
+      (o.status === 'filled' || o.status === 'closed') &&
+      o.entry_price != null && o.exit_price != null
+    ).length;
+  }, [executionMetrics]);
+
   // Compute a simple "system health" score based on available metrics
   const healthScore = useMemo(() => {
     if (!hasRealData || totalTrades < 5) return null;
     let score = 50; // baseline
-    // Win rate contribution
     if (winRate >= 0.55) score += 15;
     else if (winRate >= 0.45) score += 5;
     else score -= 10;
-    // Edge confidence contribution
     score += Math.round(summary.avgEdgeConfidence * 20);
-    // Stable environments boost
     score += summary.stableCount * 5;
-    // Decaying penalty
     score -= summary.decayingCount * 3;
-    // Reverting penalty
     score -= summary.revertingCount * 8;
     return Math.max(0, Math.min(100, score));
   }, [hasRealData, totalTrades, winRate, summary]);
@@ -83,8 +90,21 @@ export const SystemLearningPanel = ({ executionMetrics }: SystemLearningPanelPro
           </Badge>
         </div>
         <span className="text-[9px] text-muted-foreground">
-          {summary.totalTradesProcessed} trades processed
+          {postRevampTrades} revamped · {summary.totalTradesProcessed} total
         </span>
+      </div>
+
+      {/* Revamped Strategy Banner */}
+      <div className="flex items-center gap-2 p-2 rounded-lg bg-primary/5 border border-primary/20">
+        <Zap className="w-3.5 h-3.5 text-primary shrink-0" />
+        <div className="flex-1 flex items-center justify-between flex-wrap gap-1">
+          <span className="text-[10px] font-bold text-primary">Revamped Strategy Active</span>
+          <div className="flex items-center gap-2 text-[9px] text-muted-foreground">
+            <Badge variant="outline" className="text-[8px] px-1 py-0 text-emerald-400 border-emerald-400/30">Dynamic SL</Badge>
+            <Badge variant="outline" className="text-[8px] px-1 py-0 text-emerald-400 border-emerald-400/30">No Time Limits</Badge>
+            <Badge variant="outline" className="text-[8px] px-1 py-0 text-emerald-400 border-emerald-400/30">Supertrend+ATR</Badge>
+          </div>
+        </div>
       </div>
 
       {/* Environment Learning Summary */}
