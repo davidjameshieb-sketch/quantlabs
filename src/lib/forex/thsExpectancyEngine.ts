@@ -347,6 +347,7 @@ export function orderToClosedTradeRecord(order: {
   trade_health_score?: number | null;
   mfe_r?: number | null;
   mae_r?: number | null;
+  r_pips?: number | null;
   entry_price?: number | null;
   exit_price?: number | null;
   direction: string;
@@ -366,8 +367,8 @@ export function orderToClosedTradeRecord(order: {
     ? (exitPrice - entryPrice) * pipMult
     : (entryPrice - exitPrice) * pipMult;
 
-  // Estimate R using a reasonable SL assumption (8 pips default)
-  const riskPips = 8;
+  // FIX: Use real r_pips (true risk at entry) instead of default 8
+  const riskPips = order.r_pips ?? 8;
   const finalR = Math.round((pnlPips / riskPips) * 100) / 100;
 
   return {
