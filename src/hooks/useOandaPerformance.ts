@@ -56,6 +56,14 @@ export interface RealOrder {
   regime_label: string | null;
   gate_result: string | null;
   gate_reasons: string[] | null;
+  governance_payload: Record<string, unknown> | null;
+  trade_health_score: number | null;
+  health_band: string | null;
+  mfe_r: number | null;
+  ue_r: number | null;
+  bars_since_entry: number | null;
+  progress_fail: boolean | null;
+  health_governance_action: string | null;
   created_at: string;
   closed_at: string | null;
 }

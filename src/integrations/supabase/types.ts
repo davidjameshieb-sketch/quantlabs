@@ -80,6 +80,7 @@ export type Database = {
       oanda_orders: {
         Row: {
           agent_id: string | null
+          bars_since_entry: number | null
           closed_at: string | null
           confidence_score: number | null
           confirmation_tf_used: string | null
@@ -105,10 +106,14 @@ export type Database = {
           gate_result: string | null
           governance_composite: number | null
           governance_payload: Json | null
+          health_band: string | null
+          health_governance_action: string | null
           id: string
           idempotency_key: string | null
+          mfe_r: number | null
           oanda_order_id: string | null
           oanda_trade_id: string | null
+          progress_fail: boolean | null
           quantlabs_bias: string | null
           quantlabs_confidence: number | null
           regime_label: string | null
@@ -118,6 +123,8 @@ export type Database = {
           slippage_pips: number | null
           spread_at_entry: number | null
           status: string
+          trade_health_score: number | null
+          ue_r: number | null
           units: number
           updated_at: string
           user_id: string
@@ -125,6 +132,7 @@ export type Database = {
         }
         Insert: {
           agent_id?: string | null
+          bars_since_entry?: number | null
           closed_at?: string | null
           confidence_score?: number | null
           confirmation_tf_used?: string | null
@@ -150,10 +158,14 @@ export type Database = {
           gate_result?: string | null
           governance_composite?: number | null
           governance_payload?: Json | null
+          health_band?: string | null
+          health_governance_action?: string | null
           id?: string
           idempotency_key?: string | null
+          mfe_r?: number | null
           oanda_order_id?: string | null
           oanda_trade_id?: string | null
+          progress_fail?: boolean | null
           quantlabs_bias?: string | null
           quantlabs_confidence?: number | null
           regime_label?: string | null
@@ -163,6 +175,8 @@ export type Database = {
           slippage_pips?: number | null
           spread_at_entry?: number | null
           status?: string
+          trade_health_score?: number | null
+          ue_r?: number | null
           units: number
           updated_at?: string
           user_id: string
@@ -170,6 +184,7 @@ export type Database = {
         }
         Update: {
           agent_id?: string | null
+          bars_since_entry?: number | null
           closed_at?: string | null
           confidence_score?: number | null
           confirmation_tf_used?: string | null
@@ -195,10 +210,14 @@ export type Database = {
           gate_result?: string | null
           governance_composite?: number | null
           governance_payload?: Json | null
+          health_band?: string | null
+          health_governance_action?: string | null
           id?: string
           idempotency_key?: string | null
+          mfe_r?: number | null
           oanda_order_id?: string | null
           oanda_trade_id?: string | null
+          progress_fail?: boolean | null
           quantlabs_bias?: string | null
           quantlabs_confidence?: number | null
           regime_label?: string | null
@@ -208,6 +227,8 @@ export type Database = {
           slippage_pips?: number | null
           spread_at_entry?: number | null
           status?: string
+          trade_health_score?: number | null
+          ue_r?: number | null
           units?: number
           updated_at?: string
           user_id?: string
