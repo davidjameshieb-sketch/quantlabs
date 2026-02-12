@@ -15,6 +15,7 @@ const OANDA_HOSTS: Record<string, string> = {
   live: "https://api-fxtrade.oanda.com",
 };
 const USER_ID = "11edc350-4c81-4d9f-82ae-cd2209b7581d";
+const STRATEGY_CUTOFF = "2026-02-12T01:00:00Z";
 
 // ─── Pair-specific thresholds ───
 
@@ -24,18 +25,18 @@ function getPipMultiplier(pair: string): number {
   return JPY_PAIRS.includes(pair) ? 0.01 : 0.0001;
 }
 
-// TP thresholds and max age by volatility class (SL is now dynamic via Supertrend+ATR)
-function getExitThresholds(pair: string): { tpPips: number; maxAgeMinutes: number } {
+// TP thresholds by volatility class (SL is dynamic via Supertrend+ATR, no time limits)
+function getExitThresholds(pair: string): { tpPips: number } {
   const highVol = ["GBP_JPY", "GBP_AUD", "EUR_AUD", "AUD_NZD"];
   const medVol = ["GBP_USD", "EUR_JPY", "AUD_JPY", "USD_CAD", "EUR_GBP", "USD_JPY"];
 
   if (highVol.includes(pair)) {
-    return { tpPips: 25, maxAgeMinutes: 50 };
+    return { tpPips: 25 };
   }
   if (medVol.includes(pair)) {
-    return { tpPips: 18, maxAgeMinutes: 40 };
+    return { tpPips: 18 };
   }
-  return { tpPips: 12, maxAgeMinutes: 35 };
+  return { tpPips: 12 };
 }
 
 // ─── Dynamic Stop Loss from 15m Supertrend + ATR ───
@@ -163,18 +164,17 @@ async function oandaRequest(path: string, method: string, body?: Record<string, 
 
 // ─── Exit Decision Engine ───
 // ═══ EXIT RULE PRIORITY (STRICT, INVIOLABLE ORDER) ═══
-// 1. TP hit          → CLOSE immediately (hard rule, nothing overrides)
-// 2. Trailing stop   → CLOSE immediately (hard rule)
-// 3. SL hit          → CLOSE immediately (hard rule, dynamic via Supertrend+ATR)
-// 4. Time-decay exit → CLOSE if flat/negative (last-resort cleanup)
-// 5. Hold            → Continue monitoring
+// 1. TP hit          → CLOSE immediately
+// 2. Trailing stop   → CLOSE immediately
+// 3. SL hit          → CLOSE immediately (dynamic via Supertrend+ATR)
+// 4. Hold            → Continue monitoring (NO time limits — let TP/SL/trailing handle exits)
 //
 // DIVERGENCE DEFENSE is SUBORDINATE to all hard rules:
 //   ✅ Can tighten trailing stops (reduce trailing trigger from 60% → 40% of TP)
 //   ❌ NEVER widens stops or delays exits
 
 interface ExitDecision {
-  action: "hold" | "close-tp" | "close-sl" | "close-time" | "close-trailing";
+  action: "hold" | "close-tp" | "close-sl" | "close-trailing";
   reason: string;
   currentPnlPips: number;
   progressToTp: number;
@@ -241,18 +241,6 @@ function evaluateExit(
     };
   }
 
-  // ═══ PRIORITY 4: Time-based exit (last resort) ═══
-  if (tradeAgeMinutes >= thresholds.maxAgeMinutes) {
-    if (currentPnlPips <= 0) {
-      return {
-        action: "close-time",
-        reason: `Time exit: ${tradeAgeMinutes.toFixed(0)}min (max: ${thresholds.maxAgeMinutes}min), P&L: ${currentPnlPips.toFixed(1)}p — flat/negative`,
-        currentPnlPips, progressToTp, tradeAgeMinutes,
-      };
-    }
-    console.log(`[TRADE-MONITOR] ${pair}: Age ${tradeAgeMinutes.toFixed(0)}min exceeds max but +${currentPnlPips.toFixed(1)}p — holding for TP/trailing`);
-  }
-
   return {
     action: "hold",
     reason: `Holding: ${currentPnlPips.toFixed(1)}p P&L, ${(progressToTp * 100).toFixed(0)}% to TP, SL@${dynamicSl.slPrice.toFixed(5)} (${dynamicSl.slDistancePips.toFixed(1)}p), ${tradeAgeMinutes.toFixed(0)}min age [${dynamicSl.source}]`,
@@ -285,6 +273,7 @@ Deno.serve(async (req) => {
       .is("exit_price", null)
       .not("oanda_trade_id", "is", null)
       .not("entry_price", "is", null)
+      .gte("created_at", STRATEGY_CUTOFF)
       .order("created_at", { ascending: true });
 
     if (fetchErr) {
