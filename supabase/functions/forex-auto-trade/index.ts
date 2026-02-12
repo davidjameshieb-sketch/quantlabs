@@ -1304,7 +1304,8 @@ Deno.serve(async (req) => {
     // PHASE 0: Load Agent Snapshot (lightweight direct query, avoids RPC timeout)
     // ═══════════════════════════════════════════════════════════
 
-    const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
+    // STRATEGY REVAMP: 21-day lookback — only use data from revamped strategy, not legacy contamination
+    const twentyOneDaysAgo = new Date(Date.now() - 21 * 24 * 60 * 60 * 1000).toISOString();
     const { data: rawOrders, error: ordersErr } = await supabase
       .from("oanda_orders")
       .select("agent_id, direction, entry_price, exit_price, currency_pair, status")
@@ -1313,7 +1314,7 @@ Deno.serve(async (req) => {
       .not("agent_id", "is", null)
       .not("entry_price", "is", null)
       .not("exit_price", "is", null)
-      .gte("created_at", ninetyDaysAgo)
+      .gte("created_at", twentyOneDaysAgo)
       .order("created_at", { ascending: false })
       .limit(5000);
 
@@ -1972,9 +1973,13 @@ Deno.serve(async (req) => {
       );
 
       // ═══ EDGE PROOF: Build per-signal proof record ═══
-      // FIX: Use indicator-derived regime (not time-based) for authorization check
+      // FIX: Use indicator-derived regime with direction-specific authorized lists
       const effectiveRegimeForAuth = indicatorRegime !== "unknown" ? indicatorRegime : regime;
-      const regimeAuthorized = effectiveRegimeForAuth !== 'unknown' && effectiveRegimeForAuth !== 'flat';
+      const LONG_AUTHORIZED_REGIMES = ["expansion", "momentum", "exhaustion", "ignition", "transition"];
+      const SHORT_AUTHORIZED_REGIMES = ["breakdown", "risk-off", "exhaustion", "compression", "shock-breakdown", "risk-off-impulse", "liquidity-vacuum", "breakdown-continuation"];
+      const regimeAuthorized = direction === "long"
+        ? LONG_AUTHORIZED_REGIMES.includes(effectiveRegimeForAuth)
+        : SHORT_AUTHORIZED_REGIMES.includes(effectiveRegimeForAuth);
       const coalitionMet = snapshot.eligibleCount >= snapshot.coalitionRequirement.minAgents;
       const autoPromotionEvent = (snapshot.promotionLog || []).length > 0
         ? (snapshot.promotionLog.some(l => l.includes("SUPPORT")) ? "support"
@@ -2075,7 +2080,7 @@ Deno.serve(async (req) => {
           agentId === "range-navigator" ||
           session === "rollover" ||
           spreadPips > SPREAD_BLOCK_THRESHOLD ||
-          (regime === "ignition" && approxComposite < IGNITION_MIN_COMPOSITE);
+          (effectiveRegime === "ignition" && approxComposite < IGNITION_MIN_COMPOSITE);
 
         const isEdge =
           (session === "ny-overlap" && regime === "expansion") ||
