@@ -259,16 +259,16 @@ function OpenPositionRow({ order, index }: { order: RealOrder; index: number }) 
           body: { instruments: [order.currency_pair] },
         });
         if (!mounted) return;
-        const p = data?.prices?.[0];
-        if (p) {
-          // Use mid price
-          const mid = (parseFloat(p.asks?.[0]?.price || '0') + parseFloat(p.bids?.[0]?.price || '0')) / 2;
-          if (mid > 0) setLivePrice(mid);
+        // Response format: { prices: { "EUR/GBP": { ask, bid, mid } } }
+        const pairKey = order.currency_pair.replace('_', '/');
+        const p = data?.prices?.[pairKey];
+        if (p && p.mid > 0) {
+          setLivePrice(p.mid);
         }
       } catch { /* silent */ }
     };
     fetchLive();
-    const iv = setInterval(fetchLive, 15000); // refresh every 15s
+    const iv = setInterval(fetchLive, 15000);
     return () => { mounted = false; clearInterval(iv); };
   }, [order.currency_pair]);
 
@@ -279,6 +279,22 @@ function OpenPositionRow({ order, index }: { order: RealOrder; index: number }) 
       ? (livePrice - order.entry_price) * mult
       : (order.entry_price - livePrice) * mult;
     return Math.round(raw * 10) / 10;
+  }, [order, livePrice]);
+
+  // Dollar value: pips * units * pip value
+  const unrealizedDollar = useMemo(() => {
+    if (order.entry_price == null || livePrice == null) return null;
+    const priceDiff = order.direction === 'long'
+      ? livePrice - order.entry_price
+      : order.entry_price - livePrice;
+    // For USD-quoted pairs (EUR/USD etc): P&L = priceDiff * units
+    // For JPY pairs: P&L = priceDiff * units / USD_JPY rate (approx)
+    // Simplified: assume USD is quote currency for most pairs
+    const isJpy = order.currency_pair.endsWith('_JPY');
+    const dollarPnl = isJpy
+      ? (priceDiff * order.units) / (livePrice || 1) // convert JPY P&L to USD
+      : priceDiff * order.units;
+    return Math.round(dollarPnl * 100) / 100;
   }, [order, livePrice]);
 
   const isProfit = unrealizedPips != null && unrealizedPips > 0;
@@ -317,12 +333,22 @@ function OpenPositionRow({ order, index }: { order: RealOrder; index: number }) 
           )}
           {/* Unrealized P&L */}
           {unrealizedPips != null ? (
-            <span className={cn(
-              "text-sm font-mono font-bold min-w-[60px] text-right",
-              isProfit ? "text-emerald-400" : isLoss ? "text-red-400" : "text-muted-foreground"
-            )}>
-              {unrealizedPips >= 0 ? '+' : ''}{unrealizedPips.toFixed(1)}p
-            </span>
+            <div className="text-right min-w-[80px]">
+              <span className={cn(
+                "text-sm font-mono font-bold block",
+                isProfit ? "text-emerald-400" : isLoss ? "text-red-400" : "text-muted-foreground"
+              )}>
+                {unrealizedPips >= 0 ? '+' : ''}{unrealizedPips.toFixed(1)}p
+              </span>
+              {unrealizedDollar != null && (
+                <span className={cn(
+                  "text-[10px] font-mono",
+                  isProfit ? "text-emerald-400/70" : isLoss ? "text-red-400/70" : "text-muted-foreground"
+                )}>
+                  {unrealizedDollar >= 0 ? '+' : ''}${Math.abs(unrealizedDollar).toFixed(2)}
+                </span>
+              )}
+            </div>
           ) : (
             <span className="text-[10px] text-muted-foreground italic">loading...</span>
           )}
