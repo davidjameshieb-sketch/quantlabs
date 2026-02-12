@@ -1139,6 +1139,23 @@ function computeStopLossPips(pair: string, direction: "long" | "short"): number 
   return Math.min(15, Math.max(3, stopPips));
 }
 
+function computeTakeProfitPips(pair: string, direction: "long" | "short"): number {
+  const stopPips = computeStopLossPips(pair, direction);
+  // Target 1.5:1 reward-to-risk ratio as a baseline TP
+  // This ensures asymmetric payoffs even if the trade monitor doesn't intervene
+  return Math.round(stopPips * 1.5 * 10) / 10;
+}
+
+function computeTakeProfitPrice(pair: string, direction: "long" | "short", entryPrice: number): number {
+  const tpPips = computeTakeProfitPips(pair, direction);
+  const pipValue = pair.includes("JPY") ? 0.01 : 0.0001;
+  if (direction === "long") {
+    return Math.round((entryPrice + tpPips * pipValue) * 100000) / 100000;
+  } else {
+    return Math.round((entryPrice - tpPips * pipValue) * 100000) / 100000;
+  }
+}
+
 function computeStopLossPrice(pair: string, direction: "long" | "short", entryPrice: number): number {
   const stopPips = computeStopLossPips(pair, direction);
   const pipValue = pair.includes("JPY") ? 0.01 : 0.0001;
@@ -1939,6 +1956,25 @@ Deno.serve(async (req) => {
     // Session performance is tracked per-regime and auto-adjusted via shortLearningProfile
     const SHORT_ELIGIBLE_SESSIONS: SessionWindow[] = ["london-open", "ny-overlap", "asian", "late-ny"];
 
+    // ─── FIFO Guard: Fetch open trades from OANDA to prevent duplicate positions ───
+    const openPairSet = new Set<string>();
+    try {
+      const openTradesRes = await oandaRequest(
+        "/v3/accounts/{accountId}/openTrades", "GET",
+        execConfig.oandaHost
+      ) as { trades?: Array<{ instrument: string }> };
+      if (openTradesRes.trades) {
+        for (const t of openTradesRes.trades) {
+          openPairSet.add(t.instrument);
+        }
+        if (openPairSet.size > 0) {
+          console.log(`[SCALP-TRADE] FIFO guard: ${openPairSet.size} pairs with open trades — will skip: ${[...openPairSet].join(", ")}`);
+        }
+      }
+    } catch (fifoErr) {
+      console.warn(`[SCALP-TRADE] FIFO guard: Could not fetch open trades: ${(fifoErr as Error).message} — proceeding without guard`);
+    }
+
     console.log(`[SCALP-TRADE] Generating ${signalCount} DUAL-DIRECTION signals via snapshot agents`);
 
     for (let i = 0; i < signalCount; i++) {
@@ -1967,6 +2003,13 @@ Deno.serve(async (req) => {
           // 35% → secondary pairs (broader data collection)
           pair = SECONDARY_PAIRS[Math.floor(Math.random() * SECONDARY_PAIRS.length)];
         }
+      }
+
+      // ─── FIFO Guard: Skip pair if already has an open position ───
+      if (openPairSet.has(pair) && !forceMode) {
+        console.log(`[SCALP-TRADE] ${pair}: SKIPPED — open trade exists (FIFO guard)`);
+        results.push({ pair, direction: "none", status: "fifo-skipped", agentId });
+        continue;
       }
 
       // ═══ INDICATOR-CONFIRMED DIRECTION (Multi-Timeframe Consensus) ═══
@@ -2376,9 +2419,10 @@ Deno.serve(async (req) => {
         mtfConfirmed ? (60 + Math.abs(indicatorConsensusScore) * 0.3) : (50 + Math.random() * 20)
       );
 
-      // ═══ EDGE PROOF: Build per-signal proof record ═══
-      // FIX: Both ATR regime AND indicator regime must authorize the direction.
-      // Prevents indicator regime ("momentum") from overriding ATR regime ("compression") to leak trades.
+      // ═══ REGIME AUTHORIZATION ═══
+      // During learning phase: indicator regime takes precedence when available (it uses 16 real-time indicators).
+      // ATR regime is a simple volatility measure that can disagree on direction (e.g., "expansion" during a breakdown).
+      // Post-maturity (500+ trades): both must agree for additional safety.
       const LONG_AUTHORIZED_REGIMES = ["expansion", "momentum", "exhaustion", "ignition"];
       const SHORT_AUTHORIZED_REGIMES = ["breakdown", "risk-off", "exhaustion", "shock-breakdown", "risk-off-impulse", "liquidity-vacuum", "breakdown-continuation"];
       const atrRegimeAuthorized = direction === "long"
@@ -2387,8 +2431,12 @@ Deno.serve(async (req) => {
       const indicatorRegimeAuthorized = indicatorRegime === "unknown" || (direction === "long"
         ? LONG_AUTHORIZED_REGIMES.includes(indicatorRegime)
         : SHORT_AUTHORIZED_REGIMES.includes(indicatorRegime));
-      const regimeAuthorized = atrRegimeAuthorized && indicatorRegimeAuthorized;
-      const effectiveRegimeForAuth = regime; // ATR regime is the primary authority
+      // LEARNING PHASE: indicator regime is primary when available; ATR is fallback
+      const isLearningPhase = (rawOrders || []).length < 500;
+      const regimeAuthorized = indicatorRegime !== "unknown" && isLearningPhase
+        ? indicatorRegimeAuthorized   // Trust indicator regime during learning
+        : (atrRegimeAuthorized && indicatorRegimeAuthorized); // Both must agree post-maturity
+      const effectiveRegimeForAuth = indicatorRegime !== "unknown" ? indicatorRegime : regime;
       const coalitionMet = snapshot.eligibleCount >= snapshot.coalitionRequirement.minAgents;
       const autoPromotionEvent = (snapshot.promotionLog || []).length > 0
         ? (snapshot.promotionLog.some(l => l.includes("SUPPORT")) ? "support"
@@ -2754,9 +2802,10 @@ Deno.serve(async (req) => {
       try {
         const signedUnits = direction === "short" ? -tradeUnits : tradeUnits; // Negative for shorts
         
-        // ═══ STOP-LOSS: Dynamic ATR-based stop-loss wired into OANDA order ═══
-        // Fetches current price to compute stop-loss level
+        // ═══ STOP-LOSS + TAKE-PROFIT: Dynamic ATR-based levels wired into OANDA order ═══
+        // Fetches current price to compute SL and TP levels (1.5:1 R:R)
         let stopLossPrice: number | undefined;
+        let takeProfitPrice: number | undefined;
         let entryEstimate = 0; // Pre-order price for slippage calculation
         try {
           const priceRes = await oandaRequest(
@@ -2770,12 +2819,14 @@ Deno.serve(async (req) => {
               : parseFloat(currentPrice.bids?.[0]?.price || "0");
             if (entryEstimate > 0) {
               stopLossPrice = computeStopLossPrice(pair, direction, entryEstimate);
+              takeProfitPrice = computeTakeProfitPrice(pair, direction, entryEstimate);
               const stopPips = computeStopLossPips(pair, direction);
-              console.log(`[SCALP-TRADE] ${pair}: Stop-loss set at ${stopLossPrice} (${stopPips}p from entry ~${entryEstimate})`);
+              const tpPips = computeTakeProfitPips(pair, direction);
+              console.log(`[SCALP-TRADE] ${pair}: SL=${stopLossPrice} (${stopPips}p) | TP=${takeProfitPrice} (${tpPips}p) | R:R=1:1.5 | entry ~${entryEstimate}`);
             }
           }
         } catch (slErr) {
-          console.warn(`[SCALP-TRADE] ${pair}: Could not compute stop-loss price: ${(slErr as Error).message}`);
+          console.warn(`[SCALP-TRADE] ${pair}: Could not compute SL/TP price: ${(slErr as Error).message}`);
         }
         
         const orderBody: Record<string, unknown> = {
@@ -2788,6 +2839,12 @@ Deno.serve(async (req) => {
         if (stopLossPrice) {
           orderBody.stopLossOnFill = {
             price: stopLossPrice.toString(),
+            timeInForce: "GTC",
+          };
+        }
+        if (takeProfitPrice) {
+          orderBody.takeProfitOnFill = {
+            price: takeProfitPrice.toString(),
             timeInForce: "GTC",
           };
         }
@@ -2897,8 +2954,9 @@ Deno.serve(async (req) => {
     const pairBanned = results.filter(r => r.status === "pair-banned").length;
     const discoveryBlocked = results.filter(r => r.status === "discovery_blocked").length;
     const shadowEvals = results.filter(r => r.status === "shadow_eval").length;
+    const fifoSkipped = results.filter(r => r.status === "fifo-skipped").length;
 
-    console.log(`[SCALP-TRADE] ═══ Complete: ${results.length} signals | ${passed} filled | ${edgeLocked} edge-locked | ${mtfBlocked} mtf-blocked | ${weakConsensus} weak-consensus | ${gated} gated | ${rejected} rejected | ${pairBanned} banned | ${discoveryBlocked} disc_blocked | ${shadowEvals} shadow | ${elapsed}ms ═══`);
+    console.log(`[SCALP-TRADE] ═══ Complete: ${results.length} signals | ${passed} filled | ${edgeLocked} edge-locked | ${mtfBlocked} mtf-blocked | ${weakConsensus} weak-consensus | ${gated} gated | ${rejected} rejected | ${pairBanned} banned | ${discoveryBlocked} disc_blocked | ${fifoSkipped} fifo-skipped | ${shadowEvals} shadow | ${elapsed}ms ═══`);
 
     return new Response(
       JSON.stringify({
