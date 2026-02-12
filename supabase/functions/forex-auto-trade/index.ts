@@ -1713,13 +1713,13 @@ Deno.serve(async (req) => {
         try {
           const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
           const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-          const indicatorRes = await fetch(`${supabaseUrl}/functions/v1/forex-indicators`, {
-            method: "POST",
+          // FIX: forex-indicators reads from URL query params, NOT POST body
+          const indicatorRes = await fetch(`${supabaseUrl}/functions/v1/forex-indicators?instrument=${pair}&timeframe=15m`, {
+            method: "GET",
             headers: {
-              "Content-Type": "application/json",
               Authorization: `Bearer ${supabaseKey}`,
+              apikey: supabaseKey,
             },
-            body: JSON.stringify({ instrument: pair, timeframe: "15m" }),
           });
 
           if (indicatorRes.ok) {
@@ -1835,12 +1835,13 @@ Deno.serve(async (req) => {
                     }
                   }
                   
-                  // Check if this regime is in the worst list (auto-blocked by learning)
-                  if (longLearningProfile.worstRegimes.includes(indicatorRegime)) {
-                    console.log(`[LONG-LEARN] ${pair}: Regime ${indicatorRegime} AUTO-BLOCKED by learning — historically destructive for longs`);
-                    results.push({ pair, direction: "long", status: "regime-learned-destructive", govState, agentId });
-                    continue;
-                  }
+                   // Check if this regime is in the worst list (auto-blocked by learning)
+                   // LEARNING PHASE: Only block after 500-trade milestone with strong evidence
+                   if (longLearningProfile.totalLongTrades >= 500 && longLearningProfile.worstRegimes.includes(indicatorRegime)) {
+                     console.log(`[LONG-LEARN] ${pair}: Regime ${indicatorRegime} AUTO-BLOCKED by learning — historically destructive for longs (post-milestone)`);
+                     results.push({ pair, direction: "long", status: "regime-learned-destructive", govState, agentId });
+                     continue;
+                   }
                   
                   // Require minimum bullish momentum confirmation (adaptive)
                   if (indicatorBullishMomentum < MIN_BULLISH_MOMENTUM) {
@@ -1856,17 +1857,18 @@ Deno.serve(async (req) => {
                     continue;
                   }
                   
-                  // ═══ LONG SESSION AUTO-BLOCKING (learned from data) ═══
-                  const longSessStats = longLearningProfile.sessionStats[session];
-                  if (longSessStats && (longSessStats.wins + longSessStats.losses) >= 5) {
-                    const longSessExp = longSessStats.totalPips / (longSessStats.wins + longSessStats.losses);
-                    const longSessWR = longSessStats.wins / (longSessStats.wins + longSessStats.losses);
-                    if (longSessExp < -2 || longSessWR < 0.25) {
-                      console.log(`[LONG-LEARN] ${pair}: Session ${session} AUTO-BLOCKED for longs — WR=${(longSessWR*100).toFixed(0)}%, exp=${longSessExp.toFixed(1)}p (learned)`);
-                      results.push({ pair, direction: "long", status: "session-learned-destructive", govState, agentId });
-                      continue;
-                    }
-                  }
+                   // ═══ LONG SESSION AUTO-BLOCKING (learned from data) ═══
+                   // LEARNING PHASE: Disabled until 500-trade milestone — system needs data from ALL sessions
+                   const longSessStats = longLearningProfile.sessionStats[session];
+                   if (longLearningProfile.totalLongTrades >= 500 && longSessStats && (longSessStats.wins + longSessStats.losses) >= 10) {
+                     const longSessExp = longSessStats.totalPips / (longSessStats.wins + longSessStats.losses);
+                     const longSessWR = longSessStats.wins / (longSessStats.wins + longSessStats.losses);
+                     if (longSessExp < -3 || longSessWR < 0.20) {
+                       console.log(`[LONG-LEARN] ${pair}: Session ${session} AUTO-BLOCKED for longs — WR=${(longSessWR*100).toFixed(0)}%, exp=${longSessExp.toFixed(1)}p (learned, post-milestone)`);
+                       results.push({ pair, direction: "long", status: "session-learned-destructive", govState, agentId });
+                       continue;
+                     }
+                   }
                   
                   direction = "long";
                   mtfConfirmed = true;
@@ -1899,12 +1901,13 @@ Deno.serve(async (req) => {
                     continue;
                   }
                   
-                  // Check if this regime is in the worst list (auto-blocked by learning)
-                  if (shortLearningProfile.worstRegimes.includes(indicatorRegime)) {
-                    console.log(`[SHORT-LEARN] ${pair}: Regime ${indicatorRegime} AUTO-BLOCKED by learning — historically destructive`);
-                    results.push({ pair, direction: "short", status: "regime-learned-destructive", govState, agentId });
-                    continue;
-                  }
+                   // Check if this regime is in the worst list (auto-blocked by learning)
+                   // LEARNING PHASE: Only block after 500-trade milestone
+                   if (shortLearningProfile.totalShortTrades >= 500 && shortLearningProfile.worstRegimes.includes(indicatorRegime)) {
+                     console.log(`[SHORT-LEARN] ${pair}: Regime ${indicatorRegime} AUTO-BLOCKED by learning — historically destructive (post-milestone)`);
+                     results.push({ pair, direction: "short", status: "regime-learned-destructive", govState, agentId });
+                     continue;
+                   }
                   
                   // Adaptive bearish momentum threshold (learned from data)
                   if (indicatorBearishMomentum < adaptiveBearishThreshold) {
@@ -1916,11 +1919,12 @@ Deno.serve(async (req) => {
                   // Short learning + regime + momentum confirmed — check pair + session eligibility
                   if (SHORT_ELIGIBLE_PAIRS.includes(pair) && SHORT_ELIGIBLE_SESSIONS.includes(session)) {
                     // Check session-specific learning (block sessions with negative expectancy)
+                    // LEARNING PHASE: Disabled until 500-trade milestone
                     const sessStats = shortLearningProfile.sessionStats[session];
-                    if (sessStats && (sessStats.wins + sessStats.losses) >= 5) {
+                    if (shortLearningProfile.totalShortTrades >= 500 && sessStats && (sessStats.wins + sessStats.losses) >= 10) {
                       const sessExp = sessStats.totalPips / (sessStats.wins + sessStats.losses);
-                      if (sessExp < -2) {
-                        console.log(`[SHORT-LEARN] ${pair}: Session ${session} AUTO-BLOCKED for shorts — exp=${sessExp.toFixed(2)}p (learned)`);
+                      if (sessExp < -3) {
+                        console.log(`[SHORT-LEARN] ${pair}: Session ${session} AUTO-BLOCKED for shorts — exp=${sessExp.toFixed(2)}p (learned, post-milestone)`);
                         results.push({ pair, direction: "short", status: "session-learned-destructive", govState, agentId });
                         continue;
                       }
@@ -1968,7 +1972,9 @@ Deno.serve(async (req) => {
       );
 
       // ═══ EDGE PROOF: Build per-signal proof record ═══
-      const regimeAuthorized = regime !== 'unknown' && regime !== 'flat';
+      // FIX: Use indicator-derived regime (not time-based) for authorization check
+      const effectiveRegimeForAuth = indicatorRegime !== "unknown" ? indicatorRegime : regime;
+      const regimeAuthorized = effectiveRegimeForAuth !== 'unknown' && effectiveRegimeForAuth !== 'flat';
       const coalitionMet = snapshot.eligibleCount >= snapshot.coalitionRequirement.minAgents;
       const autoPromotionEvent = (snapshot.promotionLog || []).length > 0
         ? (snapshot.promotionLog.some(l => l.includes("SUPPORT")) ? "support"
