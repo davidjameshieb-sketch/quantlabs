@@ -1443,17 +1443,19 @@ Deno.serve(async (req) => {
     // PHASE 0: Load Agent Snapshot (lightweight direct query, avoids RPC timeout)
     // ═══════════════════════════════════════════════════════════
 
-    // STRATEGY REVAMP: 21-day lookback — only use data from revamped strategy, not legacy contamination
-    const twentyOneDaysAgo = new Date(Date.now() - 21 * 24 * 60 * 60 * 1000).toISOString();
+    // STRATEGY RESET: Only use trades from revamped strategy (post-2026-02-12)
+    // All old practice/backtest/pre-revamp trades are excluded from learning
+    const STRATEGY_CUTOFF = "2026-02-12T01:00:00Z";
     const { data: rawOrders, error: ordersErr } = await supabase
       .from("oanda_orders")
       .select("agent_id, direction, entry_price, exit_price, currency_pair, status")
       .eq("user_id", USER_ID)
+      .eq("environment", execConfig.oandaEnv) // CRITICAL: only current env, no practice contamination
       .in("status", ["filled", "closed"])
       .not("agent_id", "is", null)
       .not("entry_price", "is", null)
       .not("exit_price", "is", null)
-      .gte("created_at", twentyOneDaysAgo)
+      .gte("created_at", STRATEGY_CUTOFF)
       .order("created_at", { ascending: false })
       .limit(5000);
 
@@ -1572,6 +1574,7 @@ Deno.serve(async (req) => {
       .eq("user_id", USER_ID)
       .eq("environment", govEnv)
       .neq("currency_pair", "SYSTEM") // exclude halt/ramp markers
+      .gte("created_at", STRATEGY_CUTOFF) // CRITICAL: only post-revamp trades for learning
       .order("created_at", { ascending: false })
       .limit(250);
 
