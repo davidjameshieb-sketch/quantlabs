@@ -955,16 +955,17 @@ function buildLongLearningProfile(orders: Array<Record<string, unknown>>): LongL
   else if (totalLongTrades >= 20) maturity = "growing";
   else if (totalLongTrades >= 5) maturity = "early";
 
-  // Adaptive bullish momentum threshold: start permissive (3/7), tighten to 5/7 as data grows
+  // Adaptive bullish momentum threshold: start permissive, tighten only with statistical significance
+  // MINIMUM 50 trades before tightening — early WR is noise, not signal
   let adaptiveBullishThreshold = 4; // Default: require 4/7 bullish indicators
-  if (totalLongTrades >= 20 && overallWR < 0.35) adaptiveBullishThreshold = 5; // Tighten if losing
-  else if (totalLongTrades >= 50 && overallWR >= 0.55) adaptiveBullishThreshold = 3; // Relax if winning
-  else if (totalLongTrades >= 30 && overallWR < 0.40) adaptiveBullishThreshold = 5;
+  if (totalLongTrades >= 50 && overallWR < 0.35) adaptiveBullishThreshold = 5;
+  else if (totalLongTrades >= 75 && overallWR >= 0.55) adaptiveBullishThreshold = 3;
 
-  // Adaptive regime strength minimum
-  let adaptiveRegimeStrengthMin = 30;
-  if (totalLongTrades >= 20 && overallWR < 0.35) adaptiveRegimeStrengthMin = 45;
-  else if (totalLongTrades >= 50 && overallWR >= 0.55) adaptiveRegimeStrengthMin = 25;
+  // Adaptive regime strength minimum — PERMISSIVE during learning to collect data
+  // Don't tighten until 50+ trades — early losses may be from bugs/SL issues, not regime quality
+  let adaptiveRegimeStrengthMin = 25;
+  if (totalLongTrades >= 50 && overallWR < 0.30) adaptiveRegimeStrengthMin = 40;
+  else if (totalLongTrades >= 75 && overallWR >= 0.55) adaptiveRegimeStrengthMin = 20;
 
   // Best/worst regimes (by expectancy)
   const regimeEntries = Object.entries(regimeStats)
@@ -1077,15 +1078,16 @@ function buildShortLearningProfile(orders: Array<Record<string, unknown>>): Shor
   // EMERGENCY FIX: Shorts losing across ALL pairs (-5,236p in 7 days).
   // Default raised from 4/7 to 5/7 — require stronger bearish conviction before shorting.
   // Only relax to 4 after PROVEN profitability (WR >= 55% over 50+ shorts).
+  // Adaptive bearish momentum: require 5/7 default, only tighten with 50+ trade evidence
   let adaptiveBearishThreshold = 5;
-  if (totalShortTrades >= 50 && overallWR >= 0.55 && overallExp > 0) adaptiveBearishThreshold = 4;
-  else if (totalShortTrades >= 20 && overallWR < 0.35) adaptiveBearishThreshold = 6;
-  else if (totalShortTrades >= 30 && overallWR < 0.40) adaptiveBearishThreshold = 6;
+  if (totalShortTrades >= 75 && overallWR >= 0.55 && overallExp > 0) adaptiveBearishThreshold = 4;
+  else if (totalShortTrades >= 50 && overallWR < 0.30) adaptiveBearishThreshold = 6;
 
-  // EMERGENCY FIX: Raise regime strength minimum — weak regimes producing losses
-  let adaptiveRegimeStrengthMin = 45;
-  if (totalShortTrades >= 20 && overallWR < 0.35) adaptiveRegimeStrengthMin = 60;
-  else if (totalShortTrades >= 50 && overallWR >= 0.55 && overallExp > 0) adaptiveRegimeStrengthMin = 30;
+  // Regime strength minimum — PERMISSIVE during learning (was 45 "EMERGENCY FIX" but
+  // that was based on practice data, not live. Live shorts were killed by SL bug, not weak regimes)
+  let adaptiveRegimeStrengthMin = 30;
+  if (totalShortTrades >= 50 && overallWR < 0.30) adaptiveRegimeStrengthMin = 50;
+  else if (totalShortTrades >= 75 && overallWR >= 0.55 && overallExp > 0) adaptiveRegimeStrengthMin = 25;
 
   const regimeEntries = Object.entries(regimeStats)
     .filter(([, s]) => (s.wins + s.losses) >= 3)
