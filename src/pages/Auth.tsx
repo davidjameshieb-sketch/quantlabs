@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { Activity, Mail, Lock, Eye, EyeOff, ArrowRight, Chrome, Apple } from 'lucide-react';
+import { Activity, Mail, Lock, Eye, EyeOff, ArrowRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -15,7 +15,7 @@ import { useToast } from '@/hooks/use-toast';
 const Auth = () => {
   const navigate = useNavigate();
   const location = useLocation();
-  const { user, loading, signIn, signUp, signInWithGoogle, signInWithApple } = useAuth();
+  const { user, loading, signIn, signUp } = useAuth();
   const { toast } = useToast();
   
   const [isLogin, setIsLogin] = useState(true);
@@ -101,37 +101,6 @@ const Auth = () => {
     }
   };
 
-  const handleGoogleAuth = async () => {
-    setIsSubmitting(true);
-    try {
-      const { error } = await signInWithGoogle();
-      if (error) {
-        toast({
-          variant: 'destructive',
-          title: 'Google sign in failed',
-          description: error.message,
-        });
-      }
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
-
-  const handleAppleAuth = async () => {
-    setIsSubmitting(true);
-    try {
-      const { error } = await signInWithApple();
-      if (error) {
-        toast({
-          variant: 'destructive',
-          title: 'Apple sign in failed',
-          description: error.message,
-        });
-      }
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
 
   // Show loading while checking auth state
   if (loading) {
@@ -178,36 +147,6 @@ const Auth = () => {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            {/* Social OAuth buttons */}
-            <div className="space-y-3 mb-6">
-              <Button
-                variant="outline"
-                className="w-full border-border/50 hover:bg-muted/50"
-                onClick={handleGoogleAuth}
-                disabled={isSubmitting}
-              >
-                <Chrome className="w-5 h-5 mr-2" />
-                Continue with Google
-              </Button>
-              
-              <Button
-                variant="outline"
-                className="w-full border-border/50 hover:bg-muted/50 bg-black text-white hover:bg-black/90 hover:text-white"
-                onClick={handleAppleAuth}
-                disabled={isSubmitting}
-              >
-                <Apple className="w-5 h-5 mr-2" />
-                Continue with Apple
-              </Button>
-            </div>
-
-            <div className="relative mb-6">
-              <Separator />
-              <span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 bg-card px-4 text-xs text-muted-foreground">
-                or
-              </span>
-            </div>
-
             {/* Email/Password form */}
             <form onSubmit={handleSubmit} className="space-y-4">
               <div className="space-y-2">
