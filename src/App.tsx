@@ -38,7 +38,7 @@ const App = () => (
               <FloatingCommandWidget />
               <Routes>
                 <Route path="/" element={<Navigate to="/dashboard" replace />} />
-                <Route path="/auth" element={<Navigate to="/dashboard" replace />} />
+                <Route path="/auth" element={<Auth />} />
                 <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
                 <Route path="/dashboard/ticker/:symbol" element={<ProtectedRoute><Ticker /></ProtectedRoute>} />
                 <Route path="/dashboard/agents" element={<ProtectedRoute><AIAgents /></ProtectedRoute>} />
