@@ -19,19 +19,9 @@ const OANDA_HOSTS = {
 };
 
 // ─── CAPITAL DEPLOYMENT DIRECTIVE ───
-// Primary pair: full deployment, highest execution priority
-const PRIMARY_PAIR = "USD_CAD";
-// Secondary pairs: reduced allocation, conditional execution only
-const SECONDARY_PAIRS_ALLOWED = ["AUD_USD", "EUR_USD", "EUR_GBP"];
-// Combined focus list for pair selection
-const FOCUS_PAIRS = [PRIMARY_PAIR, ...SECONDARY_PAIRS_ALLOWED];
-// Sessions allowed for secondary pairs (London Open → NY Overlap ONLY)
-const SECONDARY_ALLOWED_SESSIONS: SessionWindow[] = ["london-open", "ny-overlap"];
-// PRIMARY pair trades ALL sessions — no session restrictions (Fast Ramp §1)
-const PRIMARY_ALL_SESSIONS = true;
-// Secondary pair multiplier range
-const SECONDARY_MULTIPLIER_MIN = 0.6;
-const SECONDARY_MULTIPLIER_MAX = 0.8;
+// STRATEGY REVAMP: All pairs authorized, no focus restrictions
+// System learns from ALL pairs equally to reach Prime Directive milestones
+const PRIMARY_PAIR = "USD_CAD"; // Anchor pair — permanently exempt from restrictions
 
 const SCALP_PAIRS = [
   "EUR_USD", "GBP_USD", "USD_JPY", "AUD_USD", "USD_CAD",
@@ -542,33 +532,34 @@ const STATE_CONFIGS: Record<GovernanceState, GovernanceStateConfig> = {
     sizingMultiplier: 1.0,
     frictionKOverride: 3.0,
     pairRestriction: "none",
-    // PROFIT FIX: Rollover blocked (was -0.8p avg, 42% WR) — zero density = no trades
-    sessionAggressiveness: { asian: 0.85, "london-open": 1.0, "ny-overlap": 1.0, "late-ny": 0.65, rollover: 0.0 },
+    // STRATEGY REVAMP: All sessions active for maximum data collection
+    // Rollover gets reduced but NOT zero — learning needs all session data
+    sessionAggressiveness: { asian: 0.85, "london-open": 1.0, "ny-overlap": 1.0, "late-ny": 0.65, rollover: 0.35 },
     recoveryRequired: [],
   },
   DEFENSIVE: {
-    densityMultiplier: 0.65,
-    sizingMultiplier: 0.75,
-    frictionKOverride: 3.8,
-    pairRestriction: "majors-only",
-    sessionAggressiveness: { asian: 0.4, "london-open": 0.85, "ny-overlap": 0.8, "late-ny": 0.3, rollover: 0.0 },
-    recoveryRequired: ["expectancy > 0.5 over 20 trades", "win rate > 55%", "capture ratio > 0.40"],
+    densityMultiplier: 0.75,
+    sizingMultiplier: 0.80,
+    frictionKOverride: 3.5,
+    pairRestriction: "none",
+    sessionAggressiveness: { asian: 0.65, "london-open": 0.90, "ny-overlap": 0.85, "late-ny": 0.45, rollover: 0.20 },
+    recoveryRequired: ["expectancy > 0.5 over 50 trades"],
   },
   THROTTLED: {
-    densityMultiplier: 0.30,
-    sizingMultiplier: 0.50,
-    frictionKOverride: 4.5,
-    pairRestriction: "top-performers",
-    sessionAggressiveness: { asian: 0.0, "london-open": 0.6, "ny-overlap": 0.5, "late-ny": 0.0, rollover: 0.0 },
-    recoveryRequired: ["expectancy > 0.8 over 30 trades", "win rate > 60%", "no slippage drift"],
+    densityMultiplier: 0.50,
+    sizingMultiplier: 0.60,
+    frictionKOverride: 4.0,
+    pairRestriction: "none",
+    sessionAggressiveness: { asian: 0.40, "london-open": 0.70, "ny-overlap": 0.65, "late-ny": 0.25, rollover: 0.10 },
+    recoveryRequired: ["expectancy > 0.8 over 50 trades", "win rate > 50%"],
   },
   HALT: {
     // GRACEFUL DEGRADATION: HALT now reduces to minimum viable instead of stopping
-    densityMultiplier: 0.15,
-    sizingMultiplier: 0.35,
-    frictionKOverride: 5.5,
-    pairRestriction: "top-performers",
-    sessionAggressiveness: { asian: 0.0, "london-open": 0.3, "ny-overlap": 0.25, "late-ny": 0.0, rollover: 0.0 },
+    densityMultiplier: 0.25,
+    sizingMultiplier: 0.40,
+    frictionKOverride: 5.0,
+    pairRestriction: "none",
+    sessionAggressiveness: { asian: 0.20, "london-open": 0.40, "ny-overlap": 0.35, "late-ny": 0.10, rollover: 0.0 },
     recoveryRequired: ["Graceful degradation — trading continues at minimum viable params"],
   },
 };
@@ -670,51 +661,45 @@ function determineGovernanceState(
 ): { state: GovernanceState; reasons: string[] } {
   const reasons: string[] = [];
 
-  // HALT
-  if (m20.tradeCount >= 5 && m20.winRate < 0.35 && m20.expectancy < -2) {
-    reasons.push(`HALT: 20-trade WR ${(m20.winRate * 100).toFixed(0)}% < 35% with neg expectancy`);
+  // ═══ STRATEGY REVAMP: LEARNING PHASE ═══
+  // During learning phase (< 500 trades), governance stays NORMAL to maximize data collection.
+  // The system learns from ALL trades — HALT/THROTTLE disabled until Prime Directive milestones reached.
+  // Safety brakes (spread, slippage, liquidity) remain as hard-blocks to protect capital.
+  const totalTrades = m200.tradeCount;
+  const LEARNING_MILESTONE = 500;
+
+  if (totalTrades < LEARNING_MILESTONE) {
+    reasons.push(`LEARNING PHASE: ${totalTrades}/${LEARNING_MILESTONE} trades — governance overrides disabled for data accumulation`);
+    // Only flag extreme execution issues (not performance-based)
+    if (m20.avgQuality > 0 && m20.avgQuality < 15) {
+      reasons.push(`WARNING: Execution quality critically low (${m20.avgQuality.toFixed(0)}) — monitor broker connection`);
+    }
+    return { state: "NORMAL", reasons };
+  }
+
+  // POST-LEARNING: Full governance active after milestone reached
+  // HALT — only for severe catastrophic conditions
+  if (m20.tradeCount >= 10 && m20.winRate < 0.20 && m20.expectancy < -5) {
+    reasons.push(`HALT: 20-trade WR ${(m20.winRate * 100).toFixed(0)}% < 20% with severe neg expectancy`);
     return { state: "HALT", reasons };
   }
-  if (m50.tradeCount >= 10 && m50.frictionAdjPnl < -50) {
+  if (m50.tradeCount >= 20 && m50.frictionAdjPnl < -100) {
     reasons.push(`HALT: 50-trade friction-adj P&L ${m50.frictionAdjPnl.toFixed(1)}p is catastrophic`);
     return { state: "HALT", reasons };
   }
-  if (m20.rejectionRate > 0.6 && m20.avgQuality < 35) {
-    reasons.push(`HALT: rejection rate ${(m20.rejectionRate * 100).toFixed(0)}% + quality ${m20.avgQuality.toFixed(0)}`);
-    return { state: "HALT", reasons };
-  }
 
-  // THROTTLED
-  if (m20.tradeCount >= 5 && m20.winRate < 0.45) {
-    reasons.push(`THROTTLE: 20-trade WR ${(m20.winRate * 100).toFixed(0)}% < 45%`);
+  // THROTTLED — only if sustained poor performance post-learning
+  if (m50.tradeCount >= 20 && m50.winRate < 0.35 && m50.expectancy < -1.5) {
+    reasons.push(`THROTTLE: 50-trade WR ${(m50.winRate * 100).toFixed(0)}% < 35% with neg expectancy`);
+    return { state: "THROTTLED", reasons };
   }
-  if (m50.tradeCount >= 10 && m50.expectancy < -0.5) {
-    reasons.push(`THROTTLE: 50-trade expectancy ${m50.expectancy.toFixed(2)}p < -0.5`);
-  }
-  if (m20.slippageDrift && m20.avgQuality < 50) {
-    reasons.push(`THROTTLE: slippage drift + quality ${m20.avgQuality.toFixed(0)} < 50`);
-  }
-  if (m20.captureRatio < 0.30 && m20.tradeCount >= 5) {
-    reasons.push(`THROTTLE: capture ratio ${(m20.captureRatio * 100).toFixed(0)}% < 30%`);
-  }
-  if (reasons.length >= 2) return { state: "THROTTLED", reasons };
-  if (reasons.length === 1) return { state: "THROTTLED", reasons };
 
   // DEFENSIVE
-  if (m20.tradeCount >= 5 && m20.winRate < 0.55) {
-    reasons.push(`DEFENSIVE: 20-trade WR ${(m20.winRate * 100).toFixed(0)}% < 55%`);
+  if (m50.tradeCount >= 20 && m50.expectancy < 0) {
+    reasons.push(`DEFENSIVE: 50-trade expectancy ${m50.expectancy.toFixed(2)}p negative`);
   }
-  if (m50.tradeCount >= 10 && m50.expectancy < 0.5) {
-    reasons.push(`DEFENSIVE: 50-trade expectancy ${m50.expectancy.toFixed(2)}p < 0.5`);
-  }
-  if (m20.rejectionRate > 0.25) {
-    reasons.push(`DEFENSIVE: rejection rate ${(m20.rejectionRate * 100).toFixed(0)}% > 25%`);
-  }
-  if (m20.slippageDrift) {
-    reasons.push("DEFENSIVE: slippage drift detected");
-  }
-  if (m200.tradeCount >= 20 && m200.captureRatio < 0.40) {
-    reasons.push(`DEFENSIVE: 200-trade capture ratio ${(m200.captureRatio * 100).toFixed(0)}% < 40%`);
+  if (m200.tradeCount >= 50 && m200.captureRatio < 0.30) {
+    reasons.push(`DEFENSIVE: 200-trade capture ratio ${(m200.captureRatio * 100).toFixed(0)}% < 30%`);
   }
   if (reasons.length > 0) return { state: "DEFENSIVE", reasons };
 
@@ -1672,22 +1657,22 @@ Deno.serve(async (req) => {
       const agentTier = forceMode ? "manual" : (selectedAgent?.effectiveTier || "unknown");
       const agentRole = forceMode ? "manual" : (selectedAgent?.role || "stabilizer");
 
-      // ─── Pair selection: weighted toward PRIMARY_PAIR ───
-      // Primary pair gets ~50% of signals, secondary pairs split remainder
+      // ─── Pair selection: STRATEGY REVAMP — all pairs equally eligible ───
+      // Weighted distribution: majors get slightly more signals, but ALL pairs participate
       let pair: string;
       if (forceMode) {
         pair = reqBody.pair || "USD_CAD";
       } else {
+        // Distribute signals across ALL_PAIRS with slight weighting toward SCALP_PAIRS
         const roll = Math.random();
-        if (roll < 0.50) {
-          pair = PRIMARY_PAIR; // 50% of signals → USD_CAD
+        if (roll < 0.65) {
+          // 65% → scalp pairs (higher liquidity)
+          pair = SCALP_PAIRS[Math.floor(Math.random() * SCALP_PAIRS.length)];
         } else {
-          pair = SECONDARY_PAIRS_ALLOWED[Math.floor(Math.random() * SECONDARY_PAIRS_ALLOWED.length)];
+          // 35% → secondary pairs (broader data collection)
+          pair = SECONDARY_PAIRS[Math.floor(Math.random() * SECONDARY_PAIRS.length)];
         }
       }
-
-      const isPrimaryPair = pair === PRIMARY_PAIR;
-      const isSecondaryPair = SECONDARY_PAIRS_ALLOWED.includes(pair);
 
       // ═══ INDICATOR-CONFIRMED DIRECTION (Multi-Timeframe Consensus) ═══
       // Direction is ONLY authorized when MTF consensus aligns. Random selection prohibited.
@@ -1996,7 +1981,9 @@ Deno.serve(async (req) => {
         console.log(`[SCALP-TRADE] ⚠ Support agent ${agentId} used — can confirm coalition count but cannot generate bias or override MTF`);
       }
 
-      console.log(`[SCALP-TRADE] Signal ${i + 1}: ${direction.toUpperCase()} ${pair} (${isPrimaryPair ? 'PRIMARY' : 'SECONDARY'}) | consensus=${indicatorConsensusScore} (${indicatorDirection}) | mtf=${mtfConfirmed} [1m=${mtf_1m_ignition},5m=${mtf_5m_momentum},15m=${mtf_15m_bias}] | regime=${regime}(auth=${regimeAuthorized}) | agent=${agentId}(${agentTier}) | coalition=${snapshot.eligibleCount}/${snapshot.coalitionRequirement.minAgents}(${coalitionMet}) | support=${isSupportAgent}`);
+      const isPrimaryPair = SCALP_PAIRS.includes(pair);
+
+      console.log(`[SCALP-TRADE] Signal ${i + 1}: ${direction.toUpperCase()} ${pair} (${isPrimaryPair ? 'SCALP' : 'SECONDARY'}) | consensus=${indicatorConsensusScore} (${indicatorDirection}) | mtf=${mtfConfirmed} [1m=${mtf_1m_ignition},5m=${mtf_5m_momentum},15m=${mtf_15m_bias}] | regime=${regime}(auth=${regimeAuthorized}) | agent=${agentId}(${agentTier}) | coalition=${snapshot.eligibleCount}/${snapshot.coalitionRequirement.minAgents}(${coalitionMet}) | support=${isSupportAgent}`);
 
       // ─── Pair Allocation Check (GRACEFUL DEGRADATION) ───
       const pairAlloc = pairAllocations[pair] || { banned: false, restricted: false, capitalMultiplier: 1.0 };
@@ -2008,39 +1995,10 @@ Deno.serve(async (req) => {
         (pairAlloc as PairRollingMetrics).banned = false;
       }
 
-      // ═══ SECONDARY PAIR GATES — GRACEFUL DEGRADATION (downgrade not block) ═══
-      if (!forceMode && isSecondaryPair) {
-        // Session intelligence: downgrade allocation instead of blocking
-        if (!SECONDARY_ALLOWED_SESSIONS.includes(session)) {
-          console.log(`[SCALP-TRADE] ${pair}: SECONDARY session downgrade — ${session} not in prime sessions, reducing allocation to 40%`);
-          (pairAlloc as PairRollingMetrics).capitalMultiplier = Math.min(
-            (pairAlloc as PairRollingMetrics).capitalMultiplier || 1.0,
-            0.4
-          );
-        }
+      // ═══ STRATEGY REVAMP: No secondary pair gates — all pairs trade all sessions ═══
+      // Pair performance still adjusts allocation via adaptive edge, but no hard session blocks
 
-        // Pair performance: reduce allocation for underperformers (graceful degradation)
-        const pm = pairAlloc as PairRollingMetrics;
-        if (pm.tradeCount >= 5 && pm.expectancy < -1.0) {
-          console.log(`[SCALP-TRADE] ${pair}: SECONDARY performance downgrade — exp=${pm.expectancy.toFixed(2)}, reducing to 25%`);
-          pm.capitalMultiplier = 0.25;
-        } else if (pm.tradeCount >= 5 && pm.expectancy < 0) {
-          console.log(`[SCALP-TRADE] ${pair}: SECONDARY mild downgrade — exp=${pm.expectancy.toFixed(2)}, reducing to 50%`);
-          pm.capitalMultiplier = Math.min(pm.capitalMultiplier, 0.5);
-        }
-      }
-
-      // Pair restriction: reduce allocation instead of blocking
-      if (!forceMode && govConfig.pairRestriction === "majors-only" && !SCALP_PAIRS.includes(pair)) {
-        (pairAlloc as PairRollingMetrics).capitalMultiplier = Math.min(
-          (pairAlloc as PairRollingMetrics).capitalMultiplier || 1.0, 0.4
-        );
-      }
-      if (!forceMode && govConfig.pairRestriction === "top-performers" && (pairAlloc as PairRollingMetrics).capitalMultiplier < 1.0) {
-        (pairAlloc as PairRollingMetrics).capitalMultiplier = Math.max(0.2,
-          (pairAlloc as PairRollingMetrics).capitalMultiplier * 0.7
-        );
-      }
+      // Note: pair-level allocation adjustments handled by adaptive edge engine, not hard restrictions
 
       // ─── Pre-Trade Friction Gate ───
       const gate = forceMode
@@ -2152,22 +2110,11 @@ Deno.serve(async (req) => {
         agentSizeMult
       );
 
-      // ═══ CAPITAL DEPLOYMENT DIRECTIVE: Secondary pair multiplier cap (§2) ═══
-      // Primary pair: full discovery multiplier (no cap)
-      // Secondary pairs: clamped to 0.6–0.8× regardless of other multipliers
+      // ═══ STRATEGY REVAMP: No secondary pair cap — all pairs use discovery multiplier ═══
       let deploymentMultiplier = discoveryMultiplier;
-      if (!forceMode && isSecondaryPair) {
-        // Secondary pairs get a random multiplier within the reduced range
-        const secondaryCap = SECONDARY_MULTIPLIER_MIN + Math.random() * (SECONDARY_MULTIPLIER_MAX - SECONDARY_MULTIPLIER_MIN);
-        // Take the LOWER of discovery multiplier and secondary cap — never exceed ceiling
-        deploymentMultiplier = Math.min(discoveryMultiplier, secondaryCap);
-        // Floor at 0 if discovery blocked it
-        if (discoveryMultiplier === 0) deploymentMultiplier = 0;
-      }
-
       const tradeUnits = Math.max(500, Math.round(baseTradeUnits * deploymentMultiplier));
 
-      console.log(`[SCALP-TRADE] ${pair} (${isPrimaryPair ? 'PRIMARY' : 'SECONDARY'}): sized ${tradeUnits}u (gov=${govConfig.sizingMultiplier}, pair=${(pairAlloc as PairRollingMetrics).capitalMultiplier?.toFixed(2)}, session=${sessionBudget.capitalBudgetPct}, agent=${agentSizeMult}, discovery=${discoveryMultiplier}, deployment=${deploymentMultiplier.toFixed(2)})`);
+      console.log(`[SCALP-TRADE] ${pair} (${isPrimaryPair ? 'SCALP' : 'SECONDARY'}): sized ${tradeUnits}u (gov=${govConfig.sizingMultiplier}, pair=${(pairAlloc as PairRollingMetrics).capitalMultiplier?.toFixed(2)}, session=${sessionBudget.capitalBudgetPct}, agent=${agentSizeMult}, discovery=${discoveryMultiplier}, deployment=${deploymentMultiplier.toFixed(2)})`);
 
       // ─── Determine execution environment ───
       const executionEnv = execConfig.oandaEnv;
@@ -2507,8 +2454,6 @@ Deno.serve(async (req) => {
     const pairBanned = results.filter(r => r.status === "pair-banned").length;
     const discoveryBlocked = results.filter(r => r.status === "discovery_blocked").length;
     const shadowEvals = results.filter(r => r.status === "shadow_eval").length;
-    const secondarySessionBlocked = results.filter(r => r.status === "secondary_session_blocked").length;
-    const secondaryDegraded = results.filter(r => r.status === "secondary_degraded").length;
 
     console.log(`[SCALP-TRADE] ═══ Complete: ${results.length} signals | ${passed} filled | ${edgeLocked} edge-locked | ${mtfBlocked} mtf-blocked | ${weakConsensus} weak-consensus | ${gated} gated | ${rejected} rejected | ${pairBanned} banned | ${discoveryBlocked} disc_blocked | ${shadowEvals} shadow | ${elapsed}ms ═══`);
 
@@ -2554,13 +2499,11 @@ Deno.serve(async (req) => {
         },
         capitalDeployment: {
           primaryPair: PRIMARY_PAIR,
-          secondaryPairs: SECONDARY_PAIRS_ALLOWED,
-          secondaryAllowedSessions: SECONDARY_ALLOWED_SESSIONS,
-          secondaryMultiplierRange: [SECONDARY_MULTIPLIER_MIN, SECONDARY_MULTIPLIER_MAX],
-          secondarySessionBlocked,
-          secondaryDegraded,
+          allPairsAuthorized: true,
+          scalpPairs: SCALP_PAIRS,
+          secondaryPairs: SECONDARY_PAIRS,
         },
-        summary: { total: results.length, filled: passed, edgeLocked, mtfBlocked, weakConsensus, gated, rejected, pairBanned, discoveryBlocked, secondarySessionBlocked, secondaryDegraded, shadowEvals },
+        summary: { total: results.length, filled: passed, edgeLocked, mtfBlocked, weakConsensus, gated, rejected, pairBanned, discoveryBlocked, shadowEvals },
         signals: results,
         elapsed,
       }),
