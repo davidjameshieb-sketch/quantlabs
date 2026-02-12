@@ -2281,13 +2281,18 @@ Deno.serve(async (req) => {
       );
 
       // ═══ EDGE PROOF: Build per-signal proof record ═══
-      // FIX: Use indicator-derived regime with direction-specific authorized lists
-      const effectiveRegimeForAuth = indicatorRegime !== "unknown" ? indicatorRegime : regime;
+      // FIX: Both ATR regime AND indicator regime must authorize the direction.
+      // Prevents indicator regime ("momentum") from overriding ATR regime ("compression") to leak trades.
       const LONG_AUTHORIZED_REGIMES = ["expansion", "momentum", "exhaustion", "ignition", "transition"];
       const SHORT_AUTHORIZED_REGIMES = ["breakdown", "risk-off", "exhaustion", "shock-breakdown", "risk-off-impulse", "liquidity-vacuum", "breakdown-continuation"];
-      const regimeAuthorized = direction === "long"
-        ? LONG_AUTHORIZED_REGIMES.includes(effectiveRegimeForAuth)
-        : SHORT_AUTHORIZED_REGIMES.includes(effectiveRegimeForAuth);
+      const atrRegimeAuthorized = direction === "long"
+        ? LONG_AUTHORIZED_REGIMES.includes(regime)
+        : SHORT_AUTHORIZED_REGIMES.includes(regime);
+      const indicatorRegimeAuthorized = indicatorRegime === "unknown" || (direction === "long"
+        ? LONG_AUTHORIZED_REGIMES.includes(indicatorRegime)
+        : SHORT_AUTHORIZED_REGIMES.includes(indicatorRegime));
+      const regimeAuthorized = atrRegimeAuthorized && indicatorRegimeAuthorized;
+      const effectiveRegimeForAuth = regime; // ATR regime is the primary authority
       const coalitionMet = snapshot.eligibleCount >= snapshot.coalitionRequirement.minAgents;
       const autoPromotionEvent = (snapshot.promotionLog || []).length > 0
         ? (snapshot.promotionLog.some(l => l.includes("SUPPORT")) ? "support"
