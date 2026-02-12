@@ -1593,13 +1593,37 @@ Deno.serve(async (req) => {
     const orders = (recentOrders || []) as Array<Record<string, unknown>>;
 
     // ═══════════════════════════════════════════════════════════
-    // PHASE 1.5: Indicator Learning Engine — soft-weighted noise gating
+    // PHASE 1.5: Indicator Learning Engine — regime-aware soft-weighted noise gating
     // ═══════════════════════════════════════════════════════════
-    const NOISE_FLOOR_WEIGHT = 0.05; // soft floor — never fully excluded
+    const NOISE_FLOOR_WEIGHT = 0.05;
+    const MIN_LEARNING_TRADES = 10;
+    const MIN_TRADES_PER_REGIME = 5;
+    const NOISE_THRESHOLD = -0.03;
+    const SIGNAL_THRESHOLD = 0.02;
+
+    type RegimeBucketKey = string; // e.g. "trending_expansion"
+
+    function classifyRegimeBucket(regimeLabel: string): RegimeBucketKey {
+      const lower = (regimeLabel || "").toLowerCase();
+      let vol = "expansion";
+      if (lower.includes("compress") || lower === "quiet") vol = "compression";
+      else if (lower.includes("ignit") || lower.includes("breakout") || lower.includes("momentum")) vol = "ignition";
+      else if (lower.includes("exhaust") || lower.includes("risk-off")) vol = "exhaustion";
+
+      let trend = "ranging";
+      if (lower.includes("trend") || lower.includes("momentum") || lower.includes("breakout") || lower.includes("breakdown")) trend = "trending";
+      if (vol === "ignition") trend = "trending";
+
+      return `${trend}_${vol}`;
+    }
+
+    interface RegimeWeights { weights: Record<string, number>; trades: number; baseWR: number; }
+
     const indicatorLearningProfiles = new Map<string, {
       noiseIndicators: string[];
       signalIndicators: string[];
       softWeights: Record<string, number>;
+      regimeWeights: Record<RegimeBucketKey, RegimeWeights>;
       qualityScore: number;
       baselineWinRate: number;
       totalTrades: number;
@@ -1614,10 +1638,9 @@ Deno.serve(async (req) => {
     });
 
     if (closedWithIndicators.length > 0) {
-      // Group by pair
       const pairTradesMap = new Map<string, Array<{
         pair: string; direction: string; won: boolean;
-        indicators: Record<string, string>;
+        indicators: Record<string, string>; regime: string;
       }>>();
 
       for (const o of closedWithIndicators) {
@@ -1629,28 +1652,27 @@ Deno.serve(async (req) => {
         const pips = dir === "long" ? (exit - entry) / pipDiv : (entry - exit) / pipDiv;
         const gp = o.governance_payload as Record<string, unknown>;
         const breakdown = gp.indicatorBreakdown as Record<string, string>;
+        const regime = (o.regime_label as string) || (gp.regime as string) || "unknown";
 
         if (!pairTradesMap.has(pair)) pairTradesMap.set(pair, []);
         pairTradesMap.get(pair)!.push({
-          pair, direction: dir, won: pips > 0, indicators: breakdown,
+          pair, direction: dir, won: pips > 0, indicators: breakdown, regime,
         });
       }
 
-      const MIN_LEARNING_TRADES = 10;
-      const NOISE_THRESHOLD = -0.03;
-      const SIGNAL_THRESHOLD = 0.02;
-
-      for (const [pair, pairTrades] of pairTradesMap) {
-        if (pairTrades.length < MIN_LEARNING_TRADES) continue;
-
-        const baseWR = pairTrades.filter(t => t.won).length / pairTrades.length;
+      // Helper: compute indicator reliabilities + soft weights for a set of trades
+      function computeWeightsForTrades(
+        trades: Array<{ direction: string; won: boolean; indicators: Record<string, string> }>,
+        baseWR: number,
+        minSample: number
+      ): { noiseList: string[]; signalList: string[]; softWeights: Record<string, number> } {
         const noiseList: string[] = [];
         const signalList: string[] = [];
-
         const softWeights: Record<string, number> = {};
+
         for (const indKey of Object.keys(INDICATOR_NAMES)) {
           let confirmed = 0, wins = 0;
-          for (const t of pairTrades) {
+          for (const t of trades) {
             const sig = t.indicators[indKey];
             if (!sig || sig === "neutral") continue;
             const isConf = (
@@ -1659,8 +1681,8 @@ Deno.serve(async (req) => {
             );
             if (isConf) { confirmed++; if (t.won) wins++; }
           }
-          if (confirmed < MIN_LEARNING_TRADES) {
-            softWeights[indKey] = 0.5; // neutral — insufficient data
+          if (confirmed < minSample) {
+            softWeights[indKey] = 0.5;
             continue;
           }
           const wr = wins / confirmed;
@@ -1675,25 +1697,57 @@ Deno.serve(async (req) => {
             softWeights[indKey] = 0.5;
           }
         }
+        return { noiseList, signalList, softWeights };
+      }
+
+      for (const [pair, pairTrades] of pairTradesMap) {
+        if (pairTrades.length < MIN_LEARNING_TRADES) continue;
+
+        const baseWR = pairTrades.filter(t => t.won).length / pairTrades.length;
+
+        // Global weights (all regimes combined)
+        const global = computeWeightsForTrades(pairTrades, baseWR, MIN_LEARNING_TRADES);
+
+        // Regime-specific weights
+        const regimeBuckets = new Map<RegimeBucketKey, typeof pairTrades>();
+        for (const t of pairTrades) {
+          const bucket = classifyRegimeBucket(t.regime);
+          if (!regimeBuckets.has(bucket)) regimeBuckets.set(bucket, []);
+          regimeBuckets.get(bucket)!.push(t);
+        }
+
+        const regimeWeights: Record<RegimeBucketKey, RegimeWeights> = {};
+        for (const [bucket, bucketTrades] of regimeBuckets) {
+          if (bucketTrades.length < MIN_TRADES_PER_REGIME) continue;
+          const bucketBaseWR = bucketTrades.filter(t => t.won).length / bucketTrades.length;
+          const bucketResult = computeWeightsForTrades(bucketTrades, bucketBaseWR, MIN_TRADES_PER_REGIME);
+          regimeWeights[bucket] = {
+            weights: bucketResult.softWeights,
+            trades: bucketTrades.length,
+            baseWR: bucketBaseWR,
+          };
+        }
 
         const qualityScore = Math.min(100, Math.round(
-          (signalList.length / 16) * 50 + Math.min(50, signalList.length * 5)
+          (global.signalList.length / 16) * 50 + Math.min(50, global.signalList.length * 5)
         ));
 
         indicatorLearningProfiles.set(pair, {
-          noiseIndicators: noiseList,
-          signalIndicators: signalList,
-          softWeights,
+          noiseIndicators: global.noiseList,
+          signalIndicators: global.signalList,
+          softWeights: global.softWeights,
+          regimeWeights,
           qualityScore,
           baselineWinRate: baseWR,
           totalTrades: pairTrades.length,
         });
 
-        if (noiseList.length > 0) {
-          console.log(`[INDICATOR-LEARN] ${pair}: NOISE indicators down-weighted: ${noiseList.map(k => `${k}(w=${softWeights[k]?.toFixed(2)})`).join(", ")} (${pairTrades.length} trades, baseline WR=${(baseWR*100).toFixed(0)}%)`);
+        if (global.noiseList.length > 0) {
+          console.log(`[INDICATOR-LEARN] ${pair}: GLOBAL noise down-weighted: ${global.noiseList.map(k => `${k}(w=${global.softWeights[k]?.toFixed(2)})`).join(", ")} (${pairTrades.length} trades, baseline WR=${(baseWR*100).toFixed(0)}%)`);
         }
-        if (signalList.length > 0) {
-          console.log(`[INDICATOR-LEARN] ${pair}: SIGNAL indicators: ${signalList.join(", ")} (quality=${qualityScore})`);
+        if (Object.keys(regimeWeights).length > 0) {
+          const regimeSummary = Object.entries(regimeWeights).map(([b, r]) => `${b}(${r.trades}t,WR=${(r.baseWR*100).toFixed(0)}%)`).join(", ");
+          console.log(`[INDICATOR-LEARN] ${pair}: Regime buckets: ${regimeSummary}`);
         }
       }
     }
@@ -1939,11 +1993,24 @@ Deno.serve(async (req) => {
                 console.log(`[REGIME-INDICATOR] ${pair}: regime=${indicatorRegime} strength=${indicatorRegimeStrength} longFriendly=${indicatorLongFriendly} shortFriendly=${indicatorShortFriendly} bullishMom=${indicatorBullishMomentum} bearishMom=${indicatorBearishMomentum}`);
               }
 
-              // ═══ INDICATOR LEARNING: Soft-weighted consensus (down-weight noise) ═══
+              // ═══ INDICATOR LEARNING: Regime-aware soft-weighted consensus ═══
               pairLearningProfile = indicatorLearningProfiles.get(pair) || null;
+              let weightSource = "none";
               if (pairLearningProfile && indicatorBreakdown && Object.keys(pairLearningProfile.softWeights).length > 0) {
                 learningApplied = true;
-                const weights = pairLearningProfile.softWeights;
+
+                // Pick regime-specific weights if available, else fall back to global
+                const currentRegimeBucket = classifyRegimeBucket(indicatorRegime || "unknown");
+                const regimeProfile = pairLearningProfile.regimeWeights[currentRegimeBucket];
+                let weights: Record<string, number>;
+
+                if (regimeProfile && regimeProfile.trades >= MIN_TRADES_PER_REGIME) {
+                  weights = regimeProfile.weights;
+                  weightSource = `regime:${currentRegimeBucket}(${regimeProfile.trades}t)`;
+                } else {
+                  weights = pairLearningProfile.softWeights;
+                  weightSource = `global(${pairLearningProfile.totalTrades}t)`;
+                }
 
                 // Re-compute consensus with soft weights — noise contributes near-zero, not excluded
                 let bullishW = 0, bearishW = 0, totalW = 0;
@@ -1959,7 +2026,7 @@ Deno.serve(async (req) => {
                 filteredConsensusScore = totalW > 0 ? Math.round(((bullishW - bearishW) / totalW) * 100) : 0;
                 filteredDirection = filteredConsensusScore > 15 ? "bullish" : filteredConsensusScore < -15 ? "bearish" : "neutral";
 
-                console.log(`[INDICATOR-LEARN] ${pair}: Raw consensus=${indicatorConsensusScore} (${indicatorDirection}) → Weighted=${filteredConsensusScore} (${filteredDirection}) | ${noiseExcludedCount} noise down-weighted (floor=${NOISE_FLOOR_WEIGHT})`);
+                console.log(`[INDICATOR-LEARN] ${pair}: Raw=${indicatorConsensusScore} → Weighted=${filteredConsensusScore} (${filteredDirection}) | source=${weightSource} | ${noiseExcludedCount} noise down-weighted`);
 
                 // USE WEIGHTED consensus for direction decision
                 indicatorConsensusScore = filteredConsensusScore;
@@ -2385,15 +2452,17 @@ Deno.serve(async (req) => {
             coalitionTier: snapshot.coalitionRequirement.tier,
             coalitionMinAgents: snapshot.coalitionRequirement.minAgents,
             governanceState: govState,
-            // ═══ INDICATOR LEARNING ═══
+            // ═══ INDICATOR LEARNING (regime-aware) ═══
             indicatorLearning: learningApplied ? {
               applied: true,
-              mode: "soft-weighted",
+              mode: "regime-aware-soft-weighted",
+              weightSource,
               filteredConsensus: filteredConsensusScore,
               filteredDirection,
               noiseDownWeighted: pairLearningProfile?.noiseIndicators || [],
               signalIndicators: pairLearningProfile?.signalIndicators || [],
               softWeights: pairLearningProfile?.softWeights || {},
+              regimeBucketsAvailable: Object.keys(pairLearningProfile?.regimeWeights || {}),
               noiseDownWeightedCount: noiseExcludedCount,
               qualityScore: pairLearningProfile?.qualityScore || 0,
               baselineWinRate: pairLearningProfile?.baselineWinRate || 0,
