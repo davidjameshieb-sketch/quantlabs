@@ -37,13 +37,13 @@ function getExitThresholds(pair: string): { tpPips: number; slPips: number; maxA
   // Low vol: EUR_USD, USD_JPY, AUD_USD, NZD_USD, etc.
 
   if (highVol.includes(pair)) {
-    return { tpPips: 20, slPips: 8, maxAgeMinutes: 45 };
+    return { tpPips: 25, slPips: 12, maxAgeMinutes: 50 };
   }
   if (medVol.includes(pair)) {
-    return { tpPips: 15, slPips: 6, maxAgeMinutes: 35 };
+    return { tpPips: 18, slPips: 9, maxAgeMinutes: 40 };
   }
   // Low volatility majors
-  return { tpPips: 10, slPips: 5, maxAgeMinutes: 30 };
+  return { tpPips: 12, slPips: 7, maxAgeMinutes: 35 };
 }
 
 // ─── Trailing stop logic ───
