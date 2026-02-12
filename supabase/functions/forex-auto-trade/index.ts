@@ -145,14 +145,26 @@ function computeCoalitionRequirement(agents: AgentSnapshot[]): CoalitionRequirem
 
   if (eligible.length === 0) {
     return {
-      tier: "trio", minAgents: 3, survivorshipScore: 0, rollingPF: 0,
-      expectancySlope: 0, stabilityTrend: "deteriorating",
-      reasons: ["No eligible agents"],
+      tier: "duo", minAgents: 2, survivorshipScore: 0, rollingPF: 0,
+      expectancySlope: 0, stabilityTrend: "flat",
+      reasons: ["No eligible agents — bootstrap DUO"],
     };
   }
 
   // Aggregate survivorship score from eligible agents' metrics
   const totalTrades = eligible.reduce((s, a) => s + a.metrics.totalTrades, 0);
+
+  // ─── BOOTSTRAP PHASE: < 10 trades = cold start, default to DUO ───
+  // No evidence of degradation yet — requiring TRIO would deadlock the system
+  if (totalTrades < 10) {
+    reasons.push(`Bootstrap phase: ${totalTrades} trades < 10 — defaulting to DUO`);
+    return {
+      tier: "duo", minAgents: 2, survivorshipScore: 0, rollingPF: 0,
+      expectancySlope: 0, stabilityTrend: "flat",
+      reasons,
+    };
+  }
+
   const weightedWR = eligible.reduce((s, a) => s + a.metrics.winRate * a.metrics.totalTrades, 0) / (totalTrades || 1);
   const weightedExp = eligible.reduce((s, a) => s + a.metrics.expectancy * a.metrics.totalTrades, 0) / (totalTrades || 1);
   const weightedPF = eligible.reduce((s, a) => s + a.metrics.profitFactor * a.metrics.totalTrades, 0) / (totalTrades || 1);
