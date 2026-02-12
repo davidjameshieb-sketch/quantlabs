@@ -456,9 +456,14 @@ Deno.serve(async (req) => {
         ? Math.round(30 + ((atrAccelRatio - 0.9) / 0.2) * 20)
         : Math.min(100, Math.round(50 + ((atrAccelRatio - 1.1) / 0.4) * 50));
 
-    // Component B: BB width acceleration (compare current BB width vs 5-bar-ago BB width)
-    const bbWidthPrev = bbWidths.length >= 6 ? bbWidths[bbWidths.length - 6] : bbWidth;
-    const bbAccelRatio = bbWidthPrev > 0 ? bbWidth / bbWidthPrev : 1;
+    // Component B: BB width acceleration (3-bar avg vs prior 3-bar avg — matches ATR/range cadence)
+    const bbRecent3 = bbWidths.length >= 6
+      ? (bbWidths[bbWidths.length - 1] + bbWidths[bbWidths.length - 2] + bbWidths[bbWidths.length - 3]) / 3
+      : bbWidth;
+    const bbPrior3 = bbWidths.length >= 6
+      ? (bbWidths[bbWidths.length - 4] + bbWidths[bbWidths.length - 5] + bbWidths[bbWidths.length - 6]) / 3
+      : bbWidth;
+    const bbAccelRatio = bbPrior3 > 0 ? bbRecent3 / bbPrior3 : 1;
     const bbAccelScore = bbAccelRatio < 0.9
       ? Math.round((bbAccelRatio / 0.9) * 30)
       : bbAccelRatio <= 1.1
@@ -514,6 +519,55 @@ Deno.serve(async (req) => {
       structureScore * 0.25
     );
 
+    // ── PRICE PROGRESS VALIDATION (for exhaustion detection) ──
+    // Measures whether price is STILL making progress or stalling.
+    // Prevents misclassifying "orderly quiet trend" as exhaustion.
+    // If persistence is strong + structure prints HH/HL, decelerating vol = orderly trend, NOT exhaustion.
+
+    // Price progress indicator 1: ROC slope (is ROC declining?)
+    const rocVal = indicators.roc.value || 0;
+    const rocSlice = closes.slice(-15);
+    let rocRecent = 0, rocPrior = 0;
+    if (rocSlice.length >= 14) {
+      const rocR = rocSlice[rocSlice.length - 1] / rocSlice[rocSlice.length - 7] - 1;
+      const rocP = rocSlice[rocSlice.length - 7] / rocSlice[rocSlice.length - 13] - 1;
+      rocRecent = rocR * 100;
+      rocPrior = rocP * 100;
+    }
+    const rocDeclining = Math.abs(rocRecent) < Math.abs(rocPrior) * 0.7; // ROC magnitude shrinking >30%
+
+    // Price progress indicator 2: Efficiency slope (is efficiency declining?)
+    const effSlice = closes.slice(-22);
+    let effRecent = 0, effPrior = 0;
+    if (effSlice.length >= 22) {
+      const recentHalf = effSlice.slice(-7);
+      const priorHalf = effSlice.slice(-14, -7);
+      const effR = Math.abs(recentHalf[recentHalf.length - 1] - recentHalf[0]);
+      const pathR = recentHalf.reduce((s, v, i) => i > 0 ? s + Math.abs(v - recentHalf[i - 1]) : s, 0);
+      effRecent = pathR > 0 ? effR / pathR : 0;
+      const effP = Math.abs(priorHalf[priorHalf.length - 1] - priorHalf[0]);
+      const pathP = priorHalf.reduce((s, v, i) => i > 0 ? s + Math.abs(v - priorHalf[i - 1]) : s, 0);
+      effPrior = pathP > 0 ? effP / pathP : 0;
+    }
+    const efficiencyDeclining = effPrior > 0.1 && effRecent < effPrior * 0.6; // efficiency dropped >40%
+
+    // Price progress indicator 3: Structure still printing HH/HL (bullish) or LL/LH (bearish)?
+    const last8 = candles.slice(-8);
+    let hhCount = 0, hlCount = 0, llCount = 0, lhCount = 0;
+    for (let si = 1; si < last8.length; si++) {
+      if (last8[si].h > last8[si - 1].h) hhCount++;
+      if (last8[si].l > last8[si - 1].l) hlCount++;
+      if (last8[si].l < last8[si - 1].l) llCount++;
+      if (last8[si].h < last8[si - 1].h) lhCount++;
+    }
+    const bullishStructureIntact = hhCount >= 3 && hlCount >= 3; // still making HH+HL
+    const bearishStructureIntact = llCount >= 3 && lhCount >= 3; // still making LL+LH
+    const structureIntact = dominantDir === "bullish" ? bullishStructureIntact : bearishStructureIntact;
+
+    // Combined price progress stalling = ROC declining + efficiency declining + structure NOT intact
+    // If structure is intact despite vol decel → orderly trend, NOT exhaustion
+    const priceProgressStalling = (rocDeclining || efficiencyDeclining) && !structureIntact;
+
     // ── REGIME CLASSIFICATION from three-axis composite ──
     let marketRegime: string;
     let regimeStrength: number;
@@ -531,9 +585,11 @@ Deno.serve(async (req) => {
       marketRegime = "flat";
       regimeStrength = Math.round(directionalPersistence * 0.5 + (100 - volatilityScore) * 0.3);
     } else if (volLevel === "low" && persLevel === "strong") {
-      // Low vol + strong direction: if vol is accelerating → transition to breakout; if decelerating → still flat
+      // Low vol + strong direction + accelerating vol → transition (informational only, never trade-authorized)
+      // "transition" is purely a diagnostic label — if you want early breakout entries,
+      // create "pre-expansion" with stricter requirements (5m+15m bias + spread ok + accel 3 bars).
       if (accelLevel === "accelerating") {
-        marketRegime = "transition"; // vol catching up to direction — breakout forming
+        marketRegime = "transition"; // informational: vol catching up to direction
         regimeStrength = directionalPersistence;
       } else {
         marketRegime = "flat"; // strong direction but vol dying — no real breakout
@@ -557,33 +613,42 @@ Deno.serve(async (req) => {
       }
     } else if (volLevel === "normal" && persLevel === "strong") {
       if (dominantDir === "bearish") {
-        // Acceleration confirms real breakdown vs fading sell-off
         if (accelLevel === "decelerating") {
-          marketRegime = "exhaustion"; // sellers losing steam despite strong persistence
+          // Vol decelerating + strong bearish persistence:
+          // If price progress is stalling (ROC/efficiency declining + no LL/LH) → exhaustion
+          // If structure intact (still printing LL/LH) → orderly quiet downtrend, classify as risk-off
+          marketRegime = priceProgressStalling ? "exhaustion" : "risk-off";
         } else {
           marketRegime = bearishMomentum >= 5 ? "breakdown" : "risk-off";
         }
       } else {
         if (accelLevel === "decelerating") {
-          marketRegime = "exhaustion"; // buyers losing steam
+          // Vol decelerating + strong bullish persistence:
+          // If price progress stalling → exhaustion; if HH/HL intact → orderly quiet uptrend = momentum
+          marketRegime = priceProgressStalling ? "exhaustion" : "momentum";
         } else {
           marketRegime = bullishMomentum >= 5 ? "expansion" : "momentum";
         }
       }
       regimeStrength = Math.round(directionalPersistence * 0.4 + volatilityScore * 0.2 + volAcceleration * 0.3);
     } else if (volLevel === "high" && persLevel === "weak") {
-      // High vol + no direction: if decelerating → exhaustion confirmed; if accelerating → ignition
-      if (accelLevel === "decelerating") {
+      // High vol + no direction: if decelerating + price stalling → exhaustion; otherwise ignition
+      if (accelLevel === "decelerating" && priceProgressStalling) {
         marketRegime = "exhaustion";
         regimeStrength = Math.round(volatilityScore * 0.5 + (100 - volAcceleration) * 0.3);
+      } else if (accelLevel === "decelerating") {
+        // Vol decelerating but no strong price stalling — could be choppy wind-down
+        marketRegime = "flat"; // safer than exhaustion — no directional trade
+        regimeStrength = Math.round(volatilityScore * 0.3);
       } else {
         marketRegime = "ignition";
         regimeStrength = Math.round(volatilityScore * 0.4 + volAcceleration * 0.3);
       }
     } else if (volLevel === "high" && persLevel === "moderate") {
       if (accelLevel === "decelerating") {
-        // High vol decelerating with moderate direction = exhaustion trap
-        marketRegime = "exhaustion";
+        // High vol decelerating + moderate direction:
+        // Only exhaustion if price progress actually stalling; otherwise trend continuation at lower vol
+        marketRegime = priceProgressStalling ? "exhaustion" : (dominantDir === "bearish" ? "risk-off" : "momentum");
         regimeStrength = Math.round(volatilityScore * 0.4 + (100 - volAcceleration) * 0.3);
       } else {
         marketRegime = dominantDir === "bearish" ? "risk-off" : "expansion";
@@ -592,8 +657,15 @@ Deno.serve(async (req) => {
     } else {
       // high vol + strong persistence
       if (accelLevel === "decelerating") {
-        // Late entry trap: trend is strong but vol fading → exhaustion
-        marketRegime = "exhaustion";
+        // Strong persistence + vol fading: exhaustion ONLY if price progress stalling
+        // If HH/HL or LL/LH intact → orderly trend continuation, NOT exhaustion
+        if (priceProgressStalling) {
+          marketRegime = "exhaustion";
+        } else {
+          marketRegime = dominantDir === "bearish"
+            ? (bearishMomentum >= 5 ? "breakdown" : "risk-off")
+            : (bullishMomentum >= 5 ? "expansion" : "momentum");
+        }
         regimeStrength = Math.round(volatilityScore * 0.3 + directionalPersistence * 0.3);
       } else {
         if (dominantDir === "bearish") {
@@ -738,7 +810,7 @@ Deno.serve(async (req) => {
     // If 1+ bars diverge → early warning (can be used for tighter stops / reduced sizing)
     const regimeEarlyWarning = divergentBars >= 1 && !regimeDiverging;
 
-    console.log(`[REGIME-COMPOSITE] ${instrument}/${timeframe}: volScore=${volatilityScore} | accel=${volAcceleration}(${accelLevel}) [atr=${atrAccelScore},bb=${bbAccelScore},range=${rangeAccelScore}] | persScore=${directionalPersistence} (eff=${efficiencyScore}, adx=${adxNormalized}, struct=${structureScore}) → ${marketRegime} (${regimeStrength}) | dir=${regimeDirection} family=${familyLabel} | hold=${holdBars}/${STABILITY_LOOKBACK} familyHold=${familyHoldBars} confirmed=${regimeFamilyConfirmed} divergent=${divergentBars} diverging=${regimeDiverging} earlyWarn=${regimeEarlyWarning} recentRegimes=[${recentRegimes.join(',')}]`);
+    console.log(`[REGIME-COMPOSITE] ${instrument}/${timeframe}: volScore=${volatilityScore} | accel=${volAcceleration}(${accelLevel}) [atr=${atrAccelScore},bb=${bbAccelScore},range=${rangeAccelScore}] | persScore=${directionalPersistence} (eff=${efficiencyScore}, adx=${adxNormalized}, struct=${structureScore}) → ${marketRegime} (${regimeStrength}) | dir=${regimeDirection} family=${familyLabel} | priceStalling=${priceProgressStalling} rocDecl=${rocDeclining} effDecl=${efficiencyDeclining} structIntact=${structureIntact} | hold=${holdBars}/${STABILITY_LOOKBACK} familyHold=${familyHoldBars} confirmed=${regimeFamilyConfirmed} divergent=${divergentBars} diverging=${regimeDiverging} earlyWarn=${regimeEarlyWarning} recentRegimes=[${recentRegimes.join(',')}]`);
 
     const lastCandle = candles[candles.length - 1];
 
@@ -790,8 +862,13 @@ Deno.serve(async (req) => {
         divergentBars,         // how many of last 5 bars disagree with current family
         regimeDiverging,       // 2+ bars diverge → throttle/exit signal
         regimeEarlyWarning,    // 1 bar diverges → tighten stops / reduce sizing
+        // ═══ PRICE PROGRESS VALIDATION: Prevents false exhaustion on orderly trends ═══
+        priceProgressStalling, // true = ROC/efficiency declining + structure broken
+        rocDeclining,          // ROC magnitude shrinking >30%
+        efficiencyDeclining,   // price path efficiency dropped >40%
+        structureIntact,       // HH/HL (bull) or LL/LH (bear) still printing
         recentRegimes,
-        shortFriendly: ["breakdown", "risk-off", "exhaustion"].includes(marketRegime),
+        shortFriendly: ["breakdown", "risk-off"].includes(marketRegime), // exhaustion removed — it's neutral now
         longFriendly: ["expansion", "momentum", "exhaustion"].includes(marketRegime),
       },
     }), {
