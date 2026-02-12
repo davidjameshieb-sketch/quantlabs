@@ -2138,7 +2138,7 @@ Deno.serve(async (req) => {
       // FIX: Use indicator-derived regime with direction-specific authorized lists
       const effectiveRegimeForAuth = indicatorRegime !== "unknown" ? indicatorRegime : regime;
       const LONG_AUTHORIZED_REGIMES = ["expansion", "momentum", "exhaustion", "ignition", "transition"];
-      const SHORT_AUTHORIZED_REGIMES = ["breakdown", "risk-off", "exhaustion", "compression", "shock-breakdown", "risk-off-impulse", "liquidity-vacuum", "breakdown-continuation"];
+      const SHORT_AUTHORIZED_REGIMES = ["breakdown", "risk-off", "exhaustion", "shock-breakdown", "risk-off-impulse", "liquidity-vacuum", "breakdown-continuation"];
       const regimeAuthorized = direction === "long"
         ? LONG_AUTHORIZED_REGIMES.includes(effectiveRegimeForAuth)
         : SHORT_AUTHORIZED_REGIMES.includes(effectiveRegimeForAuth);
@@ -2286,9 +2286,12 @@ Deno.serve(async (req) => {
 
       // ═══ STRATEGY REVAMP: No secondary pair cap — all pairs use discovery multiplier ═══
       let deploymentMultiplier = discoveryMultiplier;
-      const tradeUnits = Math.max(500, Math.round(baseTradeUnits * deploymentMultiplier));
 
-      console.log(`[SCALP-TRADE] ${pair} (${isPrimaryPair ? 'SCALP' : 'SECONDARY'}): sized ${tradeUnits}u (gov=${govConfig.sizingMultiplier}, pair=${(pairAlloc as PairRollingMetrics).capitalMultiplier?.toFixed(2)}, session=${sessionBudget.capitalBudgetPct}, agent=${agentSizeMult}, discovery=${discoveryMultiplier}, deployment=${deploymentMultiplier.toFixed(2)})`);
+      // ─── SHORT CAPITAL CAP: 25% of long allocation during learning phase ───
+      const shortCapMultiplier = direction === "short" ? 0.25 : 1.0;
+      const tradeUnits = Math.max(500, Math.round(baseTradeUnits * deploymentMultiplier * shortCapMultiplier));
+
+      console.log(`[SCALP-TRADE] ${pair} (${isPrimaryPair ? 'SCALP' : 'SECONDARY'}): sized ${tradeUnits}u (gov=${govConfig.sizingMultiplier}, pair=${(pairAlloc as PairRollingMetrics).capitalMultiplier?.toFixed(2)}, session=${sessionBudget.capitalBudgetPct}, agent=${agentSizeMult}, discovery=${discoveryMultiplier}, deployment=${deploymentMultiplier.toFixed(2)}, shortCap=${shortCapMultiplier})`);
 
       // ─── Determine execution environment ───
       const executionEnv = execConfig.oandaEnv;
