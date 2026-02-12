@@ -1459,23 +1459,27 @@ Deno.serve(async (req) => {
     );
   }
 
-  // ─── TOXIC HOUR GUARD (Fix #2) ───
-  // Hours 13-14 UTC have statistically destructive expectancy across all pairs.
-  // Hard-block new entries during these hours to eliminate ~155 pips of losses.
-  const currentHourUTC = new Date().getUTCHours();
-  const TOXIC_HOURS = [13, 14]; // NY lunch hour — liquidity vacuum
-  if (TOXIC_HOURS.includes(currentHourUTC) && !forceMode) {
-    console.log(`[SCALP-TRADE] ═══ TOXIC HOUR BLOCK: ${currentHourUTC}:00 UTC — statistically destructive, skipping ═══`);
-    return new Response(
-      JSON.stringify({ success: true, mode: "toxic-hour-skip", reason: `Hour ${currentHourUTC} UTC blocked (negative expectancy)` }),
-      { headers: { ...corsHeaders, "Content-Type": "application/json" } }
-    );
-  }
-
   // Parse optional body for force-test mode
   let reqBody: { force?: boolean; pair?: string; direction?: "long" | "short"; preflight?: boolean } = {};
   try { reqBody = await req.json(); } catch { /* no body = normal cron */ }
   const forceMode = reqBody.force === true;
+
+  // ─── TOXIC HOUR GUARD (Phase 1+2) ───
+  // Expanded from forensic audit: block ALL statistically destructive hours.
+  // Phase 1: 13-14 UTC (NY lunch — liquidity vacuum, zero wins)
+  // Phase 2: 01-04 UTC (Asian — 15.8% WR), 18-21 UTC (late-NY — 12.5% WR)
+  const currentHourUTC = new Date().getUTCHours();
+  const TOXIC_HOURS = [1, 2, 3, 4, 13, 14, 18, 19, 20, 21]; // Asian dead zone + NY lunch + late-NY
+  if (TOXIC_HOURS.includes(currentHourUTC) && !forceMode) {
+    const toxicZone = currentHourUTC >= 13 && currentHourUTC <= 14 ? "NY-lunch"
+      : currentHourUTC >= 1 && currentHourUTC <= 4 ? "Asian-dead-zone"
+      : "late-NY";
+    console.log(`[SCALP-TRADE] ═══ TOXIC HOUR BLOCK: ${currentHourUTC}:00 UTC (${toxicZone}) — statistically destructive, skipping ═══`);
+    return new Response(
+      JSON.stringify({ success: true, mode: "toxic-hour-skip", reason: `Hour ${currentHourUTC} UTC blocked — ${toxicZone} (negative expectancy)` }),
+      { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    );
+  }
 
   try {
     const supabase = createClient(
@@ -1873,17 +1877,35 @@ Deno.serve(async (req) => {
     const govState: GovernanceState = forceMode ? "NORMAL" : govStateResult.state;
     const govConfig = { ...STATE_CONFIGS[govState] };
 
-    // ═══ FIX #7: SESSION-WEIGHTED POSITION SIZING ═══
-    // Apply hourly performance multipliers based on quant analysis
+    // ═══ PHASE 7: SESSION-WEIGHTED POSITION SIZING (expanded) ═══
+    // Toxic hours hard-blocked above. Remaining hours get performance-weighted sizing.
     const HOUR_SIZING_MULTIPLIER: Record<number, number> = {
-      0: 0.5, 1: 0.3, 2: 0.5, 3: 0.7, 4: 0.7, 5: 0.7,
+      0: 0.5, 1: 0.0, 2: 0.0, 3: 0.0, 4: 0.0, 5: 0.7,  // 01-04 toxic blocked above, double-lock
       6: 0.8, 7: 1.0, 8: 1.2, 9: 1.2, 10: 0.3, 11: 0.5,
-      12: 0.8, 13: 0.0, 14: 0.0, // toxic hours already blocked above, but double-lock
-      15: 1.5, 16: 1.5, 17: 1.0, 18: 0.7, 19: 0.5,
-      20: 0.5, 21: 0.3, 22: 0.3, 23: 0.5,
+      12: 0.8, 13: 0.0, 14: 0.0, // NY lunch toxic
+      15: 1.5, 16: 1.5, 17: 1.0, 18: 0.0, 19: 0.0,  // 18-21 toxic blocked above
+      20: 0.0, 21: 0.0, 22: 0.3, 23: 0.5,
     };
     const hourSizingMult = HOUR_SIZING_MULTIPLIER[currentHourUTC] ?? 1.0;
     govConfig.sizingMultiplier *= hourSizingMult;
+
+    // ═══ PHASE 6: REGIME-WEIGHTED POSITION SIZING ═══
+    // Only risk-off regime is profitable (+23.8p). Scale capital accordingly.
+    // Kelly fraction: f* = (WR × payoff - (1-WR)) / payoff
+    // risk-off: WR~45%, payoff~1.71 → f* = (0.45×1.71 - 0.55)/1.71 = 0.129 → use 0.08 (half-Kelly)
+    // momentum/expansion longs: WR~19%, payoff~1.71 → f* = (0.19×1.71 - 0.81)/1.71 = -0.284 → NEGATIVE (shouldn't bet)
+    const REGIME_SIZING_MULTIPLIER: Record<string, number> = {
+      "risk-off": 2.0,       // Only profitable regime — double allocation (Kelly-informed)
+      "breakdown": 1.5,      // Short-friendly — elevated
+      "momentum": 0.5,       // Longs bleeding here — halved until WR > 30%
+      "expansion": 0.5,      // Same — entries too late, halved
+      "exhaustion": 0.7,     // Mixed — cautious
+      "ignition": 0.8,       // Early move — moderate
+      "compression": 0.4,    // No trend — very low
+      "flat": 0.3,           // Dead market — minimum
+      "transition": 0.0,     // Already blocked, double-lock
+    };
+
     if (hourSizingMult !== 1.0) {
       console.log(`[SCALP-TRADE] Hour ${currentHourUTC} UTC sizing multiplier: ${hourSizingMult}x → effective sizing=${govConfig.sizingMultiplier.toFixed(2)}`);
     }
@@ -2188,9 +2210,9 @@ Deno.serve(async (req) => {
                   continue;
                 }
 
-                // ═══ FIX #3+4: TRANSITION-BASED ENTRY TIMING ═══
-                // Enter on regime family TRANSITIONS (flat→bullish, neutral→bearish)
-                // instead of waiting for confirmed state. This captures the move at ignition.
+                // ═══ PHASE 5: TRANSITION-BASED + PULLBACK ENTRY TIMING ═══
+                // Mode A: Enter on regime family TRANSITIONS (flat→bullish) with hold=1
+                // Mode B: Pullback entry for established trends (familyHold >= 5)
                 const HOLD_REQUIRED_REGIMES = ["expansion", "momentum", "breakdown", "risk-off"];
                 const WHIPSAW_COOLDOWN_MINUTES = 15;
                 
@@ -2202,11 +2224,19 @@ Deno.serve(async (req) => {
                   currentFamily !== "neutral" &&
                   (prevFamilies[0] === "neutral" || prevFamilies[0] === "flat" || prevFamilies[0] !== currentFamily);
                 
-                // FIX #3: Transition entries get hold=1, confirmed entries get hold=2 (learning) or 3 (post-learning)
+                // ═══ PHASE 5b: PULLBACK ENTRY MODE ═══
+                // For established trends (familyHold >= 5), allow re-entry even without transition.
+                // This captures mean-reversion entries within proven directional moves.
+                const isPullbackEntry = !isTransitionEntry && regimeFamilyHoldBars >= 5 && 
+                  currentFamily !== "neutral" && regimeConfirmed;
+                
                 let requiredFamilyHold = isInLearningPhase ? 2 : 3;
                 if (isTransitionEntry) {
                   requiredFamilyHold = 1; // Immediate entry on family transition
                   console.log(`[REGIME-TRANSITION] ${pair}: Family transition detected (${prevFamilies[0]}→${currentFamily}) — fast entry with hold=1`);
+                } else if (isPullbackEntry) {
+                  requiredFamilyHold = 1; // Established trend — pullback re-entry allowed
+                  console.log(`[REGIME-PULLBACK] ${pair}: Established ${currentFamily} trend (familyHold=${regimeFamilyHoldBars}) — pullback entry authorized`);
                 }
 
                 if (HOLD_REQUIRED_REGIMES.includes(indicatorRegime)) {
@@ -2325,6 +2355,23 @@ Deno.serve(async (req) => {
                   // Mirrors short-side logic: regime must be longFriendly + bullish momentum threshold.
                   
                   const LONG_FRIENDLY_REGIMES = ["expansion", "momentum", "exhaustion"];
+                  // ═══ PHASE 4: BLOCK momentum/expansion longs until WR > 30% ═══
+                  // Forensic audit: momentum longs 18.9% WR, expansion longs bleeding.
+                  // Only risk-off longs are profitable. Block these regimes until learning proves edge.
+                  const MOMENTUM_EXPANSION_BLOCKED = ["momentum", "expansion"];
+                  if (MOMENTUM_EXPANSION_BLOCKED.includes(indicatorRegime) && longLearningProfile.totalLongTrades < 500) {
+                    // Check if regime-specific WR exceeds 30%
+                    const regimeData = longLearningProfile.regimeStats[indicatorRegime];
+                    const regimeTotal = regimeData ? regimeData.wins + regimeData.losses : 0;
+                    const regimeWR = regimeTotal > 0 ? regimeData!.wins / regimeTotal : 0;
+                    if (regimeTotal < 20 || regimeWR < 0.30) {
+                      console.log(`[LONG-BLOCK] ${pair}: ${indicatorRegime} regime BLOCKED for longs — WR=${(regimeWR*100).toFixed(0)}% < 30% (${regimeTotal} trades) — waiting for edge proof`);
+                      results.push({ pair, direction: "long", status: "regime-long-blocked", govState, agentId,
+                        error: `regime=${indicatorRegime},regimeWR=${(regimeWR*100).toFixed(0)}%,need>30%` });
+                      continue;
+                    }
+                    console.log(`[LONG-LEARN] ${pair}: ${indicatorRegime} regime UNLOCKED — WR=${(regimeWR*100).toFixed(0)}% > 30% (${regimeTotal} trades)`);
+                  }
                   // ═══ ADAPTIVE LONG LEARNING: Use learned thresholds ═══
                   const MIN_BULLISH_MOMENTUM = longLearningProfile.adaptiveBullishThreshold;
                   const longRegimeStrengthMin = longLearningProfile.adaptiveRegimeStrengthMin;
@@ -2655,9 +2702,31 @@ Deno.serve(async (req) => {
         agentSizeMult
       );
 
-      // ═══ STRATEGY REVAMP: No secondary pair cap — all pairs use discovery multiplier ═══
+      // ═══ PHASE 6+8: REGIME + KELLY WEIGHTED SIZING ═══
       let deploymentMultiplier = discoveryMultiplier;
       if (neutralRegimeReducedSizing) deploymentMultiplier *= 0.5;
+      // Apply regime-weighted sizing (Kelly-informed capital allocation)
+      const effectiveRegimeForSizing = indicatorRegime !== "unknown" ? indicatorRegime : regime;
+      const regimeSizingMult = REGIME_SIZING_MULTIPLIER[effectiveRegimeForSizing] ?? 1.0;
+      deploymentMultiplier *= regimeSizingMult;
+      if (regimeSizingMult !== 1.0) {
+        console.log(`[SCALP-TRADE] ${pair}: Regime ${effectiveRegimeForSizing} sizing multiplier: ${regimeSizingMult}x (Kelly-informed)`);
+      }
+
+      // ═══ PHASE 9: AGENT ACCOUNTABILITY ═══
+      // Penalize support-mtf-confirmer specifically — 14.6% WR, -170.2 pips
+      const AGENT_PENALTY_MULTIPLIER: Record<string, number> = {
+        "support-mtf-confirmer": 0.0,   // Phase 3: SUSPENDED — shadow only, zero execution
+        "sentiment-reactor": 0.0,       // Already blocked by discovery risk
+        "range-navigator": 0.0,         // Already blocked by discovery risk
+      };
+      const agentPenalty = AGENT_PENALTY_MULTIPLIER[agentId] ?? 1.0;
+      if (agentPenalty === 0 && !forceMode) {
+        console.log(`[SCALP-TRADE] ${pair}: Agent ${agentId} SUSPENDED (Phase 3: shadow-only) — skipping execution`);
+        results.push({ pair, direction, status: "agent-suspended", agentId, govState });
+        continue;
+      }
+      deploymentMultiplier *= agentPenalty;
 
       // ─── SHORT CAPITAL: Equal allocation to longs ───
       const shortCapMultiplier = 1.0;
