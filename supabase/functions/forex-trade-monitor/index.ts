@@ -216,16 +216,18 @@ function computeTradeHealthScore(
   regimeDiverging: boolean,
 ): TradeHealthResult {
   const pipMult = getPipMultiplier(pair);
-  const rPips = Math.max(Math.abs(entryPrice - initialSlPrice) * pipMult, 0.1);
+  // IMPORTANT: pipMult here is the pip SIZE (0.0001 for non-JPY, 0.01 for JPY)
+  // To convert price difference to pips, we DIVIDE by pipMult, not multiply
+  const rPips = Math.max(Math.abs(entryPrice - initialSlPrice) / pipMult, 0.1);
 
   const mfePips = direction === "long"
-    ? Math.max(0, (mfePrice - entryPrice) * pipMult)
-    : Math.max(0, (entryPrice - mfePrice) * pipMult);
+    ? Math.max(0, (mfePrice - entryPrice) / pipMult)
+    : Math.max(0, (entryPrice - mfePrice) / pipMult);
   const mfeR = mfePips / rPips;
 
   const uePips = direction === "long"
-    ? (currentPrice - entryPrice) * pipMult
-    : (entryPrice - currentPrice) * pipMult;
+    ? (currentPrice - entryPrice) / pipMult
+    : (entryPrice - currentPrice) / pipMult;
   const ueR = uePips / rPips;
 
   let validationWindow = 3;
