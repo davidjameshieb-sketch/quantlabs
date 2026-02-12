@@ -21,6 +21,7 @@ import { RealExecutionMetrics } from '@/hooks/useOandaPerformance';
 
 interface SystemLearningPanelProps {
   executionMetrics: RealExecutionMetrics | null;
+  learningReady?: boolean;
 }
 
 const learningStateUI: Record<LearningState, { color: string; icon: React.ElementType; label: string }> = {
@@ -38,8 +39,8 @@ const deploymentModeLabels: Record<AdaptiveDeploymentMode, { label: string; colo
   FULLY_ADAPTIVE: { label: 'Fully Adaptive', color: 'text-neural-green' },
 };
 
-export const SystemLearningPanel = ({ executionMetrics }: SystemLearningPanelProps) => {
-  const summary = useMemo<EdgeLearningSummary>(() => getEdgeLearningSummary(), []);
+export const SystemLearningPanel = ({ executionMetrics, learningReady }: SystemLearningPanelProps) => {
+  const summary = useMemo<EdgeLearningSummary>(() => getEdgeLearningSummary(), [learningReady, executionMetrics]);
 
   const hasRealData = executionMetrics?.hasData ?? false;
   const totalTrades = executionMetrics

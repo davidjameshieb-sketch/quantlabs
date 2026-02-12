@@ -30,6 +30,12 @@ import {
   getLastGovernanceStats,
   computeGovernanceDashboard,
 } from '@/lib/forex';
+import {
+  clearEdgeMemory,
+  updateEdgeMemory,
+  buildEnvironmentSignature,
+  type LearningTradeInput,
+} from '@/lib/forex/edgeLearningState';
 import { ForexDashboardFilters } from '@/lib/forex/forexTypes';
 import { createAgents } from '@/lib/agents/agentEngine';
 import { useOandaExecution } from '@/hooks/useOandaExecution';
@@ -61,16 +67,58 @@ const ForexDashboard = () => {
     enableAlerts: true,
   });
 
+  const [learningReady, setLearningReady] = useState(false);
+
   useEffect(() => {
-    // STRATEGY RESET: Clear stale learning memory from old strategy
+    // STRATEGY RESET: Clear stale learning memory, then rebuild from post-revamp trades
     try {
       localStorage.removeItem('quantlabs_edge_learning_memory');
       localStorage.removeItem('quantlabs_indicator_learning');
       localStorage.removeItem('quantlabs_learning_state');
     } catch { /* ignore */ }
+    clearEdgeMemory();
     fetchOandaLivePrices().then(() => setLivePricesReady(true));
     fetchAccountSummary('live');
   }, [fetchAccountSummary]);
+
+  // Rebuild learning memory from post-revamp real trades
+  useEffect(() => {
+    if (!executionMetrics?.recentOrders) return;
+    const CUTOFF = new Date('2026-02-12T01:00:00Z').getTime();
+    const postRevamp = executionMetrics.recentOrders.filter(o =>
+      new Date(o.created_at).getTime() >= CUTOFF &&
+      (o.status === 'filled' || o.status === 'closed') &&
+      o.entry_price != null && o.exit_price != null
+    );
+    if (postRevamp.length === 0) { setLearningReady(true); return; }
+
+    const JPY = ['USD_JPY', 'EUR_JPY', 'GBP_JPY', 'AUD_JPY', 'CAD_JPY', 'CHF_JPY', 'NZD_JPY'];
+    const inputs: LearningTradeInput[] = postRevamp.map(o => {
+      const mult = JPY.includes(o.currency_pair) ? 100 : 10000;
+      const pnl = o.direction === 'long'
+        ? (o.exit_price! - o.entry_price!) * mult
+        : (o.entry_price! - o.exit_price!) * mult;
+      const sig = buildEnvironmentSignature(
+        o.session_label || 'unknown',
+        o.regime_label || 'unknown',
+        o.currency_pair,
+        o.direction,
+        o.agent_id || undefined,
+      );
+      return {
+        environmentSignature: sig,
+        pnlPips: Math.round(pnl * 10) / 10,
+        session: o.session_label || 'unknown',
+        regime: o.regime_label || 'unknown',
+        compositeScore: o.confidence_score ?? 0.5,
+        timestamp: new Date(o.created_at).getTime(),
+      };
+    });
+
+    clearEdgeMemory();
+    updateEdgeMemory(inputs);
+    setLearningReady(true);
+  }, [executionMetrics]);
 
   // --- Legacy simulated trades kept ONLY for Archive tab ---
   const agents = useMemo(() => createAgents(), []);
@@ -160,7 +208,7 @@ const ForexDashboard = () => {
             {/* ─── TAB 1: Trade Book ─── */}
             <TabsContent value="trade-book" className="space-y-4">
               <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-4">
-                <SystemLearningPanel executionMetrics={executionMetrics} />
+                <SystemLearningPanel executionMetrics={executionMetrics} learningReady={learningReady} />
                 <LiveTradeBook metrics={executionMetrics} />
               </motion.div>
             </TabsContent>
