@@ -61,6 +61,12 @@ const ForexDashboard = () => {
   });
 
   useEffect(() => {
+    // STRATEGY RESET: Clear stale learning memory from old strategy
+    try {
+      localStorage.removeItem('quantlabs_edge_learning_memory');
+      localStorage.removeItem('quantlabs_indicator_learning');
+      localStorage.removeItem('quantlabs_learning_state');
+    } catch { /* ignore */ }
     fetchOandaLivePrices().then(() => setLivePricesReady(true));
     fetchAccountSummary('live');
   }, [fetchAccountSummary]);
