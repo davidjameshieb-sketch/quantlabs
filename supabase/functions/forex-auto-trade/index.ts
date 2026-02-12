@@ -1061,15 +1061,18 @@ function buildShortLearningProfile(orders: Array<Record<string, unknown>>): Shor
   else if (totalShortTrades >= 20) maturity = "growing";
   else if (totalShortTrades >= 5) maturity = "early";
 
-  // Adaptive bearish momentum threshold: start permissive (4/7), tighten if losing
-  let adaptiveBearishThreshold = 4;
-  if (totalShortTrades >= 20 && overallWR < 0.35) adaptiveBearishThreshold = 5;
-  else if (totalShortTrades >= 50 && overallWR >= 0.55) adaptiveBearishThreshold = 3;
-  else if (totalShortTrades >= 30 && overallWR < 0.40) adaptiveBearishThreshold = 5;
+  // EMERGENCY FIX: Shorts losing across ALL pairs (-5,236p in 7 days).
+  // Default raised from 4/7 to 5/7 — require stronger bearish conviction before shorting.
+  // Only relax to 4 after PROVEN profitability (WR >= 55% over 50+ shorts).
+  let adaptiveBearishThreshold = 5;
+  if (totalShortTrades >= 50 && overallWR >= 0.55 && overallExp > 0) adaptiveBearishThreshold = 4;
+  else if (totalShortTrades >= 20 && overallWR < 0.35) adaptiveBearishThreshold = 6;
+  else if (totalShortTrades >= 30 && overallWR < 0.40) adaptiveBearishThreshold = 6;
 
-  let adaptiveRegimeStrengthMin = 30;
-  if (totalShortTrades >= 20 && overallWR < 0.35) adaptiveRegimeStrengthMin = 45;
-  else if (totalShortTrades >= 50 && overallWR >= 0.55) adaptiveRegimeStrengthMin = 25;
+  // EMERGENCY FIX: Raise regime strength minimum — weak regimes producing losses
+  let adaptiveRegimeStrengthMin = 45;
+  if (totalShortTrades >= 20 && overallWR < 0.35) adaptiveRegimeStrengthMin = 60;
+  else if (totalShortTrades >= 50 && overallWR >= 0.55 && overallExp > 0) adaptiveRegimeStrengthMin = 30;
 
   const regimeEntries = Object.entries(regimeStats)
     .filter(([, s]) => (s.wins + s.losses) >= 3)
@@ -2538,7 +2541,9 @@ Deno.serve(async (req) => {
 
         // FIX: Use pre-order entryEstimate as requestedPrice (not filledPrice which makes slippage always 0)
         const requestedPrice = entryEstimate > 0 ? entryEstimate : filledPrice;
-        const spreadAtEntry = halfSpread != null ? halfSpread * 2 : (PAIR_BASE_SPREADS[pair] || 1.0) * 0.0001;
+        // FIX: JPY pairs use 0.01 pip value, not 0.0001
+        const pipValueForSpread = pair.includes("JPY") ? 0.01 : 0.0001;
+        const spreadAtEntry = halfSpread != null ? halfSpread * 2 : (PAIR_BASE_SPREADS[pair] || 1.0) * pipValueForSpread;
         // REAL SLIPPAGE: computed from actual fill price vs requested price (not random)
         let slippagePips: number | null = null;
         if (!wasCancelled && filledPrice && requestedPrice) {
@@ -2549,9 +2554,11 @@ Deno.serve(async (req) => {
         }
 
         const baseSpread = PAIR_BASE_SPREADS[pair] || 1.0;
+        // FIX: Convert spreadAtEntry (price units) back to pips correctly for JPY vs non-JPY
+        const spreadInPips = spreadAtEntry / pipValueForSpread;
         const execQuality = wasCancelled ? 0 : scoreExecution(
           slippagePips || 0, fillLatencyMs,
-          spreadAtEntry * 10000, baseSpread
+          spreadInPips, baseSpread
         );
 
         await supabase
