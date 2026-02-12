@@ -457,7 +457,9 @@ Deno.serve(async (req) => {
     // CRITICAL: oandaTrade.price is the ENTRY price, NOT the current market price!
     // Without this, all TP/SL/trailing evaluations see ~0 pips P&L and never trigger.
     const instrumentsNeeded = new Set(openOrders.map(o => o.currency_pair));
-    const currentPriceMap = new Map<string, number>();
+    // Store ask AND bid separately so shorts use ASK (cost to close) and longs use BID
+    const askPriceMap = new Map<string, number>();
+    const bidPriceMap = new Map<string, number>();
     if (instrumentsNeeded.size > 0) {
       try {
         const instruments = [...instrumentsNeeded].join(",");
@@ -467,10 +469,10 @@ Deno.serve(async (req) => {
         for (const p of (priceRes.prices || [])) {
           const ask = parseFloat(p.asks?.[0]?.price || "0");
           const bid = parseFloat(p.bids?.[0]?.price || "0");
-          const mid = (ask + bid) / 2;
-          if (mid > 0) currentPriceMap.set(p.instrument, mid);
+          if (ask > 0) askPriceMap.set(p.instrument, ask);
+          if (bid > 0) bidPriceMap.set(p.instrument, bid);
         }
-        console.log(`[TRADE-MONITOR] Fetched live prices for ${currentPriceMap.size} instruments`);
+        console.log(`[TRADE-MONITOR] Fetched live prices for ${askPriceMap.size} instruments`);
       } catch (priceErr) {
         console.error(`[TRADE-MONITOR] Failed to fetch current prices:`, priceErr);
       }
@@ -558,10 +560,13 @@ Deno.serve(async (req) => {
         continue;
       }
 
-      const livePrice = currentPriceMap.get(order.currency_pair);
+      // SHORTS close at ASK, LONGS close at BID — use the correct side for mark-to-market
+      const livePrice = order.direction === "short"
+        ? askPriceMap.get(order.currency_pair)
+        : bidPriceMap.get(order.currency_pair);
       const currentPrice = livePrice || parseFloat(oandaTrade.price);
       if (!livePrice) {
-        console.warn(`[TRADE-MONITOR] ${order.currency_pair}: No live price, using trade entry as fallback`);
+        console.warn(`[TRADE-MONITOR] ${order.currency_pair}: No live ${order.direction === 'short' ? 'ASK' : 'BID'} price, using trade entry as fallback`);
       }
       const entryPrice = order.entry_price!;
       const tradeAgeMs = Date.now() - new Date(order.created_at).getTime();
