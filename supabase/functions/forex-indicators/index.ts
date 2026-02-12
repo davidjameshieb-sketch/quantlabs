@@ -397,12 +397,12 @@ Deno.serve(async (req) => {
     // ── AXIS 1: VOLATILITY SCORE (0-100) ──
     // Component A: ATR Ratio (current ATR vs longer-term baseline)
     const atrVals = atr(candles, 14);
-    const currentATR = atrVals[atrVals.length - 1] || 0;
+    const currentATRVal = atrVals[atrVals.length - 1] || 0;
     // Use ATR(50) as the baseline — compare short-term vol to medium-term
     const atrLong = atrVals.length >= 50
       ? atrVals.slice(-50).reduce((a, b) => a + b, 0) / 50
       : atrVals.reduce((a, b) => a + b, 0) / Math.max(atrVals.length, 1);
-    const atrRatio = atrLong > 0 ? currentATR / atrLong : 1;
+    const atrRatio = atrLong > 0 ? currentATRVal / atrLong : 1;
     // Map: <0.7 = low vol (0-20), 0.7-1.3 = normal (30-60), >1.3 = high vol (70-100)
     const atrRatioScore = atrRatio < 0.7
       ? Math.round((atrRatio / 0.7) * 20)
@@ -431,7 +431,7 @@ Deno.serve(async (req) => {
     let atrPercentile = 50;
     if (atrWindow.length > 10) {
       const sorted = [...atrWindow].sort((a, b) => a - b);
-      const rank = sorted.filter(v => v <= currentATR).length;
+      const rank = sorted.filter(v => v <= currentATRVal).length;
       atrPercentile = Math.round((rank / sorted.length) * 100);
     }
 
@@ -449,10 +449,10 @@ Deno.serve(async (req) => {
     // Component A: ATR acceleration (compare last 3-bar ATR avg vs prior 3-bar ATR avg)
     const atrRecent3 = atrVals.length >= 6
       ? (atrVals[atrVals.length - 1] + atrVals[atrVals.length - 2] + atrVals[atrVals.length - 3]) / 3
-      : currentATR;
+      : currentATRVal;
     const atrPrior3 = atrVals.length >= 6
       ? (atrVals[atrVals.length - 4] + atrVals[atrVals.length - 5] + atrVals[atrVals.length - 6]) / 3
-      : currentATR;
+      : currentATRVal;
     const atrAccelRatio = atrPrior3 > 0 ? atrRecent3 / atrPrior3 : 1;
     // Map: <0.9 = decelerating (0-30), 0.9-1.1 = stable (30-50), >1.1 = accelerating (50-100)
     const atrAccelScore = atrAccelRatio < 0.9
@@ -530,7 +530,7 @@ Deno.serve(async (req) => {
     // If persistence is strong + structure prints HH/HL, decelerating vol = orderly trend, NOT exhaustion.
 
     // Price progress indicator 1: ROC slope (is ROC declining?)
-    const rocVal = indicators.roc.value || 0;
+    const rocValLocal = indicators.roc.value || 0;
     const rocSlice = closes.slice(-15);
     let rocRecent = 0, rocPrior = 0;
     if (rocSlice.length >= 14) {
