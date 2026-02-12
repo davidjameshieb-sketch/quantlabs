@@ -25,18 +25,16 @@ function getPipMultiplier(pair: string): number {
   return JPY_PAIRS.includes(pair) ? 0.01 : 0.0001;
 }
 
-// TP thresholds by volatility class (SL is dynamic via Supertrend+ATR, no time limits)
+// PHASE 2: TP thresholds REMOVED — ATR-trailing manages all exits
+// Safety ceiling TP set at 5R on the OANDA order. These pip values are only used
+// for the legacy computeTrailingStop function (which is now subordinate to R-based trailing).
 function getExitThresholds(pair: string): { tpPips: number } {
+  // Return very wide safety values — actual exits via ATR-trailing in evaluateExit()
   const highVol = ["GBP_JPY", "GBP_AUD", "EUR_AUD", "AUD_NZD"];
   const medVol = ["GBP_USD", "EUR_JPY", "AUD_JPY", "USD_CAD", "EUR_GBP", "USD_JPY"];
-
-  if (highVol.includes(pair)) {
-    return { tpPips: 25 };
-  }
-  if (medVol.includes(pair)) {
-    return { tpPips: 18 };
-  }
-  return { tpPips: 12 };
+  if (highVol.includes(pair)) return { tpPips: 75 };
+  if (medVol.includes(pair)) return { tpPips: 54 };
+  return { tpPips: 36 };
 }
 
 // ─── Dynamic Stop Loss from 15m Supertrend + ATR ───
@@ -378,14 +376,15 @@ function evaluateExit(
     : Math.max(0, (entryPrice - mfePriceWatermark) / pipMult)) : 0;
   const mfeR = effectiveRPips > 0 ? mfePips / effectiveRPips : 0;
 
-  // Progress (TP target is 2R)
-  const progressToTp = currentR / 2.0;
+  // Progress (TP safety ceiling is 5R — ATR-trailing handles exits before this)
+  const progressToTp = currentR / 5.0;
 
-  // ═══ PRIORITY 1: TP safety ceiling (2R) — OANDA handles natively, but verify ═══
-  if (currentR >= 2.0) {
+  // ═══ PRIORITY 1: TP safety ceiling (5R) — emergency only, ATR-trailing handles exits ═══
+  // PHASE 2: Raised from 2R→5R to let winners run. ATR-trailing at 1.5R/2R manages actual exits.
+  if (currentR >= 5.0) {
     return {
       action: "close-tp",
-      reason: `TP hit: +${currentPnlPips.toFixed(1)}p (${currentR.toFixed(2)}R, target: 2.0R)`,
+      reason: `TP ceiling hit: +${currentPnlPips.toFixed(1)}p (${currentR.toFixed(2)}R, safety ceiling: 5.0R)`,
       currentPnlPips, progressToTp, tradeAgeMinutes,
     };
   }
