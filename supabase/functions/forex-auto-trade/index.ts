@@ -1593,11 +1593,13 @@ Deno.serve(async (req) => {
     const orders = (recentOrders || []) as Array<Record<string, unknown>>;
 
     // ═══════════════════════════════════════════════════════════
-    // PHASE 1.5: Indicator Learning Engine — per-pair noise detection
+    // PHASE 1.5: Indicator Learning Engine — soft-weighted noise gating
     // ═══════════════════════════════════════════════════════════
+    const NOISE_FLOOR_WEIGHT = 0.05; // soft floor — never fully excluded
     const indicatorLearningProfiles = new Map<string, {
       noiseIndicators: string[];
       signalIndicators: string[];
+      softWeights: Record<string, number>;
       qualityScore: number;
       baselineWinRate: number;
       totalTrades: number;
@@ -1645,6 +1647,7 @@ Deno.serve(async (req) => {
         const noiseList: string[] = [];
         const signalList: string[] = [];
 
+        const softWeights: Record<string, number> = {};
         for (const indKey of Object.keys(INDICATOR_NAMES)) {
           let confirmed = 0, wins = 0;
           for (const t of pairTrades) {
@@ -1656,11 +1659,21 @@ Deno.serve(async (req) => {
             );
             if (isConf) { confirmed++; if (t.won) wins++; }
           }
-          if (confirmed < MIN_LEARNING_TRADES) continue;
+          if (confirmed < MIN_LEARNING_TRADES) {
+            softWeights[indKey] = 0.5; // neutral — insufficient data
+            continue;
+          }
           const wr = wins / confirmed;
           const lift = wr - baseWR;
-          if (lift <= NOISE_THRESHOLD) noiseList.push(indKey);
-          else if (lift >= SIGNAL_THRESHOLD) signalList.push(indKey);
+          if (lift <= NOISE_THRESHOLD) {
+            noiseList.push(indKey);
+            softWeights[indKey] = Math.max(NOISE_FLOOR_WEIGHT, 0.15 + lift * 2);
+          } else if (lift >= SIGNAL_THRESHOLD) {
+            signalList.push(indKey);
+            softWeights[indKey] = Math.min(1.0, 0.6 + lift * 5);
+          } else {
+            softWeights[indKey] = 0.5;
+          }
         }
 
         const qualityScore = Math.min(100, Math.round(
@@ -1670,13 +1683,14 @@ Deno.serve(async (req) => {
         indicatorLearningProfiles.set(pair, {
           noiseIndicators: noiseList,
           signalIndicators: signalList,
+          softWeights,
           qualityScore,
           baselineWinRate: baseWR,
           totalTrades: pairTrades.length,
         });
 
         if (noiseList.length > 0) {
-          console.log(`[INDICATOR-LEARN] ${pair}: NOISE indicators excluded: ${noiseList.join(", ")} (${pairTrades.length} trades, baseline WR=${(baseWR*100).toFixed(0)}%)`);
+          console.log(`[INDICATOR-LEARN] ${pair}: NOISE indicators down-weighted: ${noiseList.map(k => `${k}(w=${softWeights[k]?.toFixed(2)})`).join(", ")} (${pairTrades.length} trades, baseline WR=${(baseWR*100).toFixed(0)}%)`);
         }
         if (signalList.length > 0) {
           console.log(`[INDICATOR-LEARN] ${pair}: SIGNAL indicators: ${signalList.join(", ")} (quality=${qualityScore})`);
@@ -1925,28 +1939,29 @@ Deno.serve(async (req) => {
                 console.log(`[REGIME-INDICATOR] ${pair}: regime=${indicatorRegime} strength=${indicatorRegimeStrength} longFriendly=${indicatorLongFriendly} shortFriendly=${indicatorShortFriendly} bullishMom=${indicatorBullishMomentum} bearishMom=${indicatorBearishMomentum}`);
               }
 
-              // ═══ INDICATOR LEARNING: Apply noise filtering ═══
+              // ═══ INDICATOR LEARNING: Soft-weighted consensus (down-weight noise) ═══
               pairLearningProfile = indicatorLearningProfiles.get(pair) || null;
-              if (pairLearningProfile && indicatorBreakdown && pairLearningProfile.noiseIndicators.length > 0) {
+              if (pairLearningProfile && indicatorBreakdown && Object.keys(pairLearningProfile.softWeights).length > 0) {
                 learningApplied = true;
-                const noiseKeys = pairLearningProfile.noiseIndicators;
+                const weights = pairLearningProfile.softWeights;
 
-                // Re-compute consensus excluding noise indicators
-                let bullish = 0, bearish = 0, total = 0;
+                // Re-compute consensus with soft weights — noise contributes near-zero, not excluded
+                let bullishW = 0, bearishW = 0, totalW = 0;
                 for (const [indKey, sig] of Object.entries(indicatorBreakdown)) {
-                  if (noiseKeys.includes(indKey)) { noiseExcludedCount++; continue; }
                   if (sig === "neutral") continue;
-                  total++;
-                  if (sig === "bullish" || sig === "oversold") bullish++;
-                  else if (sig === "bearish" || sig === "overbought") bearish++;
+                  const w = weights[indKey] ?? 0.5;
+                  totalW += w;
+                  if (sig === "bullish" || sig === "oversold") bullishW += w;
+                  else if (sig === "bearish" || sig === "overbought") bearishW += w;
                 }
+                noiseExcludedCount = pairLearningProfile.noiseIndicators.filter(k => indicatorBreakdown[k] && indicatorBreakdown[k] !== "neutral").length;
 
-                filteredConsensusScore = total > 0 ? Math.round(((bullish - bearish) / total) * 100) : 0;
+                filteredConsensusScore = totalW > 0 ? Math.round(((bullishW - bearishW) / totalW) * 100) : 0;
                 filteredDirection = filteredConsensusScore > 15 ? "bullish" : filteredConsensusScore < -15 ? "bearish" : "neutral";
 
-                console.log(`[INDICATOR-LEARN] ${pair}: Raw consensus=${indicatorConsensusScore} (${indicatorDirection}) → Filtered=${filteredConsensusScore} (${filteredDirection}) | ${noiseExcludedCount} noise indicators excluded: ${noiseKeys.join(",")}`);
+                console.log(`[INDICATOR-LEARN] ${pair}: Raw consensus=${indicatorConsensusScore} (${indicatorDirection}) → Weighted=${filteredConsensusScore} (${filteredDirection}) | ${noiseExcludedCount} noise down-weighted (floor=${NOISE_FLOOR_WEIGHT})`);
 
-                // USE FILTERED consensus for direction decision
+                // USE WEIGHTED consensus for direction decision
                 indicatorConsensusScore = filteredConsensusScore;
                 indicatorDirection = filteredDirection as "bullish" | "bearish" | "neutral";
               }
@@ -2373,11 +2388,13 @@ Deno.serve(async (req) => {
             // ═══ INDICATOR LEARNING ═══
             indicatorLearning: learningApplied ? {
               applied: true,
+              mode: "soft-weighted",
               filteredConsensus: filteredConsensusScore,
               filteredDirection,
-              noiseExcluded: pairLearningProfile?.noiseIndicators || [],
+              noiseDownWeighted: pairLearningProfile?.noiseIndicators || [],
               signalIndicators: pairLearningProfile?.signalIndicators || [],
-              noiseExcludedCount,
+              softWeights: pairLearningProfile?.softWeights || {},
+              noiseDownWeightedCount: noiseExcludedCount,
               qualityScore: pairLearningProfile?.qualityScore || 0,
               baselineWinRate: pairLearningProfile?.baselineWinRate || 0,
               learningTrades: pairLearningProfile?.totalTrades || 0,
