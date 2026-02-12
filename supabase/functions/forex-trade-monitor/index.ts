@@ -672,6 +672,18 @@ Deno.serve(async (req) => {
         healthResult.trailingTightenFactor, // pass tightening factor
       );
 
+      // ─── THS Expectancy Tracking ───
+      // entry_ths: set once on first health evaluation (bars=1)
+      // peak_ths: rolling max of THS across trade lifetime
+      // mae_r: Maximum Adverse Excursion in R-multiples
+      const prevEntryThs = typeof order.entry_ths === 'number' ? order.entry_ths : null;
+      const prevPeakThs = typeof order.peak_ths === 'number' ? order.peak_ths : 0;
+      const prevMaeR = typeof order.mae_r === 'number' ? order.mae_r : 0;
+
+      const entryThsValue = prevEntryThs ?? healthResult.tradeHealthScore; // lock on first eval
+      const peakThsValue = Math.max(prevPeakThs, healthResult.tradeHealthScore);
+      const maeRValue = Math.round(Math.max(prevMaeR, Math.abs(Math.min(0, healthResult.ueR))) * 100) / 100;
+
       // Persist health telemetry on every cycle
       await supabase
         .from("oanda_orders")
@@ -684,6 +696,9 @@ Deno.serve(async (req) => {
           progress_fail: healthResult.progressFail,
           health_governance_action: healthResult.governanceActionType,
           time_to_mfe_bars: healthResult.timeToMfeBars,
+          entry_ths: entryThsValue,
+          peak_ths: peakThsValue,
+          mae_r: maeRValue,
         })
         .eq("id", order.id);
 
@@ -741,6 +756,10 @@ Deno.serve(async (req) => {
             progress_fail: healthResult.progressFail,
             health_governance_action: healthResult.governanceActionType,
             time_to_mfe_bars: healthResult.timeToMfeBars,
+            entry_ths: entryThsValue,
+            peak_ths: peakThsValue,
+            exit_ths: healthResult.tradeHealthScore,
+            mae_r: maeRValue,
           })
           .eq("id", order.id);
 
