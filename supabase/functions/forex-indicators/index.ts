@@ -529,7 +529,105 @@ Deno.serve(async (req) => {
       regimeStrength = Math.min(100, Math.round(volatilityScore * 0.4 + directionalPersistence * 0.5));
     }
 
-    console.log(`[REGIME-COMPOSITE] ${instrument}/${timeframe}: volScore=${volatilityScore} (atrRatio=${atrRatio.toFixed(2)}, bbPctl=${bbPercentile}, atrPctl=${atrPercentile}) | persScore=${directionalPersistence} (eff=${efficiencyScore}, adx=${adxNormalized}, struct=${structureScore}) → ${marketRegime} (${regimeStrength})`);
+    // ═══ REGIME STABILITY: Check if regime has held for last N bars ═══
+    // Re-run the composite classification for the last 5 bars to detect flicker
+    const STABILITY_LOOKBACK = 5;
+    const recentRegimes: string[] = [marketRegime]; // current bar
+    if (candles.length > STABILITY_LOOKBACK + 50) { // need enough history
+      for (let barOffset = 1; barOffset < STABILITY_LOOKBACK; barOffset++) {
+        const subCandles = candles.slice(0, candles.length - barOffset);
+        if (subCandles.length < 50) break;
+        const subCloses = subCandles.map(c => c.c);
+        
+        // Mini regime classification for this historical bar
+        const subAtrVals = atr(subCandles, 14);
+        const subCurrentATR = subAtrVals[subAtrVals.length - 1] || 0;
+        const subAtrLong = subAtrVals.length >= 50
+          ? subAtrVals.slice(-50).reduce((a, b) => a + b, 0) / 50
+          : subAtrVals.reduce((a, b) => a + b, 0) / Math.max(subAtrVals.length, 1);
+        const subAtrRatio = subAtrLong > 0 ? subCurrentATR / subAtrLong : 1;
+        const subAtrRatioScore = subAtrRatio < 0.7
+          ? Math.round((subAtrRatio / 0.7) * 20)
+          : subAtrRatio <= 1.3
+            ? Math.round(30 + ((subAtrRatio - 0.7) / 0.6) * 30)
+            : Math.min(100, Math.round(60 + ((subAtrRatio - 1.3) / 0.7) * 40));
+        
+        // Sub BB percentile
+        const subCloses20 = subCloses.slice(-100);
+        const subBBWidths: number[] = [];
+        for (let j = 20; j <= subCloses20.length; j++) {
+          const sl = subCloses20.slice(j - 20, j);
+          const m = sl.reduce((a, b) => a + b, 0) / 20;
+          const sd = Math.sqrt(sl.reduce((a, v) => a + (v - m) ** 2, 0) / 20);
+          if (m > 0) subBBWidths.push((2 * 2 * sd) / m);
+        }
+        const subBBCurrent = subBBWidths.length > 0 ? subBBWidths[subBBWidths.length - 1] : 0;
+        let subBBPctl = 50;
+        if (subBBWidths.length > 10) {
+          const sorted = [...subBBWidths].sort((a, b) => a - b);
+          subBBPctl = Math.round(sorted.filter(w => w <= subBBCurrent).length / sorted.length * 100);
+        }
+
+        const subAtrWindow = subAtrVals.slice(-100);
+        let subAtrPctl = 50;
+        if (subAtrWindow.length > 10) {
+          const sorted = [...subAtrWindow].sort((a, b) => a - b);
+          subAtrPctl = Math.round(sorted.filter(v => v <= subCurrentATR).length / sorted.length * 100);
+        }
+
+        const subVolScore = Math.round(subAtrRatioScore * 0.40 + subBBPctl * 0.30 + subAtrPctl * 0.30);
+
+        // Sub trend efficiency
+        const subTrendEff = (() => {
+          const sl = subCloses.slice(-15);
+          const net = Math.abs(sl[sl.length - 1] - sl[0]);
+          let path = 0;
+          for (let k = 1; k < sl.length; k++) path += Math.abs(sl[k] - sl[k - 1]);
+          return path === 0 ? 0 : net / path;
+        })();
+        const subEffScore = Math.round(subTrendEff * 100);
+        
+        // Sub ADX (simplified — use current since it's smoothed)
+        const subAdxNorm = adxNormalized; // ADX is already smoothed, stable across 5 bars
+        const subStructScore = structureScore; // Structure won't change drastically bar-to-bar
+        const subPersis = Math.round(subEffScore * 0.40 + subAdxNorm * 0.35 + subStructScore * 0.25);
+
+        const subVol = subVolScore < 30 ? "low" : subVolScore <= 65 ? "normal" : "high";
+        const subPers = subPersis < 30 ? "weak" : subPersis <= 60 ? "moderate" : "strong";
+
+        // Simplified regime label from axes
+        let subRegime: string;
+        if (subVol === "low" && subPers === "weak") subRegime = "compression";
+        else if (subVol === "low" && subPers === "moderate") subRegime = "flat";
+        else if (subVol === "low" && subPers === "strong") subRegime = "transition";
+        else if (subVol === "normal" && subPers === "weak") subRegime = "flat";
+        else if (subVol === "normal" && subPers === "moderate") subRegime = dominantDir === "bearish" && bearishMomentum >= 4 ? "risk-off" : dominantDir === "bullish" && bullishMomentum >= 4 ? "momentum" : "transition";
+        else if (subVol === "normal" && subPers === "strong") subRegime = dominantDir === "bearish" ? "breakdown" : "expansion";
+        else if (subVol === "high" && subPers === "weak") subRegime = (rsiVal > 70 || rsiVal < 30) ? "exhaustion" : "ignition";
+        else if (subVol === "high" && subPers === "moderate") subRegime = dominantDir === "bearish" ? "risk-off" : "expansion";
+        else subRegime = dominantDir === "bearish" ? "breakdown" : "expansion";
+
+        recentRegimes.push(subRegime);
+      }
+    }
+
+    // Count how many of the last N bars share the current regime
+    const holdBars = recentRegimes.filter(r => r === marketRegime).length;
+    // Also check "regime family" stability (e.g., expansion+momentum = bullish family)
+    const BULLISH_FAMILY = ["expansion", "momentum"];
+    const BEARISH_FAMILY = ["breakdown", "risk-off"];
+    const familyLabel = BULLISH_FAMILY.includes(marketRegime) ? "bullish"
+      : BEARISH_FAMILY.includes(marketRegime) ? "bearish" : "neutral";
+    const familyHoldBars = recentRegimes.filter(r => {
+      if (familyLabel === "bullish") return BULLISH_FAMILY.includes(r);
+      if (familyLabel === "bearish") return BEARISH_FAMILY.includes(r);
+      return r === marketRegime;
+    }).length;
+
+    const regimeConfirmed = holdBars >= 3; // exact match held 3+ bars
+    const regimeFamilyConfirmed = familyHoldBars >= 3; // family held 3+ bars
+
+    console.log(`[REGIME-COMPOSITE] ${instrument}/${timeframe}: volScore=${volatilityScore} (atrRatio=${atrRatio.toFixed(2)}, bbPctl=${bbPercentile}, atrPctl=${atrPercentile}) | persScore=${directionalPersistence} (eff=${efficiencyScore}, adx=${adxNormalized}, struct=${structureScore}) → ${marketRegime} (${regimeStrength}) | hold=${holdBars}/${STABILITY_LOOKBACK} familyHold=${familyHoldBars} confirmed=${regimeConfirmed} recentRegimes=[${recentRegimes.join(',')}]`);
 
     const lastCandle = candles[candles.length - 1];
 
@@ -549,7 +647,7 @@ Deno.serve(async (req) => {
         bearishCount: bearish,
         neutralCount: signals.length - bullish - bearish,
       },
-      // ═══ COMPOSITE REGIME: Volatility Score + Directional Persistence ═══
+      // ═══ COMPOSITE REGIME: Volatility Score + Directional Persistence + Stability ═══
       regime: {
         label: marketRegime,
         strength: regimeStrength,
@@ -565,7 +663,13 @@ Deno.serve(async (req) => {
         adx: adxVal,
         trendEfficiency: trendEff,
         bollingerWidth: bbWidth,
-        shortFriendly: ["breakdown", "risk-off", "exhaustion", "compression"].includes(marketRegime),
+        // ═══ REGIME STABILITY: Anti-flicker confirmation ═══
+        holdBars,
+        familyHoldBars,
+        regimeConfirmed,
+        regimeFamilyConfirmed,
+        recentRegimes,
+        shortFriendly: ["breakdown", "risk-off", "exhaustion"].includes(marketRegime),
         longFriendly: ["expansion", "momentum", "exhaustion"].includes(marketRegime),
       },
     }), {
