@@ -1593,15 +1593,17 @@ Deno.serve(async (req) => {
     const orders = (recentOrders || []) as Array<Record<string, unknown>>;
 
     // ═══════════════════════════════════════════════════════════
-    // PHASE 1.5: Indicator Learning Engine — regime-aware soft-weighted noise gating
+    // PHASE 1.5: Indicator Learning Engine — walk-forward OOS, regime-aware, soft-weighted
     // ═══════════════════════════════════════════════════════════
     const NOISE_FLOOR_WEIGHT = 0.05;
     const MIN_LEARNING_TRADES = 10;
     const MIN_TRADES_PER_REGIME = 5;
     const NOISE_THRESHOLD = -0.03;
     const SIGNAL_THRESHOLD = 0.02;
+    const WALK_FORWARD_TRAIN_RATIO = 0.67; // 2/3 train, 1/3 test (OOS)
+    const MIN_OOS_TRADES = 5; // Minimum OOS trades for valid lift measurement
 
-    type RegimeBucketKey = string; // e.g. "trending_expansion"
+    type RegimeBucketKey = string;
 
     function classifyRegimeBucket(regimeLabel: string): RegimeBucketKey {
       const lower = (regimeLabel || "").toLowerCase();
@@ -1617,7 +1619,7 @@ Deno.serve(async (req) => {
       return `${trend}_${vol}`;
     }
 
-    interface RegimeWeights { weights: Record<string, number>; trades: number; baseWR: number; }
+    interface RegimeWeights { weights: Record<string, number>; trades: number; baseWR: number; oosValidated: boolean; }
 
     const indicatorLearningProfiles = new Map<string, {
       noiseIndicators: string[];
@@ -1627,9 +1629,12 @@ Deno.serve(async (req) => {
       qualityScore: number;
       baselineWinRate: number;
       totalTrades: number;
+      oosValidated: boolean;
+      oosTradesUsed: number;
     }>();
 
     // Parse closed trades with indicator data for learning
+    // IMPORTANT: trades arrive ordered by created_at DESC from the query above
     const closedWithIndicators = orders.filter(o => {
       const gp = o.governance_payload as Record<string, unknown> | null;
       return (o.status === "closed" || o.status === "filled") &&
@@ -1641,6 +1646,7 @@ Deno.serve(async (req) => {
       const pairTradesMap = new Map<string, Array<{
         pair: string; direction: string; won: boolean;
         indicators: Record<string, string>; regime: string;
+        createdAt: string;
       }>>();
 
       for (const o of closedWithIndicators) {
@@ -1657,47 +1663,96 @@ Deno.serve(async (req) => {
         if (!pairTradesMap.has(pair)) pairTradesMap.set(pair, []);
         pairTradesMap.get(pair)!.push({
           pair, direction: dir, won: pips > 0, indicators: breakdown, regime,
+          createdAt: o.created_at as string,
         });
       }
 
-      // Helper: compute indicator reliabilities + soft weights for a set of trades
-      function computeWeightsForTrades(
-        trades: Array<{ direction: string; won: boolean; indicators: Record<string, string> }>,
-        baseWR: number,
+      // ─── Walk-Forward OOS lift computation ───
+      // Computes lift on TRAIN set, then validates on OOS (test) set.
+      // Only indicators that show positive lift in BOTH sets qualify as "signal".
+      // Indicators that show negative lift in OOS qualify as "noise".
+      function computeOOSWeightsForTrades(
+        allTrades: Array<{ direction: string; won: boolean; indicators: Record<string, string>; createdAt: string }>,
         minSample: number
-      ): { noiseList: string[]; signalList: string[]; softWeights: Record<string, number> } {
+      ): { noiseList: string[]; signalList: string[]; softWeights: Record<string, number>; oosValidated: boolean; oosTradesUsed: number } {
         const noiseList: string[] = [];
         const signalList: string[] = [];
         const softWeights: Record<string, number> = {};
 
+        // Sort chronologically (oldest first) for walk-forward split
+        const sorted = [...allTrades].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+        const splitIdx = Math.floor(sorted.length * WALK_FORWARD_TRAIN_RATIO);
+        const trainSet = sorted.slice(0, splitIdx);
+        const testSet = sorted.slice(splitIdx);
+
+        const hasOOS = testSet.length >= MIN_OOS_TRADES;
+        const trainBaseWR = trainSet.length > 0 ? trainSet.filter(t => t.won).length / trainSet.length : 0.5;
+        const testBaseWR = testSet.length > 0 ? testSet.filter(t => t.won).length / testSet.length : 0.5;
+
         for (const indKey of Object.keys(INDICATOR_NAMES)) {
-          let confirmed = 0, wins = 0;
-          for (const t of trades) {
+          // TRAIN: compute in-sample lift
+          let trainConf = 0, trainWins = 0;
+          for (const t of trainSet) {
             const sig = t.indicators[indKey];
             if (!sig || sig === "neutral") continue;
             const isConf = (
               (t.direction === "long" && (sig === "bullish" || sig === "oversold")) ||
               (t.direction === "short" && (sig === "bearish" || sig === "overbought"))
             );
-            if (isConf) { confirmed++; if (t.won) wins++; }
+            if (isConf) { trainConf++; if (t.won) trainWins++; }
           }
-          if (confirmed < minSample) {
-            softWeights[indKey] = 0.5;
-            continue;
+
+          // TEST (OOS): compute out-of-sample lift
+          let testConf = 0, testWins = 0;
+          for (const t of testSet) {
+            const sig = t.indicators[indKey];
+            if (!sig || sig === "neutral") continue;
+            const isConf = (
+              (t.direction === "long" && (sig === "bullish" || sig === "oversold")) ||
+              (t.direction === "short" && (sig === "bearish" || sig === "overbought"))
+            );
+            if (isConf) { testConf++; if (t.won) testWins++; }
           }
-          const wr = wins / confirmed;
-          const lift = wr - baseWR;
-          if (lift <= NOISE_THRESHOLD) {
-            noiseList.push(indKey);
-            softWeights[indKey] = Math.max(NOISE_FLOOR_WEIGHT, 0.15 + lift * 2);
-          } else if (lift >= SIGNAL_THRESHOLD) {
-            signalList.push(indKey);
-            softWeights[indKey] = Math.min(1.0, 0.6 + lift * 5);
+
+          // Determine quality using OOS lift (if available), fallback to in-sample
+          if (hasOOS && testConf >= Math.min(minSample, MIN_OOS_TRADES)) {
+            // OOS-validated: use test set lift for classification
+            const oosLift = (testWins / testConf) - testBaseWR;
+
+            if (oosLift <= NOISE_THRESHOLD) {
+              noiseList.push(indKey);
+              softWeights[indKey] = Math.max(NOISE_FLOOR_WEIGHT, 0.15 + oosLift * 2);
+            } else if (oosLift >= SIGNAL_THRESHOLD) {
+              // Double-check: train lift must also be positive (prevents lucky OOS)
+              const trainLift = trainConf >= minSample ? (trainWins / trainConf) - trainBaseWR : 0;
+              if (trainLift >= 0) {
+                signalList.push(indKey);
+                softWeights[indKey] = Math.min(1.0, 0.6 + oosLift * 5);
+              } else {
+                softWeights[indKey] = 0.5; // Train disagrees — stay neutral
+              }
+            } else {
+              softWeights[indKey] = 0.5;
+            }
+          } else if (trainConf >= minSample) {
+            // Fallback: not enough OOS data — use in-sample but cap weight influence
+            const trainLift = (trainWins / trainConf) - trainBaseWR;
+            if (trainLift <= NOISE_THRESHOLD) {
+              noiseList.push(indKey);
+              // Weaker penalty without OOS confirmation (cap at 0.25 instead of near-zero)
+              softWeights[indKey] = Math.max(0.15, 0.3 + trainLift * 2);
+            } else if (trainLift >= SIGNAL_THRESHOLD) {
+              // Weaker boost without OOS confirmation (cap at 0.75 instead of 1.0)
+              signalList.push(indKey);
+              softWeights[indKey] = Math.min(0.75, 0.55 + trainLift * 3);
+            } else {
+              softWeights[indKey] = 0.5;
+            }
           } else {
             softWeights[indKey] = 0.5;
           }
         }
-        return { noiseList, signalList, softWeights };
+        return { noiseList, signalList, softWeights, oosValidated: hasOOS, oosTradesUsed: testSet.length };
       }
 
       for (const [pair, pairTrades] of pairTradesMap) {
@@ -1705,10 +1760,10 @@ Deno.serve(async (req) => {
 
         const baseWR = pairTrades.filter(t => t.won).length / pairTrades.length;
 
-        // Global weights (all regimes combined)
-        const global = computeWeightsForTrades(pairTrades, baseWR, MIN_LEARNING_TRADES);
+        // Global weights with walk-forward OOS validation
+        const global = computeOOSWeightsForTrades(pairTrades, MIN_LEARNING_TRADES);
 
-        // Regime-specific weights
+        // Regime-specific weights (also walk-forward within each bucket)
         const regimeBuckets = new Map<RegimeBucketKey, typeof pairTrades>();
         for (const t of pairTrades) {
           const bucket = classifyRegimeBucket(t.regime);
@@ -1720,11 +1775,12 @@ Deno.serve(async (req) => {
         for (const [bucket, bucketTrades] of regimeBuckets) {
           if (bucketTrades.length < MIN_TRADES_PER_REGIME) continue;
           const bucketBaseWR = bucketTrades.filter(t => t.won).length / bucketTrades.length;
-          const bucketResult = computeWeightsForTrades(bucketTrades, bucketBaseWR, MIN_TRADES_PER_REGIME);
+          const bucketResult = computeOOSWeightsForTrades(bucketTrades, MIN_TRADES_PER_REGIME);
           regimeWeights[bucket] = {
             weights: bucketResult.softWeights,
             trades: bucketTrades.length,
             baseWR: bucketBaseWR,
+            oosValidated: bucketResult.oosValidated,
           };
         }
 
@@ -1740,13 +1796,21 @@ Deno.serve(async (req) => {
           qualityScore,
           baselineWinRate: baseWR,
           totalTrades: pairTrades.length,
+          oosValidated: global.oosValidated,
+          oosTradesUsed: global.oosTradesUsed,
         });
 
+        const validationTag = global.oosValidated ? `OOS-validated(${global.oosTradesUsed}t)` : "in-sample-only";
         if (global.noiseList.length > 0) {
-          console.log(`[INDICATOR-LEARN] ${pair}: GLOBAL noise down-weighted: ${global.noiseList.map(k => `${k}(w=${global.softWeights[k]?.toFixed(2)})`).join(", ")} (${pairTrades.length} trades, baseline WR=${(baseWR*100).toFixed(0)}%)`);
+          console.log(`[INDICATOR-LEARN] ${pair}: NOISE [${validationTag}]: ${global.noiseList.map(k => `${k}(w=${global.softWeights[k]?.toFixed(2)})`).join(", ")} (${pairTrades.length}t, WR=${(baseWR*100).toFixed(0)}%)`);
+        }
+        if (global.signalList.length > 0) {
+          console.log(`[INDICATOR-LEARN] ${pair}: SIGNAL [${validationTag}]: ${global.signalList.join(", ")} (quality=${qualityScore})`);
         }
         if (Object.keys(regimeWeights).length > 0) {
-          const regimeSummary = Object.entries(regimeWeights).map(([b, r]) => `${b}(${r.trades}t,WR=${(r.baseWR*100).toFixed(0)}%)`).join(", ");
+          const regimeSummary = Object.entries(regimeWeights).map(([b, r]) =>
+            `${b}(${r.trades}t,WR=${(r.baseWR*100).toFixed(0)}%,${r.oosValidated ? "OOS" : "IS"})`
+          ).join(", ");
           console.log(`[INDICATOR-LEARN] ${pair}: Regime buckets: ${regimeSummary}`);
         }
       }
@@ -2452,11 +2516,13 @@ Deno.serve(async (req) => {
             coalitionTier: snapshot.coalitionRequirement.tier,
             coalitionMinAgents: snapshot.coalitionRequirement.minAgents,
             governanceState: govState,
-            // ═══ INDICATOR LEARNING (regime-aware) ═══
+            // ═══ INDICATOR LEARNING (walk-forward OOS, regime-aware) ═══
             indicatorLearning: learningApplied ? {
               applied: true,
-              mode: "regime-aware-soft-weighted",
+              mode: "walk-forward-oos-regime-aware",
               weightSource,
+              oosValidated: pairLearningProfile?.oosValidated || false,
+              oosTradesUsed: pairLearningProfile?.oosTradesUsed || 0,
               filteredConsensus: filteredConsensusScore,
               filteredDirection,
               noiseDownWeighted: pairLearningProfile?.noiseIndicators || [],
