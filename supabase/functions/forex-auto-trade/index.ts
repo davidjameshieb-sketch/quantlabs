@@ -53,6 +53,26 @@ const PAIR_BASE_SPREADS: Record<string, number> = {
   EUR_AUD: 1.6, GBP_AUD: 2.0, AUD_NZD: 1.8,
 };
 
+// ─── Indicator Names (canonical list for learning engine) ───
+const INDICATOR_NAMES: Record<string, string> = {
+  ema50: "EMA 50",
+  rsi: "RSI",
+  supertrend: "Supertrend",
+  parabolicSAR: "Parabolic SAR",
+  ichimoku: "Ichimoku",
+  adx: "ADX",
+  bollingerBands: "Bollinger Bands",
+  donchianChannels: "Donchian Channels",
+  stochastics: "Stochastics",
+  cci: "CCI",
+  keltnerChannels: "Keltner Channels",
+  roc: "ROC",
+  elderForce: "Elder Force",
+  heikinAshi: "Heikin-Ashi",
+  pivotPoints: "Pivot Points",
+  trendEfficiency: "Trend Efficiency",
+};
+
 // ═══════════════════════════════════════════════════════════════
 // §0 — LIVE/PRACTICE CONFIG + AGENT SNAPSHOT TYPES
 // ═══════════════════════════════════════════════════════════════
@@ -1690,7 +1710,9 @@ Deno.serve(async (req) => {
     // PHASE 3: Fetch Account Balance
     // ═══════════════════════════════════════════════════════════
 
-    let accountBalance = 100000;
+    // SAFETY: Default to known live account balance ($250) — NOT $100K
+    // Oversized defaults cause catastrophic over-leveraging on a $250 account
+    let accountBalance = execConfig.oandaEnv === "live" ? 250 : 100000;
     try {
       const balEnv = (Deno.env.get("OANDA_ENV") || "practice");
       const apiToken = balEnv === "live"
@@ -2154,7 +2176,7 @@ Deno.serve(async (req) => {
         .select("id")
         .eq("user_id", USER_ID)
         .eq("currency_pair", pair)
-        .eq("status", "filled")
+        .in("status", ["filled", "submitted"]) // FIX: Also catch submitted (not yet filled) to prevent duplicate exposure
         .gte("created_at", twoMinAgo)
         .limit(1);
 

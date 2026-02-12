@@ -118,8 +118,9 @@ function calcFrictionAdjustedPips(trade: CoalitionTradeRecord): number {
     ? (trade.exit_price - trade.entry_price) * mult
     : (trade.entry_price - trade.exit_price) * mult;
 
-  // Deduct spread as friction
-  const spreadPips = trade.spread_at_entry ?? 0;
+  // FIX: spread_at_entry is stored in price units (e.g., 0.00008), convert to pips
+  const spreadPrice = trade.spread_at_entry ?? 0;
+  const spreadPips = spreadPrice * mult; // Convert price-unit spread to pip-unit spread
   return rawPips - spreadPips;
 }
 
