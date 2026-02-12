@@ -38,13 +38,13 @@ const App = () => (
               <FloatingCommandWidget />
               <Routes>
                 <Route path="/" element={<Navigate to="/dashboard" replace />} />
-                <Route path="/auth" element={<Auth />} />
-                <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
-                <Route path="/dashboard/ticker/:symbol" element={<ProtectedRoute><Ticker /></ProtectedRoute>} />
-                <Route path="/dashboard/agents" element={<ProtectedRoute><AIAgents /></ProtectedRoute>} />
-                <Route path="/dashboard/evolution" element={<ProtectedRoute><Evolution /></ProtectedRoute>} />
-                <Route path="/dashboard/forex" element={<ProtectedRoute><ForexDashboard /></ProtectedRoute>} />
-                <Route path="/dashboard/forex/oanda" element={<ProtectedRoute><ForexOanda /></ProtectedRoute>} />
+                <Route path="/auth" element={<Navigate to="/dashboard" replace />} />
+                <Route path="/dashboard" element={<Dashboard />} />
+                <Route path="/dashboard/ticker/:symbol" element={<Ticker />} />
+                <Route path="/dashboard/agents" element={<AIAgents />} />
+                <Route path="/dashboard/evolution" element={<Evolution />} />
+                <Route path="/dashboard/forex" element={<ForexDashboard />} />
+                <Route path="/dashboard/forex/oanda" element={<ForexOanda />} />
                 <Route path="/guide" element={<Guide />} />
                 <Route path="/billing/success" element={<BillingSuccess />} />
                 <Route
