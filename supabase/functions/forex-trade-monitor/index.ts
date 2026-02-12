@@ -433,6 +433,25 @@ function evaluateExit(
         currentPnlPips, progressToTp, tradeAgeMinutes,
       };
     }
+  } else if (mfeR >= 1.0) {
+    // ═══ FIX #5: BREAKEVEN STOP — once MFE reaches 1.0R, move SL to entry ═══
+    // Protects trades that go positive from reverting to losses.
+    // Only triggers exit if price has come back to entry after reaching 1.0R MFE.
+    const breakevenSlPrice = direction === "long"
+      ? entryPrice + 0.5 * pipMult  // breakeven + 0.5 pip buffer
+      : entryPrice - 0.5 * pipMult;
+
+    const breakevenHit = direction === "long"
+      ? currentPrice <= breakevenSlPrice
+      : currentPrice >= breakevenSlPrice;
+
+    if (breakevenHit) {
+      return {
+        action: "close-trailing",
+        reason: `Breakeven stop: ${currentPnlPips.toFixed(1)}p (${currentR.toFixed(2)}R) | MFE=${mfeR.toFixed(2)}R reached 1.0R — protecting at entry`,
+        currentPnlPips, progressToTp, tradeAgeMinutes,
+      };
+    }
   }
 
   // ═══ PRIORITY 3: Dynamic SL hit (Supertrend + ATR based) ═══

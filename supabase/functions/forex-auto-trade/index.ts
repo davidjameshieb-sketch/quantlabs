@@ -1459,6 +1459,19 @@ Deno.serve(async (req) => {
     );
   }
 
+  // ─── TOXIC HOUR GUARD (Fix #2) ───
+  // Hours 13-14 UTC have statistically destructive expectancy across all pairs.
+  // Hard-block new entries during these hours to eliminate ~155 pips of losses.
+  const currentHourUTC = new Date().getUTCHours();
+  const TOXIC_HOURS = [13, 14]; // NY lunch hour — liquidity vacuum
+  if (TOXIC_HOURS.includes(currentHourUTC) && !forceMode) {
+    console.log(`[SCALP-TRADE] ═══ TOXIC HOUR BLOCK: ${currentHourUTC}:00 UTC — statistically destructive, skipping ═══`);
+    return new Response(
+      JSON.stringify({ success: true, mode: "toxic-hour-skip", reason: `Hour ${currentHourUTC} UTC blocked (negative expectancy)` }),
+      { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    );
+  }
+
   // Parse optional body for force-test mode
   let reqBody: { force?: boolean; pair?: string; direction?: "long" | "short"; preflight?: boolean } = {};
   try { reqBody = await req.json(); } catch { /* no body = normal cron */ }
@@ -1854,11 +1867,26 @@ Deno.serve(async (req) => {
 
     const degradation = forceMode ? null : buildDegradationReport(orders);
 
-    // ─── LIVE GOVERNANCE: State machine active with graceful degradation ───
+  // ─── LIVE GOVERNANCE: State machine active with graceful degradation ───
     // HALT no longer stops trading — it reduces params to minimum viable
     const govStateResult = degradation ? determineGovernanceState(degradation.windows.w20, degradation.windows.w50, degradation.windows.w200) : { state: "NORMAL" as GovernanceState, reasons: ["No degradation data"] };
     const govState: GovernanceState = forceMode ? "NORMAL" : govStateResult.state;
     const govConfig = { ...STATE_CONFIGS[govState] };
+
+    // ═══ FIX #7: SESSION-WEIGHTED POSITION SIZING ═══
+    // Apply hourly performance multipliers based on quant analysis
+    const HOUR_SIZING_MULTIPLIER: Record<number, number> = {
+      0: 0.5, 1: 0.3, 2: 0.5, 3: 0.7, 4: 0.7, 5: 0.7,
+      6: 0.8, 7: 1.0, 8: 1.2, 9: 1.2, 10: 0.3, 11: 0.5,
+      12: 0.8, 13: 0.0, 14: 0.0, // toxic hours already blocked above, but double-lock
+      15: 1.5, 16: 1.5, 17: 1.0, 18: 0.7, 19: 0.5,
+      20: 0.5, 21: 0.3, 22: 0.3, 23: 0.5,
+    };
+    const hourSizingMult = HOUR_SIZING_MULTIPLIER[currentHourUTC] ?? 1.0;
+    govConfig.sizingMultiplier *= hourSizingMult;
+    if (hourSizingMult !== 1.0) {
+      console.log(`[SCALP-TRADE] Hour ${currentHourUTC} UTC sizing multiplier: ${hourSizingMult}x → effective sizing=${govConfig.sizingMultiplier.toFixed(2)}`);
+    }
     const pairAllocations = degradation?.pairAllocations || computeAllPairAllocations(orders);
 
     console.log(`[SCALP-TRADE] ═══ GOVERNANCE STATE: ${govState} ═══`);
@@ -2160,14 +2188,26 @@ Deno.serve(async (req) => {
                   continue;
                 }
 
-                // ═══ ANTI-FLICKER GATE 2: Trade regimes must hold 3+ bars (direction-aware family) ═══
-                // WHIPSAW DEFENSE: If this pair recently had a divergence block, require EXTENDED
-                // re-confirmation (familyHold >= 5 instead of 3) to prevent churn during chop.
-                // Check recent orders for this pair with regime-diverging status.
+                // ═══ FIX #3+4: TRANSITION-BASED ENTRY TIMING ═══
+                // Enter on regime family TRANSITIONS (flat→bullish, neutral→bearish)
+                // instead of waiting for confirmed state. This captures the move at ignition.
                 const HOLD_REQUIRED_REGIMES = ["expansion", "momentum", "breakdown", "risk-off"];
-                const WHIPSAW_COOLDOWN_MINUTES = 15; // ~3 bars on 5m timeframe
-                // PHASE 3: Reduced from 3→2 during learning to capture more moves at transition point
+                const WHIPSAW_COOLDOWN_MINUTES = 15;
+                
+                // Detect regime family transition: previous family was different from current
+                const prevFamilies = (recentRegimes || []).slice(1); // exclude current bar
+                const currentFamily = familyLabel;
+                const isTransitionEntry = prevFamilies.length > 0 && 
+                  prevFamilies[0] !== currentFamily && 
+                  currentFamily !== "neutral" &&
+                  (prevFamilies[0] === "neutral" || prevFamilies[0] === "flat" || prevFamilies[0] !== currentFamily);
+                
+                // FIX #3: Transition entries get hold=1, confirmed entries get hold=2 (learning) or 3 (post-learning)
                 let requiredFamilyHold = isInLearningPhase ? 2 : 3;
+                if (isTransitionEntry) {
+                  requiredFamilyHold = 1; // Immediate entry on family transition
+                  console.log(`[REGIME-TRANSITION] ${pair}: Family transition detected (${prevFamilies[0]}→${currentFamily}) — fast entry with hold=1`);
+                }
 
                 if (HOLD_REQUIRED_REGIMES.includes(indicatorRegime)) {
                   // Check if this pair had a divergence block recently (whipsaw cooldown)
