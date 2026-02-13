@@ -177,6 +177,35 @@ export const useVoiceChat = () => {
         });
       }
 
+      // ─── Auto-execute any action blocks emitted by the Floor Manager ───
+      const actionBlocks: Record<string, unknown>[] = [];
+      assistantContent.replace(/```action\n([\s\S]*?)```/g, (_match: string, json: string) => {
+        try { actionBlocks.push(JSON.parse(json.trim())); } catch { /* ignore */ }
+        return '';
+      });
+      if (actionBlocks.length > 0) {
+        console.log(`[FLOOR-MANAGER-VOICE] Auto-executing ${actionBlocks.length} action(s)`);
+        for (const action of actionBlocks) {
+          try {
+            const result = await executeAction(action);
+            const statusLine = result.success
+              ? `\n\n✅ Auto-executed: ${result.detail}`
+              : `\n\n❌ Execution failed: ${result.detail}`;
+            assistantContent += statusLine;
+            setMessages(prev => {
+              const updated = [...prev];
+              const last = updated[updated.length - 1];
+              if (last?.role === 'assistant') {
+                updated[updated.length - 1] = { ...last, content: assistantContent };
+              }
+              return updated;
+            });
+          } catch (err) {
+            console.error('[FLOOR-MANAGER-VOICE] Auto-execute error:', err);
+          }
+        }
+      }
+
       // Speak the response
       if (assistantContent) {
         await speak(assistantContent);
