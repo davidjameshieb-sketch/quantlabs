@@ -946,6 +946,46 @@ Deno.serve(async (req) => {
         decision.reason = `MAE kill switch: ${maeRValue}R adverse excursion exceeds ${MAE_KILL_THRESHOLD}R threshold — edge invalidated`;
       }
 
+      // ═══ SOVEREIGN STOP-HUNT PROTECTION ═══
+      // Detects if current SL is near a "Retail Stop Cluster" (round numbers)
+      // and autonomously moves it into deep liquidity to avoid being hunted.
+      if (decision.action === "hold" && order.oanda_trade_id) {
+        const pipMultHunt = getPipMultiplier(order.currency_pair);
+        const currentSLPrice = dynamicSl.slPrice;
+        
+        // Check if SL is within 3 pips of a round number (xx.xx000, xx.xx500)
+        const roundUnit50 = 50 * pipMultHunt;
+        const roundUnit100 = 100 * pipMultHunt;
+        const distTo50 = Math.abs((currentSLPrice % roundUnit50) < roundUnit50 / 2 
+          ? (currentSLPrice % roundUnit50) : (roundUnit50 - currentSLPrice % roundUnit50));
+        const distTo100 = Math.abs((currentSLPrice % roundUnit100) < roundUnit100 / 2 
+          ? (currentSLPrice % roundUnit100) : (roundUnit100 - currentSLPrice % roundUnit100));
+        
+        const nearestClusterDist = Math.min(distTo50, distTo100) / pipMultHunt;
+        
+        if (nearestClusterDist <= 3.0 && nearestClusterDist > 0.5) {
+          // Move SL 5 pips away from the cluster into deep liquidity
+          const adjustment = 5 * pipMultHunt;
+          const adjustedSL = order.direction === "long"
+            ? currentSLPrice - adjustment  // Push SL further below cluster
+            : currentSLPrice + adjustment; // Push SL further above cluster
+          
+          // Only adjust if it doesn't widen the stop beyond MAE kill threshold
+          const adjustedDistPips = order.direction === "long"
+            ? (entryPrice - adjustedSL) / pipMultHunt
+            : (adjustedSL - entryPrice) / pipMultHunt;
+          const adjustedR = rPipsEst > 0 ? adjustedDistPips / rPipsEst : 99;
+          
+          if (adjustedR < MAE_KILL_THRESHOLD) {
+            console.log(`[STOP-HUNT-SHIELD] ${order.currency_pair} ${order.direction}: SL@${currentSLPrice.toFixed(5)} is ${nearestClusterDist.toFixed(1)}p from retail cluster — moving to ${adjustedSL.toFixed(5)} (deep liquidity)`);
+            const huntResult = await updateTrailingStop(order.oanda_trade_id, adjustedSL, order.environment || "live");
+            if (huntResult.success) {
+              console.log(`[STOP-HUNT-SHIELD] ✅ SL relocated for ${order.currency_pair} — protected from stop hunt`);
+            }
+          }
+        }
+      }
+
       // ═══════════════════════════════════════════════════════════
       // AUTONOMOUS EXIT AUTHORITY — AI Floor Manager Controls
       // Three exit triggers that fire WITHOUT human approval:
@@ -955,7 +995,6 @@ Deno.serve(async (req) => {
       // ═══════════════════════════════════════════════════════════
 
       // ─── Hook 1: THS-Based Exit Acceleration ───
-      // If trade is in profit but THS collapsed below 40, behavioral probability is gone.
       const THS_EXIT_THRESHOLD = 40;
       if (decision.action === "hold" && ueRValue > 0 && healthResult.tradeHealthScore < THS_EXIT_THRESHOLD) {
         console.log(`[AUTO-EXIT] ${order.currency_pair} ${order.direction}: THS=${healthResult.tradeHealthScore} < ${THS_EXIT_THRESHOLD} while in profit (${ueRValue}R) — AUTONOMOUS EXIT (behavioral edge gone)`);
@@ -964,26 +1003,18 @@ Deno.serve(async (req) => {
       }
 
       // ─── Hook 2: Profit Capture Decay — MFE Retracement Kill ───
-      // If trade achieved >= 0.8R MFE but retraced to < 0.15R, the winner is dying.
-      // Close immediately to capture remaining profit before it goes negative.
       if (decision.action === "hold" && currentMfeR >= 0.8 && ueRValue < 0.15 && ueRValue > -0.1) {
-        console.log(`[AUTO-EXIT] ${order.currency_pair} ${order.direction}: Profit capture decay — MFE=${currentMfeR.toFixed(2)}R but UE retraced to ${ueRValue}R — AUTONOMOUS EXIT (capturing remaining profit)`);
+        console.log(`[AUTO-EXIT] ${order.currency_pair} ${order.direction}: Profit capture decay — MFE=${currentMfeR.toFixed(2)}R but UE retraced to ${ueRValue}R — AUTONOMOUS EXIT`);
         decision.action = "profit-decay-exit" as typeof decision.action;
-        decision.reason = `AUTONOMOUS EXIT: MFE=${currentMfeR.toFixed(2)}R achieved but retraced to ${ueRValue}R — profit capture decay, closing before round-trip`;
+        decision.reason = `AUTONOMOUS EXIT: MFE=${currentMfeR.toFixed(2)}R achieved but retraced to ${ueRValue}R — profit capture decay`;
       }
 
       // ─── Hook 3: Rolling WR Trailing Override ───
-      // If the agent's recent 20-trade WR is below 30%, tighten ALL trailing stops by 40%.
-      // This makes the system "faster to exit" when the agent is running cold.
       const agentId = order.agent_id || "unknown";
       if (decision.action === "hold" && ueRValue > 0) {
-        // Check agent's recent performance from closed orders in same batch
-        const agentRecentOrders = (openOrders as Array<Record<string, unknown>>).length; // placeholder — we compute below
-        // We use the healthResult's trailing factor AND apply agent-cold override
-        // If THS is already in caution/sick, this stacks with THS tightening
         const agentColdMultiplier = healthResult.trailingTightenFactor < 0.7 ? 0.8 : 1.0;
         if (agentColdMultiplier < 1.0) {
-          console.log(`[AUTO-EXIT] ${order.currency_pair}: Agent ${agentId} trailing override — THS factor ${healthResult.trailingTightenFactor} + cold multiplier ${agentColdMultiplier} = ${(healthResult.trailingTightenFactor * agentColdMultiplier).toFixed(2)}`);
+          console.log(`[AUTO-EXIT] ${order.currency_pair}: Agent ${agentId} trailing override — THS factor ${healthResult.trailingTightenFactor} + cold multiplier ${agentColdMultiplier}`);
         }
       }
 
@@ -992,7 +1023,8 @@ Deno.serve(async (req) => {
       const isFriday = nowUtc.getUTCDay() === 5;
       const hourUtc = nowUtc.getUTCHours();
       if (isFriday && hourUtc >= 20 && decision.action === "hold") {
-        console.log(`[FRIDAY-FLUSH] ${order.currency_pair} ${order.direction}: Friday ${hourUtc}:00 UTC — closing all positions before weekend gap risk`);
+        console.log(`[FRIDAY-FLUSH] ${order.currency_pair} ${order.direction}: Friday ${hourUtc}:00 UTC — closing all positions`);
+        const currentPnlPips = decision.currentPnlPips;
         decision.action = "friday-flush" as typeof decision.action;
         decision.reason = `Friday flush: ${currentPnlPips.toFixed(1)}p — closing before weekend gap (Friday ${hourUtc}:00 UTC)`;
       }
