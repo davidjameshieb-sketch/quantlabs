@@ -17,6 +17,9 @@ const FOCUS_INSTRUMENTS = [
   "EUR_USD", "GBP_USD", "USD_JPY", "AUD_USD", "USD_CAD",
   "NZD_USD", "EUR_GBP", "EUR_JPY", "GBP_JPY", "AUD_JPY",
   "USD_CHF", "EUR_CHF", "EUR_AUD", "GBP_AUD", "AUD_NZD",
+  "USD_SGD", "USD_HKD", "USD_MXN", "USD_ZAR", "EUR_NZD",
+  "GBP_NZD", "GBP_CAD", "EUR_CAD", "AUD_CAD", "NZD_CAD",
+  "CHF_JPY", "CAD_JPY", "NZD_JPY", "CAD_CHF", "AUD_CHF",
 ];
 
 // ── In-memory caches ──
@@ -66,8 +69,8 @@ async function fetchOrderBooks(host: string, apiToken: string): Promise<Record<s
   }
 
   const books: Record<string, unknown> = {};
-  // Fetch top 6 pairs to stay within rate limits
-  const topPairs = FOCUS_INSTRUMENTS.slice(0, 6);
+  // Fetch all pairs
+  const topPairs = FOCUS_INSTRUMENTS;
   const results = await Promise.allSettled(
     topPairs.map(async (inst) => {
       const data = await oandaGet(`${host}/v3/instruments/${inst}/orderBook`, apiToken);
@@ -117,7 +120,7 @@ async function fetchPositionBooks(host: string, apiToken: string): Promise<Recor
   }
 
   const books: Record<string, unknown> = {};
-  const topPairs = FOCUS_INSTRUMENTS.slice(0, 6);
+  const topPairs = FOCUS_INSTRUMENTS;
   await Promise.allSettled(
     topPairs.map(async (inst) => {
       const data = await oandaGet(`${host}/v3/instruments/${inst}/positionBook`, apiToken);
