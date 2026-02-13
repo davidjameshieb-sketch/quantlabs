@@ -7,14 +7,81 @@ interface ChatMessageProps {
   message: Message;
 }
 
-// Simple markdown-like formatting
+// Enhanced markdown formatting with tables, headers, and alerts
 const formatContent = (content: string) => {
-  // Split by double newlines for paragraphs
   const paragraphs = content.split(/\n\n+/);
   
   return paragraphs.map((paragraph, pIdx) => {
-    // Handle headers
-    if (paragraph.startsWith('**') && paragraph.endsWith('**')) {
+    // Handle markdown tables
+    const lines = paragraph.split('\n');
+    if (lines.length >= 2 && lines[0].includes('|') && lines[1]?.match(/^\|[\s-:|]+\|$/)) {
+      const headerCells = lines[0].split('|').filter(c => c.trim());
+      const bodyRows = lines.slice(2).filter(l => l.includes('|'));
+      return (
+        <div key={pIdx} className="my-3 overflow-x-auto rounded-lg border border-border/60">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="bg-muted/50 border-b border-border/60">
+                {headerCells.map((cell, i) => (
+                  <th key={i} className="px-3 py-2 text-left font-semibold text-foreground whitespace-nowrap">
+                    {formatInline(cell.trim())}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {bodyRows.map((row, rIdx) => {
+                const cells = row.split('|').filter(c => c.trim() !== '' || c.includes(' '));
+                // Filter out empty leading/trailing from pipe split
+                const cleanCells = row.startsWith('|') ? row.slice(1, row.endsWith('|') ? -1 : undefined).split('|') : row.split('|');
+                return (
+                  <tr key={rIdx} className="border-b border-border/30 last:border-0 hover:bg-muted/30">
+                    {cleanCells.map((cell, i) => (
+                      <td key={i} className="px-3 py-1.5 text-foreground/80 whitespace-nowrap">
+                        {formatInline(cell.trim())}
+                      </td>
+                    ))}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      );
+    }
+
+    // Handle ### headers
+    const h3Match = paragraph.match(/^###\s+(.+)/);
+    if (h3Match) {
+      return (
+        <h3 key={pIdx} className="font-display font-bold text-foreground mt-5 mb-2 first:mt-0 text-base">
+          {formatInline(h3Match[1])}
+        </h3>
+      );
+    }
+
+    // Handle ## headers
+    const h2Match = paragraph.match(/^##\s+(.+)/);
+    if (h2Match) {
+      return (
+        <h2 key={pIdx} className="font-display font-bold text-foreground mt-5 mb-2 first:mt-0 text-lg border-b border-border/40 pb-1">
+          {formatInline(h2Match[1])}
+        </h2>
+      );
+    }
+
+    // Handle #### headers
+    const h4Match = paragraph.match(/^####\s+(.+)/);
+    if (h4Match) {
+      return (
+        <h4 key={pIdx} className="font-display font-semibold text-foreground mt-4 mb-1 first:mt-0 text-sm">
+          {formatInline(h4Match[1])}
+        </h4>
+      );
+    }
+
+    // Handle **Bold Only** paragraphs as headers
+    if (paragraph.startsWith('**') && paragraph.endsWith('**') && !paragraph.slice(2, -2).includes('\n')) {
       const text = paragraph.slice(2, -2);
       return (
         <h4 key={pIdx} className="font-display font-semibold text-foreground mt-4 mb-2 first:mt-0">
@@ -22,13 +89,27 @@ const formatContent = (content: string) => {
         </h4>
       );
     }
+
+    // Handle alert blocks (⚠️ or 🔴 or ✅ prefixed)
+    if (paragraph.match(/^[⚠️🔴✅🟡🟢❌]/u)) {
+      return (
+        <div key={pIdx} className="my-2 px-3 py-2 rounded-lg bg-primary/5 border border-primary/20 text-sm">
+          {paragraph.split('\n').map((line, lIdx) => (
+            <span key={lIdx}>
+              {formatInline(line)}
+              {lIdx < paragraph.split('\n').length - 1 && <br />}
+            </span>
+          ))}
+        </div>
+      );
+    }
     
-    // Handle lists
+    // Handle lists (- items)
     if (paragraph.includes('\n-') || paragraph.startsWith('-')) {
-      const lines = paragraph.split('\n');
+      const listLines = paragraph.split('\n');
       return (
         <ul key={pIdx} className="space-y-1 my-2">
-          {lines.map((line, lIdx) => {
+          {listLines.map((line, lIdx) => {
             if (line.startsWith('-')) {
               return (
                 <li key={lIdx} className="flex items-start gap-2">
@@ -45,10 +126,10 @@ const formatContent = (content: string) => {
     
     // Handle numbered lists
     if (/^\d+\./.test(paragraph)) {
-      const lines = paragraph.split('\n');
+      const numLines = paragraph.split('\n');
       return (
         <ol key={pIdx} className="space-y-2 my-2">
-          {lines.map((line, lIdx) => {
+          {numLines.map((line, lIdx) => {
             const match = line.match(/^(\d+)\.\s*(.*)/);
             if (match) {
               return (
@@ -64,14 +145,14 @@ const formatContent = (content: string) => {
       );
     }
     
-    // Regular paragraph with line breaks
-    const lines = paragraph.split('\n');
+    // Regular paragraph
+    const pLines = paragraph.split('\n');
     return (
       <p key={pIdx} className="my-2 first:mt-0 last:mb-0">
-        {lines.map((line, lIdx) => (
+        {pLines.map((line, lIdx) => (
           <span key={lIdx}>
             {formatInline(line)}
-            {lIdx < lines.length - 1 && <br />}
+            {lIdx < pLines.length - 1 && <br />}
           </span>
         ))}
       </p>

@@ -53,6 +53,44 @@ export function isShadowMode(): boolean {
   return SHADOW_MODE;
 }
 
+// ─── Agent De-Correlation Tracker (Gate G12) ───
+// Prevents multiple agents from taking the same direction on the same pair within a time window.
+
+interface RecentProposal {
+  pair: string;
+  direction: 'long' | 'short';
+  agentId: string;
+  timestamp: number;
+}
+
+const DECORRELATION_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
+let recentProposals: RecentProposal[] = [];
+
+/**
+ * Check if another agent already proposed the same trade recently.
+ * Returns the conflicting agent ID if duplicate detected, null otherwise.
+ */
+export function checkAgentDecorrelation(pair: string, direction: 'long' | 'short', agentId: string): string | null {
+  const now = Date.now();
+  // Prune old entries
+  recentProposals = recentProposals.filter(p => now - p.timestamp < DECORRELATION_WINDOW_MS);
+  
+  // Check for existing proposal on same pair+direction from a different agent
+  const conflict = recentProposals.find(
+    p => p.pair === pair && p.direction === direction && p.agentId !== agentId
+  );
+  
+  // Register this proposal
+  recentProposals.push({ pair, direction, agentId, timestamp: now });
+  
+  // Keep buffer bounded
+  if (recentProposals.length > 200) {
+    recentProposals = recentProposals.slice(-100);
+  }
+  
+  return conflict ? conflict.agentId : null;
+}
+
 // ─── Gate ID Type (Fix #6) ───
 
 export type GateId =
@@ -66,6 +104,8 @@ export type GateId =
   | 'G8_HIGH_SHOCK'
   | 'G9_PRICE_DATA_UNAVAILABLE'
   | 'G10_ANALYSIS_UNAVAILABLE'
+  | 'G11_EXTENSION_EXHAUSTION'
+  | 'G12_AGENT_DECORRELATION'
   | 'G_STRAT_LONG_ONLY_BLOCK';
 
 export interface GateEntry {
@@ -356,6 +396,23 @@ const evaluateRejectionGates = (ctx: GovernanceContext): GateEntry[] => {
       id: 'G8_HIGH_SHOCK',
       message: `High shock risk ${ctx.liquidityShockProb.toFixed(0)}% outside ignition`,
     });
+  }
+
+  // Gate 11: Extension-Exhaustion — block breakdown shorts when move is already stretched
+  // If we're in a breakdown regime and the price has already traveled 2x+ ATR,
+  // the mean-reversion probability is high → block the short to avoid selling the bottom.
+  if (
+    ctx.volatilityPhase === 'exhaustion' ||
+    (ctx.volatilityPhase === 'compression' && ctx.phaseConfidence < 40)
+  ) {
+    // Exhaustion is already penalized via regime multiplier, but we add a hard gate
+    // when ATR extension is extreme (atrValue >> atrAvg = move already stretched)
+    if (ctx.atrValue > 0 && ctx.atrAvg > 0 && ctx.atrValue > ctx.atrAvg * 2.0) {
+      gates.push({
+        id: 'G11_EXTENSION_EXHAUSTION',
+        message: `Extension exhausted: ATR ${(ctx.atrValue * 10000).toFixed(1)}p vs avg ${(ctx.atrAvg * 10000).toFixed(1)}p (${(ctx.atrValue / ctx.atrAvg).toFixed(1)}x stretch)`,
+      });
+    }
   }
 
   return gates;
