@@ -86,7 +86,7 @@ const ForexDashboard = () => {
   // Rebuild learning memory from post-revamp real trades
   useEffect(() => {
     if (!executionMetrics?.recentOrders) return;
-    const CUTOFF = new Date('2026-02-12T01:00:00Z').getTime();
+    const CUTOFF = new Date('2026-02-13T14:00:00Z').getTime();
     const postRevamp = executionMetrics.recentOrders.filter(o =>
       new Date(o.created_at).getTime() >= CUTOFF &&
       (o.status === 'filled' || o.status === 'closed') &&
