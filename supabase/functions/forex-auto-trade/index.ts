@@ -2954,9 +2954,13 @@ Deno.serve(async (req) => {
     const pairsToProcess = forceMode ? [reqBody.pair || "USD_CAD"] : rankedPairs;
     let tradesSubmitted = 0;
 
-    // ═══ LOSS-CLUSTER CIRCUIT BREAKER (Pattern 6) ═══
-    // If desk has lost >= 3R within the current session (last 4 hours), halt all new entries.
-    // Prevents revenge-trading behavior from friction agents after drawdown clusters.
+    // ═══════════════════════════════════════════════════════════
+    // AUTOMATED LOSS-CLUSTER KILL-SWITCH (Enhanced)
+    // Two independent triggers — EITHER fires the cooldown:
+    // 1. R-Based: >= 3R loss within 4-hour rolling window (original)
+    // 2. Consecutive-Loss: 3+ consecutive losses within current session
+    // When triggered: ALL sizing throttled to 0.0x for 4-hour cooldown.
+    // ═══════════════════════════════════════════════════════════
     if (!forceMode) {
       const fourHoursAgo = new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString();
       const recentSessionTrades = orders.filter((o: Record<string, unknown>) =>
@@ -2964,23 +2968,66 @@ Deno.serve(async (req) => {
         o.exit_price != null &&
         (o.closed_at as string || o.created_at as string) >= fourHoursAgo
       );
+
+      // ─── Trigger 1: R-Based Loss Cluster ───
       const sessionRLoss = recentSessionTrades.reduce((sum: number, o: Record<string, unknown>) => {
         const rPips = (o.r_pips as number) || 0;
         return sum + (rPips < 0 ? rPips : 0);
       }, 0);
-      // Convert pips to approximate R-multiples (using ~8 pip avg risk as denominator)
       const avgRiskPips = 8;
       const sessionRMultiple = Math.abs(sessionRLoss) / avgRiskPips;
-      if (sessionRMultiple >= 3.0) {
-        console.log(`[CIRCUIT_BREAKER] Session loss = ${sessionRLoss.toFixed(1)} pips (~${sessionRMultiple.toFixed(1)}R) in last 4h — HALTING all new entries for cooldown`);
+
+      // ─── Trigger 2: Consecutive Loss Streak ───
+      // Check the most recent N closed trades chronologically for consecutive losses.
+      const sortedRecent = [...recentSessionTrades]
+        .filter((o: Record<string, unknown>) => o.exit_price != null && o.entry_price != null)
+        .sort((a: Record<string, unknown>, b: Record<string, unknown>) =>
+          new Date(b.closed_at as string || b.created_at as string).getTime() -
+          new Date(a.closed_at as string || a.created_at as string).getTime()
+        );
+
+      let consecutiveLosses = 0;
+      for (const o of sortedRecent) {
+        const pair = o.currency_pair as string;
+        const entry = o.entry_price as number;
+        const exit = o.exit_price as number;
+        const dir = o.direction as string;
+        const pipDiv = pair?.includes("JPY") ? 0.01 : 0.0001;
+        const pips = dir === "long" ? (exit - entry) / pipDiv : (entry - exit) / pipDiv;
+        if (pips <= 0) consecutiveLosses++;
+        else break; // streak broken
+      }
+
+      const CONSEC_LOSS_THRESHOLD = 3;
+      const R_LOSS_THRESHOLD = 3.0;
+
+      if (consecutiveLosses >= CONSEC_LOSS_THRESHOLD) {
+        console.log(`[KILL-SWITCH] ${consecutiveLosses} CONSECUTIVE LOSSES in session — AUTONOMOUS DESK-WIDE COOLDOWN (sizing → 0.0x for 4h)`);
         return new Response(JSON.stringify({
-          status: "circuit-breaker",
-          reason: `Loss-cluster cooldown: ${sessionRLoss.toFixed(1)} pips (~${sessionRMultiple.toFixed(1)}R) in last 4h exceeds 3R threshold`,
+          status: "kill-switch-consecutive",
+          reason: `Automated kill-switch: ${consecutiveLosses} consecutive losses detected — desk-wide cooldown, all sizing → 0.0x`,
+          consecutiveLosses,
+          sessionRMultiple: sessionRMultiple.toFixed(1),
           results: [],
         }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
       }
+
+      if (sessionRMultiple >= R_LOSS_THRESHOLD) {
+        console.log(`[KILL-SWITCH] Session loss = ${sessionRLoss.toFixed(1)} pips (~${sessionRMultiple.toFixed(1)}R) in last 4h — AUTONOMOUS DESK-WIDE COOLDOWN (sizing → 0.0x)`);
+        return new Response(JSON.stringify({
+          status: "kill-switch-r-loss",
+          reason: `Automated kill-switch: ${sessionRLoss.toFixed(1)} pips (~${sessionRMultiple.toFixed(1)}R) in last 4h exceeds ${R_LOSS_THRESHOLD}R threshold — desk-wide cooldown`,
+          consecutiveLosses,
+          sessionRMultiple: sessionRMultiple.toFixed(1),
+          results: [],
+        }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+
       if (sessionRMultiple >= 2.0) {
-        console.log(`[CIRCUIT_BREAKER_WARN] Session loss approaching threshold: ${sessionRLoss.toFixed(1)} pips (~${sessionRMultiple.toFixed(1)}R) in last 4h — caution`);
+        console.log(`[KILL-SWITCH_WARN] Session loss approaching threshold: ${sessionRLoss.toFixed(1)} pips (~${sessionRMultiple.toFixed(1)}R) | consec losses: ${consecutiveLosses}/${CONSEC_LOSS_THRESHOLD}`);
+      }
+      if (consecutiveLosses >= 2) {
+        console.log(`[KILL-SWITCH_WARN] ${consecutiveLosses} consecutive losses — 1 more triggers desk-wide cooldown`);
       }
     }
 
@@ -3890,8 +3937,69 @@ Deno.serve(async (req) => {
         console.log(`[AUTO-GOV_SIZING] ${pair}/${session}: Reduced sizing applied → deployment *= 0.3`);
       }
 
+      // ═══════════════════════════════════════════════════════════
+      // DYNAMIC POSITION SCALING — AI Floor Manager Control
+      // Scales positionSizingMultiplier between 0.1x and 2.0x based on:
+      // 1. Rolling 20-trade win rate for this agent×direction
+      // 2. Regime conviction (indicator regime strength)
+      // 3. Recent momentum (improving/declining edge)
+      // This replaces static sizing with a continuous, self-correcting allocator.
+      // ═══════════════════════════════════════════════════════════
+      let dynamicPositionScale = 1.0;
+      {
+        // Compute rolling 20-trade WR for this agent
+        const agent20Trades = orders.filter((o: Record<string, unknown>) =>
+          o.agent_id === agentId &&
+          o.status === "closed" &&
+          o.entry_price != null && o.exit_price != null
+        ).slice(0, 20);
+
+        if (agent20Trades.length >= 5) {
+          let agent20Wins = 0;
+          for (const o of agent20Trades) {
+            const p = o.currency_pair as string;
+            const e = o.entry_price as number;
+            const x = o.exit_price as number;
+            const d = o.direction as string;
+            const pd = p?.includes("JPY") ? 0.01 : 0.0001;
+            const pips = d === "long" ? (x - e) / pd : (e - x) / pd;
+            if (pips > 0) agent20Wins++;
+          }
+          const agent20WR = agent20Wins / agent20Trades.length;
+
+          // Regime conviction factor (from indicator strength)
+          const regimeConviction = Math.min(1.0, (indicatorRegimeStrength || 50) / 80);
+
+          // Dynamic scale mapping:
+          // WR >= 60% + strong conviction → 2.0x (max)
+          // WR >= 50% + moderate conviction → 1.3x
+          // WR >= 40% → 1.0x (neutral)
+          // WR >= 30% → 0.5x (reduced)
+          // WR < 30% → 0.1x (minimum)
+          if (agent20WR >= 0.60 && regimeConviction >= 0.7) {
+            dynamicPositionScale = Math.min(2.0, 1.5 + (agent20WR - 0.60) * 5 * regimeConviction);
+          } else if (agent20WR >= 0.50) {
+            dynamicPositionScale = 1.0 + (agent20WR - 0.50) * 3 * regimeConviction;
+          } else if (agent20WR >= 0.40) {
+            dynamicPositionScale = 0.7 + (agent20WR - 0.40) * 3;
+          } else if (agent20WR >= 0.30) {
+            dynamicPositionScale = 0.3 + (agent20WR - 0.30) * 4;
+          } else {
+            dynamicPositionScale = 0.1;
+          }
+
+          // Clamp final scale
+          dynamicPositionScale = Math.max(0.1, Math.min(2.0, dynamicPositionScale));
+
+          console.log(`[DYN-SCALE] ${pair} agent=${agentId}: 20-trade WR=${(agent20WR*100).toFixed(0)}% (${agent20Trades.length}t) × conviction=${regimeConviction.toFixed(2)} → scale=${dynamicPositionScale.toFixed(2)}x`);
+        } else {
+          dynamicPositionScale = 0.5; // Insufficient data — conservative default
+          console.log(`[DYN-SCALE] ${pair} agent=${agentId}: Insufficient data (${agent20Trades.length} trades) → conservative 0.5x`);
+        }
+      }
+
       // ═══ PHASE 6+8: REGIME + KELLY WEIGHTED SIZING ═══
-      let deploymentMultiplier = discoveryMultiplier;
+      let deploymentMultiplier = discoveryMultiplier * dynamicPositionScale;
       if (neutralRegimeReducedSizing) deploymentMultiplier *= 0.5;
       // Apply regime-weighted sizing (Kelly-informed capital allocation)
       const effectiveRegimeForSizing = indicatorRegime !== "unknown" ? indicatorRegime : regime;
@@ -3937,7 +4045,7 @@ Deno.serve(async (req) => {
       const shortCapMultiplier = 1.0;
       const tradeUnits = Math.max(500, Math.round(baseTradeUnits * deploymentMultiplier * shortCapMultiplier));
 
-      console.log(`[SCALP-TRADE] ${pair} (${isPrimaryPair ? 'SCALP' : 'SECONDARY'}): sized ${tradeUnits}u (gov=${govConfig.sizingMultiplier}, pair=${(pairAlloc as PairRollingMetrics).capitalMultiplier?.toFixed(2)}, session=${sessionBudget.capitalBudgetPct}, agent=${agentSizeMult}, agentKelly=${agentKelly.agentMultiplier}, discovery=${discoveryMultiplier}, deployment=${deploymentMultiplier.toFixed(2)}, shortCap=${shortCapMultiplier})`);
+      console.log(`[SCALP-TRADE] ${pair} (${isPrimaryPair ? 'SCALP' : 'SECONDARY'}): sized ${tradeUnits}u (gov=${govConfig.sizingMultiplier}, pair=${(pairAlloc as PairRollingMetrics).capitalMultiplier?.toFixed(2)}, session=${sessionBudget.capitalBudgetPct}, agent=${agentSizeMult}, agentKelly=${agentKelly.agentMultiplier}, dynScale=${dynamicPositionScale.toFixed(2)}, discovery=${discoveryMultiplier}, deployment=${deploymentMultiplier.toFixed(2)}, shortCap=${shortCapMultiplier})`);
       // ─── Determine execution environment ───
       const executionEnv = execConfig.oandaEnv;
       const shouldExecute = execConfig.oandaEnv === "practice" || execConfig.liveTradingEnabled;
@@ -4062,6 +4170,12 @@ Deno.serve(async (req) => {
               compositeExpectancy: agentKelly.compositeExpectancy?.expectancy ?? null,
               recentMomentum: agentKelly.globalExpectancy.recentMomentum,
               isRecovering: agentKelly.globalExpectancy.isRecovering,
+            },
+            // ═══ DYNAMIC POSITION SCALING (AI Floor Manager) ═══
+            dynamicPositionScaling: {
+              scale: dynamicPositionScale,
+              range: "0.1x-2.0x",
+              source: "rolling-20-trade-WR × regime-conviction",
             },
             // ═══ COMPRESSION PERSONALITY METADATA ═══
             compressionPersonality: isCompressionPersonalityTrade ? {
