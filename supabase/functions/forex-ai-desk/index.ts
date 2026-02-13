@@ -99,48 +99,36 @@ Even if the user asks a simple question, scan the data for any critical issues a
 - Always reference the Prime Directive when discussing system evolution
 - If you detect a failure pattern, be LOUD about it — this is money on the line
 
-## YOUR WRITE CAPABILITIES (Floor Manager Authority)
-You are NOT a read-only analyst. You are the **Floor Manager** with FULL WRITE ACCESS to the live execution pipeline. The following autonomous hooks run continuously on your behalf:
+## EXECUTABLE ACTION BLOCKS (CRITICAL)
+When you want to execute a trade action (place a trade, close a trade, modify SL/TP), you MUST emit a fenced code block tagged \`action\` containing valid JSON. The UI will parse these and render ⚡ Floor Manager Action buttons that the operator can click to execute.
 
-### Hook 1: Autonomous Exit Authority (forex-trade-monitor)
-You have direct write permission to the OANDA v20 API via PUT /v3/accounts/{accountId}/trades/{tradeId}/orders.
-Active exit triggers you enforce:
-- **THS-Decay Exit**: Any open trade with THS < 40 AND unrealized P&L > 0 → you close it immediately via closePosition to lock profit before decay erases it.
-- **Profit Capture Decay Exit**: Any trade that reached MFE ≥ 0.8R but retraced to UE < 0.15R → you close it to solve the Profit Capture Decay failure pattern.
-- **Rolling WR Trailing Override**: If an agent's rolling 20-trade win rate drops below 30%, you auto-tighten their trailing stop by 40% via updateTrailingStop pushed directly to the OANDA broker.
-- **Health-Band Trailing Sync**: Every monitoring cycle, you compare computed SL against OANDA's current SL. If tighter, you PATCH the broker's stop-loss in real-time (Caution: 20% tighter, Sick: 40%, Critical: 50%).
+### Format:
+\`\`\`action
+{"type": "place_trade", "pair": "EUR_CHF", "direction": "short", "units": 500}
+\`\`\`
 
-### Hook 2: Dynamic Position Scaling (forex-auto-trade)
-You control the positionSizingMultiplier on every new trade entry:
-- Scale range: **0.1x to 2.0x** (hard-clamped)
-- Formula: baseScale = rolling 20-trade WR mapped [0.25→0.60 WR] to [0.3x→1.5x], then multiplied by regime conviction (0.5x for low, 1.0x for medium, 1.3x for high)
-- You log every DYN-SCALE decision with the computed winRate, conviction, and final multiplier
-- This means you directly control HOW MUCH capital each agent risks on every single trade
+\`\`\`action
+{"type": "close_trade", "tradeId": "12345"}
+\`\`\`
 
-### Hook 3: Automated Loss-Cluster Kill-Switch (forex-auto-trade)
-You enforce desk-wide circuit breakers:
-- **3-Consecutive-Loss Kill**: If 3+ consecutive losses occur within a session, you throttle ALL sizing to 0.0x — complete desk halt
-- **3R Cumulative Loss Kill**: If cumulative session losses exceed 3R, you trigger the same 0.0x cooldown
-- **Cooldown Duration**: 30 minutes of zero execution before gradual re-entry
-- You log every KILL-SWITCH activation with the trigger type and affected session
+\`\`\`action
+{"type": "update_sl_tp", "tradeId": "12345", "stopLossPrice": 1.08500, "takeProfitPrice": 1.09200}
+\`\`\`
 
-### Hook 4: Autonomous Governance Evolution (forex-auto-trade)
-You dynamically tune governance parameters without manual intervention:
-- **Dynamic G11 Threshold**: You adjust the ATR extension exhaustion gate between 1.6x–2.0x based on regime-specific win rates
-- **Dynamic Composite Minimum**: You raise the minimum governance score to 0.80 for underperforming regimes
-- **Session-Pair Blacklisting**: You apply 0.3x sizing to toxic session+pair combinations identified by rolling analytics
+### Available action types:
+- **place_trade**: Opens a new market order on OANDA. Required: pair (OANDA format like EUR_CHF), direction (long/short), units (integer).
+- **close_trade**: Closes an existing trade. Required: tradeId (OANDA trade ID from the open trades list).
+- **update_sl_tp**: Modifies stop-loss and/or take-profit on an existing trade. Required: tradeId. Optional: stopLossPrice, takeProfitPrice.
+- **get_account_summary**: Fetches current account balance/NAV.
+- **get_open_trades**: Lists all open trades.
 
-### What This Means For Your Analysis
-When you detect a failure pattern, you are not just recommending fixes — many of them are ALREADY EXECUTING autonomously:
-- Profit Capture Decay → Your THS-decay and MFE-retrace exits are actively closing trades
-- Drawdown Clustering → Your 3-consecutive-loss kill-switch is actively halting the desk
-- Agent Underperformance → Your dynamic sizing is already scaling down weak agents
-- Breakdown Traps → Your dynamic G11 is already tightening to 1.6x in dangerous regimes
-
-When briefing the operator, distinguish between:
-1. **Active interventions** — "I've already tightened trailing on agent X because their WR dropped to 28%"
-2. **Recommendations requiring manual action** — "I recommend suspending agent Y entirely — that requires your approval"
-3. **System health status** — "Kill-switch has NOT fired today. Dynamic sizing range: 0.4x–1.3x across active agents"
+### RULES:
+1. ALWAYS emit action blocks when you propose a trade intervention — do NOT just describe it in text.
+2. Each action block must be valid JSON on a single object.
+3. You may emit multiple action blocks in one response.
+4. The operator MUST click the button to execute — you are proposing, they are confirming.
+5. For place_trade, use conservative sizing (500 units minimum for test trades).
+6. ALWAYS include the action block even for test trades — without it, nothing reaches OANDA.
 
 Always report your autonomous actions in your analysis. The operator needs to know what you've done, not just what you've seen.`;
 
@@ -507,6 +495,48 @@ async function executeAction(
       action: "update_sl_tp",
       success: true,
       detail: `Trade ${action.tradeId} SL=${action.stopLossPrice ?? 'unchanged'} TP=${action.takeProfitPrice ?? 'unchanged'}`,
+      data: result,
+    });
+
+  } else if (action.type === "place_trade" && action.pair && action.direction && action.units) {
+    console.log(`[AI-DESK] Floor Manager placing trade: ${action.direction} ${action.units} ${action.pair}`);
+    const signedUnits = action.direction === "short" ? -Math.abs(action.units) : Math.abs(action.units);
+    const orderBody = {
+      order: {
+        type: "MARKET",
+        instrument: action.pair.replace("/", "_"),
+        units: signedUnits.toString(),
+        timeInForce: "FOK",
+        positionFill: "DEFAULT",
+      },
+    };
+    const result = await oandaRequest(
+      "/v3/accounts/{accountId}/orders",
+      "POST",
+      orderBody,
+      environment
+    );
+    const oandaTradeId = result.orderFillTransaction?.tradeOpened?.tradeID || result.orderFillTransaction?.id || null;
+    const filledPrice = result.orderFillTransaction?.price ? parseFloat(result.orderFillTransaction.price) : null;
+
+    // Log to DB
+    await sb.from("oanda_orders").insert({
+      user_id: "00000000-0000-0000-0000-000000000000",
+      signal_id: `floor-manager-${Date.now()}`,
+      currency_pair: action.pair.replace("/", "_"),
+      direction: action.direction,
+      units: action.units,
+      status: "filled",
+      environment,
+      oanda_trade_id: oandaTradeId,
+      entry_price: filledPrice,
+      agent_id: "floor-manager",
+    });
+
+    results.push({
+      action: "place_trade",
+      success: true,
+      detail: `${action.direction.toUpperCase()} ${action.units} ${action.pair} filled at ${filledPrice} (Trade ID: ${oandaTradeId})`,
       data: result,
     });
 

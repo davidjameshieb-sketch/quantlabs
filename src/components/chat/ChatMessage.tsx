@@ -241,6 +241,8 @@ function ActionButton({ action, onExecute }: { action: Record<string, unknown>; 
     ? `Close Trade ${action.tradeId}`
     : action.type === 'update_sl_tp'
     ? `Update SL/TP on ${action.tradeId}`
+    : action.type === 'place_trade'
+    ? `${String(action.direction || '').toUpperCase()} ${action.units} ${action.pair}`
     : String(action.type);
 
   const handleClick = async () => {
