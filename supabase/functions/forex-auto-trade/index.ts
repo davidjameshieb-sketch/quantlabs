@@ -1928,21 +1928,21 @@ Deno.serve(async (req) => {
   try { reqBody = await req.json(); } catch { /* no body = normal cron */ }
   const forceMode = reqBody.force === true;
 
-  // ─── TOXIC HOUR GUARD (Phase 1+2) ───
-  // Expanded from forensic audit: block ALL statistically destructive hours.
-  // Phase 1: 13-14 UTC (NY lunch — liquidity vacuum, zero wins)
-  // Phase 2: 01-04 UTC (Asian — 15.8% WR), 18-21 UTC (late-NY — 12.5% WR)
+  // ─── TOXIC HOUR GUARD ───
+  // REVAMP: Only NY lunch (13-14 UTC) remains hard-blocked (liquidity vacuum, zero wins).
+  // Asian (1-4 UTC) and Late-NY (18-21 UTC) are now shadow-logged — let revamped system gather fresh data.
   const currentHourUTC = new Date().getUTCHours();
-  const TOXIC_HOURS = [1, 2, 3, 4, 13, 14, 18, 19, 20, 21]; // Asian dead zone + NY lunch + late-NY
-  if (TOXIC_HOURS.includes(currentHourUTC) && !forceMode) {
-    const toxicZone = currentHourUTC >= 13 && currentHourUTC <= 14 ? "NY-lunch"
-      : currentHourUTC >= 1 && currentHourUTC <= 4 ? "Asian-dead-zone"
-      : "late-NY";
-    console.log(`[SCALP-TRADE] ═══ TOXIC HOUR BLOCK: ${currentHourUTC}:00 UTC (${toxicZone}) — statistically destructive, skipping ═══`);
+  const HARD_BLOCK_HOURS = [13, 14]; // NY lunch only — structural liquidity vacuum
+  const SHADOW_LOG_HOURS = [18, 19, 20, 21]; // Late-NY — shadow-logged, not blocked
+  if (HARD_BLOCK_HOURS.includes(currentHourUTC) && !forceMode) {
+    console.log(`[SCALP-TRADE] ═══ TOXIC HOUR BLOCK: ${currentHourUTC}:00 UTC (NY-lunch) — liquidity vacuum, skipping ═══`);
     return new Response(
-      JSON.stringify({ success: true, mode: "toxic-hour-skip", reason: `Hour ${currentHourUTC} UTC blocked — ${toxicZone} (negative expectancy)` }),
+      JSON.stringify({ success: true, mode: "toxic-hour-skip", reason: `Hour ${currentHourUTC} UTC blocked — NY-lunch (structural liquidity vacuum)` }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
+  }
+  if (SHADOW_LOG_HOURS.includes(currentHourUTC)) {
+    console.log(`[GOV_SHADOW_TOXIC_HOUR] hour_utc=${currentHourUTC} zone=late-NY — shadow-logged, trading permitted with revamped logic`);
   }
 
   try {
