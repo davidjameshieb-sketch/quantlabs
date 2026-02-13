@@ -104,7 +104,7 @@ When you want to execute a trade action (place a trade, close a trade, modify SL
 
 ### Format:
 \`\`\`action
-{"type": "place_trade", "pair": "EUR_CHF", "direction": "short", "units": 500}
+{"type": "place_trade", "pair": "EUR_CHF", "direction": "short", "units": 500, "stopLossPrice": 0.91350, "takeProfitPrice": 0.91050}
 \`\`\`
 
 \`\`\`action
@@ -116,7 +116,7 @@ When you want to execute a trade action (place a trade, close a trade, modify SL
 \`\`\`
 
 ### Available action types:
-- **place_trade**: Opens a new market order on OANDA. Required: pair (OANDA format like EUR_CHF), direction (long/short), units (integer).
+- **place_trade**: Opens a new market order on OANDA. Required: pair (OANDA format like EUR_CHF), direction (long/short), units (integer). Optional: stopLossPrice (decimal), takeProfitPrice (decimal). ALWAYS include SL and TP when placing trades.
 - **close_trade**: Closes an existing trade. Required: tradeId (OANDA trade ID from the open trades list).
 - **update_sl_tp**: Modifies stop-loss and/or take-profit on an existing trade. Required: tradeId. Optional: stopLossPrice, takeProfitPrice.
 - **get_account_summary**: Fetches current account balance/NAV.
@@ -480,10 +480,10 @@ async function executeAction(
     console.log(`[AI-DESK] Floor Manager updating SL/TP on trade ${action.tradeId}`);
     const orderUpdate: Record<string, unknown> = {};
     if (action.stopLossPrice != null) {
-      orderUpdate.stopLoss = { price: action.stopLossPrice.toFixed(5), timeInForce: "GTC" };
+      orderUpdate.stopLoss = { price: parseFloat(String(action.stopLossPrice)).toFixed(5), timeInForce: "GTC" };
     }
     if (action.takeProfitPrice != null) {
-      orderUpdate.takeProfit = { price: action.takeProfitPrice.toFixed(5), timeInForce: "GTC" };
+      orderUpdate.takeProfit = { price: parseFloat(String(action.takeProfitPrice)).toFixed(5), timeInForce: "GTC" };
     }
     const result = await oandaRequest(
       `/v3/accounts/{accountId}/trades/${action.tradeId}/orders`,
@@ -501,7 +501,7 @@ async function executeAction(
   } else if (action.type === "place_trade" && action.pair && action.direction && action.units) {
     console.log(`[AI-DESK] Floor Manager placing trade: ${action.direction} ${action.units} ${action.pair}`);
     const signedUnits = action.direction === "short" ? -Math.abs(action.units) : Math.abs(action.units);
-    const orderBody = {
+    const orderPayload: any = {
       order: {
         type: "MARKET",
         instrument: action.pair.replace("/", "_"),
@@ -510,10 +510,17 @@ async function executeAction(
         positionFill: "DEFAULT",
       },
     };
+    // Attach SL/TP if provided by the Floor Manager
+    if (action.stopLossPrice) {
+      orderPayload.order.stopLossOnFill = { price: String(action.stopLossPrice), timeInForce: "GTC" };
+    }
+    if (action.takeProfitPrice) {
+      orderPayload.order.takeProfitOnFill = { price: String(action.takeProfitPrice), timeInForce: "GTC" };
+    }
     const result = await oandaRequest(
       "/v3/accounts/{accountId}/orders",
       "POST",
-      orderBody,
+      orderPayload,
       environment
     );
     const oandaTradeId = result.orderFillTransaction?.tradeOpened?.tradeID || result.orderFillTransaction?.id || null;
