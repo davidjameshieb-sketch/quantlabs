@@ -1,12 +1,17 @@
-// Floor Manager's View — The complete governance visualization dashboard
+// Floor Manager's View — Complete governance + neural forensic dashboard
 import { motion } from 'framer-motion';
-import { Eye, RefreshCw } from 'lucide-react';
+import { Eye, RefreshCw, Brain } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { useFloorManagerState } from '@/hooks/useFloorManagerState';
 import { PrimeDirectiveGauge } from './PrimeDirectiveGauge';
 import { GateStatusPanel } from './GateStatusPanel';
 import { AgentForensicPanel } from './AgentForensicPanel';
 import { ExecutionSizingPanel } from './ExecutionSizingPanel';
+import { GhostTapePanel } from './GhostTapePanel';
+import { RegimeMismatchPanel } from './RegimeMismatchPanel';
+import { ConfidenceCompetencePanel } from './ConfidenceCompetencePanel';
+import { FailurePatternTicker } from './FailurePatternTicker';
+import { IndicatorConsensusPanel } from './IndicatorConsensusPanel';
 
 interface Props {
   openTrades?: Array<{
@@ -58,6 +63,27 @@ export function FloorManagerView({ openTrades }: Props) {
         <AgentForensicPanel state={state} openTrades={openTrades} />
         <ExecutionSizingPanel state={state} />
       </div>
+
+      {/* ── Neural Forensic Engine ── */}
+      <div className="flex items-center gap-2 pt-2">
+        <Brain className="w-4 h-4 text-[hsl(var(--neural-purple))]" />
+        <h3 className="text-sm font-display font-bold text-[hsl(var(--neural-purple))]">Neural Forensic Engine</h3>
+      </div>
+
+      {/* Ghost Tape + Failure Pattern Ticker */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <GhostTapePanel />
+        <FailurePatternTicker />
+      </div>
+
+      {/* Regime Mismatch + Confidence vs Competence */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <RegimeMismatchPanel />
+        <ConfidenceCompetencePanel />
+      </div>
+
+      {/* Indicator Consensus Engine Room */}
+      <IndicatorConsensusPanel />
     </motion.div>
   );
 }
