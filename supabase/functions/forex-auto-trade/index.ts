@@ -2768,6 +2768,7 @@ Deno.serve(async (req) => {
       let breakoutVolAccel = 0;
       let breakoutAccelLevel = "stable";
       let parsedRegimeFamilyHoldBars = 0; // Hoisted for post-indicator choke point
+      let indicatorAtrRatio: number | null = null; // ATR current / ATR(50) — for G11 extension gate
 
       if (forceMode) {
         direction = reqBody.direction || "long";
@@ -2851,7 +2852,8 @@ Deno.serve(async (req) => {
                 // ═══ VOLATILITY ACCELERATION: Anti-false-expansion fields ═══
                 const volAcceleration = indicatorData.regime.volAcceleration || 0;
                 const accelLevel = indicatorData.regime.accelLevel || "stable";
-                console.log(`[REGIME-INDICATOR] ${pair}: regime=${indicatorRegime} strength=${indicatorRegimeStrength} longFriendly=${indicatorLongFriendly} shortFriendly=${indicatorShortFriendly} bullishMom=${indicatorBullishMomentum} bearishMom=${indicatorBearishMomentum} hold=${regimeHoldBars} familyHold=${regimeFamilyHoldBars} family=${familyLabel} dir=${regimeDirection} confirmed=${regimeFamilyConfirmed} divergent=${divergentBars} diverging=${regimeDiverging} earlyWarn=${regimeEarlyWarning} accel=${volAcceleration}(${accelLevel}) recentRegimes=[${recentRegimes.join(',')}]`);
+                indicatorAtrRatio = indicatorData.regime.atrRatio ?? null;
+                console.log(`[REGIME-INDICATOR] ${pair}: regime=${indicatorRegime} strength=${indicatorRegimeStrength} longFriendly=${indicatorLongFriendly} shortFriendly=${indicatorShortFriendly} bullishMom=${indicatorBullishMomentum} bearishMom=${indicatorBearishMomentum} hold=${regimeHoldBars} familyHold=${regimeFamilyHoldBars} family=${familyLabel} dir=${regimeDirection} confirmed=${regimeFamilyConfirmed} divergent=${divergentBars} diverging=${regimeDiverging} earlyWarn=${regimeEarlyWarning} accel=${volAcceleration}(${accelLevel}) atrRatio=${indicatorAtrRatio} recentRegimes=[${recentRegimes.join(',')}]`);
 
                 // ═══ ANTI-FLICKER GATE 0: NEUTRAL family regimes ═══
                 // COMPRESSION PERSONALITY: Compression is no longer blocked — it has its own trading personality.
@@ -3311,6 +3313,19 @@ Deno.serve(async (req) => {
         );
         if (!postCheck.allowed) {
           results.push({ pair, direction, status: postCheck.reason_code, agentId, govState });
+          continue;
+        }
+      }
+
+      // ═══ G11 EXTENSION EXHAUSTION — 1.8x ATR STRETCH GATE ═══
+      // When ATR(14) > 1.8x ATR(50), the move is over-extended.
+      // Block breakdown shorts (selling the bottom) and exhaustion entries.
+      if (!forceMode && indicatorAtrRatio !== null && indicatorAtrRatio > 1.8) {
+        const isBreakdownShort = direction === "short" && (indicatorRegime === "breakdown" || indicatorRegime === "risk-off" || indicatorRegime === "exhaustion");
+        const isExhaustedEntry = indicatorRegime === "exhaustion";
+        if (isBreakdownShort || isExhaustedEntry) {
+          console.log(`[G11_EXTENSION_EXHAUSTION] ${pair} ${direction}: ATR ratio ${indicatorAtrRatio.toFixed(2)}x > 1.8x threshold — BLOCKED (regime=${indicatorRegime})`);
+          results.push({ pair, direction, status: "g11-extension-exhaustion", agentId, govState });
           continue;
         }
       }
