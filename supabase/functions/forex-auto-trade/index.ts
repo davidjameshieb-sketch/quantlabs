@@ -1692,6 +1692,10 @@ function canPlaceLiveOrder(
     console.log(`[AUTO-GOV_BLOCK] pair=${tradeIntent.pair} session=${tradeIntent.session} — AUTONOMOUS FULL BLOCK`);
     return { allowed: false, reason_code: "AUTO_GOV_SESSION_PAIR_BLOCK", metadata: { pair: tradeIntent.pair, session: tradeIntent.session, mode: blMode } };
   }
+  if (blMode === "reduced-sizing") {
+    console.log(`[AUTO-GOV_REDUCED] pair=${tradeIntent.pair} session=${tradeIntent.session} — AUTONOMOUS REDUCED SIZING (0.3x)`);
+    // Don't block — the main loop will pick up this flag and reduce deployment multiplier
+  }
   if (blMode === "monitoring-only") {
     console.log(`[AUTO-GOV_MONITOR] pair=${tradeIntent.pair} session=${tradeIntent.session} — monitoring only (shadow-logged)`);
     // Don't block, just log — trade proceeds but data is tracked
@@ -3661,17 +3665,29 @@ Deno.serve(async (req) => {
         }
       }
 
-      // ═══ G11 EXTENSION EXHAUSTION — 1.8x ATR STRETCH GATE ═══
-      // When ATR(14) > 1.8x ATR(50), the move is over-extended.
-      // Block breakdown shorts (selling the bottom) and exhaustion entries.
-      if (!forceMode && indicatorAtrRatio !== null && indicatorAtrRatio > 1.8) {
+      // ═══ G11 EXTENSION EXHAUSTION — DYNAMIC ATR STRETCH GATE ═══
+      // Threshold dynamically calibrated by Autonomous Governance Engine per regime.
+      // Default 1.8x, tightens to 1.6x if regime WR < 40%, loosens to 2.0x if proven.
+      const effectiveG11Threshold = getEffectiveG11Threshold(indicatorRegime !== "unknown" ? indicatorRegime : regime);
+      if (!forceMode && indicatorAtrRatio !== null && indicatorAtrRatio > effectiveG11Threshold) {
         const isBreakdownShort = direction === "short" && (indicatorRegime === "breakdown" || indicatorRegime === "risk-off" || indicatorRegime === "exhaustion");
         const isExhaustedEntry = indicatorRegime === "exhaustion";
         if (isBreakdownShort || isExhaustedEntry) {
-          console.log(`[G11_EXTENSION_EXHAUSTION] ${pair} ${direction}: ATR ratio ${indicatorAtrRatio.toFixed(2)}x > 1.8x threshold — BLOCKED (regime=${indicatorRegime})`);
+          console.log(`[G11_EXTENSION_EXHAUSTION] ${pair} ${direction}: ATR ratio ${indicatorAtrRatio.toFixed(2)}x > ${effectiveG11Threshold}x threshold (auto-calibrated) — BLOCKED (regime=${indicatorRegime})`);
           results.push({ pair, direction, status: "g11-extension-exhaustion", agentId, govState });
           continue;
         }
+      }
+
+      // ═══ DYNAMIC COMPOSITE MINIMUM GATE ═══
+      // Autonomous Governance Engine calibrates minimum composite per regime.
+      // Default 0.72, tightens to 0.80 for underperforming regimes, relaxes to 0.65 for proven ones.
+      const effectiveCompositeMin = getEffectiveCompositeMin(indicatorRegime !== "unknown" ? indicatorRegime : regime);
+      const approxCompositeForGate = (gate.frictionScore || 50) / 100;
+      if (!forceMode && approxCompositeForGate < effectiveCompositeMin) {
+        console.log(`[AUTO-GOV_COMPOSITE] ${pair} ${direction}: composite ${approxCompositeForGate.toFixed(2)} < ${effectiveCompositeMin} (auto-calibrated for regime=${indicatorRegime}) — BLOCKED`);
+        results.push({ pair, direction, status: "auto-gov-composite-block", agentId, govState });
+        continue;
       }
 
       const confidence = forceMode ? 90 : Math.round(
@@ -3865,6 +3881,14 @@ Deno.serve(async (req) => {
         govConfig, pairAlloc as PairRollingMetrics, sessionBudget,
         agentSizeMult
       );
+
+      // ═══ AUTONOMOUS BLACKLIST: REDUCED-SIZING OVERRIDE ═══
+      const pairBlMode = getBlacklistMode(pair, session);
+      if (pairBlMode === "reduced-sizing") {
+        discoveryMultiplier *= 0.3;
+        explainReasons.push(`AUTO-GOV reduced-sizing blacklist: ${pair}/${session} → 0.3x`);
+        console.log(`[AUTO-GOV_SIZING] ${pair}/${session}: Reduced sizing applied → deployment *= 0.3`);
+      }
 
       // ═══ PHASE 6+8: REGIME + KELLY WEIGHTED SIZING ═══
       let deploymentMultiplier = discoveryMultiplier;
