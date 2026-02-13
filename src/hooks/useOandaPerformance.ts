@@ -76,8 +76,8 @@ export function useOandaPerformance() {
     setLoading(true);
 
     try {
-      // STRATEGY RESET: Only show trades from revamped strategy (post-2026-02-12)
-      const cutoff = '2026-02-12T00:00:00Z';
+      // STRATEGY RESET: Only show trades from revamped strategy (post-2026-02-13)
+      const cutoff = '2026-02-13T00:00:00Z';
       const { data: orders, error } = await supabase
         .from('oanda_orders')
         .select('*')
