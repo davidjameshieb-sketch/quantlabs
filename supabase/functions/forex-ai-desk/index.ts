@@ -507,51 +507,115 @@ async function executeAction(
   } else if (action.type === "place_trade" && action.pair && action.direction && action.units) {
     console.log(`[AI-DESK] Floor Manager placing trade: ${action.direction} ${action.units} ${action.pair}`);
     const signedUnits = action.direction === "short" ? -Math.abs(action.units) : Math.abs(action.units);
+    const instrument = action.pair.replace("/", "_");
+
+    // Fetch current price to validate SL/TP direction
+    let currentPrice: number | null = null;
+    try {
+      const pricing = await oandaRequest(`/v3/accounts/{accountId}/pricing?instruments=${instrument}`, "GET", undefined, environment);
+      const priceData = pricing.prices?.[0];
+      if (priceData) {
+        const ask = parseFloat(priceData.asks?.[0]?.price || "0");
+        const bid = parseFloat(priceData.bids?.[0]?.price || "0");
+        currentPrice = action.direction === "long" ? ask : bid;
+      }
+    } catch (e) {
+      console.warn(`[AI-DESK] Could not fetch price for validation:`, (e as Error).message);
+    }
+
     const orderPayload: any = {
       order: {
         type: "MARKET",
-        instrument: action.pair.replace("/", "_"),
+        instrument,
         units: signedUnits.toString(),
         timeInForce: "FOK",
         positionFill: "DEFAULT",
       },
     };
-    // Attach SL/TP if provided by the Floor Manager
-    if (action.stopLossPrice) {
+
+    // Attach SL/TP only if they're on the correct side of current price
+    if (action.stopLossPrice && currentPrice) {
+      const slValid = action.direction === "long"
+        ? action.stopLossPrice < currentPrice
+        : action.stopLossPrice > currentPrice;
+      if (slValid) {
+        orderPayload.order.stopLossOnFill = { price: String(action.stopLossPrice), timeInForce: "GTC" };
+      } else {
+        console.warn(`[AI-DESK] Stripping invalid SL ${action.stopLossPrice} for ${action.direction} at ${currentPrice}`);
+      }
+    } else if (action.stopLossPrice) {
       orderPayload.order.stopLossOnFill = { price: String(action.stopLossPrice), timeInForce: "GTC" };
     }
-    if (action.takeProfitPrice) {
+
+    if (action.takeProfitPrice && currentPrice) {
+      const tpValid = action.direction === "long"
+        ? action.takeProfitPrice > currentPrice
+        : action.takeProfitPrice < currentPrice;
+      if (tpValid) {
+        orderPayload.order.takeProfitOnFill = { price: String(action.takeProfitPrice), timeInForce: "GTC" };
+      } else {
+        console.warn(`[AI-DESK] Stripping invalid TP ${action.takeProfitPrice} for ${action.direction} at ${currentPrice}`);
+      }
+    } else if (action.takeProfitPrice) {
       orderPayload.order.takeProfitOnFill = { price: String(action.takeProfitPrice), timeInForce: "GTC" };
     }
+
     const result = await oandaRequest(
       "/v3/accounts/{accountId}/orders",
       "POST",
       orderPayload,
       environment
     );
+
+    // Check if order was actually filled vs cancelled
+    const wasCancelled = !!result.orderCancelTransaction && !result.orderFillTransaction;
     const oandaTradeId = result.orderFillTransaction?.tradeOpened?.tradeID || result.orderFillTransaction?.id || null;
     const filledPrice = result.orderFillTransaction?.price ? parseFloat(result.orderFillTransaction.price) : null;
+    const cancelReason = result.orderCancelTransaction?.reason || null;
 
-    // Log to DB
-    await sb.from("oanda_orders").insert({
-      user_id: "00000000-0000-0000-0000-000000000000",
-      signal_id: `floor-manager-${Date.now()}`,
-      currency_pair: action.pair.replace("/", "_"),
-      direction: action.direction,
-      units: action.units,
-      status: "filled",
-      environment,
-      oanda_trade_id: oandaTradeId,
-      entry_price: filledPrice,
-      agent_id: "floor-manager",
-    });
+    if (wasCancelled) {
+      console.warn(`[AI-DESK] Order CANCELLED by OANDA: ${cancelReason}`);
+      // Log as rejected, not filled
+      await sb.from("oanda_orders").insert({
+        user_id: "00000000-0000-0000-0000-000000000000",
+        signal_id: `floor-manager-${Date.now()}`,
+        currency_pair: instrument,
+        direction: action.direction,
+        units: action.units,
+        status: "rejected",
+        environment,
+        agent_id: "floor-manager",
+        error_message: `OANDA rejected: ${cancelReason}`,
+      });
 
-    results.push({
-      action: "place_trade",
-      success: true,
-      detail: `${action.direction.toUpperCase()} ${action.units} ${action.pair} filled at ${filledPrice} (Trade ID: ${oandaTradeId})`,
-      data: result,
-    });
+      results.push({
+        action: "place_trade",
+        success: false,
+        detail: `ORDER REJECTED by OANDA: ${cancelReason}. The TP/SL prices were invalid relative to current market price${currentPrice ? ` (${currentPrice})` : ''}. Will retry without invalid levels.`,
+        data: result,
+      });
+    } else {
+      // Successfully filled
+      await sb.from("oanda_orders").insert({
+        user_id: "00000000-0000-0000-0000-000000000000",
+        signal_id: `floor-manager-${Date.now()}`,
+        currency_pair: instrument,
+        direction: action.direction,
+        units: action.units,
+        status: "filled",
+        environment,
+        oanda_trade_id: oandaTradeId,
+        entry_price: filledPrice,
+        agent_id: "floor-manager",
+      });
+
+      results.push({
+        action: "place_trade",
+        success: true,
+        detail: `${action.direction.toUpperCase()} ${action.units} ${instrument} filled at ${filledPrice} (Trade ID: ${oandaTradeId})`,
+        data: result,
+      });
+    }
 
   } else if (action.type === "get_account_summary") {
     const result = await oandaRequest("/v3/accounts/{accountId}/summary", "GET", undefined, environment);
