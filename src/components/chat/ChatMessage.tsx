@@ -242,7 +242,7 @@ function ActionButton({ action, onExecute }: { action: Record<string, unknown>; 
     : action.type === 'update_sl_tp'
     ? `Update SL/TP on ${action.tradeId}`
     : action.type === 'place_trade'
-    ? `${String(action.direction || '').toUpperCase()} ${action.units} ${action.pair}`
+    ? `${String(action.direction || '').toUpperCase()} ${action.units} ${action.pair}${action.stopLossPrice ? ` SL:${action.stopLossPrice}` : ''}${action.takeProfitPrice ? ` TP:${action.takeProfitPrice}` : ''}`
     : String(action.type);
 
   const handleClick = async () => {
