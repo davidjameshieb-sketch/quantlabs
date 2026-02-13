@@ -15,7 +15,7 @@ const OANDA_HOSTS: Record<string, string> = {
   live: "https://api-fxtrade.oanda.com",
 };
 const USER_ID = "11edc350-4c81-4d9f-82ae-cd2209b7581d";
-const STRATEGY_CUTOFF = "2026-02-12T01:00:00Z";
+const STRATEGY_CUTOFF = "2026-02-13T14:00:00Z";
 
 // ─── Pair-specific thresholds ───
 

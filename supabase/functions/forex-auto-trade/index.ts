@@ -1390,58 +1390,49 @@ function canPlaceLiveOrder(
     }
   }
 
-  // ─── CHECK 4B: COMPRESSION REGIME HARD-BLOCK (ALL DIRECTIONS) ───
-  // Data: compression longs = -113.4p across all agents (16-23% WR). Zero edge.
+  // ─── SHADOW CHECK 4B: COMPRESSION REGIME (shadow-log only, not blocked) ───
+  // Previously hard-blocked based on old data. Now shadow-logged to gather new evidence.
   if (tradeIntent.indicatorRegime === "compression") {
-    console.log(`[GOV_BLOCK_REGIME] regime=compression — 16-23% WR across all agents, -113.4p net. Hard-blocked.`);
-    return { allowed: false, reason_code: "GOV_BLOCK_REGIME", metadata: { regime_label: "compression", reason: "Zero edge — 16-23% WR, -113.4p net across all agents" } };
+    console.log(`[GOV_SHADOW_REGIME] regime=compression — shadow-logged, gathering new data (was: hard-blocked)`);
   }
 
-  // ─── CHECK 4C: EXHAUSTION REGIME HARD-BLOCK ───
-  // Data: exhaustion longs = -8.9p (20% WR). Not tradeable yet.
+  // ─── SHADOW CHECK 4C: EXHAUSTION REGIME (shadow-log only) ───
   if (tradeIntent.indicatorRegime === "exhaustion") {
-    console.log(`[GOV_BLOCK_REGIME] regime=exhaustion — 20% WR, negative expectancy. Hard-blocked.`);
-    return { allowed: false, reason_code: "GOV_BLOCK_REGIME", metadata: { regime_label: "exhaustion", reason: "20% WR, negative expectancy" } };
+    console.log(`[GOV_SHADOW_REGIME] regime=exhaustion — shadow-logged, gathering new data (was: hard-blocked)`);
   }
 
-  // ─── CHECK 4D: TRANSITION REGIME HARD-BLOCK ───
-  // Transition is informational only — never trade.
+  // ─── SHADOW CHECK 4D: TRANSITION REGIME (shadow-log only) ───
   if (tradeIntent.indicatorRegime === "transition") {
-    console.log(`[GOV_BLOCK_REGIME] regime=transition — informational only, blocked from execution`);
-    return { allowed: false, reason_code: "GOV_BLOCK_REGIME", metadata: { regime_label: "transition" } };
+    console.log(`[GOV_SHADOW_REGIME] regime=transition — shadow-logged, gathering new data (was: hard-blocked)`);
   }
 
-  // ─── CHECK 5: EXPANDED TOXIC HOURS (Asian dead zone + late-NY hours) ───
+  // ─── CHECK 5: EXPANDED TOXIC HOURS (structural — kept as hard-block) ───
   const EXTENDED_TOXIC_HOURS = [1, 2, 3, 4, 18, 19, 20, 21];
   if (EXTENDED_TOXIC_HOURS.includes(tradeIntent.hourUtc)) {
     const zone = tradeIntent.hourUtc <= 4 ? "Asian-dead-zone" : "late-NY";
-    console.log(`[GOV_BLOCK_TOXIC_HOUR] hour_utc=${tradeIntent.hourUtc} zone=${zone} — extended toxic block`);
+    console.log(`[GOV_BLOCK_TOXIC_HOUR] hour_utc=${tradeIntent.hourUtc} zone=${zone} — structural toxic block`);
     return { allowed: false, reason_code: "GOV_BLOCK_TOXIC_HOUR", metadata: { hour_utc: tradeIntent.hourUtc, zone } };
   }
 
-  // ─── CHECK 6: REGIME INTELLIGENCE — higher consensus for momentum/expansion ───
+  // ─── SHADOW CHECK 6: HIGH CONSENSUS REGIMES (shadow-log only) ───
   const HIGH_CONSENSUS_REGIMES = ["momentum", "expansion"];
   if (HIGH_CONSENSUS_REGIMES.includes(tradeIntent.indicatorRegime)) {
-    const requiredMomentum = 6; // 6/7 vs normal 4/7
+    const requiredMomentum = 6;
     const momentum = tradeIntent.direction === "long" ? tradeIntent.indicatorBullishMomentum : tradeIntent.indicatorBearishMomentum;
     if (momentum < requiredMomentum) {
-      console.log(`[GOV_BLOCK_REGIME_CONSENSUS] regime=${tradeIntent.indicatorRegime} ${tradeIntent.direction} momentum=${momentum} < required ${requiredMomentum}/7`);
-      return { allowed: false, reason_code: "GOV_BLOCK_REGIME_CONSENSUS", metadata: { regime: tradeIntent.indicatorRegime, momentum, required: requiredMomentum } };
+      console.log(`[GOV_SHADOW_CONSENSUS] regime=${tradeIntent.indicatorRegime} ${tradeIntent.direction} momentum=${momentum} < ${requiredMomentum}/7 — shadow-logged (was: hard-blocked)`);
     }
   }
 
-  // ─── CHECK 7: PAIR PERFORMANCE BLOCK — block pairs with significantly negative edge ───
-  // Data: EUR_CHF -34.7p (0% WR), USD_CHF -30.5p (0% WR), GBP_AUD -28.0p (0% WR)
-  const BLOCKED_PAIRS = ["EUR_CHF", "USD_CHF", "GBP_AUD", "AUD_NZD", "EUR_AUD"];
-  if (BLOCKED_PAIRS.includes(tradeIntent.pair)) {
-    console.log(`[GOV_BLOCK_PAIR] pair=${tradeIntent.pair} — negative expectancy, blocked until evidence of edge`);
-    return { allowed: false, reason_code: "GOV_BLOCK_PAIR", metadata: { pair: tradeIntent.pair } };
+  // ─── SHADOW CHECK 7: PAIR PERFORMANCE (shadow-log only) ───
+  const SHADOW_PAIRS = ["EUR_CHF", "USD_CHF", "GBP_AUD", "AUD_NZD", "EUR_AUD"];
+  if (SHADOW_PAIRS.includes(tradeIntent.pair)) {
+    console.log(`[GOV_SHADOW_PAIR] pair=${tradeIntent.pair} — shadow-logged, gathering new data (was: hard-blocked)`);
   }
 
-  // ─── CHECK 8: REGIME TRANSITION AGE — block stale regimes (>15 bars) ───
+  // ─── SHADOW CHECK 8: STALE REGIME (shadow-log only) ───
   if (tradeIntent.regimeFamilyHoldBars > 15) {
-    console.log(`[GOV_BLOCK_STALE_REGIME] regime_transition_age=${tradeIntent.regimeFamilyHoldBars} — regime too stale for entry`);
-    return { allowed: false, reason_code: "GOV_BLOCK_STALE_REGIME", metadata: { regimeAge: tradeIntent.regimeFamilyHoldBars } };
+    console.log(`[GOV_SHADOW_STALE_REGIME] regime_transition_age=${tradeIntent.regimeFamilyHoldBars} — shadow-logged (was: hard-blocked)`);
   }
 
   return { allowed: true, reason_code: "PASS", metadata: {} };
@@ -1974,7 +1965,7 @@ Deno.serve(async (req) => {
 
     // STRATEGY RESET: Only use trades from revamped strategy (post-2026-02-12)
     // All old practice/backtest/pre-revamp trades are excluded from learning
-    const STRATEGY_CUTOFF = "2026-02-12T01:00:00Z";
+    const STRATEGY_CUTOFF = "2026-02-13T14:00:00Z";
     const { data: rawOrders, error: ordersErr } = await supabase
       .from("oanda_orders")
       .select("agent_id, direction, entry_price, exit_price, currency_pair, status")

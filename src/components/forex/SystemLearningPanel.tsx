@@ -51,7 +51,7 @@ export const SystemLearningPanel = ({ executionMetrics, learningReady }: SystemL
   const deploymentInfo = deploymentModeLabels[summary.deploymentMode];
 
   // Strategy cutoff — only post-revamp trades count
-  const STRATEGY_CUTOFF = new Date('2026-02-12T01:00:00Z');
+  const STRATEGY_CUTOFF = new Date('2026-02-13T14:00:00Z');
   const postRevampTrades = useMemo(() => {
     if (!executionMetrics?.recentOrders) return 0;
     return executionMetrics.recentOrders.filter(o =>
