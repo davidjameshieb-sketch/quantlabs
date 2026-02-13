@@ -2,14 +2,13 @@
 // Primary view: Live trade book with per-trade analysis
 // Archive: All legacy dashboards
 
-import { useState, useMemo, useEffect, useCallback } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { LongOnlyFilterProvider } from '@/contexts/LongOnlyFilterContext';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion } from 'framer-motion';
 import {
-  Globe, TrendingUp, ChevronDown, BookOpen, Archive, Brain, HeartPulse, MessageSquare, Mic, X,
+  Globe, TrendingUp, BookOpen, Archive, Brain, HeartPulse, Mic,
 } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Button } from '@/components/ui/button';
 import { DashboardLayout } from '@/components/dashboard/DashboardLayout';
 import { IntelligenceModeBadge } from '@/components/dashboard/IntelligenceModeBadge';
 import { LongOnlyBadge } from '@/components/forex/LongOnlyBanner';
@@ -20,7 +19,6 @@ import { TradeHealthPanel } from '@/components/forex/TradeHealthPanel';
 import { SystemLearningPanel } from '@/components/forex/SystemLearningPanel';
 import { SystemConfidenceMeter } from '@/components/forex/SystemConfidenceMeter';
 import { GovernanceStateBanner } from '@/components/forex/GovernanceStateBanner';
-import { ChatInterface } from '@/components/chat/ChatInterface';
 import { VoiceChatInterface } from '@/components/chat/VoiceChatInterface';
 
 // Archive (lazy-loaded legacy dashboards)
@@ -49,8 +47,6 @@ import { useTradeAnalytics } from '@/hooks/useTradeAnalytics';
 import { useRealtimeOrders } from '@/hooks/useRealtimeOrders';
 
 const ForexDashboard = () => {
-  const [chatOpen, setChatOpen] = useState(false);
-  const [chatMode, setChatMode] = useState<'text' | 'voice'>('voice');
   const [longOnlyFilter, setLongOnlyFilter] = useState(false);
   const [filters, setFilters] = useState<ForexDashboardFilters>({
     period: '30d',
@@ -213,6 +209,9 @@ const ForexDashboard = () => {
               <TabsTrigger value="trade-health" className="text-xs gap-1.5 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
                 <HeartPulse className="w-3.5 h-3.5" />Trade Health
               </TabsTrigger>
+              <TabsTrigger value="ai-desk" className="text-xs gap-1.5 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
+                <Mic className="w-3.5 h-3.5" />AI Desk
+              </TabsTrigger>
               <TabsTrigger value="archive" className="text-xs gap-1.5 text-muted-foreground">
                 <Archive className="w-3.5 h-3.5" />Archive
               </TabsTrigger>
@@ -240,7 +239,16 @@ const ForexDashboard = () => {
               </LazyTabContent>
             </TabsContent>
 
-            {/* ─── TAB 3: Archive (all legacy dashboards) ─── */}
+            {/* ─── TAB 4: AI Desk ─── */}
+            <TabsContent value="ai-desk" className="space-y-4">
+              <LazyTabContent label="AI Desk">
+                <div className="h-[calc(100vh-320px)] min-h-[500px]">
+                  <VoiceChatInterface className="h-full" />
+                </div>
+              </LazyTabContent>
+            </TabsContent>
+
+            {/* ─── TAB 5: Archive (all legacy dashboards) ─── */}
             <TabsContent value="archive" className="space-y-4">
               <LazyTabContent label="Archive">
                 <ForexArchiveDashboards
@@ -262,60 +270,6 @@ const ForexDashboard = () => {
             </TabsContent>
           </Tabs>
         </div>
-
-        {/* AI Trading Desk — floating button + slide-out panel */}
-        <AnimatePresence>
-          {chatOpen && (
-            <motion.div
-              initial={{ x: '100%' }}
-              animate={{ x: 0 }}
-              exit={{ x: '100%' }}
-              transition={{ type: 'spring', damping: 25, stiffness: 300 }}
-              className="fixed top-0 right-0 h-full w-full sm:w-[420px] z-50 shadow-2xl"
-            >
-              <div className="relative h-full flex flex-col">
-                {/* Close + mode toggle */}
-                <div className="absolute top-3 right-3 z-10 flex items-center gap-1">
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    onClick={() => setChatMode(chatMode === 'voice' ? 'text' : 'voice')}
-                    className="h-8 w-8"
-                    title={chatMode === 'voice' ? 'Switch to text' : 'Switch to voice'}
-                  >
-                    {chatMode === 'voice' ? <MessageSquare className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    onClick={() => setChatOpen(false)}
-                    className="h-8 w-8"
-                  >
-                    <X className="w-4 h-4" />
-                  </Button>
-                </div>
-                {chatMode === 'voice' ? (
-                  <VoiceChatInterface className="h-full rounded-none" />
-                ) : (
-                  <ChatInterface className="h-full rounded-none" />
-                )}
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {!chatOpen && (
-          <motion.button
-            initial={{ scale: 0 }}
-            animate={{ scale: 1 }}
-            whileHover={{ scale: 1.1 }}
-            whileTap={{ scale: 0.95 }}
-            onClick={() => setChatOpen(true)}
-            className="fixed bottom-6 right-6 z-50 w-14 h-14 rounded-full bg-gradient-to-br from-primary to-secondary shadow-lg flex items-center justify-center text-primary-foreground"
-          >
-            <Mic className="w-6 h-6" />
-          </motion.button>
-        )}
       </DashboardLayout>
     </LongOnlyFilterProvider>
   );

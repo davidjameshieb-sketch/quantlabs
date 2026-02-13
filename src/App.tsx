@@ -9,7 +9,7 @@ import { SiteLockGate } from "@/components/SiteLockGate";
 import { AdminRoute } from "@/components/AdminRoute";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
 import { FoundersBroadcastBar } from "@/components/founders/FoundersBroadcastBar";
-import { FloatingCommandWidget } from "@/components/founders/FloatingCommandWidget";
+
 import { Navigate } from "react-router-dom";
 import Auth from "./pages/Auth";
 import Dashboard from "./pages/Dashboard";
@@ -35,7 +35,7 @@ const App = () => (
           <SiteLockProvider>
             <SiteLockGate>
               <FoundersBroadcastBar />
-              <FloatingCommandWidget />
+              
               <Routes>
                 <Route path="/" element={<Navigate to="/dashboard" replace />} />
                 <Route path="/auth" element={<Auth />} />
