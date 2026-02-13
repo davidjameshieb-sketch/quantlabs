@@ -146,51 +146,57 @@ function evaluateAutonomousTiering(
     const avgMAE = maeCount > 0 ? totalMAE / maeCount : 0;
 
     const currentTier: AutonomousTier =
-      SUSPENDED_AGENTS[s.agent_id] === "disabled" ? "D" :
+      SUSPENDED_AGENTS[s.agent_id] === "disabled" || isAgentSuspendedByFM(s.agent_id) ? "D" :
       SUSPENDED_AGENTS[s.agent_id] === "shadow" ? "C" :
       (expectancy > 0 && pf >= 1.1) ? "A" : "B";
 
-    // ── INSTANT DEMOTION TO C (Shadow) ──
+    // ── INSTANT DEMOTION TO C (Shadow) — thresholds overridable by Floor Manager ──
+    const maeThreshold = getFMEvolutionParam("mae_demotion_threshold") ?? 0.90;
+    const consecLossThreshold = getFMEvolutionParam("consec_loss_demotion") ?? 5;
+    const wrFloorThreshold = getFMEvolutionParam("wr_floor_demotion") ?? 0.25;
+    const expFloorThreshold = getFMEvolutionParam("exp_floor_demotion") ?? -2.0;
+
     if (currentTier !== "C" && currentTier !== "D" && agentRecent.length >= 8) {
-      if (avgMAE > 0.90) {
+      if (avgMAE > maeThreshold) {
         changes.push({ agentId: s.agent_id, fromTier: currentTier, toTier: "C",
-          reason: `AUTO-DEMOTE: MAE ${avgMAE.toFixed(2)}R > 0.90R — catastrophic adverse excursion`,
-          triggerMetric: "avgMAE", triggerValue: avgMAE, threshold: 0.90, ts: Date.now() });
+          reason: `AUTO-DEMOTE: MAE ${avgMAE.toFixed(2)}R > ${maeThreshold}R — catastrophic adverse excursion`,
+          triggerMetric: "avgMAE", triggerValue: avgMAE, threshold: maeThreshold, ts: Date.now() });
         _autonomousTierOverrides[s.agent_id] = "C";
         SUSPENDED_AGENTS[s.agent_id] = "shadow";
         continue;
       }
-      if (maxConsecLosses >= 5) {
+      if (maxConsecLosses >= consecLossThreshold) {
         changes.push({ agentId: s.agent_id, fromTier: currentTier, toTier: "C",
-          reason: `AUTO-DEMOTE: ${maxConsecLosses} consecutive losses — pattern failure`,
-          triggerMetric: "consecutiveLosses", triggerValue: maxConsecLosses, threshold: 5, ts: Date.now() });
+          reason: `AUTO-DEMOTE: ${maxConsecLosses} consecutive losses ≥ ${consecLossThreshold} — pattern failure`,
+          triggerMetric: "consecutiveLosses", triggerValue: maxConsecLosses, threshold: consecLossThreshold, ts: Date.now() });
         _autonomousTierOverrides[s.agent_id] = "C";
         SUSPENDED_AGENTS[s.agent_id] = "shadow";
         continue;
       }
-      if (recentWR < 0.25 && agentRecent.length >= 10) {
+      if (recentWR < wrFloorThreshold && agentRecent.length >= 10) {
         changes.push({ agentId: s.agent_id, fromTier: currentTier, toTier: "C",
-          reason: `AUTO-DEMOTE: Recent WR ${(recentWR*100).toFixed(0)}% < 25% floor — demoted before next trade`,
-          triggerMetric: "recentWR", triggerValue: recentWR, threshold: 0.25, ts: Date.now() });
+          reason: `AUTO-DEMOTE: Recent WR ${(recentWR*100).toFixed(0)}% < ${(wrFloorThreshold*100).toFixed(0)}% floor — demoted before next trade`,
+          triggerMetric: "recentWR", triggerValue: recentWR, threshold: wrFloorThreshold, ts: Date.now() });
         _autonomousTierOverrides[s.agent_id] = "C";
         SUSPENDED_AGENTS[s.agent_id] = "shadow";
         continue;
       }
-      if (recentExp < -2.0 && agentRecent.length >= 10) {
+      if (recentExp < expFloorThreshold && agentRecent.length >= 10) {
         changes.push({ agentId: s.agent_id, fromTier: currentTier, toTier: "C",
-          reason: `AUTO-DEMOTE: Recent exp ${recentExp.toFixed(2)}p < -2.0p — value-destructive`,
-          triggerMetric: "recentExp", triggerValue: recentExp, threshold: -2.0, ts: Date.now() });
+          reason: `AUTO-DEMOTE: Recent exp ${recentExp.toFixed(2)}p < ${expFloorThreshold}p — value-destructive`,
+          triggerMetric: "recentExp", triggerValue: recentExp, threshold: expFloorThreshold, ts: Date.now() });
         _autonomousTierOverrides[s.agent_id] = "C";
         SUSPENDED_AGENTS[s.agent_id] = "shadow";
         continue;
       }
     }
 
-    // ── RECOVERY FROM C TO B (requires 45% WR) ──
-    if (currentTier === "C" && agentRecent.length >= 15 && recentWR >= 0.45 && recentExp >= 0) {
+    // ── RECOVERY FROM C TO B (threshold overridable by FM) ──
+    const recoveryWRThreshold = getFMEvolutionParam("recovery_wr_threshold") ?? 0.45;
+    if (currentTier === "C" && agentRecent.length >= 15 && recentWR >= recoveryWRThreshold && recentExp >= 0) {
       changes.push({ agentId: s.agent_id, fromTier: "C", toTier: "B",
-        reason: `AUTO-PROMOTE: Recovery detected — WR=${(recentWR*100).toFixed(0)}% ≥ 45%, exp=${recentExp.toFixed(2)}p`,
-        triggerMetric: "recentWR", triggerValue: recentWR, threshold: 0.45, ts: Date.now() });
+        reason: `AUTO-PROMOTE: Recovery detected — WR=${(recentWR*100).toFixed(0)}% ≥ ${(recoveryWRThreshold*100).toFixed(0)}%, exp=${recentExp.toFixed(2)}p`,
+        triggerMetric: "recentWR", triggerValue: recentWR, threshold: recoveryWRThreshold, ts: Date.now() });
       _autonomousTierOverrides[s.agent_id] = "B";
       delete SUSPENDED_AGENTS[s.agent_id]; // re-enable
     }
@@ -330,20 +336,40 @@ function evaluateSessionPairBlacklists(
   return blacklists;
 }
 
-// ─── Get effective G11 threshold for a regime ───
+// ─── Get effective G11 threshold for a regime (checks FM override first) ───
 function getEffectiveG11Threshold(regime: string): number {
+  const fmOverride = getFMGateThresholdOverride("G11", "atrStretchThreshold");
+  if (fmOverride !== null) {
+    console.log(`[FM-GATE-OVERRIDE] G11 atrStretchThreshold overridden to ${fmOverride} by Floor Manager`);
+    return fmOverride;
+  }
   const override = _autonomousGateOverrides.find(o => o.gateId === "G11" && o.regime === regime);
   return override ? override.to : 1.8;
 }
 
-// ─── Get effective composite minimum for a regime ───
+// ─── Get effective composite minimum for a regime (checks FM override first) ───
 function getEffectiveCompositeMin(regime: string): number {
+  const fmOverride = getFMGateThresholdOverride("COMPOSITE_MIN", "compositeScoreMin");
+  if (fmOverride !== null) {
+    console.log(`[FM-GATE-OVERRIDE] COMPOSITE_MIN overridden to ${fmOverride} by Floor Manager`);
+    return fmOverride;
+  }
   const override = _autonomousGateOverrides.find(o => o.gateId === "COMPOSITE_MIN" && o.regime === regime);
   return override ? override.to : 0.72;
 }
 
-// ─── Check if pair+session is blacklisted ───
+// ─── Check if pair+session is blacklisted (checks FM override first) ───
 function getBlacklistMode(pair: string, session: string): BlacklistMode | null {
+  // FM can override blacklists
+  const fmOverride = getFMBlacklistOverride(pair, session);
+  if (fmOverride === "remove") {
+    console.log(`[FM-BLACKLIST-OVERRIDE] ${pair}/${session} blacklist REMOVED by Floor Manager`);
+    return null;
+  }
+  if (fmOverride) {
+    console.log(`[FM-BLACKLIST-OVERRIDE] ${pair}/${session} blacklisted as ${fmOverride} by Floor Manager`);
+    return fmOverride as BlacklistMode;
+  }
   const bl = _autonomousBlacklists.find(b => b.pair === pair && b.session === session && b.expiresAt > Date.now());
   return bl ? bl.mode : null;
 }
@@ -771,9 +797,9 @@ function resolveAgentSnapshot(stats: Array<{
 
     for (const sa of supportAgents) {
       if (eligible.length >= minRequired) break;
-      // GOVERNANCE FIX: Do NOT promote agents that are suspended from live execution
-      if (SUSPENDED_AGENTS[sa.agentId]) {
-        promotionLog.push(`[AUTO-PROMOTE] SKIPPED ${sa.agentId} — suspended (mode=${SUSPENDED_AGENTS[sa.agentId]})`);
+      // GOVERNANCE FIX: Do NOT promote agents that are suspended from live execution (hardcoded OR FM DB)
+      if (SUSPENDED_AGENTS[sa.agentId] || isAgentSuspendedByFM(sa.agentId)) {
+        promotionLog.push(`[AUTO-PROMOTE] SKIPPED ${sa.agentId} — suspended (mode=${SUSPENDED_AGENTS[sa.agentId] || "fm-suspended"})`);
         continue;
       }
       agents.push(sa);
@@ -838,14 +864,14 @@ function selectAgentFromSnapshot(snapshot: ExecutionSnapshot, pair: string): Age
   const eligible = snapshot.eligibleAgents;
   if (eligible.length === 0) return null;
 
-  // Classify and filter out diluters AND suspended agents
+  // Classify and filter out diluters AND suspended agents (hardcoded + FM DB suspensions)
   const classified = eligible.map(a => ({ agent: a, ...classifyAgentRole(a) }))
     .filter(c => c.role !== "diluter")
-    .filter(c => !SUSPENDED_AGENTS[c.agent.agentId]);
+    .filter(c => !SUSPENDED_AGENTS[c.agent.agentId] && !isAgentSuspendedByFM(c.agent.agentId));
 
   if (classified.length === 0) {
-    // Fallback: use first eligible that is NOT suspended
-    const nonSuspended = eligible.filter(a => !SUSPENDED_AGENTS[a.agentId]);
+    // Fallback: use first eligible that is NOT suspended (hardcoded + FM DB)
+    const nonSuspended = eligible.filter(a => !SUSPENDED_AGENTS[a.agentId] && !isAgentSuspendedByFM(a.agentId));
     const first = nonSuspended.length > 0 ? nonSuspended[0] : eligible[0];
     return { ...first, role: "stabilizer" as AgentLiveRole, roleMult: 0.95 };
   }
@@ -1694,6 +1720,52 @@ function getFMSizingOverride(): number | null {
   return match ? parseFloat(match[1]) : null;
 }
 
+// ─── FM Gate Threshold Overrides (reads GATE_THRESHOLD:* from gate_bypasses) ───
+function getFMGateThresholdOverride(gateId: string, param: string): number | null {
+  const now = new Date().toISOString();
+  const key = `GATE_THRESHOLD:${gateId}:${param}`;
+  const override = _serverBypasses.find(bp => bp.gate_id === key && bp.expires_at >= now);
+  if (!override) return null;
+  const match = override.reason.match(/^([\d.]+)/);
+  return match ? parseFloat(match[1]) : null;
+}
+
+// ─── FM Session-Pair Blacklist Overrides (reads BLACKLIST:* from gate_bypasses) ───
+function getFMBlacklistOverride(pair: string, session: string): BlacklistMode | "remove" | null {
+  const now = new Date().toISOString();
+  // Check for removal first
+  const removeKey = `BLACKLIST_REMOVE:${pair}:${session}`;
+  const removal = _serverBypasses.find(bp => bp.gate_id === removeKey && bp.expires_at >= now);
+  if (removal) return "remove";
+  // Check for add
+  const addKey = `BLACKLIST_ADD:${pair}:${session}`;
+  const addition = _serverBypasses.find(bp => bp.gate_id === addKey && bp.expires_at >= now);
+  if (addition) {
+    const mode = addition.reason.match(/mode=(full-block|reduced-sizing|monitoring-only)/);
+    return mode ? mode[1] as BlacklistMode : "full-block";
+  }
+  return null;
+}
+
+// ─── FM Equity Circuit Breaker (reads EQUITY_CIRCUIT_BREAKER from gate_bypasses) ───
+function getFMEquityCircuitBreaker(): { active: boolean; maxDrawdownPct?: number } {
+  const now = new Date().toISOString();
+  const override = _serverBypasses.find(bp => bp.gate_id === "EQUITY_CIRCUIT_BREAKER" && bp.expires_at >= now);
+  if (!override) return { active: false };
+  const match = override.reason.match(/^([\d.]+)%/);
+  return { active: true, maxDrawdownPct: match ? parseFloat(match[1]) : 5.0 };
+}
+
+// ─── FM Evolution Parameter Overrides (reads EVOLUTION_PARAM:* from gate_bypasses) ───
+function getFMEvolutionParam(paramName: string): number | null {
+  const now = new Date().toISOString();
+  const key = `EVOLUTION_PARAM:${paramName}`;
+  const override = _serverBypasses.find(bp => bp.gate_id === key && bp.expires_at >= now);
+  if (!override) return null;
+  const match = override.reason.match(/^([\d.]+)/);
+  return match ? parseFloat(match[1]) : null;
+}
+
 function canPlaceLiveOrder(
   tradeIntent: {
     pair: string;
@@ -2354,6 +2426,32 @@ Deno.serve(async (req) => {
     // PHASE 0a: Load Floor Manager Gate Bypasses from DB
     // ═══════════════════════════════════════════════════════════
     await loadServerBypasses(supabase);
+
+    // ═══════════════════════════════════════════════════════════
+    // PHASE 0a2: Equity Circuit Breaker (FM-controlled kill-switch)
+    // ═══════════════════════════════════════════════════════════
+    const equityCircuitBreaker = getFMEquityCircuitBreaker();
+    if (equityCircuitBreaker.active) {
+      // Fetch account equity from OANDA to check drawdown
+      try {
+        const accountSummary = await oandaRequest("/v3/accounts/{accountId}/summary", "GET", undefined, execConfig);
+        const nav = parseFloat(accountSummary.account?.NAV || "0");
+        const balance = parseFloat(accountSummary.account?.balance || "0");
+        const peakBalance = Math.max(nav, balance); // Simplified — ideally track historical peak
+        const drawdownPct = balance > 0 ? ((peakBalance - nav) / peakBalance) * 100 : 0;
+        const maxDD = equityCircuitBreaker.maxDrawdownPct || 5.0;
+        if (drawdownPct >= maxDD) {
+          console.log(`[EQUITY-CIRCUIT-BREAKER] ⛔ HALT — drawdown ${drawdownPct.toFixed(2)}% ≥ ${maxDD}% threshold — Floor Manager kill-switch active`);
+          return new Response(
+            JSON.stringify({ status: "halted", reason: `Equity circuit breaker: ${drawdownPct.toFixed(2)}% drawdown ≥ ${maxDD}% max`, results: [] }),
+            { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
+        console.log(`[EQUITY-CIRCUIT-BREAKER] Active — drawdown ${drawdownPct.toFixed(2)}% < ${maxDD}% — trading permitted`);
+      } catch (err) {
+        console.warn(`[EQUITY-CIRCUIT-BREAKER] Could not fetch account equity:`, (err as Error).message);
+      }
+    }
 
     // ═══════════════════════════════════════════════════════════
     // PHASE 0b: Load Agent Snapshot (lightweight direct query, avoids RPC timeout)

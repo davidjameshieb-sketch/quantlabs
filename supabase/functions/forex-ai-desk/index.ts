@@ -127,9 +127,27 @@ When you want to execute a trade action (place a trade, close a trade, modify SL
 - **reinstate_agent**: Re-enables a suspended agent. Required: agentId.
 - **adjust_position_sizing**: Adjusts the global position sizing multiplier. Required: multiplier (number 0.1-2.0). Optional: reason.
 - **get_active_bypasses**: Lists all currently active gate bypasses. No parameters needed.
+- **adjust_gate_threshold**: Tunes a specific gate threshold dynamically. Required: gateId (e.g. "G11", "COMPOSITE_MIN"), param (e.g. "atrStretchThreshold", "compositeScoreMin"), value (number). Optional: reason, ttlMinutes (default 240). The auto-trade pipeline reads this in real-time.
+- **add_blacklist**: Adds a session-pair blacklist. Required: pair (e.g. "USD_CAD"), session (e.g. "asian"). Optional: mode ("full-block"|"reduced-sizing"|"monitoring-only", default "full-block"), reason, ttlMinutes (default 480).
+- **remove_blacklist**: Removes a session-pair blacklist override. Required: pair, session. Optional: reason, ttlMinutes (default 480).
+- **activate_circuit_breaker**: Activates the equity drawdown kill-switch. Required: maxDrawdownPct (number, e.g. 5.0 for 5%). Optional: reason, ttlMinutes (default 480). When active, the auto-trade pipeline halts if account drawdown exceeds the threshold.
+- **deactivate_circuit_breaker**: Deactivates the equity circuit breaker. No required parameters.
+- **adjust_evolution_param**: Adjusts evolution engine parameters (demotion/promotion thresholds). Required: param (one of: "mae_demotion_threshold", "consec_loss_demotion", "wr_floor_demotion", "exp_floor_demotion", "recovery_wr_threshold"), value (number). Optional: reason, ttlMinutes (default 480).
 
 ### Valid Gate IDs for bypass_gate:
 G1_FRICTION, G2_NO_HTF_WEAK_MTF, G3_EDGE_DECAY, G4_SPREAD_INSTABILITY, G5_COMPRESSION_LOW_SESSION, G6_OVERTRADING, G7_LOSS_CLUSTER_WEAK_MTF, G8_HIGH_SHOCK, G9_PRICE_DATA_UNAVAILABLE, G10_ANALYSIS_UNAVAILABLE, G11_EXTENSION_EXHAUSTION, G12_AGENT_DECORRELATION
+
+### Valid Gate IDs for adjust_gate_threshold:
+- G11 + param "atrStretchThreshold" (default 1.8, range 1.2-2.5)
+- COMPOSITE_MIN + param "compositeScoreMin" (default 0.72, range 0.50-0.95)
+- G1_FRICTION + param "frictionK" (default 3.0, range 1.5-6.0)
+
+### Valid Evolution Parameters:
+- mae_demotion_threshold: MAE R-multiple that triggers instant demotion (default 0.90, range 0.5-1.5)
+- consec_loss_demotion: Consecutive losses to trigger demotion (default 5, range 3-10)
+- wr_floor_demotion: Win rate floor for demotion (default 0.25, range 0.10-0.40)
+- exp_floor_demotion: Expectancy floor for demotion in pips (default -2.0, range -5.0 to -0.5)
+- recovery_wr_threshold: Win rate required for C→B recovery (default 0.45, range 0.30-0.60)
 
 ### RULES:
 1. ALWAYS emit action blocks when you propose a trade intervention — do NOT just describe it in text.
@@ -140,6 +158,8 @@ G1_FRICTION, G2_NO_HTF_WEAK_MTF, G3_EDGE_DECAY, G4_SPREAD_INSTABILITY, G5_COMPRE
 6. ALWAYS include the action block even for test trades — without it, nothing reaches OANDA.
 7. When bypassing gates, ALWAYS explain the risk tradeoff and set the shortest TTL needed. Prefer pair-specific bypasses over global ones.
 8. Gate bypasses are now PERSISTED SERVER-SIDE in the database — the auto-trade pipeline respects them. You no longer need to worry about page refreshes losing your overrides.
+9. Gate threshold adjustments, blacklists, circuit breakers, and evolution params are ALL server-side — the auto-trade pipeline reads them in real-time.
+10. When adjusting evolution params, explain the tradeoff between sensitivity and stability.
 
 Always report your autonomous actions in your analysis. The operator needs to know what you've done, not just what you've seen.`;
 
@@ -722,6 +742,125 @@ async function executeAction(
       results.push({ action: "adjust_position_sizing", success: false, detail: insertErr.message });
     } else {
       results.push({ action: "adjust_position_sizing", success: true, detail: `Position sizing set to ${multiplier}x — ${reason}` });
+    }
+
+  // ── Gate Threshold Adjustment ──
+  } else if (action.type === "adjust_gate_threshold" && (action as any).gateId && (action as any).param && (action as any).value != null) {
+    const gateId = (action as any).gateId as string;
+    const param = (action as any).param as string;
+    const value = (action as any).value as number;
+    const reason = (action as any).reason || "Floor Manager gate threshold adjustment";
+    const ttlMinutes = Math.min(1440, Math.max(1, (action as any).ttlMinutes || 240));
+    const key = `GATE_THRESHOLD:${gateId}:${param}`;
+
+    // Revoke existing override for same key
+    await sb.from("gate_bypasses").update({ revoked: true }).eq("gate_id", key).eq("revoked", false);
+    const { error: insertErr } = await sb.from("gate_bypasses").insert({
+      gate_id: key,
+      reason: `${value} — ${reason}`,
+      expires_at: new Date(Date.now() + ttlMinutes * 60 * 1000).toISOString(),
+      created_by: "floor-manager",
+    });
+    if (insertErr) {
+      results.push({ action: "adjust_gate_threshold", success: false, detail: insertErr.message });
+    } else {
+      results.push({ action: "adjust_gate_threshold", success: true, detail: `Gate ${gateId} param ${param} set to ${value} for ${ttlMinutes}m — ${reason}` });
+    }
+
+  // ── Add Session-Pair Blacklist ──
+  } else if (action.type === "add_blacklist" && (action as any).pair && (action as any).session) {
+    const pair = (action as any).pair as string;
+    const session = (action as any).session as string;
+    const mode = (action as any).mode || "full-block";
+    const reason = (action as any).reason || "Floor Manager blacklist";
+    const ttlMinutes = Math.min(1440, Math.max(1, (action as any).ttlMinutes || 480));
+    const key = `BLACKLIST_ADD:${pair}:${session}`;
+
+    // Revoke any existing removal for this pair+session
+    await sb.from("gate_bypasses").update({ revoked: true }).eq("gate_id", `BLACKLIST_REMOVE:${pair}:${session}`).eq("revoked", false);
+    await sb.from("gate_bypasses").update({ revoked: true }).eq("gate_id", key).eq("revoked", false);
+    const { error: insertErr } = await sb.from("gate_bypasses").insert({
+      gate_id: key,
+      reason: `mode=${mode} — ${reason}`,
+      expires_at: new Date(Date.now() + ttlMinutes * 60 * 1000).toISOString(),
+      created_by: "floor-manager",
+    });
+    if (insertErr) {
+      results.push({ action: "add_blacklist", success: false, detail: insertErr.message });
+    } else {
+      results.push({ action: "add_blacklist", success: true, detail: `${pair}/${session} blacklisted (${mode}) for ${ttlMinutes}m — ${reason}` });
+    }
+
+  // ── Remove Session-Pair Blacklist ──
+  } else if (action.type === "remove_blacklist" && (action as any).pair && (action as any).session) {
+    const pair = (action as any).pair as string;
+    const session = (action as any).session as string;
+    const reason = (action as any).reason || "Floor Manager blacklist removal";
+    const ttlMinutes = Math.min(1440, Math.max(1, (action as any).ttlMinutes || 480));
+    const key = `BLACKLIST_REMOVE:${pair}:${session}`;
+
+    // Revoke any existing add for this pair+session
+    await sb.from("gate_bypasses").update({ revoked: true }).eq("gate_id", `BLACKLIST_ADD:${pair}:${session}`).eq("revoked", false);
+    await sb.from("gate_bypasses").update({ revoked: true }).eq("gate_id", key).eq("revoked", false);
+    const { error: insertErr } = await sb.from("gate_bypasses").insert({
+      gate_id: key,
+      reason,
+      expires_at: new Date(Date.now() + ttlMinutes * 60 * 1000).toISOString(),
+      created_by: "floor-manager",
+    });
+    if (insertErr) {
+      results.push({ action: "remove_blacklist", success: false, detail: insertErr.message });
+    } else {
+      results.push({ action: "remove_blacklist", success: true, detail: `${pair}/${session} blacklist REMOVED for ${ttlMinutes}m — ${reason}` });
+    }
+
+  // ── Activate Equity Circuit Breaker ──
+  } else if (action.type === "activate_circuit_breaker" && (action as any).maxDrawdownPct != null) {
+    const maxDD = Math.min(20, Math.max(1, (action as any).maxDrawdownPct as number));
+    const reason = (action as any).reason || "Floor Manager equity kill-switch";
+    const ttlMinutes = Math.min(1440, Math.max(1, (action as any).ttlMinutes || 480));
+
+    await sb.from("gate_bypasses").update({ revoked: true }).eq("gate_id", "EQUITY_CIRCUIT_BREAKER").eq("revoked", false);
+    const { error: insertErr } = await sb.from("gate_bypasses").insert({
+      gate_id: "EQUITY_CIRCUIT_BREAKER",
+      reason: `${maxDD}% — ${reason}`,
+      expires_at: new Date(Date.now() + ttlMinutes * 60 * 1000).toISOString(),
+      created_by: "floor-manager",
+    });
+    if (insertErr) {
+      results.push({ action: "activate_circuit_breaker", success: false, detail: insertErr.message });
+    } else {
+      results.push({ action: "activate_circuit_breaker", success: true, detail: `Equity circuit breaker ACTIVE — halt if drawdown ≥ ${maxDD}% for ${ttlMinutes}m` });
+    }
+
+  // ── Deactivate Equity Circuit Breaker ──
+  } else if (action.type === "deactivate_circuit_breaker") {
+    await sb.from("gate_bypasses").update({ revoked: true }).eq("gate_id", "EQUITY_CIRCUIT_BREAKER").eq("revoked", false);
+    results.push({ action: "deactivate_circuit_breaker", success: true, detail: "Equity circuit breaker DEACTIVATED" });
+
+  // ── Adjust Evolution Parameters ──
+  } else if (action.type === "adjust_evolution_param" && (action as any).param && (action as any).value != null) {
+    const param = (action as any).param as string;
+    const value = (action as any).value as number;
+    const reason = (action as any).reason || "Floor Manager evolution adjustment";
+    const ttlMinutes = Math.min(1440, Math.max(1, (action as any).ttlMinutes || 480));
+    const validParams = ["mae_demotion_threshold", "consec_loss_demotion", "wr_floor_demotion", "exp_floor_demotion", "recovery_wr_threshold"];
+    if (!validParams.includes(param)) {
+      results.push({ action: "adjust_evolution_param", success: false, detail: `Invalid param: ${param}. Valid: ${validParams.join(", ")}` });
+    } else {
+      const key = `EVOLUTION_PARAM:${param}`;
+      await sb.from("gate_bypasses").update({ revoked: true }).eq("gate_id", key).eq("revoked", false);
+      const { error: insertErr } = await sb.from("gate_bypasses").insert({
+        gate_id: key,
+        reason: `${value} — ${reason}`,
+        expires_at: new Date(Date.now() + ttlMinutes * 60 * 1000).toISOString(),
+        created_by: "floor-manager",
+      });
+      if (insertErr) {
+        results.push({ action: "adjust_evolution_param", success: false, detail: insertErr.message });
+      } else {
+        results.push({ action: "adjust_evolution_param", success: true, detail: `Evolution param ${param} set to ${value} for ${ttlMinutes}m — ${reason}` });
+      }
     }
 
   } else {
