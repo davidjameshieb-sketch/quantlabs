@@ -407,10 +407,10 @@ const evaluateRejectionGates = (ctx: GovernanceContext): GateEntry[] => {
   ) {
     // Exhaustion is already penalized via regime multiplier, but we add a hard gate
     // when ATR extension is extreme (atrValue >> atrAvg = move already stretched)
-    if (ctx.atrValue > 0 && ctx.atrAvg > 0 && ctx.atrValue > ctx.atrAvg * 1.5) {
+    if (ctx.atrValue > 0 && ctx.atrAvg > 0 && ctx.atrValue > ctx.atrAvg * 1.8) {
       gates.push({
         id: 'G11_EXTENSION_EXHAUSTION',
-        message: `Extension exhausted: ATR ${(ctx.atrValue * 10000).toFixed(1)}p vs avg ${(ctx.atrAvg * 10000).toFixed(1)}p (${(ctx.atrValue / ctx.atrAvg).toFixed(1)}x stretch)`,
+        message: `Extension exhausted (>1.8x): ATR ${(ctx.atrValue * 10000).toFixed(1)}p vs avg ${(ctx.atrAvg * 10000).toFixed(1)}p (${(ctx.atrValue / ctx.atrAvg).toFixed(1)}x stretch)`,
       });
     }
   }
