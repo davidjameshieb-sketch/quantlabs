@@ -30,7 +30,7 @@ export function FloorManagerView({ openTrades }: Props) {
   const totalOverrides = state.bypasses.length + state.gateThresholds.length +
     state.blacklists.length + state.suspendedAgents.length +
     (state.circuitBreaker ? 1 : 0) + (state.sizingOverride ? 1 : 0) +
-    state.evolutionParams.length;
+    state.evolutionParams.length + state.dynamicGates.length;
 
   return (
     <motion.div
