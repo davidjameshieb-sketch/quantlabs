@@ -452,6 +452,26 @@ function evaluateExit(
         currentPnlPips, progressToTp, tradeAgeMinutes,
       };
     }
+  } else if (mfeR >= 0.8) {
+    // ═══ FIX #6: EARLY PROFIT LOCK — once MFE reaches 0.8R, lock 0.2R profit ═══
+    // Pattern 5 (Profit Capture Decay): Trades reaching 0.8-1.0R MFE reverting to scratch/loss.
+    // Tighter trailing ensures we capture partial winners instead of giving back all progress.
+    const lockRDistance = 0.2 * effectiveRPips * pipMult;
+    const earlyTrailSlPrice = direction === "long"
+      ? entryPrice + lockRDistance
+      : entryPrice - lockRDistance;
+
+    const earlyTrailHit = direction === "long"
+      ? currentPrice <= earlyTrailSlPrice
+      : currentPrice >= earlyTrailSlPrice;
+
+    if (earlyTrailHit) {
+      return {
+        action: "close-trailing",
+        reason: `Early profit lock: ${currentPnlPips.toFixed(1)}p (${currentR.toFixed(2)}R) | MFE=${mfeR.toFixed(2)}R reached 0.8R — locking 0.2R`,
+        currentPnlPips, progressToTp, tradeAgeMinutes,
+      };
+    }
   }
 
   // ═══ PRIORITY 3: Dynamic SL hit (Supertrend + ATR based) ═══
