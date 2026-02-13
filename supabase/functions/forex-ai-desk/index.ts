@@ -1124,8 +1124,8 @@ serve(async (req) => {
       if (typeof msg.content !== "string" || msg.content.length === 0) {
         return ERR.bad("Message content must be a non-empty string");
       }
-      if (msg.content.length > 4000) {
-        return ERR.bad("Message too long (max 4000 characters)");
+      if (msg.content.length > 24000) {
+        return ERR.bad("Message too long (max 24000 characters)");
       }
     }
 
