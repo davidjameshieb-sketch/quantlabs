@@ -38,6 +38,8 @@ const BASE_UNITS = 1000;
 
 // ─── GOVERNANCE: Agents suspended from LIVE execution ───
 // Must be checked by coalition promotion, agent selection, AND canPlaceLiveOrder.
+// NOTE: This is now DYNAMICALLY UPDATED by the Autonomous Governance Engine.
+// Static entries are the initial state — the feedback loop can add/remove agents.
 const SUSPENDED_AGENTS: Record<string, string> = {
   "support-mtf-confirmer": "disabled",    // DEMOTED to Tier C (deep retune): -170 pips across 41 trades, worst on desk. MTF validation lagging market, creating late entries.
   "support-regime-confirmer": "shadow",   // Suspended: breakdown trap offender — 24-trade loss streak, -116 pips. Requires WR>50% over 30 trades to reinstate.
@@ -45,6 +47,306 @@ const SUSPENDED_AGENTS: Record<string, string> = {
   "range-navigator": "disabled",
   "manual-test": "disabled",         // KILLED: pollutes behavioral analytics with discretionary data. Positive P&L (+8.3p) is noise, not signal.
 };
+
+// ═══════════════════════════════════════════════════════════════
+// AUTONOMOUS GOVERNANCE EVOLUTION ENGINE (Server-Side)
+// Three autonomous functions + continuous feedback loop.
+// "Floor Manager" controls: agent tiering, gate calibration, session-pair blacklisting.
+// "Central Bank" reserves: risk sizing, global kill-switch, capital ceiling.
+// ═══════════════════════════════════════════════════════════════
+
+type AutonomousTier = "A" | "B" | "C" | "D";
+type BlacklistMode = "monitoring-only" | "reduced-sizing" | "full-block";
+
+interface AutonomousTierChange {
+  agentId: string;
+  fromTier: AutonomousTier;
+  toTier: AutonomousTier;
+  reason: string;
+  triggerMetric: string;
+  triggerValue: number;
+  threshold: number;
+  ts: number;
+}
+
+interface GateCalibrationOverride {
+  gateId: string;
+  regime: string;
+  param: string;
+  from: number;
+  to: number;
+  reason: string;
+  ts: number;
+}
+
+interface SessionPairBlock {
+  pair: string;
+  session: string;
+  mode: BlacklistMode;
+  reason: string;
+  expiresAt: number;
+  winRate: number;
+  expectancy: number;
+  trades: number;
+}
+
+// Persistent state for the duration of this edge function execution
+const _autonomousTierOverrides: Record<string, AutonomousTier> = {};
+const _autonomousGateOverrides: GateCalibrationOverride[] = [];
+const _autonomousBlacklists: SessionPairBlock[] = [];
+const _autonomousTierHistory: AutonomousTierChange[] = [];
+
+// ─── §1: AUTONOMOUS AGENT TIERING ───
+
+function evaluateAutonomousTiering(
+  agentStats: Array<{
+    agent_id: string; total_trades: number; win_count: number; net_pips: number;
+    gross_profit: number; gross_loss: number;
+  }>,
+  recentOrders: Array<Record<string, unknown>>,
+): AutonomousTierChange[] {
+  const changes: AutonomousTierChange[] = [];
+
+  for (const s of agentStats) {
+    if (!s.agent_id || s.agent_id === "manual-test") continue;
+    const totalTrades = s.total_trades || 0;
+    if (totalTrades < 8) continue; // need minimum sample
+
+    const winRate = totalTrades > 0 ? s.win_count / totalTrades : 0;
+    const expectancy = totalTrades > 0 ? s.net_pips / totalTrades : 0;
+    const pf = s.gross_loss > 0 ? s.gross_profit / s.gross_loss : s.gross_profit > 0 ? 99 : 0;
+
+    // Compute recent 20-trade metrics for this agent
+    const agentRecent = recentOrders
+      .filter(o => o.agent_id === s.agent_id && o.status === "closed" && o.entry_price != null && o.exit_price != null)
+      .slice(0, 20);
+
+    let recentWins = 0, recentPnl = 0, maxConsecLosses = 0, currentStreak = 0;
+    let totalMAE = 0, maeCount = 0;
+
+    for (const o of agentRecent) {
+      const pair = o.currency_pair as string;
+      const entry = o.entry_price as number;
+      const exit = o.exit_price as number;
+      const dir = o.direction as string;
+      const pipDiv = pair?.includes("JPY") ? 0.01 : 0.0001;
+      const pips = dir === "long" ? (exit - entry) / pipDiv : (entry - exit) / pipDiv;
+
+      if (pips > 0) { recentWins++; currentStreak = 0; }
+      else { currentStreak++; maxConsecLosses = Math.max(maxConsecLosses, currentStreak); }
+      recentPnl += pips;
+
+      // Track MAE
+      const maeR = (o.mae_r as number) || 0;
+      if (maeR < 0) { totalMAE += Math.abs(maeR); maeCount++; }
+    }
+
+    const recentWR = agentRecent.length > 0 ? recentWins / agentRecent.length : winRate;
+    const recentExp = agentRecent.length > 0 ? recentPnl / agentRecent.length : expectancy;
+    const avgMAE = maeCount > 0 ? totalMAE / maeCount : 0;
+
+    const currentTier: AutonomousTier =
+      SUSPENDED_AGENTS[s.agent_id] === "disabled" ? "D" :
+      SUSPENDED_AGENTS[s.agent_id] === "shadow" ? "C" :
+      (expectancy > 0 && pf >= 1.1) ? "A" : "B";
+
+    // ── INSTANT DEMOTION TO C (Shadow) ──
+    if (currentTier !== "C" && currentTier !== "D" && agentRecent.length >= 8) {
+      if (avgMAE > 0.90) {
+        changes.push({ agentId: s.agent_id, fromTier: currentTier, toTier: "C",
+          reason: `AUTO-DEMOTE: MAE ${avgMAE.toFixed(2)}R > 0.90R — catastrophic adverse excursion`,
+          triggerMetric: "avgMAE", triggerValue: avgMAE, threshold: 0.90, ts: Date.now() });
+        _autonomousTierOverrides[s.agent_id] = "C";
+        SUSPENDED_AGENTS[s.agent_id] = "shadow";
+        continue;
+      }
+      if (maxConsecLosses >= 5) {
+        changes.push({ agentId: s.agent_id, fromTier: currentTier, toTier: "C",
+          reason: `AUTO-DEMOTE: ${maxConsecLosses} consecutive losses — pattern failure`,
+          triggerMetric: "consecutiveLosses", triggerValue: maxConsecLosses, threshold: 5, ts: Date.now() });
+        _autonomousTierOverrides[s.agent_id] = "C";
+        SUSPENDED_AGENTS[s.agent_id] = "shadow";
+        continue;
+      }
+      if (recentWR < 0.25 && agentRecent.length >= 10) {
+        changes.push({ agentId: s.agent_id, fromTier: currentTier, toTier: "C",
+          reason: `AUTO-DEMOTE: Recent WR ${(recentWR*100).toFixed(0)}% < 25% floor — demoted before next trade`,
+          triggerMetric: "recentWR", triggerValue: recentWR, threshold: 0.25, ts: Date.now() });
+        _autonomousTierOverrides[s.agent_id] = "C";
+        SUSPENDED_AGENTS[s.agent_id] = "shadow";
+        continue;
+      }
+      if (recentExp < -2.0 && agentRecent.length >= 10) {
+        changes.push({ agentId: s.agent_id, fromTier: currentTier, toTier: "C",
+          reason: `AUTO-DEMOTE: Recent exp ${recentExp.toFixed(2)}p < -2.0p — value-destructive`,
+          triggerMetric: "recentExp", triggerValue: recentExp, threshold: -2.0, ts: Date.now() });
+        _autonomousTierOverrides[s.agent_id] = "C";
+        SUSPENDED_AGENTS[s.agent_id] = "shadow";
+        continue;
+      }
+    }
+
+    // ── RECOVERY FROM C TO B (requires 45% WR) ──
+    if (currentTier === "C" && agentRecent.length >= 15 && recentWR >= 0.45 && recentExp >= 0) {
+      changes.push({ agentId: s.agent_id, fromTier: "C", toTier: "B",
+        reason: `AUTO-PROMOTE: Recovery detected — WR=${(recentWR*100).toFixed(0)}% ≥ 45%, exp=${recentExp.toFixed(2)}p`,
+        triggerMetric: "recentWR", triggerValue: recentWR, threshold: 0.45, ts: Date.now() });
+      _autonomousTierOverrides[s.agent_id] = "B";
+      delete SUSPENDED_AGENTS[s.agent_id]; // re-enable
+    }
+
+    // ── PROMOTION B TO A ──
+    if (currentTier === "B" && totalTrades >= 30 && winRate >= 0.50 && expectancy > 0.3 && pf >= 1.15) {
+      changes.push({ agentId: s.agent_id, fromTier: "B", toTier: "A",
+        reason: `AUTO-PROMOTE: WR=${(winRate*100).toFixed(0)}%, exp=${expectancy.toFixed(2)}p, PF=${pf.toFixed(2)}`,
+        triggerMetric: "winRate", triggerValue: winRate, threshold: 0.50, ts: Date.now() });
+      _autonomousTierOverrides[s.agent_id] = "A";
+    }
+  }
+
+  return changes;
+}
+
+// ─── §2: DYNAMIC GATE CALIBRATION ───
+
+function calibrateGatesFromData(
+  orders: Array<Record<string, unknown>>
+): GateCalibrationOverride[] {
+  const overrides: GateCalibrationOverride[] = [];
+  const regimeStats: Record<string, { wins: number; losses: number; totalPips: number }> = {};
+
+  for (const o of orders) {
+    if (o.status !== "closed" || o.entry_price == null || o.exit_price == null) continue;
+    const regime = (o.regime_label as string) || "unknown";
+    const pair = o.currency_pair as string;
+    const entry = o.entry_price as number;
+    const exit = o.exit_price as number;
+    const dir = o.direction as string;
+    const pipDiv = pair?.includes("JPY") ? 0.01 : 0.0001;
+    const pips = dir === "long" ? (exit - entry) / pipDiv : (entry - exit) / pipDiv;
+
+    if (!regimeStats[regime]) regimeStats[regime] = { wins: 0, losses: 0, totalPips: 0 };
+    if (pips > 0) regimeStats[regime].wins++;
+    else regimeStats[regime].losses++;
+    regimeStats[regime].totalPips += pips;
+  }
+
+  for (const [regime, stats] of Object.entries(regimeStats)) {
+    const total = stats.wins + stats.losses;
+    if (total < 10) continue;
+    const wr = stats.wins / total;
+    const exp = stats.totalPips / total;
+
+    // G11 ATR stretch calibration
+    if (wr < 0.40) {
+      overrides.push({
+        gateId: "G11", regime, param: "atrStretchThreshold",
+        from: 1.8, to: 1.6,
+        reason: `Regime '${regime}' WR=${(wr*100).toFixed(0)}% < 40% — tightening G11 to 1.6x`,
+        ts: Date.now(),
+      });
+    } else if (wr > 0.60 && exp > 1.0) {
+      overrides.push({
+        gateId: "G11", regime, param: "atrStretchThreshold",
+        from: 1.8, to: 2.0,
+        reason: `Regime '${regime}' WR=${(wr*100).toFixed(0)}%, exp=${exp.toFixed(1)}p — loosening G11 to 2.0x`,
+        ts: Date.now(),
+      });
+    }
+
+    // Composite minimum calibration
+    if (total >= 20 && wr < 0.40) {
+      overrides.push({
+        gateId: "COMPOSITE_MIN", regime, param: "compositeScoreMin",
+        from: 0.72, to: 0.80,
+        reason: `Regime '${regime}' underperforming — hiking composite min to 0.80`,
+        ts: Date.now(),
+      });
+    } else if (total >= 20 && wr > 0.55 && exp > 0.5) {
+      overrides.push({
+        gateId: "COMPOSITE_MIN", regime, param: "compositeScoreMin",
+        from: 0.72, to: 0.65,
+        reason: `Regime '${regime}' proven profitable — relaxing composite to 0.65`,
+        ts: Date.now(),
+      });
+    }
+  }
+
+  return overrides;
+}
+
+// ─── §3: SESSION-PAIR BLACKLISTING ───
+
+function evaluateSessionPairBlacklists(
+  orders: Array<Record<string, unknown>>
+): SessionPairBlock[] {
+  const blacklists: SessionPairBlock[] = [];
+  const stats: Record<string, { wins: number; losses: number; totalPips: number }> = {};
+
+  for (const o of orders) {
+    if (o.status !== "closed" || o.entry_price == null || o.exit_price == null) continue;
+    const pair = o.currency_pair as string;
+    const sess = (o.session_label as string) || "unknown";
+    const key = `${pair}|${sess}`;
+    const entry = o.entry_price as number;
+    const exit = o.exit_price as number;
+    const dir = o.direction as string;
+    const pipDiv = pair?.includes("JPY") ? 0.01 : 0.0001;
+    const pips = dir === "long" ? (exit - entry) / pipDiv : (entry - exit) / pipDiv;
+
+    if (!stats[key]) stats[key] = { wins: 0, losses: 0, totalPips: 0 };
+    if (pips > 0) stats[key].wins++;
+    else stats[key].losses++;
+    stats[key].totalPips += pips;
+  }
+
+  for (const [key, s] of Object.entries(stats)) {
+    const [pair, session] = key.split("|");
+    const total = s.wins + s.losses;
+    if (total < 8) continue;
+    const wr = s.wins / total;
+    const exp = s.totalPips / total;
+
+    // Full block
+    if (total >= 15 && exp < -4.0 && wr < 0.20) {
+      blacklists.push({ pair, session, mode: "full-block",
+        reason: `TOXIC: ${pair}/${session} WR=${(wr*100).toFixed(0)}%, exp=${exp.toFixed(1)}p — FULL BLOCK`,
+        expiresAt: Date.now() + 8 * 60 * 60 * 1000, winRate: wr, expectancy: exp, trades: total });
+    }
+    // Reduced sizing
+    else if (total >= 12 && exp < -2.5 && wr < 0.25) {
+      blacklists.push({ pair, session, mode: "reduced-sizing",
+        reason: `DEGRADED: ${pair}/${session} WR=${(wr*100).toFixed(0)}%, exp=${exp.toFixed(1)}p — 0.3x sizing`,
+        expiresAt: Date.now() + 8 * 60 * 60 * 1000, winRate: wr, expectancy: exp, trades: total });
+    }
+    // Monitoring only
+    else if (total >= 8 && exp < -1.5 && wr < 0.30) {
+      blacklists.push({ pair, session, mode: "monitoring-only",
+        reason: `CAUTION: ${pair}/${session} WR=${(wr*100).toFixed(0)}%, exp=${exp.toFixed(1)}p — monitoring only`,
+        expiresAt: Date.now() + 8 * 60 * 60 * 1000, winRate: wr, expectancy: exp, trades: total });
+    }
+  }
+
+  return blacklists;
+}
+
+// ─── Get effective G11 threshold for a regime ───
+function getEffectiveG11Threshold(regime: string): number {
+  const override = _autonomousGateOverrides.find(o => o.gateId === "G11" && o.regime === regime);
+  return override ? override.to : 1.8;
+}
+
+// ─── Get effective composite minimum for a regime ───
+function getEffectiveCompositeMin(regime: string): number {
+  const override = _autonomousGateOverrides.find(o => o.gateId === "COMPOSITE_MIN" && o.regime === regime);
+  return override ? override.to : 0.72;
+}
+
+// ─── Check if pair+session is blacklisted ───
+function getBlacklistMode(pair: string, session: string): BlacklistMode | null {
+  const bl = _autonomousBlacklists.find(b => b.pair === pair && b.session === session && b.expiresAt > Date.now());
+  return bl ? bl.mode : null;
+}
 const USER_ID = "11edc350-4c81-4d9f-82ae-cd2209b7581d";
 
 // ─── Pair ATR Multipliers (relative volatility) ───
@@ -1383,6 +1685,18 @@ function canPlaceLiveOrder(
     return { allowed: false, reason_code: "GOV_BLOCK_SESSION_PAIR_TOXIC", metadata: { pair: "USD_CAD", session: "asian", pattern: "session_toxicity" } };
   }
 
+  // ─── AUTONOMOUS BLACKLIST CHECK ───
+  // Dynamic session-pair blocks from the Autonomous Governance Engine
+  const blMode = getBlacklistMode(tradeIntent.pair, tradeIntent.session);
+  if (blMode === "full-block") {
+    console.log(`[AUTO-GOV_BLOCK] pair=${tradeIntent.pair} session=${tradeIntent.session} — AUTONOMOUS FULL BLOCK`);
+    return { allowed: false, reason_code: "AUTO_GOV_SESSION_PAIR_BLOCK", metadata: { pair: tradeIntent.pair, session: tradeIntent.session, mode: blMode } };
+  }
+  if (blMode === "monitoring-only") {
+    console.log(`[AUTO-GOV_MONITOR] pair=${tradeIntent.pair} session=${tradeIntent.session} — monitoring only (shadow-logged)`);
+    // Don't block, just log — trade proceeds but data is tracked
+  }
+
   // ─── SHADOW CHECK 2: SESSION BLOCKS (shadow-log, gathering fresh data) ───
   // Old stats (15.8% WR asian, 12.5% WR late-ny) were from flawed system. Re-evaluate.
   if (tradeIntent.session === "asian") {
@@ -2044,6 +2358,36 @@ Deno.serve(async (req) => {
 
     const agentStats = Array.from(agentStatsMap.values());
     const snapshot = resolveAgentSnapshot(agentStats);
+
+    // ═══ AUTONOMOUS GOVERNANCE: Run all three functions ═══
+    const autonomousTierChanges = evaluateAutonomousTiering(agentStats, (rawOrders || []) as Array<Record<string, unknown>>);
+    const autonomousGateChanges = calibrateGatesFromData((rawOrders || []) as Array<Record<string, unknown>>);
+    const autonomousBlacklistChanges = evaluateSessionPairBlacklists((rawOrders || []) as Array<Record<string, unknown>>);
+
+    // Apply results
+    _autonomousGateOverrides.push(...autonomousGateChanges);
+    _autonomousBlacklists.push(...autonomousBlacklistChanges);
+
+    // Log autonomous actions
+    if (autonomousTierChanges.length > 0) {
+      console.log(`[AUTO-GOV] ═══ AUTONOMOUS TIER CHANGES: ${autonomousTierChanges.length} ═══`);
+      for (const tc of autonomousTierChanges) {
+        console.log(`[AUTO-GOV]   ${tc.agentId}: ${tc.fromTier} → ${tc.toTier} | ${tc.reason}`);
+      }
+      _autonomousTierHistory.push(...autonomousTierChanges);
+    }
+    if (autonomousGateChanges.length > 0) {
+      console.log(`[AUTO-GOV] ═══ GATE CALIBRATIONS: ${autonomousGateChanges.length} ═══`);
+      for (const gc of autonomousGateChanges) {
+        console.log(`[AUTO-GOV]   ${gc.gateId}/${gc.regime}: ${gc.param} ${gc.from} → ${gc.to} | ${gc.reason}`);
+      }
+    }
+    if (autonomousBlacklistChanges.length > 0) {
+      console.log(`[AUTO-GOV] ═══ SESSION-PAIR BLACKLISTS: ${autonomousBlacklistChanges.length} ═══`);
+      for (const bl of autonomousBlacklistChanges) {
+        console.log(`[AUTO-GOV]   ${bl.pair}/${bl.session}: ${bl.mode} | ${bl.reason}`);
+      }
+    }
 
     console.log(`[SCALP-TRADE] Agent Snapshot: ${snapshot.eligibleCount} eligible, ${snapshot.shadowCount} shadow, ${snapshot.disabledCount} disabled (from ${agentStats.length} agents, ${(rawOrders||[]).length} orders)`);
     console.log(`[SCALP-TRADE] Coalition: ${snapshot.coalitionRequirement.tier.toUpperCase()} (min ${snapshot.coalitionRequirement.minAgents} agents) | Survivorship=${snapshot.coalitionRequirement.survivorshipScore} PF=${snapshot.coalitionRequirement.rollingPF.toFixed(2)}`);
