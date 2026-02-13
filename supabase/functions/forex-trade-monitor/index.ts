@@ -825,6 +825,17 @@ Deno.serve(async (req) => {
         })
         .eq("id", order.id);
 
+      // ═══ MAE-BASED KILL SWITCH (0.65R) ═══
+      // If trade hits 0.65R adverse excursion, the edge is gone — close at market immediately.
+      // Saves hundreds of pips by cutting losers before they hit the full stop.
+      const MAE_KILL_THRESHOLD = 0.65;
+      if (maeRValue >= MAE_KILL_THRESHOLD && decision.action === "hold") {
+        console.log(`[MAE-KILL] ${order.currency_pair} ${order.direction}: MAE=${maeRValue}R >= ${MAE_KILL_THRESHOLD}R — KILLING trade at market (edge gone)`);
+        // Override the hold decision — force close
+        decision.action = "mae-kill" as typeof decision.action;
+        decision.reason = `MAE kill switch: ${maeRValue}R adverse excursion exceeds ${MAE_KILL_THRESHOLD}R threshold — edge invalidated`;
+      }
+
       if (decision.action === "hold") {
         heldCount++;
         console.log(`[TRADE-MONITOR] ${order.currency_pair} ${order.direction}: THS=${healthResult.tradeHealthScore} [${healthResult.healthBand}] | ${decision.reason}`);
