@@ -16,7 +16,7 @@ const OANDA_HOSTS = {
 } as const;
 
 interface ExecuteRequest {
-  action: "execute" | "close" | "status" | "account-summary";
+  action: "execute" | "close" | "status" | "account-summary" | "update-orders";
   signalId?: string;
   currencyPair?: string;
   direction?: "long" | "short";
@@ -25,6 +25,8 @@ interface ExecuteRequest {
   agentId?: string;
   oandaTradeId?: string;
   environment?: "practice" | "live";
+  stopLossPrice?: number;
+  takeProfitPrice?: number;
 }
 
 // Convert QuantLabs pair format (EUR/USD) to OANDA format (EUR_USD)
@@ -358,8 +360,47 @@ Deno.serve(async (req) => {
       );
     }
 
+    // ─── Update Trade Orders (SL/TP modification) ───
+    if (body.action === "update-orders") {
+      if (!body.oandaTradeId) {
+        return new Response(
+          JSON.stringify({ error: "Missing oandaTradeId" }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      const orderUpdate: Record<string, unknown> = {};
+      if (body.stopLossPrice != null) {
+        orderUpdate.stopLoss = { price: body.stopLossPrice.toFixed(5), timeInForce: "GTC" };
+      }
+      if (body.takeProfitPrice != null) {
+        orderUpdate.takeProfit = { price: body.takeProfitPrice.toFixed(5), timeInForce: "GTC" };
+      }
+
+      if (Object.keys(orderUpdate).length === 0) {
+        return new Response(
+          JSON.stringify({ error: "No stopLossPrice or takeProfitPrice specified" }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      const result = await oandaRequest(
+        `/v3/accounts/{accountId}/trades/${body.oandaTradeId}/orders`,
+        "PUT",
+        orderUpdate,
+        environment
+      );
+
+      console.log(`[OANDA] Trade ${body.oandaTradeId} orders updated: SL=${body.stopLossPrice || 'unchanged'} TP=${body.takeProfitPrice || 'unchanged'}`);
+
+      return new Response(
+        JSON.stringify({ success: true, result }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
     return new Response(
-      JSON.stringify({ error: "Invalid action. Use: execute, close, status, account-summary" }),
+      JSON.stringify({ error: "Invalid action. Use: execute, close, status, account-summary, update-orders" }),
       { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   } catch (err) {

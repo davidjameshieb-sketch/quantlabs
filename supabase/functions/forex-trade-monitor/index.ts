@@ -136,6 +136,103 @@ function computeTrailingStop(
   return { adjustedSlPrice: 0, isTrailing: false };
 }
 
+// ─── OANDA Order Modification (WRITE PERMISSION) ───
+// FloorManager WRITE_PERMISSION for PATCH /v3/accounts/{accountID}/trades/{tradeSpecifier}/orders
+// Allows autonomous trailing stop updates, SL tightening, and TP adjustments on live OANDA trades.
+
+interface OrderModificationResult {
+  success: boolean;
+  tradeId: string;
+  action: string;
+  newStopLoss?: number;
+  newTakeProfit?: number;
+  error?: string;
+}
+
+async function updateTrailingStop(
+  tradeId: string,
+  newStopLossPrice: number,
+  environment = "live",
+): Promise<OrderModificationResult> {
+  try {
+    const result = await oandaRequest(
+      `/v3/accounts/{accountId}/trades/${tradeId}/orders`,
+      "PUT",
+      {
+        stopLoss: {
+          price: newStopLossPrice.toFixed(5),
+          timeInForce: "GTC",
+        },
+      },
+      environment,
+    );
+    console.log(`[FLOOR-MANAGER] ✅ SL updated on trade ${tradeId} → ${newStopLossPrice.toFixed(5)}`);
+    return { success: true, tradeId, action: "updateTrailingStop", newStopLoss: newStopLossPrice };
+  } catch (err) {
+    const msg = (err as Error).message;
+    console.error(`[FLOOR-MANAGER] ❌ Failed to update SL on trade ${tradeId}: ${msg}`);
+    return { success: false, tradeId, action: "updateTrailingStop", error: msg };
+  }
+}
+
+async function updateTakeProfit(
+  tradeId: string,
+  newTakeProfitPrice: number,
+  environment = "live",
+): Promise<OrderModificationResult> {
+  try {
+    const result = await oandaRequest(
+      `/v3/accounts/{accountId}/trades/${tradeId}/orders`,
+      "PUT",
+      {
+        takeProfit: {
+          price: newTakeProfitPrice.toFixed(5),
+          timeInForce: "GTC",
+        },
+      },
+      environment,
+    );
+    console.log(`[FLOOR-MANAGER] ✅ TP updated on trade ${tradeId} → ${newTakeProfitPrice.toFixed(5)}`);
+    return { success: true, tradeId, action: "updateTakeProfit", newTakeProfit: newTakeProfitPrice };
+  } catch (err) {
+    const msg = (err as Error).message;
+    console.error(`[FLOOR-MANAGER] ❌ Failed to update TP on trade ${tradeId}: ${msg}`);
+    return { success: false, tradeId, action: "updateTakeProfit", error: msg };
+  }
+}
+
+async function updateTradeOrders(
+  tradeId: string,
+  stopLossPrice?: number,
+  takeProfitPrice?: number,
+  environment = "live",
+): Promise<OrderModificationResult> {
+  const body: Record<string, unknown> = {};
+  if (stopLossPrice != null) {
+    body.stopLoss = { price: stopLossPrice.toFixed(5), timeInForce: "GTC" };
+  }
+  if (takeProfitPrice != null) {
+    body.takeProfit = { price: takeProfitPrice.toFixed(5), timeInForce: "GTC" };
+  }
+  if (Object.keys(body).length === 0) {
+    return { success: false, tradeId, action: "updateTradeOrders", error: "No modifications specified" };
+  }
+  try {
+    await oandaRequest(
+      `/v3/accounts/{accountId}/trades/${tradeId}/orders`,
+      "PUT",
+      body,
+      environment,
+    );
+    console.log(`[FLOOR-MANAGER] ✅ Trade ${tradeId} orders updated: SL=${stopLossPrice?.toFixed(5) || 'unchanged'} TP=${takeProfitPrice?.toFixed(5) || 'unchanged'}`);
+    return { success: true, tradeId, action: "updateTradeOrders", newStopLoss: stopLossPrice, newTakeProfit: takeProfitPrice };
+  } catch (err) {
+    const msg = (err as Error).message;
+    console.error(`[FLOOR-MANAGER] ❌ Trade ${tradeId} order update failed: ${msg}`);
+    return { success: false, tradeId, action: "updateTradeOrders", error: msg };
+  }
+}
+
 // ─── OANDA API Helper ───
 
 async function oandaRequest(path: string, method: string, body?: Record<string, unknown>, environment = "live"): Promise<Record<string, unknown>> {
@@ -902,6 +999,72 @@ Deno.serve(async (req) => {
 
       if (decision.action === "hold") {
         heldCount++;
+
+        // ═══ FLOOR MANAGER WRITE: Push computed trailing SL to OANDA ═══
+        // Instead of just tracking trailing stops internally, PATCH them onto the live OANDA trade.
+        // This ensures the broker-side SL always reflects the latest governance decisions.
+        const oandaTradeId = order.oanda_trade_id;
+        const env = order.environment || "live";
+        if (oandaTradeId && healthResult.healthBand !== "healthy") {
+          // Compute the effective trailing SL the FloorManager wants to enforce
+          const effectiveRPips = rPipsEst;
+          const pipMultSl = getPipMultiplier(order.currency_pair);
+
+          // Determine target SL based on MFE milestones + health tightening
+          let targetSlPrice: number | null = null;
+          let slReason = "";
+
+          if (currentMfeR >= 2.0 && ind?.atr) {
+            // Phase 2 trailing: MFE - 0.75 × ATR × healthFactor
+            const trailDist = 0.75 * ind.atr * healthResult.trailingTightenFactor;
+            targetSlPrice = order.direction === "long"
+              ? updatedMfePrice - trailDist
+              : updatedMfePrice + trailDist;
+            slReason = `ATR-trail@MFE-0.75×ATR×${healthResult.trailingTightenFactor.toFixed(2)}`;
+          } else if (currentMfeR >= 1.5) {
+            // Phase 1: lock entry+1R × healthFactor
+            const oneR = effectiveRPips * pipMultSl;
+            targetSlPrice = order.direction === "long"
+              ? entryPrice + oneR * healthResult.trailingTightenFactor
+              : entryPrice - oneR * healthResult.trailingTightenFactor;
+            slReason = `R-trail@entry+1R×${healthResult.trailingTightenFactor.toFixed(2)}`;
+          } else if (currentMfeR >= 1.2) {
+            // Harvest: lock entry+0.5R
+            const halfR = 0.5 * effectiveRPips * pipMultSl;
+            targetSlPrice = order.direction === "long"
+              ? entryPrice + halfR * healthResult.trailingTightenFactor
+              : entryPrice - halfR * healthResult.trailingTightenFactor;
+            slReason = `harvest-trail@entry+0.5R×${healthResult.trailingTightenFactor.toFixed(2)}`;
+          } else if (currentMfeR >= 1.0) {
+            // Breakeven stop
+            targetSlPrice = order.direction === "long"
+              ? entryPrice + 0.5 * pipMultSl
+              : entryPrice - 0.5 * pipMultSl;
+            slReason = "breakeven-lock";
+          } else if (currentMfeR >= 0.8) {
+            // Early profit lock: entry+0.2R
+            const earlyR = 0.2 * effectiveRPips * pipMultSl;
+            targetSlPrice = order.direction === "long"
+              ? entryPrice + earlyR
+              : entryPrice - earlyR;
+            slReason = "early-profit-lock@0.2R";
+          }
+
+          // Only push if target SL is TIGHTER than current dynamic SL (never widen)
+          if (targetSlPrice != null) {
+            const isTighter = order.direction === "long"
+              ? targetSlPrice > dynamicSl.slPrice
+              : targetSlPrice < dynamicSl.slPrice;
+
+            if (isTighter) {
+              const modResult = await updateTrailingStop(oandaTradeId, targetSlPrice, env);
+              if (modResult.success) {
+                console.log(`[FLOOR-MANAGER] ${order.currency_pair} ${order.direction}: SL pushed to OANDA → ${targetSlPrice.toFixed(5)} (${slReason})`);
+              }
+            }
+          }
+        }
+
         console.log(`[TRADE-MONITOR] ${order.currency_pair} ${order.direction}: THS=${healthResult.tradeHealthScore} [${healthResult.healthBand}] | ${decision.reason}`);
         results.push({
           pair: order.currency_pair,
