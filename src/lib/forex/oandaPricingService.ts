@@ -22,7 +22,7 @@ let lastFetchTimestamp = 0;
 let isFetching = false;
 let fetchPromise: Promise<Record<string, OandaPrice>> | null = null;
 
-const LOCAL_CACHE_TTL = 60_000; // 60s local cache (server also caches 60s)
+const LOCAL_CACHE_TTL = 5_000; // 5s local cache (server also caches 5s)
 
 export async function fetchOandaLivePrices(): Promise<Record<string, OandaPrice>> {
   const now = Date.now();

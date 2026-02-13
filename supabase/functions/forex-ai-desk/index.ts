@@ -126,7 +126,16 @@ When analyzing data, ALWAYS check for these known failure patterns:
 - **End every analysis with both a "Prime Directive Score" (0-100) AND a "Sovereignty Score" (0-100)**
 
 ## DATA FORMAT
-You'll receive a JSON block tagged <SYSTEM_STATE> containing live trade data, recent performance, governance stats, and rollup summaries.
+You'll receive a JSON block tagged <SYSTEM_STATE> containing:
+- **liveOandaState**: Real-time account balance, NAV, margin, and open trades with OANDA trade IDs
+- **marketIntel.livePricing**: Live bid/ask/spread for 15 pairs with liquidity depth (5s cache)
+- **marketIntel.orderBook**: OANDA Order Book — shows where retail traders have pending orders. Use this for stop-hunt analysis and entry optimization. Contains longClusters, shortClusters, and retailStopZones.
+- **marketIntel.positionBook**: OANDA Position Book — shows net retail positioning (LONG/SHORT bias). When retail is overwhelmingly long, that's a contrarian short signal. Contains netRetailBias and biasStrength.
+- **marketIntel.instruments**: Instrument metadata — pip locations, margin rates, financing (swap) rates, max position sizes, trailing stop distances.
+- **marketIntel.recentTransactions**: Last 24h OANDA transaction log — fills, SL/TP triggers, financing charges. Each includes halfSpreadCost, pl, commission for true cost analysis.
+- **performanceSummary, byPair, byAgent, byRegime, bySession**: Aggregated trade statistics
+- **blockedTradeAnalysis**: Governance-blocked trades with counterfactual analysis
+- **dailyRollups**: Daily P&L summaries
 
 ## PROACTIVE ANALYSIS
 Even if the user asks a simple question, scan for ANY critical issues and append a "⚠️ Sovereign Alert" section if you find:
@@ -136,7 +145,9 @@ Even if the user asks a simple question, scan for ANY critical issues and append
 - Blocked trade counterfactual win rate > 55%
 - Any pair losing > 20 pips in the last 7 days
 - Lead-lag opportunities missed in the last hour
-- Stops placed at retail cluster levels
+- Stops placed at retail cluster levels (CHECK orderBook data)
+- Retail positioning bias > 70% in one direction (CONTRARIAN signal from positionBook)
+- Spread costs exceeding 15% of average trade P&L (from transactions halfSpreadCost)
 
 ## EXECUTABLE ACTION BLOCKS (CRITICAL)
 When you want to execute a trade action, you MUST emit a fenced code block tagged \`action\` containing valid JSON.
@@ -1144,12 +1155,18 @@ serve(async (req) => {
       fetchTradeStats(supabaseAdmin),
     ]);
 
-    // Also fetch live OANDA state for real-time awareness
+    // Also fetch live OANDA state + market intel for real-time awareness
     let liveOandaState: Record<string, unknown> = {};
+    let marketIntel: Record<string, unknown> = {};
     try {
-      const [accountSummary, oandaOpenTrades] = await Promise.all([
+      const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
+      const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
+      const [accountSummary, oandaOpenTrades, intelRes] = await Promise.all([
         oandaRequest("/v3/accounts/{accountId}/summary", "GET", undefined, "live"),
         oandaRequest("/v3/accounts/{accountId}/openTrades", "GET", undefined, "live"),
+        fetch(`${supabaseUrl}/functions/v1/oanda-market-intel?sections=all`, {
+          headers: { Authorization: `Bearer ${supabaseAnonKey}`, apikey: supabaseAnonKey },
+        }).then(r => r.ok ? r.json() : null).catch(() => null),
       ]);
       liveOandaState = {
         accountBalance: accountSummary.account?.balance,
@@ -1168,6 +1185,16 @@ serve(async (req) => {
           trailingStop: t.trailingStopLossOrder?.distance || null,
         })),
       };
+      if (intelRes) {
+        marketIntel = {
+          livePricing: intelRes.livePricing || {},
+          orderBook: intelRes.orderBook || {},
+          positionBook: intelRes.positionBook || {},
+          instruments: intelRes.instruments || {},
+          recentTransactions: intelRes.transactions || [],
+        };
+        console.log(`[AI-DESK] Market intel loaded: pricing=${Object.keys(intelRes.livePricing || {}).length}, orderBook=${Object.keys(intelRes.orderBook || {}).length}, positionBook=${Object.keys(intelRes.positionBook || {}).length}, instruments=${Object.keys(intelRes.instruments || {}).length}, transactions=${(intelRes.transactions || []).length}`);
+      }
     } catch (oandaErr) {
       console.warn("[AI-DESK] OANDA live state fetch failed:", (oandaErr as Error).message);
       liveOandaState = { error: "Could not fetch live OANDA state" };
@@ -1176,7 +1203,7 @@ serve(async (req) => {
     console.log(`[FOREX-AI-DESK] State: ${openTrades.length} open, ${recentClosed.length} recent, ${rollups.length} rollups, ${blocked.length} blocked, ${stats.length} stats`);
 
     const systemState = buildSystemState(openTrades, recentClosed, rollups, blocked, stats);
-    const enrichedState = { ...systemState, liveOandaState };
+    const enrichedState = { ...systemState, liveOandaState, marketIntel };
     const stateContext = `\n\n<SYSTEM_STATE>\n${JSON.stringify(enrichedState)}\n</SYSTEM_STATE>`;
 
     const actionInstructions = `\n\n## SOVEREIGN AUTONOMOUS ACTIONS
