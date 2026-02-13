@@ -233,10 +233,7 @@ function extractActionBlocks(content: string): { text: string; actions: Record<s
   return { text: text.trim(), actions };
 }
 
-function ActionButton({ action, onExecute }: { action: Record<string, unknown>; onExecute?: (a: Record<string, unknown>) => Promise<{ success: boolean; detail?: string }> }) {
-  const [state, setState] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
-  const [detail, setDetail] = useState('');
-
+function ActionBadge({ action }: { action: Record<string, unknown> }) {
   const label = action.type === 'close_trade'
     ? `Close Trade ${action.tradeId}`
     : action.type === 'update_sl_tp'
@@ -245,35 +242,13 @@ function ActionButton({ action, onExecute }: { action: Record<string, unknown>; 
     ? `${String(action.direction || '').toUpperCase()} ${action.units} ${action.pair}${action.stopLossPrice ? ` SL:${action.stopLossPrice}` : ''}${action.takeProfitPrice ? ` TP:${action.takeProfitPrice}` : ''}`
     : String(action.type);
 
-  const handleClick = async () => {
-    if (!onExecute || state === 'loading') return;
-    setState('loading');
-    try {
-      const result = await onExecute(action);
-      setState(result.success ? 'success' : 'error');
-      setDetail(result.detail || '');
-    } catch (err) {
-      setState('error');
-      setDetail((err as Error).message);
-    }
-  };
-
   return (
     <div className="my-2 flex items-center gap-2">
-      <Button
-        size="sm"
-        variant={state === 'success' ? 'outline' : 'default'}
-        disabled={state === 'loading' || state === 'success'}
-        onClick={handleClick}
-        className="gap-2"
-      >
-        {state === 'loading' && <Loader2 className="w-3 h-3 animate-spin" />}
-        {state === 'success' && <CheckCircle className="w-3 h-3 text-green-500" />}
-        {state === 'error' && <XCircle className="w-3 h-3 text-destructive" />}
-        {state === 'idle' && <Zap className="w-3 h-3" />}
-        {state === 'success' ? 'Executed' : label}
-      </Button>
-      {detail && <span className="text-xs text-muted-foreground">{detail}</span>}
+      <div className="flex items-center gap-2 px-3 py-1.5 rounded-md bg-muted/50 border border-border text-sm">
+        <Zap className="w-3 h-3 text-yellow-500" />
+        <span className="font-medium">{label}</span>
+        <span className="text-xs text-muted-foreground">— auto-executing</span>
+      </div>
     </div>
   );
 }
@@ -322,9 +297,9 @@ export const ChatMessage = ({ message, onExecuteAction }: ChatMessageProps) => {
             )}
             {actions.length > 0 && (
               <div className="mt-3 pt-3 border-t border-border/50">
-                <p className="text-xs font-semibold text-primary mb-1">⚡ Floor Manager Actions</p>
+                <p className="text-xs font-semibold text-primary mb-1">⚡ Floor Manager Actions (auto-executing)</p>
                 {actions.map((action, i) => (
-                  <ActionButton key={i} action={action} onExecute={onExecuteAction} />
+                  <ActionBadge key={i} action={action} />
                 ))}
               </div>
             )}

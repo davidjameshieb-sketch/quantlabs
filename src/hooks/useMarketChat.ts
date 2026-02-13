@@ -9,6 +9,15 @@ export interface ChatMessage {
 
 const CHAT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/forex-ai-desk`;
 
+function extractActions(content: string): Record<string, unknown>[] {
+  const actions: Record<string, unknown>[] = [];
+  content.replace(/```action\n([\s\S]*?)```/g, (_match, json) => {
+    try { actions.push(JSON.parse(json.trim())); } catch { /* ignore */ }
+    return '';
+  });
+  return actions;
+}
+
 export const useMarketChat = () => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -142,6 +151,31 @@ export const useMarketChat = () => {
           }
           return updated;
         });
+      }
+
+      // ─── Auto-execute any action blocks emitted by the Floor Manager ───
+      const actionBlocks = extractActions(assistantContent);
+      if (actionBlocks.length > 0) {
+        console.log(`[FLOOR-MANAGER] Auto-executing ${actionBlocks.length} action(s)`);
+        for (const action of actionBlocks) {
+          try {
+            const result = await executeAction(action);
+            const statusLine = result.success
+              ? `\n\n✅ **Auto-executed**: ${result.detail}`
+              : `\n\n❌ **Execution failed**: ${result.detail}`;
+            assistantContent += statusLine;
+            setMessages(prev => {
+              const updated = [...prev];
+              const lastIndex = updated.length - 1;
+              if (updated[lastIndex]?.role === 'assistant') {
+                updated[lastIndex] = { ...updated[lastIndex], content: assistantContent };
+              }
+              return updated;
+            });
+          } catch (err) {
+            console.error('[FLOOR-MANAGER] Auto-execute error:', err);
+          }
+        }
       }
 
     } catch (err) {

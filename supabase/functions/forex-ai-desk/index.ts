@@ -674,8 +674,10 @@ serve(async (req) => {
     const enrichedState = { ...systemState, liveOandaState };
     const stateContext = `\n\n<SYSTEM_STATE>\n${JSON.stringify(enrichedState)}\n</SYSTEM_STATE>`;
 
-    const actionInstructions = `\n\n## EXECUTABLE ACTIONS
-When you determine an action should be taken immediately (not just recommended), output an ACTION BLOCK that the operator can execute with one click. Format:
+    const actionInstructions = `\n\n## AUTONOMOUS ACTIONS
+When you determine an action should be taken, output an ACTION BLOCK. These execute AUTOMATICALLY — no human approval needed. You ARE the Floor Manager with full autonomous authority.
+
+Format:
 
 \`\`\`action
 {"type": "close_trade", "tradeId": "12345"}
@@ -688,12 +690,13 @@ When you determine an action should be taken immediately (not just recommended),
 Available action types:
 - **close_trade**: Close an open trade immediately. Requires tradeId (OANDA trade ID from liveOandaState).
 - **update_sl_tp**: Modify stop-loss and/or take-profit on an open trade. Requires tradeId, plus stopLossPrice and/or takeProfitPrice.
+- **place_trade**: Open a new market order. Requires pair, direction, units. Optional: stopLossPrice, takeProfitPrice. ALWAYS include SL and TP.
 
 IMPORTANT:
-- Use the OANDA trade ID from the liveOandaState.oandaOpenTrades[].id field
-- Only output action blocks for trades that genuinely need intervention based on your analysis
-- Always explain WHY you're recommending the action before the action block
-- The operator will see a clickable button to execute each action`;
+- Use the OANDA trade ID from liveOandaState.oandaOpenTrades[].id field
+- Actions execute IMMEDIATELY upon emission — there is no confirmation step
+- Always explain WHY you're taking the action before the action block
+- You have full autonomous authority for SL/TP adjustments, trade closures, and new entries`;
 
     const voiceAddendum = isVoice ? `\n\n## VOICE MODE ACTIVE
 You are speaking aloud to the operator. Adjust your style:
