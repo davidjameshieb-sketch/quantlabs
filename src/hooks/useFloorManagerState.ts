@@ -20,6 +20,7 @@ export interface FloorManagerState {
   blacklists: GateBypasses[];
   gateThresholds: GateBypasses[];
   evolutionParams: GateBypasses[];
+  dynamicGates: GateBypasses[];
   loading: boolean;
   lastUpdated: Date | null;
 }
@@ -32,6 +33,7 @@ const EMPTY: FloorManagerState = {
   blacklists: [],
   gateThresholds: [],
   evolutionParams: [],
+  dynamicGates: [],
   loading: true,
   lastUpdated: null,
 };
@@ -56,14 +58,19 @@ export function useFloorManagerState(pollMs = 15_000): FloorManagerState {
 
       const active = data as GateBypasses[];
 
+      const CATEGORIES = ['AGENT_SUSPEND', 'CIRCUIT_BREAKER', 'SIZING_OVERRIDE', 'SESSION_BLACKLIST', 'BLACKLIST_ADD', 'GATE_THRESHOLD', 'EVOLUTION_PARAM', 'DYNAMIC_GATE'];
+      const startsWith = (id: string, prefix: string) => id === prefix || id.startsWith(prefix + ':');
+      const matchesAny = (id: string) => CATEGORIES.some(c => startsWith(id, c));
+
       setState({
-        bypasses: active.filter(b => !['AGENT_SUSPEND', 'CIRCUIT_BREAKER', 'SIZING_OVERRIDE', 'SESSION_BLACKLIST', 'GATE_THRESHOLD', 'EVOLUTION_PARAM'].includes(b.gate_id)),
-        suspendedAgents: active.filter(b => b.gate_id === 'AGENT_SUSPEND'),
-        circuitBreaker: active.find(b => b.gate_id === 'CIRCUIT_BREAKER') ?? null,
-        sizingOverride: active.find(b => b.gate_id === 'SIZING_OVERRIDE') ?? null,
-        blacklists: active.filter(b => b.gate_id === 'SESSION_BLACKLIST'),
-        gateThresholds: active.filter(b => b.gate_id === 'GATE_THRESHOLD'),
-        evolutionParams: active.filter(b => b.gate_id === 'EVOLUTION_PARAM'),
+        bypasses: active.filter(b => !matchesAny(b.gate_id)),
+        suspendedAgents: active.filter(b => startsWith(b.gate_id, 'AGENT_SUSPEND')),
+        circuitBreaker: active.find(b => startsWith(b.gate_id, 'CIRCUIT_BREAKER')) ?? null,
+        sizingOverride: active.find(b => startsWith(b.gate_id, 'SIZING_OVERRIDE')) ?? null,
+        blacklists: active.filter(b => startsWith(b.gate_id, 'SESSION_BLACKLIST') || startsWith(b.gate_id, 'BLACKLIST_ADD')),
+        gateThresholds: active.filter(b => startsWith(b.gate_id, 'GATE_THRESHOLD')),
+        evolutionParams: active.filter(b => startsWith(b.gate_id, 'EVOLUTION_PARAM')),
+        dynamicGates: active.filter(b => startsWith(b.gate_id, 'DYNAMIC_GATE')),
         loading: false,
         lastUpdated: new Date(),
       });
