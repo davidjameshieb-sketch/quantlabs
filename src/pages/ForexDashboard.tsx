@@ -4,11 +4,12 @@
 
 import { useState, useMemo, useEffect, useCallback } from 'react';
 import { LongOnlyFilterProvider } from '@/contexts/LongOnlyFilterContext';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import {
-  Globe, TrendingUp, ChevronDown, BookOpen, Archive, Brain, HeartPulse,
+  Globe, TrendingUp, ChevronDown, BookOpen, Archive, Brain, HeartPulse, MessageSquare, X,
 } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Button } from '@/components/ui/button';
 import { DashboardLayout } from '@/components/dashboard/DashboardLayout';
 import { IntelligenceModeBadge } from '@/components/dashboard/IntelligenceModeBadge';
 import { LongOnlyBadge } from '@/components/forex/LongOnlyBanner';
@@ -19,6 +20,7 @@ import { TradeHealthPanel } from '@/components/forex/TradeHealthPanel';
 import { SystemLearningPanel } from '@/components/forex/SystemLearningPanel';
 import { SystemConfidenceMeter } from '@/components/forex/SystemConfidenceMeter';
 import { GovernanceStateBanner } from '@/components/forex/GovernanceStateBanner';
+import { ChatInterface } from '@/components/chat/ChatInterface';
 
 // Archive (lazy-loaded legacy dashboards)
 import { ForexArchiveDashboards } from '@/components/forex/ForexArchiveDashboards';
@@ -46,6 +48,7 @@ import { useTradeAnalytics } from '@/hooks/useTradeAnalytics';
 import { useRealtimeOrders } from '@/hooks/useRealtimeOrders';
 
 const ForexDashboard = () => {
+  const [chatOpen, setChatOpen] = useState(false);
   const [longOnlyFilter, setLongOnlyFilter] = useState(false);
   const [filters, setFilters] = useState<ForexDashboardFilters>({
     period: '30d',
@@ -257,6 +260,44 @@ const ForexDashboard = () => {
             </TabsContent>
           </Tabs>
         </div>
+
+        {/* AI Trading Desk — floating button + slide-out panel */}
+        <AnimatePresence>
+          {chatOpen && (
+            <motion.div
+              initial={{ x: '100%' }}
+              animate={{ x: 0 }}
+              exit={{ x: '100%' }}
+              transition={{ type: 'spring', damping: 25, stiffness: 300 }}
+              className="fixed top-0 right-0 h-full w-full sm:w-[420px] z-50 shadow-2xl"
+            >
+              <div className="relative h-full flex flex-col">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => setChatOpen(false)}
+                  className="absolute top-3 right-3 z-10 h-8 w-8"
+                >
+                  <X className="w-4 h-4" />
+                </Button>
+                <ChatInterface className="h-full rounded-none" />
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {!chatOpen && (
+          <motion.button
+            initial={{ scale: 0 }}
+            animate={{ scale: 1 }}
+            whileHover={{ scale: 1.1 }}
+            whileTap={{ scale: 0.95 }}
+            onClick={() => setChatOpen(true)}
+            className="fixed bottom-6 right-6 z-50 w-14 h-14 rounded-full bg-gradient-to-br from-primary to-secondary shadow-lg flex items-center justify-center text-primary-foreground"
+          >
+            <MessageSquare className="w-6 h-6" />
+          </motion.button>
+        )}
       </DashboardLayout>
     </LongOnlyFilterProvider>
   );
