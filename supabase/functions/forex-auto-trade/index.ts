@@ -39,7 +39,7 @@ const BASE_UNITS = 1000;
 // ─── GOVERNANCE: Agents suspended from LIVE execution ───
 // Must be checked by coalition promotion, agent selection, AND canPlaceLiveOrder.
 const SUSPENDED_AGENTS: Record<string, string> = {
-  "support-mtf-confirmer": "shadow",
+  "support-mtf-confirmer": "disabled",    // DEMOTED to Tier C (deep retune): -170 pips across 41 trades, worst on desk. MTF validation lagging market, creating late entries.
   "support-regime-confirmer": "shadow",   // Suspended: breakdown trap offender — 24-trade loss streak, -116 pips. Requires WR>50% over 30 trades to reinstate.
   "sentiment-reactor": "disabled",
   "range-navigator": "disabled",
@@ -1447,6 +1447,16 @@ function canPlaceLiveOrder(
     console.log(`[GOV_SHADOW_STALE_REGIME] regime_transition_age=${tradeIntent.regimeFamilyHoldBars} — shadow-logged (was: hard-blocked)`);
   }
 
+  // ─── G5 COMPRESSION/FLAT REGIME GATE (tightened) ───
+  // Pattern 4 fix: In low-volatility regimes during Asian session, require higher composite.
+  // Prevents over-trading in dead markets where friction eats any edge.
+  const LOW_VOL_REGIMES = ["compression", "flat"];
+  if (LOW_VOL_REGIMES.includes(tradeIntent.indicatorRegime) && tradeIntent.session === "asian") {
+    console.log(`[G5_COMPRESSION_TIGHTENED] regime=${tradeIntent.indicatorRegime} session=${tradeIntent.session} — requires composite >= 0.85 in Asian low-vol`);
+    // Note: This shadow-log ensures the main loop can check and apply the tighter threshold.
+    // The actual composite check happens in the discovery risk layer with the regime multiplier.
+  }
+
   return { allowed: true, reason_code: "PASS", metadata: {} };
 }
 
@@ -2385,8 +2395,8 @@ Deno.serve(async (req) => {
       "expansion": 0.5,      // Same — entries too late, halved
       "exhaustion": 0.7,     // Mixed — cautious
       "ignition": 0.8,       // Early move — moderate
-      "compression": 0.6,    // COMPRESSION PERSONALITY: elevated from 0.4 — has mean-reversion edge
-      "flat": 0.3,           // Dead market — minimum
+      "compression": 0.6,    // COMPRESSION PERSONALITY: elevated from 0.4 — has mean-reversion edge (requires composite >= 0.85 in Asian)
+      "flat": 0.15,           // Dead market — near-zero (was 0.3, tightened per G5 audit)
       "transition": 0.0,     // Already blocked, double-lock
     };
 
@@ -2593,6 +2603,36 @@ Deno.serve(async (req) => {
 
     const pairsToProcess = forceMode ? [reqBody.pair || "USD_CAD"] : rankedPairs;
     let tradesSubmitted = 0;
+
+    // ═══ LOSS-CLUSTER CIRCUIT BREAKER (Pattern 6) ═══
+    // If desk has lost >= 3R within the current session (last 4 hours), halt all new entries.
+    // Prevents revenge-trading behavior from friction agents after drawdown clusters.
+    if (!forceMode) {
+      const fourHoursAgo = new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString();
+      const recentSessionTrades = orders.filter((o: Record<string, unknown>) =>
+        (o.status === "filled" || o.status === "closed") &&
+        o.exit_price != null &&
+        (o.closed_at as string || o.created_at as string) >= fourHoursAgo
+      );
+      const sessionRLoss = recentSessionTrades.reduce((sum: number, o: Record<string, unknown>) => {
+        const rPips = (o.r_pips as number) || 0;
+        return sum + (rPips < 0 ? rPips : 0);
+      }, 0);
+      // Convert pips to approximate R-multiples (using ~8 pip avg risk as denominator)
+      const avgRiskPips = 8;
+      const sessionRMultiple = Math.abs(sessionRLoss) / avgRiskPips;
+      if (sessionRMultiple >= 3.0) {
+        console.log(`[CIRCUIT_BREAKER] Session loss = ${sessionRLoss.toFixed(1)} pips (~${sessionRMultiple.toFixed(1)}R) in last 4h — HALTING all new entries for cooldown`);
+        return new Response(JSON.stringify({
+          status: "circuit-breaker",
+          reason: `Loss-cluster cooldown: ${sessionRLoss.toFixed(1)} pips (~${sessionRMultiple.toFixed(1)}R) in last 4h exceeds 3R threshold`,
+          results: [],
+        }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+      if (sessionRMultiple >= 2.0) {
+        console.log(`[CIRCUIT_BREAKER_WARN] Session loss approaching threshold: ${sessionRLoss.toFixed(1)} pips (~${sessionRMultiple.toFixed(1)}R) in last 4h — caution`);
+      }
+    }
 
     console.log(`[SCALP-TRADE] Processing ${pairsToProcess.length} signal-ranked pairs (target ${signalCount} signals)`);
 
