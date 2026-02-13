@@ -103,7 +103,13 @@ export const useVoiceChat = () => {
     try {
       abortRef.current = new AbortController();
       
-      const allMessages = [...messages, userMsg];
+      // Truncate older assistant messages to avoid hitting server limits
+      const allMessages = [...messages, userMsg].map((m, i, arr) => {
+        if (m.role === 'assistant' && m.content.length > 6000 && i < arr.length - 2) {
+          return { ...m, content: m.content.slice(0, 3000) + '\n...[truncated]...\n' + m.content.slice(-1500) };
+        }
+        return m;
+      });
       const response = await fetch(CHAT_URL, {
         method: 'POST',
         headers: {
