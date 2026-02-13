@@ -1,4 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
+import { registerBypass, revokeBypass } from '@/lib/forex/gateBypassRegistry';
+import type { GateId } from '@/lib/forex/tradeGovernanceEngine';
 
 export type VoiceState = 'idle' | 'listening' | 'processing' | 'speaking';
 
@@ -200,7 +202,22 @@ export const useVoiceChat = () => {
         console.log(`[FLOOR-MANAGER-VOICE] Auto-executing ${actionBlocks.length} action(s)`);
         for (const action of actionBlocks) {
           try {
-            const result = await executeAction(action);
+            let result: { success: boolean; detail?: string };
+
+            if (action.type === 'bypass_gate' && action.gateId) {
+              const gateId = action.gateId as GateId;
+              const reason = (action.reason as string) || 'Floor Manager override';
+              const ttlMinutes = typeof action.ttlMinutes === 'number' ? action.ttlMinutes : 15;
+              const pair = action.pair as string | undefined;
+              registerBypass(gateId, reason, ttlMinutes * 60 * 1000, pair);
+              result = { success: true, detail: `Gate ${gateId} bypassed for ${ttlMinutes}m${pair ? ` on ${pair}` : ''} — ${reason}` };
+            } else if (action.type === 'revoke_bypass' && action.gateId) {
+              const revoked = revokeBypass(action.gateId as GateId, action.pair as string | undefined);
+              result = { success: true, detail: revoked ? `Gate ${action.gateId} bypass revoked` : `No active bypass for ${action.gateId}` };
+            } else {
+              result = await executeAction(action);
+            }
+
             const statusLine = result.success
               ? `\n\n✅ Auto-executed: ${result.detail}`
               : `\n\n❌ Execution failed: ${result.detail}`;

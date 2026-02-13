@@ -313,105 +313,82 @@ const computeSequencingMultiplier = (ctx: GovernanceContext): number => {
 };
 
 // ─── Rejection Gating (All 8 Gates PRESERVED + Fix #6 IDs + Fix #7 data gates) ───
+// Gate bypass support: AI Floor Manager can temporarily bypass specific gates
+// with full audit logging via gateBypassRegistry.
 
-const evaluateRejectionGates = (ctx: GovernanceContext): GateEntry[] => {
+import { isGateBypassed } from './gateBypassRegistry';
+
+const evaluateRejectionGates = (ctx: GovernanceContext, signalId?: string): GateEntry[] => {
   const gates: GateEntry[] = [];
+  const pair = (ctx as any)._pair as string | undefined;
+
+  // Helper: push gate only if NOT bypassed
+  const pushGate = (id: GateId, message: string) => {
+    if (isGateBypassed(id, pair, signalId)) {
+      console.warn(`[GOVERNANCE] Gate ${id} BYPASSED by Floor Manager${pair ? ` for ${pair}` : ''}`);
+      return;
+    }
+    gates.push({ id, message });
+  };
 
   // Gate 9: Price data unavailable (Fix #7) — HARD GATE
   if (!ctx.priceDataAvailable) {
-    gates.push({
-      id: 'G9_PRICE_DATA_UNAVAILABLE',
-      message: 'Live price data unavailable — cannot assess microstructure',
-    });
+    pushGate('G9_PRICE_DATA_UNAVAILABLE', 'Live price data unavailable — cannot assess microstructure');
   }
 
   // Gate 10: Analysis unavailable (Fix #7) — HARD GATE
   if (!ctx.analysisAvailable) {
     const details = ctx.atrValue === 0 ? 'missing candles for 1h/4h' : 'ticker not found';
-    gates.push({
-      id: 'G10_ANALYSIS_UNAVAILABLE',
-      message: `ANALYSIS_UNAVAILABLE: ${details} — cannot assess MTF alignment`,
-    });
+    pushGate('G10_ANALYSIS_UNAVAILABLE', `ANALYSIS_UNAVAILABLE: ${details} — cannot assess MTF alignment`);
   }
 
   // Gate 1: Friction expectancy < 3×
   if (ctx.frictionRatio < 3) {
-    gates.push({
-      id: 'G1_FRICTION',
-      message: `Friction ratio ${ctx.frictionRatio.toFixed(1)}× < 3× threshold`,
-    });
+    pushGate('G1_FRICTION', `Friction ratio ${ctx.frictionRatio.toFixed(1)}× < 3× threshold`);
   }
 
   // Gate 2: No HTF support with poor alignment
   if (!ctx.htfSupports && ctx.mtfAlignmentScore < 35) {
-    gates.push({
-      id: 'G2_NO_HTF_WEAK_MTF',
-      message: `MTF alignment ${ctx.mtfAlignmentScore.toFixed(0)}% without HTF support`,
-    });
+    pushGate('G2_NO_HTF_WEAK_MTF', `MTF alignment ${ctx.mtfAlignmentScore.toFixed(0)}% without HTF support`);
   }
 
   // Gate 3: Edge decay
   if (ctx.edgeDecaying && ctx.edgeDecayRate > 20) {
-    gates.push({
-      id: 'G3_EDGE_DECAY',
-      message: `Edge decaying ${ctx.edgeDecayRate.toFixed(0)}%`,
-    });
+    pushGate('G3_EDGE_DECAY', `Edge decaying ${ctx.edgeDecayRate.toFixed(0)}%`);
   }
 
   // Gate 4: Spread instability
   if (ctx.spreadStabilityRank < 30) {
-    gates.push({
-      id: 'G4_SPREAD_INSTABILITY',
-      message: `Spread instability ${ctx.spreadStabilityRank.toFixed(0)}%`,
-    });
+    pushGate('G4_SPREAD_INSTABILITY', `Spread instability ${ctx.spreadStabilityRank.toFixed(0)}%`);
   }
 
   // Gate 5: Compression + low session
   if (ctx.sessionAggressiveness < 30 && ctx.volatilityPhase === 'compression') {
-    gates.push({
-      id: 'G5_COMPRESSION_LOW_SESSION',
-      message: 'Compression + low-activity session',
-    });
+    pushGate('G5_COMPRESSION_LOW_SESSION', 'Compression + low-activity session');
   }
 
   // Gate 6: Overtrading governor
   if (ctx.overtradingThrottled) {
-    gates.push({
-      id: 'G6_OVERTRADING',
-      message: 'Anti-overtrading governor active',
-    });
+    pushGate('G6_OVERTRADING', 'Anti-overtrading governor active');
   }
 
   // Gate 7: Loss cluster with weak alignment
   if (ctx.sequencingCluster === 'loss-cluster' && ctx.mtfAlignmentScore < 55) {
-    gates.push({
-      id: 'G7_LOSS_CLUSTER_WEAK_MTF',
-      message: `Loss cluster + weak alignment ${ctx.mtfAlignmentScore.toFixed(0)}%`,
-    });
+    pushGate('G7_LOSS_CLUSTER_WEAK_MTF', `Loss cluster + weak alignment ${ctx.mtfAlignmentScore.toFixed(0)}%`);
   }
 
   // Gate 8: High shock probability outside ignition
   if (ctx.liquidityShockProb > 70 && ctx.volatilityPhase !== 'ignition') {
-    gates.push({
-      id: 'G8_HIGH_SHOCK',
-      message: `High shock risk ${ctx.liquidityShockProb.toFixed(0)}% outside ignition`,
-    });
+    pushGate('G8_HIGH_SHOCK', `High shock risk ${ctx.liquidityShockProb.toFixed(0)}% outside ignition`);
   }
 
-  // Gate 11: Extension-Exhaustion — block breakdown shorts when move is already stretched
-  // If we're in a breakdown regime and the price has already traveled 2x+ ATR,
-  // the mean-reversion probability is high → block the short to avoid selling the bottom.
+  // Gate 11: Extension-Exhaustion
   if (
     ctx.volatilityPhase === 'exhaustion' ||
     (ctx.volatilityPhase === 'compression' && ctx.phaseConfidence < 40)
   ) {
-    // Exhaustion is already penalized via regime multiplier, but we add a hard gate
-    // when ATR extension is extreme (atrValue >> atrAvg = move already stretched)
     if (ctx.atrValue > 0 && ctx.atrAvg > 0 && ctx.atrValue > ctx.atrAvg * 1.8) {
-      gates.push({
-        id: 'G11_EXTENSION_EXHAUSTION',
-        message: `Extension exhausted (>1.8x): ATR ${(ctx.atrValue * 10000).toFixed(1)}p vs avg ${(ctx.atrAvg * 10000).toFixed(1)}p (${(ctx.atrValue / ctx.atrAvg).toFixed(1)}x stretch)`,
-      });
+      pushGate('G11_EXTENSION_EXHAUSTION', `Extension exhausted (>1.8x): ATR ${(ctx.atrValue * 10000).toFixed(1)}p vs avg ${(ctx.atrAvg * 10000).toFixed(1)}p (${(ctx.atrValue / ctx.atrAvg).toFixed(1)}x stretch)`);
     }
   }
 
@@ -439,7 +416,7 @@ export const evaluateTradeProposal = (
     exitEfficiency, session, sequencing, composite,
   };
 
-  const triggeredGates = evaluateRejectionGates(ctx);
+  const triggeredGates = evaluateRejectionGates(ctx, proposal.pair);
 
   // ── Long-Only Mode Gate (G_STRAT_LONG_ONLY_BLOCK) ──
   if (isLongOnlyEnabled() && proposal.direction === 'short') {
