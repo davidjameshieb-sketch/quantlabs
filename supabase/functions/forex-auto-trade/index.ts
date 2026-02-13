@@ -3654,8 +3654,21 @@ Deno.serve(async (req) => {
                     : Math.round((entryEstimate - 8 * slPipMult) * 100000) / 100000; // 8p fallback
                 }
                 
-                const slDistPips = Math.abs(entryEstimate - stopLossPrice) / slPipMult;
+                let slDistPips = Math.abs(entryEstimate - stopLossPrice) / slPipMult;
                 const tpDistPips = Math.abs(takeProfitPrice - entryEstimate) / slPipMult;
+                
+                // ═══ MINIMUM STOP DISTANCE GATE ═══
+                // When BB width collapses, the BB-outer SL can become microscopic.
+                // Enforce a floor so spread wiggle doesn't trigger instant stop-outs.
+                const minStopDistancePips = 8;
+                if (slDistPips < minStopDistancePips) {
+                  console.log(`[COMPRESSION-SL] ${pair}: BB SL too tight (${slDistPips.toFixed(1)}p < ${minStopDistancePips}p floor) — widening to ${minStopDistancePips}p`);
+                  stopLossPrice = direction === "long"
+                    ? Math.round((entryEstimate - minStopDistancePips * slPipMult) * 100000) / 100000
+                    : Math.round((entryEstimate + minStopDistancePips * slPipMult) * 100000) / 100000;
+                  slDistPips = minStopDistancePips;
+                }
+                
                 const rrRatio = slDistPips > 0 ? tpDistPips / slDistPips : 0;
                 
                 // Safety: if SL is invalid (>= entry for long, <= entry for short), fallback
@@ -3667,7 +3680,7 @@ Deno.serve(async (req) => {
                   console.log(`[COMPRESSION-SL] ${pair}: BB SL invalid, using 10p fallback`);
                 }
                 
-                console.log(`[COMPRESSION-EXIT] ${pair} ${direction}: SL=${stopLossPrice} (${slDistPips.toFixed(1)}p, BB+buffer) | TP=${takeProfitPrice} (${tpDistPips.toFixed(1)}p, pivot-to-pivot) | R:R=1:${rrRatio.toFixed(1)} | entry ~${entryEstimate}`);
+                console.log(`[COMPRESSION-EXIT] ${pair} ${direction}: SL=${stopLossPrice} (${slDistPips.toFixed(1)}p, BB+buffer, min=${minStopDistancePips}p) | TP=${takeProfitPrice} (${tpDistPips.toFixed(1)}p, pivot-to-pivot) | R:R=1:${rrRatio.toFixed(1)} | entry ~${entryEstimate}`);
               }
               // ═══ STANDARD TREND-FOLLOWING: Dynamic SL + 5R SAFETY CEILING TP ═══
               else if (supertrendValue15m !== null && atr15mValue !== null) {
