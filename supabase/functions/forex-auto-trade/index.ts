@@ -3729,8 +3729,11 @@ Deno.serve(async (req) => {
       // ═══ DYNAMIC COMPOSITE MINIMUM GATE ═══
       // Autonomous Governance Engine calibrates minimum composite per regime.
       // Default 0.72, tightens to 0.80 for underperforming regimes, relaxes to 0.65 for proven ones.
+      // NOTE: This runs BEFORE the friction gate, so use indicator confidence as proxy.
       const effectiveCompositeMin = getEffectiveCompositeMin(indicatorRegime !== "unknown" ? indicatorRegime : regime);
-      const approxCompositeForGate = (gate.frictionScore || 50) / 100;
+      const approxCompositeForGate = indicatorConfirmed
+        ? Math.min(1, (60 + Math.abs(indicatorConsensusScore) * 0.3) / 100)
+        : 0.50;
       if (!forceMode && approxCompositeForGate < effectiveCompositeMin) {
         console.log(`[AUTO-GOV_COMPOSITE] ${pair} ${direction}: composite ${approxCompositeForGate.toFixed(2)} < ${effectiveCompositeMin} (auto-calibrated for regime=${indicatorRegime}) — BLOCKED`);
         results.push({ pair, direction, status: "auto-gov-composite-block", agentId, govState });
