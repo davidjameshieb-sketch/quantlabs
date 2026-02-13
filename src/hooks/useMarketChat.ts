@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 
 export interface ChatMessage {
   id: string;
@@ -19,9 +19,22 @@ function extractActions(content: string): Record<string, unknown>[] {
 }
 
 export const useMarketChat = () => {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [messages, setMessages] = useState<ChatMessage[]>(() => {
+    try {
+      const stored = localStorage.getItem('floor-manager-chat');
+      return stored ? JSON.parse(stored) : [];
+    } catch { return []; }
+  });
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Persist last 5 messages to localStorage
+  useEffect(() => {
+    try {
+      const last5 = messages.filter(m => m.content).slice(-5);
+      localStorage.setItem('floor-manager-chat', JSON.stringify(last5));
+    } catch { /* ignore */ }
+  }, [messages]);
 
   const sendMessage = useCallback(async (input: string, marketContext?: Record<string, unknown>) => {
     if (!input.trim() || isLoading) return;
@@ -215,6 +228,7 @@ export const useMarketChat = () => {
   const clearMessages = useCallback(() => {
     setMessages([]);
     setError(null);
+    try { localStorage.removeItem('floor-manager-chat'); } catch { /* ignore */ }
   }, []);
 
   return {

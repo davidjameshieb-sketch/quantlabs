@@ -18,13 +18,26 @@ export interface VoiceMessage {
 
 export const useVoiceChat = () => {
   const [state, setState] = useState<VoiceState>('idle');
-  const [messages, setMessages] = useState<VoiceMessage[]>([]);
+  const [messages, setMessages] = useState<VoiceMessage[]>(() => {
+    try {
+      const stored = localStorage.getItem('floor-manager-voice');
+      return stored ? JSON.parse(stored) : [];
+    } catch { return []; }
+  });
   const [currentTranscript, setCurrentTranscript] = useState('');
   const [error, setError] = useState<string | null>(null);
 
   const recognitionRef = useRef<any>(null);
   const synthRef = useRef<SpeechSynthesisUtterance | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+
+  // Persist last 5 messages to localStorage
+  useEffect(() => {
+    try {
+      const last5 = messages.filter(m => m.content).slice(-5);
+      localStorage.setItem('floor-manager-voice', JSON.stringify(last5));
+    } catch { /* ignore */ }
+  }, [messages]);
 
   // Check browser support
   const isSupported = typeof window !== 'undefined' && 
@@ -288,6 +301,7 @@ export const useVoiceChat = () => {
     cancel();
     setMessages([]);
     setError(null);
+    try { localStorage.removeItem('floor-manager-voice'); } catch { /* ignore */ }
   }, [cancel]);
 
   // Cleanup on unmount
