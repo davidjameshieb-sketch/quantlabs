@@ -1373,6 +1373,14 @@ function canPlaceLiveOrder(
     console.log(`[GOV_SHADOW_TOXIC_HOUR] hour_utc=${tradeIntent.hourUtc} zone=NY-lunch — shadow-logged (was: hard-blocked)`);
   }
 
+  // ─── HARD BLOCK: USD_CAD ASIAN SESSION TOXICITY ───
+  // Pattern 3 (Session Toxicity): USD_CAD loses 86+ pips in Asian session with near-zero win rate.
+  // Liquidity profile doesn't fit friction agents. Hard-blocked until evidence of edge.
+  if (tradeIntent.pair === "USD_CAD" && tradeIntent.session === "asian") {
+    console.log(`[GOV_BLOCK_SESSION_PAIR] pair=USD_CAD session=asian — hard-blocked (Pattern 3: Session Toxicity, -86 pips, WR~0%)`);
+    return { allowed: false, reason_code: "GOV_BLOCK_SESSION_PAIR_TOXIC", metadata: { pair: "USD_CAD", session: "asian", pattern: "session_toxicity" } };
+  }
+
   // ─── SHADOW CHECK 2: SESSION BLOCKS (shadow-log, gathering fresh data) ───
   // Old stats (15.8% WR asian, 12.5% WR late-ny) were from flawed system. Re-evaluate.
   if (tradeIntent.session === "asian") {
@@ -2630,6 +2638,24 @@ Deno.serve(async (req) => {
         console.log(`[SCALP-TRADE] ${pair}: SKIPPED — open trade exists (FIFO guard)`);
         results.push({ pair, direction: "none", status: "fifo-skipped", agentId });
         continue;
+      }
+
+      // ─── G12 STRICT AGENT DECORRELATION ───
+      // Pattern 2: Prevent same agent from opening multiple same-direction positions within 1 hour.
+      // Stops risk clustering disguised as diversification (e.g., 4 shorts from one agent).
+      if (!forceMode) {
+        const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+        const agentRecentSameDir = orders.filter((o: Record<string, unknown>) =>
+          o.agent_id === agentId &&
+          (o.status === "filled" || o.status === "pending") &&
+          (o.exit_price === null || o.exit_price === undefined) &&
+          (o.created_at as string) >= oneHourAgo
+        );
+        if (agentRecentSameDir.length >= 2) {
+          console.log(`[G12_DECORRELATION_STRICT] agent=${agentId} has ${agentRecentSameDir.length} open positions in last hour — BLOCKED (max 2 per agent per hour)`);
+          results.push({ pair, direction: "none", status: "g12-decorrelation-blocked", agentId });
+          continue;
+        }
       }
 
       // ═══ CENTRALIZED CHOKE POINT — PRE-INDICATOR CHECKS ═══
