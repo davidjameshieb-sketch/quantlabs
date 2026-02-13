@@ -270,6 +270,28 @@ export const useVoiceChat = () => {
     };
   }, []);
 
+  const executeAction = useCallback(async (action: Record<string, unknown>): Promise<{ success: boolean; detail?: string }> => {
+    try {
+      const response = await fetch(CHAT_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+        },
+        body: JSON.stringify({ mode: 'action', action, environment: 'live' }),
+      });
+
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        return { success: false, detail: data.error || `Failed: ${response.status}` };
+      }
+      const detail = data.results?.[0]?.detail || 'Action executed';
+      return { success: true, detail };
+    } catch (err) {
+      return { success: false, detail: (err as Error).message };
+    }
+  }, []);
+
   return {
     state,
     messages,
@@ -281,5 +303,6 @@ export const useVoiceChat = () => {
     cancel,
     clearMessages,
     sendToAI,
+    executeAction,
   };
 };

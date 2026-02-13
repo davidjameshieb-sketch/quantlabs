@@ -38,6 +38,7 @@ export const VoiceChatInterface = ({ className }: VoiceChatInterfaceProps) => {
     cancel,
     clearMessages,
     sendToAI,
+    executeAction,
   } = useVoiceChat();
 
   const [textInput, setTextInput] = useState('');
@@ -118,7 +119,7 @@ export const VoiceChatInterface = ({ className }: VoiceChatInterfaceProps) => {
           ) : (
             <div className="space-y-4">
               {messages.map((message) => (
-                <ChatMessage key={message.id} message={message} />
+                <ChatMessage key={message.id} message={message} onExecuteAction={executeAction} />
               ))}
             </div>
           )}
