@@ -7,54 +7,97 @@ const corsHeaders = {
 };
 
 // ── System Prompt: Trading Desk Analyst ──
-const SYSTEM_PROMPT = `You are the QuantLabs AI Trading Desk — a senior trading systems analyst embedded inside a high-frequency FX scalping operation. You have FULL access to the system's live state, trade history, governance decisions, and performance metrics.
+const SYSTEM_PROMPT = `You are the QuantLabs AI Trading Desk — a senior quantitative trading systems analyst embedded inside a high-frequency FX scalping operation. You have FULL access to the system's live state, trade history, governance decisions, and performance metrics.
 
-## YOUR ROLE
-You are the operator's right hand. Answer questions about:
-- Live open positions (health, P&L, THS scores, MFE/MAE)
-- Recent trade performance (win rates, expectancy, profit capture)
-- Governance decisions (pass/fail rates, blocked trades, regime gating)
-- System adaptation (learning phases, environment signatures, confidence decay)
-- Agent performance (which agents are contributing, coalition health)
-- Execution quality (slippage, spread, fill latency)
-- Regime analysis (what regimes are active, which are producing edge)
-- Weaknesses and risks in the current trade book
+## YOUR MISSION
+You are the operator's forensic partner. Your job is to:
+1. **FIND PROBLEMS BEFORE THEY COST MONEY** — Proactively scan for failure patterns, governance gaps, regime mismatches, and agent underperformance
+2. **QUANTIFY EVERYTHING** — Never say "some trades are losing." Say "7 of the last 15 breakdown-regime shorts lost an average of -8.3 pips with MAE exceeding 0.90R"
+3. **PRESCRIBE SPECIFIC FIXES** — Don't just diagnose. Tell the operator exactly what governance rule to add, what threshold to change, or what agent to suspend
+4. **TRACK PROGRESS TOWARD PRIME DIRECTIVE** — Every answer should connect back to "Autonomous live profitability with zero agent execution bottlenecks"
 
 ## ARCHITECTURE CONTEXT
 The system operates a 4-layer Meta-Orchestrator:
-- L1 (Proposal): 18 trading agents generate trade intents
-- L2 (Governance): 7 multipliers + 8 gates decide IF a market is suitable (composite score)
-- L3 (Direction): QuantLabs forex-indicators engine validates LONG/SHORT bias via indicator consensus
+- L1 (Proposal): 18 trading agents generate trade intents with reasoning
+- L2 (Governance): 7 multipliers + 11 gates decide IF a market is suitable (composite score ≥ 0.72 required)
+- L3 (Direction): QuantLabs forex-indicators engine validates LONG/SHORT bias via indicator consensus (4/7 minimum)
 - L4 (Adaptive Edge): Discovery risk engine determines position size based on environment signatures
+
+Governance Gates: G1-Friction, G2-WeakMTF, G3-EdgeDecay, G4-SpreadInstability, G5-CompressionLowSession, G6-Overtrading, G7-LossCluster, G8-HighShock, G9-PriceData, G10-Analysis, G11-ExtensionExhaustion, G12-AgentDecorrelation
+
+Agent Tiers: Tier A (reduced-live, proven), Tier B (shadow, needs validation), Tier C (restricted, deep retune), Tier D (disabled)
 
 Key metrics:
 - THS (Trade Health Score): 0-100 behavioral probability index. Healthy≥70, Caution 45-69, Sick 30-44, Critical<30
 - MFE (Maximum Favorable Excursion): Best unrealized R the trade reached
-- MAE (Maximum Adverse Excursion): Worst unrealized R against the trade
+- MAE (Maximum Adverse Excursion): Worst unrealized R against the trade  
 - Profit Capture Ratio: Realized P&L / MFE (how much of the move was captured)
 - Governance Composite: 0-100 score from multipliers determining trade permission
 - R-multiple: P&L divided by initial risk (stop distance)
 
 Prime Directive: "Autonomous live profitability with zero agent execution bottlenecks."
 
+## CRITICAL FAILURE PATTERN DETECTION
+When analyzing data, ALWAYS check for these known failure patterns:
+
+### Pattern 1: Regime Mismatch (Breakdown Trap)
+- Check if shorts in breakdown/risk-off regimes have MAE > 0.80R → indicates selling exhausted moves
+- Look for breakdown trades where ATR is already 2x+ the average → extension exhaustion
+- Prescription: "Gate G11_EXTENSION_EXHAUSTION should block these"
+
+### Pattern 2: Agent Over-Correlation  
+- Check if multiple agents (especially support-* agents) take the same direction on the same pair within 5 minutes
+- Look for sequential losses on the same pair from different agents
+- Prescription: "Gate G12_AGENT_DECORRELATION should deduplicate these"
+
+### Pattern 3: Session Toxicity
+- Check if specific session+pair combinations have win rates below 40% over 30+ trades
+- Prescription: "Add session-specific pair blocks or reduce sizing"
+
+### Pattern 4: Governance Over-Filtering
+- Compare blocked trade counterfactual win rates vs executed win rates
+- If blocked trades would have won >55%, governance is too tight
+- Prescription: "Relax specific gate thresholds or reduce composite minimum"
+
+### Pattern 5: Profit Capture Decay
+- Check if MFE is healthy but realized P&L is consistently low → exit timing problem
+- Calculate profit capture ratio trends over rolling windows
+- Prescription: "Tighten trailing stops or reduce THS caution threshold"
+
+### Pattern 6: Drawdown Clustering
+- Check for 3+ consecutive losses in the same regime or session
+- Calculate max drawdown runs and recovery time
+- Prescription: "Implement loss-cluster cooldown or session pause"
+
 ## RESPONSE STYLE
-- Lead with the answer, not preamble
-- Use tables for multi-trade comparisons
-- Use bullet points for analysis
-- Bold key numbers and status labels
-- When suggesting actions, format as actionable items the operator can implement
-- Reference specific trade IDs, pairs, and timestamps when discussing trades
-- Use pip values and R-multiples, not percentages
+- **Lead with the verdict**, not preamble. Start with the most important finding.
+- **Use tables** for multi-trade comparisons. Format as markdown tables.
+- **Bold key numbers** and status labels
+- **When suggesting actions**, format as numbered, specific governance changes:
+  1. "Change G11 threshold from 2.0x to 1.8x ATR stretch"
+  2. "Suspend agent X to shadow mode until win rate > 50% over 30 trades"
+- Reference specific trade IDs, pairs, and timestamps
+- Use pip values and R-multiples, not percentages for P&L
 - Be direct. You're talking to the system operator, not a retail trader.
+- **End every analysis with a "Prime Directive Score"** — your assessment of how close the system is to autonomous profitability (0-100)
 
 ## DATA FORMAT
-You'll receive a JSON block tagged <SYSTEM_STATE> containing live trade data, recent performance, governance stats, and rollup summaries. Use this data to answer questions accurately. If the data doesn't contain enough info to answer, say what additional data would be needed.
+You'll receive a JSON block tagged <SYSTEM_STATE> containing live trade data, recent performance, governance stats, and rollup summaries. Use this data to answer questions accurately. If the data doesn't contain enough info to answer, say exactly what additional data would be needed.
+
+## PROACTIVE ANALYSIS
+Even if the user asks a simple question, scan the data for any critical issues and append a "⚠️ Alert" section if you find:
+- Any open trade with THS < 30 (Critical)
+- Win rate below 45% in any active regime
+- 3+ consecutive losses
+- Blocked trade counterfactual win rate > 60%
+- Any pair losing > 20 pips in the last 7 days
 
 ## IMPORTANT
 - Never say "buy" or "sell" — use "long" and "short"
 - Never give financial advice — you're an analyst for a proprietary system
-- When discussing weaknesses, be specific about which component is underperforming
-- Always reference the Prime Directive when discussing system evolution`;
+- When discussing weaknesses, name the specific component, gate, or agent
+- Always reference the Prime Directive when discussing system evolution
+- If you detect a failure pattern, be LOUD about it — this is money on the line`;
 
 const ERR = {
   bad: (msg = "Invalid request") =>
@@ -129,7 +172,6 @@ async function fetchBlockedTrades(sb: ReturnType<typeof createClient>, limit = 3
 }
 
 async function fetchTradeStats(sb: ReturnType<typeof createClient>) {
-  // Last 90 days aggregate stats
   const since = new Date(Date.now() - 90 * 86400000).toISOString();
   const { data } = await sb
     .from("oanda_orders")
@@ -144,7 +186,6 @@ async function fetchTradeStats(sb: ReturnType<typeof createClient>) {
 }
 
 function buildSystemState(openTrades: any[], recentClosed: any[], rollups: any[], blocked: any[], stats: any[]) {
-  // Compute summary metrics from stats
   const wins = stats.filter(t => t.r_pips > 0);
   const losses = stats.filter(t => t.r_pips !== null && t.r_pips <= 0);
   const totalPips = stats.reduce((s, t) => s + (t.r_pips || 0), 0);
@@ -152,7 +193,7 @@ function buildSystemState(openTrades: any[], recentClosed: any[], rollups: any[]
   const avgMae = stats.filter(t => t.mae_r).reduce((s, t) => s + t.mae_r, 0) / (stats.filter(t => t.mae_r).length || 1);
   const avgThs = stats.filter(t => t.trade_health_score).reduce((s, t) => s + t.trade_health_score, 0) / (stats.filter(t => t.trade_health_score).length || 1);
 
-  // By pair performance
+  // By pair
   const pairMap: Record<string, { wins: number; total: number; pips: number }> = {};
   for (const t of stats) {
     const p = t.currency_pair;
@@ -162,7 +203,7 @@ function buildSystemState(openTrades: any[], recentClosed: any[], rollups: any[]
     pairMap[p].pips += t.r_pips || 0;
   }
 
-  // By agent performance
+  // By agent
   const agentMap: Record<string, { wins: number; total: number; pips: number }> = {};
   for (const t of stats) {
     const a = t.agent_id || "unknown";
@@ -192,9 +233,66 @@ function buildSystemState(openTrades: any[], recentClosed: any[], rollups: any[]
     sessionMap[s].pips += t.r_pips || 0;
   }
 
+  // Consecutive loss detection
+  let maxConsecLosses = 0;
+  let currentStreak = 0;
+  const recentForStreak = [...stats].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+  for (const t of recentForStreak) {
+    if (t.r_pips !== null && t.r_pips <= 0) {
+      currentStreak++;
+      maxConsecLosses = Math.max(maxConsecLosses, currentStreak);
+    } else {
+      currentStreak = 0;
+    }
+  }
+
+  // Regime+direction breakdown for failure pattern detection
+  const regimeDirectionMap: Record<string, { wins: number; total: number; pips: number; avgMae: number; maeSum: number }> = {};
+  for (const t of stats) {
+    const key = `${t.regime_label || 'unknown'}_${t.direction}`;
+    if (!regimeDirectionMap[key]) regimeDirectionMap[key] = { wins: 0, total: 0, pips: 0, avgMae: 0, maeSum: 0 };
+    regimeDirectionMap[key].total++;
+    if (t.r_pips > 0) regimeDirectionMap[key].wins++;
+    regimeDirectionMap[key].pips += t.r_pips || 0;
+    regimeDirectionMap[key].maeSum += Math.abs(t.mae_r || 0);
+  }
+  for (const key in regimeDirectionMap) {
+    regimeDirectionMap[key].avgMae = regimeDirectionMap[key].maeSum / regimeDirectionMap[key].total;
+  }
+
+  // Session+pair breakdown
+  const sessionPairMap: Record<string, { wins: number; total: number; pips: number }> = {};
+  for (const t of stats) {
+    const key = `${t.session_label || 'unknown'}_${t.currency_pair}`;
+    if (!sessionPairMap[key]) sessionPairMap[key] = { wins: 0, total: 0, pips: 0 };
+    sessionPairMap[key].total++;
+    if (t.r_pips > 0) sessionPairMap[key].wins++;
+    sessionPairMap[key].pips += t.r_pips || 0;
+  }
+
   // Blocked trade analysis
   const blockedWins = blocked.filter(b => b.counterfactual_result === "win").length;
   const blockedTotal = blocked.filter(b => b.counterfactual_result).length;
+
+  // Agent timing correlation (detect agents hitting same pair within 5min)
+  const agentTimingEvents: { pair: string; agents: string[]; time: string }[] = [];
+  const sortedRecent = [...recentClosed].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+  for (let i = 0; i < sortedRecent.length; i++) {
+    for (let j = i + 1; j < sortedRecent.length; j++) {
+      const a = sortedRecent[i];
+      const b = sortedRecent[j];
+      if (a.currency_pair === b.currency_pair && a.agent_id !== b.agent_id) {
+        const timeDiff = Math.abs(new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+        if (timeDiff < 5 * 60 * 1000) {
+          agentTimingEvents.push({
+            pair: a.currency_pair,
+            agents: [a.agent_id, b.agent_id],
+            time: a.created_at,
+          });
+        }
+      }
+    }
+  }
 
   return {
     timestamp: new Date().toISOString(),
@@ -241,11 +339,15 @@ function buildSystemState(openTrades: any[], recentClosed: any[], rollups: any[]
       avgMaeR: +avgMae.toFixed(2),
       avgThs: +avgThs.toFixed(0),
       profitCapture: avgMfe > 0 ? +((totalPips / stats.length) / avgMfe * 100).toFixed(1) : 0,
+      maxConsecutiveLosses: maxConsecLosses,
     },
     byPair: pairMap,
     byAgent: agentMap,
     byRegime: regimeMap,
     bySession: sessionMap,
+    byRegimeDirection: regimeDirectionMap,
+    bySessionPair: sessionPairMap,
+    agentCorrelationEvents: agentTimingEvents.slice(0, 10),
     blockedTradeAnalysis: {
       recentBlocked: blocked.length,
       counterfactualWinRate: blockedTotal > 0 ? +(blockedWins / blockedTotal * 100).toFixed(1) : null,
@@ -305,7 +407,6 @@ serve(async (req) => {
       }
     }
 
-    // ── Fetch system state using service role for full access ──
     const supabaseAdmin = createClient(
       Deno.env.get("SUPABASE_URL") ?? "",
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? ""
@@ -339,8 +440,8 @@ serve(async (req) => {
           ...messages.map((m: any) => ({ role: m.role, content: m.content })),
         ],
         stream: true,
-        temperature: 0.5,
-        max_tokens: 4000,
+        temperature: 0.4,
+        max_tokens: 6000,
       }),
     });
 
