@@ -2503,9 +2503,117 @@ Deno.serve(async (req) => {
       console.warn(`[SCALP-TRADE] FIFO guard: Could not fetch open trades: ${(fifoErr as Error).message} — proceeding without guard`);
     }
 
-    console.log(`[SCALP-TRADE] Generating ${signalCount} DUAL-DIRECTION signals via snapshot agents`);
+    // ═══ SIGNAL-RANKED PAIR SELECTION ═══
+    // Pre-fetch indicators for ALL eligible pairs, rank by consensus strength.
+    // No randomness — capital flows to the strongest signals first.
+    const eligiblePairs = ALL_PAIRS.filter(p => !openPairSet.has(p));
+    const pairIndicatorCache = new Map<string, Record<string, any>>();
 
-    for (let i = 0; i < signalCount; i++) {
+    console.log(`[PAIR-RANK] Fetching indicators for ${eligiblePairs.length} eligible pairs (${openPairSet.size} FIFO-blocked)`);
+
+    const indicatorSvcUrl = Deno.env.get("SUPABASE_URL")!;
+    const indicatorSvcKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+
+    // Batch fetch indicators (groups of 4 for parallelism)
+    for (let b = 0; b < eligiblePairs.length; b += 4) {
+      const batch = eligiblePairs.slice(b, b + 4);
+      const batchResults = await Promise.all(batch.map(async (p) => {
+        try {
+          const res = await fetch(`${indicatorSvcUrl}/functions/v1/forex-indicators?instrument=${p}&timeframe=15m`, {
+            method: "GET",
+            headers: { Authorization: `Bearer ${indicatorSvcKey}`, apikey: indicatorSvcKey },
+          });
+          if (res.ok) {
+            const data = await res.json();
+            return { pair: p, data };
+          }
+          console.warn(`[PAIR-RANK] ${p}: indicator fetch HTTP ${res.status}`);
+          return null;
+        } catch (err) {
+          console.warn(`[PAIR-RANK] ${p}: indicator fetch failed: ${(err as Error).message}`);
+          return null;
+        }
+      }));
+      for (const r of batchResults) {
+        if (r) pairIndicatorCache.set(r.pair, r.data);
+      }
+    }
+
+    // Rank pairs by absolute consensus strength (strongest signals first)
+    const rankedPairs = eligiblePairs
+      .filter(p => pairIndicatorCache.has(p))
+      .sort((a, b) => {
+        const scoreA = Math.abs(pairIndicatorCache.get(a)?.consensus?.score || 0);
+        const scoreB = Math.abs(pairIndicatorCache.get(b)?.consensus?.score || 0);
+        return scoreB - scoreA;
+      });
+
+    console.log(`[PAIR-RANK] Ranked ${rankedPairs.length} pairs: ${rankedPairs.map(p => `${p}(${Math.abs(pairIndicatorCache.get(p)?.consensus?.score || 0)})`).join(', ')}`);
+
+    // ═══ CORRELATION EXPOSURE AWARENESS ═══
+    // Group correlated pairs and cap exposure per group to prevent concentrated risk.
+    const CORRELATION_GROUPS: Record<string, string[]> = {
+      // USD-denominated majors (move together against USD)
+      USD_COUNTER: ["EUR_USD", "GBP_USD", "AUD_USD", "NZD_USD"],
+      // USD-based pairs (USD is base currency)
+      USD_BASE: ["USD_JPY", "USD_CAD", "USD_CHF"],
+      // JPY crosses (driven by JPY sentiment/BOJ)
+      JPY_CROSS: ["EUR_JPY", "GBP_JPY", "AUD_JPY"],
+      // GBP crosses (driven by GBP/BOE)
+      GBP_CROSS: ["GBP_USD", "GBP_JPY", "GBP_AUD", "EUR_GBP"],
+      // AUD crosses (driven by AUD/RBA/commodities)
+      AUD_CROSS: ["AUD_USD", "AUD_JPY", "AUD_NZD", "EUR_AUD", "GBP_AUD"],
+    };
+    const MAX_PER_CORRELATION_GROUP = 2;
+    const MAX_CONCURRENT_POSITIONS = 5;
+
+    // Initialize exposure from existing open positions
+    const groupExposure: Record<string, number> = {};
+    for (const openPair of openPairSet) {
+      for (const [group, members] of Object.entries(CORRELATION_GROUPS)) {
+        if (members.includes(openPair)) {
+          groupExposure[group] = (groupExposure[group] || 0) + 1;
+        }
+      }
+    }
+    let totalPositions = openPairSet.size;
+
+    if (Object.keys(groupExposure).length > 0) {
+      console.log(`[CORRELATION] Existing exposure: ${Object.entries(groupExposure).map(([g, n]) => `${g}=${n}`).join(', ')} | total=${totalPositions}`);
+    }
+
+    const pairsToProcess = forceMode ? [reqBody.pair || "USD_CAD"] : rankedPairs;
+    let tradesSubmitted = 0;
+
+    console.log(`[SCALP-TRADE] Processing ${pairsToProcess.length} signal-ranked pairs (target ${signalCount} signals)`);
+
+    for (let i = 0; i < pairsToProcess.length; i++) {
+      if (tradesSubmitted >= signalCount && !forceMode) {
+        console.log(`[SCALP-TRADE] Reached signal target (${signalCount}) — stopping`);
+        break;
+      }
+
+      // ─── Concurrent position cap ───
+      if (totalPositions >= MAX_CONCURRENT_POSITIONS && !forceMode) {
+        console.log(`[POSITION-CAP] Max ${MAX_CONCURRENT_POSITIONS} concurrent positions reached — stopping`);
+        break;
+      }
+
+      const pair = pairsToProcess[i];
+
+      // ─── Correlation exposure check ───
+      if (!forceMode) {
+        const pairGroups = Object.entries(CORRELATION_GROUPS)
+          .filter(([_, members]) => members.includes(pair))
+          .map(([group]) => group);
+        const blockedGroup = pairGroups.find(g => (groupExposure[g] || 0) >= MAX_PER_CORRELATION_GROUP);
+        if (blockedGroup) {
+          console.log(`[CORRELATION-CAP] ${pair}: SKIPPED — group ${blockedGroup} has ${groupExposure[blockedGroup]}/${MAX_PER_CORRELATION_GROUP} positions`);
+          results.push({ pair, direction: "none", status: "correlation-capped" });
+          continue;
+        }
+      }
+
       // ─── Agent Selection from Snapshot ───
       const selectedAgent = forceMode
         ? null
@@ -2516,24 +2624,7 @@ Deno.serve(async (req) => {
       const agentTier = forceMode ? "manual" : (selectedAgent?.effectiveTier || "unknown");
       const agentRole = forceMode ? "manual" : (selectedAgent?.role || "stabilizer");
 
-      // ─── Pair selection: STRATEGY REVAMP — all pairs equally eligible ───
-      // Weighted distribution: majors get slightly more signals, but ALL pairs participate
-      let pair: string;
-      if (forceMode) {
-        pair = reqBody.pair || "USD_CAD";
-      } else {
-        // Distribute signals across ALL_PAIRS with slight weighting toward SCALP_PAIRS
-        const roll = Math.random();
-        if (roll < 0.65) {
-          // 65% → scalp pairs (higher liquidity)
-          pair = SCALP_PAIRS[Math.floor(Math.random() * SCALP_PAIRS.length)];
-        } else {
-          // 35% → secondary pairs (broader data collection)
-          pair = SECONDARY_PAIRS[Math.floor(Math.random() * SECONDARY_PAIRS.length)];
-        }
-      }
-
-      // ─── FIFO Guard: Skip pair if already has an open position ───
+      // ─── FIFO Guard: Skip pair if already has an open position (safety) ───
       if (openPairSet.has(pair) && !forceMode) {
         console.log(`[SCALP-TRADE] ${pair}: SKIPPED — open trade exists (FIFO guard)`);
         results.push({ pair, direction: "none", status: "fifo-skipped", agentId });
@@ -2569,18 +2660,15 @@ Deno.serve(async (req) => {
       let indicatorConsensusScore = 0;
       let indicatorDirection: "bullish" | "bearish" | "neutral" = "neutral";
       let indicatorBreakdown: Record<string, string> | null = null;
-      let mtfConfirmed = false;
+      let indicatorConfirmed = false;
       // ═══ INDICATOR LEARNING: Filtered consensus tracking ═══
       let filteredConsensusScore: number | null = null;
       let filteredDirection: string | null = null;
       let noiseExcludedCount = 0;
       let learningApplied = false;
       let pairLearningProfile: typeof indicatorLearningProfiles extends Map<string, infer V> ? V | null : null = null;
-      // ═══ EDGE PROOF: Per-timeframe MTF tracking ═══
-      let mtf_1m_ignition = false;
-      let mtf_5m_momentum = false;
-      let mtf_15m_bias = false;
-      let mtf_data_available = false;
+      // ═══ INDICATOR DATA TRACKING ═══
+      let indicatorDataAvailable = false;
       // ═══ INDICATOR-DERIVED REGIME (replaces time-based for BOTH long and short decisions) ═══
       let indicatorRegime = "unknown";
       let indicatorRegimeStrength = 0;
@@ -2614,29 +2702,15 @@ Deno.serve(async (req) => {
 
       if (forceMode) {
         direction = reqBody.direction || "long";
-        mtfConfirmed = true;
-        mtf_1m_ignition = true;
-        mtf_5m_momentum = true;
-        mtf_15m_bias = true;
-        mtf_data_available = true;
+        indicatorConfirmed = true;
+        indicatorDataAvailable = true;
         indicatorConsensusScore = 80;
       } else {
-        // Call forex-indicators for MTF consensus (15m directional bias)
+        // Use pre-fetched indicator data (signal-ranked, no per-pair fetch needed)
         try {
-          const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
-          const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-          // FIX: forex-indicators reads from URL query params, NOT POST body
-          const indicatorRes = await fetch(`${supabaseUrl}/functions/v1/forex-indicators?instrument=${pair}&timeframe=15m`, {
-            method: "GET",
-            headers: {
-              Authorization: `Bearer ${supabaseKey}`,
-              apikey: supabaseKey,
-            },
-          });
-
-          if (indicatorRes.ok) {
-            const indicatorData = await indicatorRes.json();
-            mtf_data_available = true;
+          const indicatorData = pairIndicatorCache.get(pair) as Record<string, any> | undefined;
+          if (indicatorData) {
+            indicatorDataAvailable = true;
             // ═══ PERSIST: Store individual indicator signals for analytics ═══
             if (indicatorData?.indicators) {
               const ind = indicatorData.indicators;
@@ -2746,10 +2820,7 @@ Deno.serve(async (req) => {
                   if (compressionReversionScore >= adaptiveReversionThreshold && compressionReversionDirection !== "none") {
                     // ── COMPRESSION TRADE AUTHORIZED ──
                     direction = compressionReversionDirection as "long" | "short";
-                    mtfConfirmed = true;
-                    mtf_1m_ignition = true;
-                    mtf_5m_momentum = true;
-                    mtf_15m_bias = true;
+                    indicatorConfirmed = true;
                     // Override regime friendliness for compression direction
                     if (direction === "long") { indicatorLongFriendly = true; }
                     else { indicatorShortFriendly = true; }
@@ -2949,13 +3020,7 @@ Deno.serve(async (req) => {
                 indicatorDirection = filteredDirection as "bullish" | "bearish" | "neutral";
               }
 
-              // ═══ EDGE PROOF: Extract per-TF signals ═══
-              // 15m bias = overall consensus direction
-              mtf_15m_bias = Math.abs(indicatorConsensusScore) >= 25;
-              // 5m momentum = consensus strength above medium threshold
-              mtf_5m_momentum = Math.abs(indicatorConsensusScore) >= 35;
-              // 1m ignition = strong consensus above high threshold
-              mtf_1m_ignition = Math.abs(indicatorConsensusScore) >= 20;
+              // Indicator consensus extracted — direction check follows below
 
               // ═══ ADAPTIVE CONSENSUS THRESHOLD ═══
               // Tightens as indicator learning matures — more data = higher bar
@@ -3049,7 +3114,7 @@ Deno.serve(async (req) => {
                    }
                   
                   direction = "long";
-                  mtfConfirmed = true;
+                  indicatorConfirmed = true;
                   console.log(`[SCALP-TRADE] ${pair}: LONG authorized — indicatorRegime=${indicatorRegime} (strength=${indicatorRegimeStrength}, bullishMom=${indicatorBullishMomentum}, adaptiveThreshold=${MIN_BULLISH_MOMENTUM}) + consensus=${indicatorConsensusScore} | learning=${longLearningProfile.learningMaturity}`);
                 } else if (indicatorDirection === "bearish") {
                   // ═══ SHORT DIRECTION: Uses INDICATOR-DERIVED regime (not time-based) ═══
@@ -3109,7 +3174,7 @@ Deno.serve(async (req) => {
                     }
                     
                     direction = "short";
-                    mtfConfirmed = true;
+                    indicatorConfirmed = true;
                     console.log(`[SCALP-TRADE] ${pair}: SHORT authorized — indicatorRegime=${indicatorRegime} (strength=${indicatorRegimeStrength}, bearishMom=${indicatorBearishMomentum}, adaptiveThreshold=${adaptiveBearishThreshold}) + consensus=${indicatorConsensusScore} | learning=${shortLearningProfile.learningMaturity}`);
                   } else {
                     console.log(`[SCALP-TRADE] ${pair}: Short regime confirmed but pair/session not eligible — skipping`);
@@ -3128,20 +3193,19 @@ Deno.serve(async (req) => {
               }
             }
           } else {
-            // ═══ HARD EDGE LOCK: Indicator service unavailable = MTF FAIL = BLOCK ═══
-            console.warn(`[SCALP-TRADE] ${pair}: Indicator service returned ${indicatorRes.status} — MTF FAIL, BLOCKING (no fallback)`);
-            mtfConfirmed = false;
-            mtf_data_available = false;
-            results.push({ pair, direction, status: "mtf-unavailable", govState, agentId });
-            continue; // HARD LOCK: no indicator data = no trade
+            // No indicator data available for this pair
+            console.warn(`[SCALP-TRADE] ${pair}: No indicator data in cache — BLOCKING (no fallback)`);
+            indicatorConfirmed = false;
+            indicatorDataAvailable = false;
+            results.push({ pair, direction, status: "indicator-unavailable", govState, agentId });
+            continue;
           }
         } catch (indicatorErr) {
-          // ═══ HARD EDGE LOCK: Indicator call failure = BLOCK ═══
-          console.warn(`[SCALP-TRADE] ${pair}: Indicator call failed: ${(indicatorErr as Error).message} — BLOCKING (no fallback)`);
-          mtfConfirmed = false;
-          mtf_data_available = false;
-          results.push({ pair, direction, status: "mtf-error", govState, agentId });
-          continue; // HARD LOCK: no indicator data = no trade
+          console.warn(`[SCALP-TRADE] ${pair}: Indicator processing failed: ${(indicatorErr as Error).message} — BLOCKING`);
+          indicatorConfirmed = false;
+          indicatorDataAvailable = false;
+          results.push({ pair, direction, status: "indicator-error", govState, agentId });
+          continue;
         }
       }
 
@@ -3172,7 +3236,7 @@ Deno.serve(async (req) => {
       }
 
       const confidence = forceMode ? 90 : Math.round(
-        mtfConfirmed ? (60 + Math.abs(indicatorConsensusScore) * 0.3) : (50 + Math.random() * 20)
+        indicatorConfirmed ? (60 + Math.abs(indicatorConsensusScore) * 0.3) : 50
       );
 
       // ═══ REGIME AUTHORIZATION ═══
@@ -3235,7 +3299,7 @@ Deno.serve(async (req) => {
 
       const isPrimaryPair = SCALP_PAIRS.includes(pair);
 
-      console.log(`[SCALP-TRADE] Signal ${i + 1}: ${direction.toUpperCase()} ${pair} (${isPrimaryPair ? 'SCALP' : 'SECONDARY'}) | consensus=${indicatorConsensusScore} (${indicatorDirection}) | mtf=${mtfConfirmed} [1m=${mtf_1m_ignition},5m=${mtf_5m_momentum},15m=${mtf_15m_bias}] | regime=${regime}(auth=${regimeAuthorized}) | agent=${agentId}(${agentTier}) | coalition=${snapshot.eligibleCount}/${snapshot.coalitionRequirement.minAgents}(${coalitionMet}) | support=${isSupportAgent}`);
+      console.log(`[SCALP-TRADE] Signal ${i + 1}: ${direction.toUpperCase()} ${pair} (${isPrimaryPair ? 'SCALP' : 'SECONDARY'}) | consensus=${indicatorConsensusScore} (${indicatorDirection}) | confirmed=${indicatorConfirmed} | regime=${regime}(auth=${regimeAuthorized}) | agent=${agentId}(${agentTier}) | coalition=${snapshot.eligibleCount}/${snapshot.coalitionRequirement.minAgents}(${coalitionMet}) | support=${isSupportAgent}`);
 
       // ─── Pair Allocation Check (GRACEFUL DEGRADATION) ───
       const pairAlloc = pairAllocations[pair] || { banned: false, restricted: false, capitalMultiplier: 1.0 };
@@ -3456,10 +3520,10 @@ Deno.serve(async (req) => {
             // EDGE PROOF — Mandatory fields (if ANY missing → BLOCK)
             // ═══════════════════════════════════════════════════════
             edgeProof: {
-              mtf_1m_ignition: mtf_1m_ignition ? "PASS" : "FAIL",
-              mtf_5m_momentum: mtf_5m_momentum ? "PASS" : "FAIL",
-              mtf_15m_bias: mtf_15m_bias ? "PASS" : "FAIL",
-              mtf_data_available: mtf_data_available,
+              indicator_confirmed: indicatorConfirmed ? "PASS" : "FAIL",
+              indicator_data_available: indicatorDataAvailable,
+              consensus_score: indicatorConsensusScore,
+              consensus_direction: indicatorDirection,
               regime_detected: regime,
               indicator_regime: indicatorRegime,
               indicator_regime_strength: indicatorRegimeStrength,
@@ -3484,7 +3548,7 @@ Deno.serve(async (req) => {
             indicatorConsensus: indicatorConsensusScore,
             indicatorDirection,
             indicatorBreakdown,
-            mtfConfirmed,
+            indicatorConfirmed,
             coalitionTier: snapshot.coalitionRequirement.tier,
             coalitionMinAgents: snapshot.coalitionRequirement.minAgents,
             governanceState: govState,
@@ -3589,8 +3653,8 @@ Deno.serve(async (req) => {
       // ═══════════════════════════════════════════════════════════════════
       const edgeLockReasons: string[] = [];
 
-      if (!mtfConfirmed && !forceMode) {
-        edgeLockReasons.push(`MTF FAIL: 1m=${mtf_1m_ignition} 5m=${mtf_5m_momentum} 15m=${mtf_15m_bias}`);
+      if (!indicatorConfirmed && !forceMode) {
+        edgeLockReasons.push(`Indicator FAIL: consensus=${indicatorConsensusScore} direction=${indicatorDirection} data=${indicatorDataAvailable}`);
       }
       if (!regimeAuthorized && !forceMode) {
         edgeLockReasons.push(`Regime FAIL: '${effectiveRegimeForAuth}' not authorized for ${direction}`);
@@ -3601,9 +3665,9 @@ Deno.serve(async (req) => {
       if (!coalitionMet && !forceMode) {
         edgeLockReasons.push(`Coalition FAIL: ${snapshot.eligibleCount} < ${snapshot.coalitionRequirement.minAgents} required`);
       }
-      // Support agent restriction: cannot generate bias or override MTF
-      if (isSupportAgent && !mtfConfirmed && !forceMode) {
-        edgeLockReasons.push(`Support agent ${agentId} cannot override MTF failure`);
+      // Support agent restriction: cannot generate bias or override indicator failure
+      if (isSupportAgent && !indicatorConfirmed && !forceMode) {
+        edgeLockReasons.push(`Support agent ${agentId} cannot override indicator failure`);
       }
 
       // Finalize edge proof record
@@ -3927,7 +3991,7 @@ Deno.serve(async (req) => {
         }
 
         // Determine entry timeframe from indicator data
-        const entryTf = "1m"; // Primary scalping timeframe
+        const entryTf = "15m"; // Actual indicator timeframe used for consensus
 
         await supabase
           .from("oanda_orders")
@@ -3960,6 +4024,17 @@ Deno.serve(async (req) => {
         });
 
         console.log(`[SCALP-TRADE] ${pair}: ${finalStatus} | ${tradeUnits}u | agent=${agentId}(${agentTier}) | quality=${execQuality}`);
+
+        // ═══ UPDATE CORRELATION EXPOSURE TRACKING ═══
+        if (finalStatus === "filled") {
+          for (const [group, members] of Object.entries(CORRELATION_GROUPS)) {
+            if (members.includes(pair)) {
+              groupExposure[group] = (groupExposure[group] || 0) + 1;
+            }
+          }
+          totalPositions++;
+          tradesSubmitted++;
+        }
       } catch (oandaErr) {
         const errMsg = (oandaErr as Error).message;
         const isMarketHalted = errMsg.includes('MARKET_HALTED');
@@ -3986,7 +4061,7 @@ Deno.serve(async (req) => {
         }
       }
 
-      if (i < signalCount - 1) await new Promise((r) => setTimeout(r, 150));
+      if (i < pairsToProcess.length - 1) await new Promise((r) => setTimeout(r, 150));
     }
 
     const elapsed = Date.now() - startTime;
@@ -3994,14 +4069,15 @@ Deno.serve(async (req) => {
     const gated = results.filter(r => r.status === "gated").length;
     const rejected = results.filter(r => r.status === "rejected").length;
     const edgeLocked = results.filter(r => r.status === "edge-locked").length;
-    const mtfBlocked = results.filter(r => r.status === "mtf-unavailable" || r.status === "mtf-error").length;
+    const indicatorBlocked = results.filter(r => r.status === "indicator-unavailable" || r.status === "indicator-error").length;
+    const correlationCapped = results.filter(r => r.status === "correlation-capped").length;
     const weakConsensus = results.filter(r => r.status === "weak-consensus").length;
     const pairBanned = results.filter(r => r.status === "pair-banned").length;
     const discoveryBlocked = results.filter(r => r.status === "discovery_blocked").length;
     const shadowEvals = results.filter(r => r.status === "shadow_eval").length;
     const fifoSkipped = results.filter(r => r.status === "fifo-skipped").length;
 
-    console.log(`[SCALP-TRADE] ═══ Complete: ${results.length} signals | ${passed} filled | ${edgeLocked} edge-locked | ${mtfBlocked} mtf-blocked | ${weakConsensus} weak-consensus | ${gated} gated | ${rejected} rejected | ${pairBanned} banned | ${discoveryBlocked} disc_blocked | ${fifoSkipped} fifo-skipped | ${shadowEvals} shadow | ${elapsed}ms ═══`);
+    console.log(`[SCALP-TRADE] ═══ Complete: ${results.length} signals | ${passed} filled | ${edgeLocked} edge-locked | ${indicatorBlocked} indicator-blocked | ${correlationCapped} correlation-capped | ${weakConsensus} weak-consensus | ${gated} gated | ${rejected} rejected | ${pairBanned} banned | ${discoveryBlocked} disc_blocked | ${fifoSkipped} fifo-skipped | ${shadowEvals} shadow | ${elapsed}ms ═══`);
 
     return new Response(
       JSON.stringify({
@@ -4049,7 +4125,7 @@ Deno.serve(async (req) => {
           scalpPairs: SCALP_PAIRS,
           secondaryPairs: SECONDARY_PAIRS,
         },
-        summary: { total: results.length, filled: passed, edgeLocked, mtfBlocked, weakConsensus, gated, rejected, pairBanned, discoveryBlocked, shadowEvals },
+        summary: { total: results.length, filled: passed, edgeLocked, indicatorBlocked, correlationCapped, weakConsensus, gated, rejected, pairBanned, discoveryBlocked, shadowEvals },
         signals: results,
         elapsed,
       }),
