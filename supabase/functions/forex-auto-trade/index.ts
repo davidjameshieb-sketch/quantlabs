@@ -40,6 +40,7 @@ const BASE_UNITS = 1000;
 // Must be checked by coalition promotion, agent selection, AND canPlaceLiveOrder.
 const SUSPENDED_AGENTS: Record<string, string> = {
   "support-mtf-confirmer": "shadow",
+  "support-regime-confirmer": "shadow",   // Suspended: breakdown trap offender — 24-trade loss streak, -116 pips. Requires WR>50% over 30 trades to reinstate.
   "sentiment-reactor": "disabled",
   "range-navigator": "disabled",
 };
