@@ -1,5 +1,4 @@
 import { useState, useCallback } from 'react';
-import { supabase } from '@/integrations/supabase/client';
 
 export interface ChatMessage {
   id: string;
@@ -8,7 +7,7 @@ export interface ChatMessage {
   timestamp: number;
 }
 
-const CHAT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/market-chat`;
+const CHAT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/forex-ai-desk`;
 
 export const useMarketChat = () => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -32,23 +31,17 @@ export const useMarketChat = () => {
     let assistantContent = '';
 
     try {
-      // Get current session token for authenticated requests
-      const { data: { session } } = await supabase.auth.getSession();
-      const token = session?.access_token;
-
       const response = await fetch(CHAT_URL, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${token || import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+          Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
         },
         body: JSON.stringify({
           messages: [...messages, userMessage].map(m => ({
             role: m.role,
             content: m.content,
           })),
-          marketData: marketContext,
-          // userTier removed — tier is now determined server-side
         }),
       });
 

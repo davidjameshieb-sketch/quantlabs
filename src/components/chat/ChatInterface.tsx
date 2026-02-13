@@ -62,8 +62,8 @@ export const ChatInterface = ({
             <Brain className="w-4 h-4 text-background" />
           </div>
           <div>
-            <h3 className="font-display text-sm font-semibold text-foreground">QuantLabs AI</h3>
-            <p className="text-xs text-muted-foreground">Market Intelligence</p>
+            <h3 className="font-display text-sm font-semibold text-foreground">AI Trading Desk</h3>
+            <p className="text-xs text-muted-foreground">System Intelligence</p>
           </div>
         </div>
         {messages.length > 0 && (
@@ -95,10 +95,10 @@ export const ChatInterface = ({
                   <Sparkles className="w-8 h-8 text-primary" />
                 </div>
                 <h3 className="font-display text-lg font-semibold text-foreground mb-2">
-                  Discover Market Opportunities
+                  AI Trading Desk
                 </h3>
                 <p className="text-sm text-muted-foreground max-w-sm mx-auto">
-                  Ask me to filter stocks by price, volume, conviction, or sector. I'll explain what the market is telling us.
+                  Ask about live trades, system performance, governance decisions, agent rankings, and progress toward the Prime Directive.
                 </p>
               </div>
 
@@ -143,7 +143,7 @@ export const ChatInterface = ({
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Ask about stocks, crypto, sectors..."
+            placeholder="Ask about trades, performance, governance..."
             className="min-h-[44px] max-h-32 resize-none bg-background/50 border-border/50"
             disabled={isLoading}
           />
@@ -161,7 +161,7 @@ export const ChatInterface = ({
           </Button>
         </form>
         <p className="text-xs text-muted-foreground mt-2 text-center">
-          QuantLabs provides analysis, not financial advice.
+          AI Trading Desk — real-time system intelligence.
         </p>
       </div>
     </div>
