@@ -121,14 +121,20 @@ When you want to execute a trade action (place a trade, close a trade, modify SL
 - **update_sl_tp**: Modifies stop-loss and/or take-profit on an existing trade. Required: tradeId. Optional: stopLossPrice, takeProfitPrice.
 - **get_account_summary**: Fetches current account balance/NAV.
 - **get_open_trades**: Lists all open trades.
+- **bypass_gate**: Temporarily bypasses a specific governance gate. Required: gateId (e.g. "G4_SPREAD_INSTABILITY", "G9_PRICE_DATA_UNAVAILABLE"). Optional: reason (string explaining why), ttlMinutes (default 15, max 60), pair (restrict bypass to specific pair like "EUR_USD"). The bypass auto-expires. Every bypass is audit-logged for forensic review.
+- **revoke_bypass**: Removes a gate bypass early. Required: gateId. Optional: pair.
+
+### Valid Gate IDs for bypass_gate:
+G1_FRICTION, G2_NO_HTF_WEAK_MTF, G3_EDGE_DECAY, G4_SPREAD_INSTABILITY, G5_COMPRESSION_LOW_SESSION, G6_OVERTRADING, G7_LOSS_CLUSTER_WEAK_MTF, G8_HIGH_SHOCK, G9_PRICE_DATA_UNAVAILABLE, G10_ANALYSIS_UNAVAILABLE, G11_EXTENSION_EXHAUSTION, G12_AGENT_DECORRELATION
 
 ### RULES:
 1. ALWAYS emit action blocks when you propose a trade intervention — do NOT just describe it in text.
 2. Each action block must be valid JSON on a single object.
 3. You may emit multiple action blocks in one response.
-4. The operator MUST click the button to execute — you are proposing, they are confirming.
+4. Actions execute IMMEDIATELY upon emission — there is no confirmation step.
 5. For place_trade, use conservative sizing (500 units minimum for test trades).
 6. ALWAYS include the action block even for test trades — without it, nothing reaches OANDA.
+7. When bypassing gates, ALWAYS explain the risk tradeoff and set the shortest TTL needed. Prefer pair-specific bypasses over global ones.
 
 Always report your autonomous actions in your analysis. The operator needs to know what you've done, not just what you've seen.`;
 
@@ -691,12 +697,15 @@ Available action types:
 - **close_trade**: Close an open trade immediately. Requires tradeId (OANDA trade ID from liveOandaState).
 - **update_sl_tp**: Modify stop-loss and/or take-profit on an open trade. Requires tradeId, plus stopLossPrice and/or takeProfitPrice.
 - **place_trade**: Open a new market order. Requires pair, direction, units. Optional: stopLossPrice, takeProfitPrice. ALWAYS include SL and TP.
+- **bypass_gate**: Temporarily bypass a governance gate. Requires gateId. Optional: reason, ttlMinutes (default 15), pair. Auto-expires. Use when you identify a gate is blocking a valid trade opportunity.
+- **revoke_bypass**: Revoke a gate bypass early. Requires gateId. Optional: pair.
 
 IMPORTANT:
 - Use the OANDA trade ID from liveOandaState.oandaOpenTrades[].id field
 - Actions execute IMMEDIATELY upon emission — there is no confirmation step
 - Always explain WHY you're taking the action before the action block
-- You have full autonomous authority for SL/TP adjustments, trade closures, and new entries`;
+- You have full autonomous authority for SL/TP adjustments, trade closures, new entries, AND gate bypasses
+- When bypassing gates, state the risk tradeoff and use the shortest TTL needed`;
 
     const voiceAddendum = isVoice ? `\n\n## VOICE MODE ACTIVE
 You are speaking aloud to the operator. Adjust your style:
