@@ -44,3 +44,9 @@ verify_jwt = false
 
 [functions.cluster-mining]
 verify_jwt = false
+
+[functions.forex-ai-desk]
+verify_jwt = false
+
+[functions.forex-counterfactual-resolver]
+verify_jwt = false
