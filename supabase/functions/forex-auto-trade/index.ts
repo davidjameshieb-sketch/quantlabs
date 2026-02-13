@@ -452,6 +452,17 @@ function resolveAgentSnapshot(stats: Array<{
         constraints: ["support-only", "no-override"],
         metrics: { totalTrades: 0, winRate: 0.5, expectancy: 0, profitFactor: 1.0, netPips: 0 },
       },
+      {
+        agentId: "support-friction-confirmer",
+        fleetSet: "ACTIVE",
+        effectiveTier: "B-Rescued" as EffectiveTier,
+        deploymentState: "reduced",
+        sizeMultiplier: 0.15,
+        longOnly: false,
+        canExecute: true,
+        constraints: ["support-only", "no-override"],
+        metrics: { totalTrades: 0, winRate: 0.5, expectancy: 0, profitFactor: 1.0, netPips: 0 },
+      },
     ];
 
     for (const sa of supportAgents) {
@@ -2344,11 +2355,11 @@ Deno.serve(async (req) => {
     // ═══ PHASE 7: SESSION-WEIGHTED POSITION SIZING (expanded) ═══
     // Toxic hours hard-blocked above. Remaining hours get performance-weighted sizing.
     const HOUR_SIZING_MULTIPLIER: Record<number, number> = {
-      0: 0.5, 1: 0.0, 2: 0.0, 3: 0.0, 4: 0.0, 5: 0.7,  // 01-04 toxic blocked above, double-lock
+      0: 0.5, 1: 0.5, 2: 0.5, 3: 0.5, 4: 0.5, 5: 0.7,  // Asian: shadow-logged, reduced sizing for learning
       6: 0.8, 7: 1.0, 8: 1.2, 9: 1.2, 10: 0.3, 11: 0.5,
-      12: 0.8, 13: 0.0, 14: 0.0, // NY lunch toxic
-      15: 1.5, 16: 1.5, 17: 1.0, 18: 0.0, 19: 0.0,  // 18-21 toxic blocked above
-      20: 0.0, 21: 0.0, 22: 0.3, 23: 0.5,
+      12: 0.8, 13: 0.0, 14: 0.0, // NY lunch toxic — hard-blocked above
+      15: 1.5, 16: 1.5, 17: 1.0, 18: 0.4, 19: 0.4,  // Late-NY: shadow-logged, reduced sizing
+      20: 0.4, 21: 0.4, 22: 0.3, 23: 0.5,
     };
     const hourSizingMult = HOUR_SIZING_MULTIPLIER[currentHourUTC] ?? 1.0;
     govConfig.sizingMultiplier *= hourSizingMult;
@@ -2599,6 +2610,7 @@ Deno.serve(async (req) => {
       let breakoutRangeLow: number | null = null;    // BB lower from compression phase
       let breakoutVolAccel = 0;
       let breakoutAccelLevel = "stable";
+      let parsedRegimeFamilyHoldBars = 0; // Hoisted for post-indicator choke point
 
       if (forceMode) {
         direction = reqBody.direction || "long";
@@ -2683,6 +2695,7 @@ Deno.serve(async (req) => {
                 // ═══ REGIME STABILITY: Direction-aware anti-flicker fields ═══
                 const regimeHoldBars = indicatorData.regime.holdBars || 0;
                 const regimeFamilyHoldBars = indicatorData.regime.familyHoldBars || 0;
+                parsedRegimeFamilyHoldBars = regimeFamilyHoldBars; // Persist for post-indicator choke point
                 const regimeConfirmed = indicatorData.regime.regimeConfirmed === true;
                 const regimeFamilyConfirmed = indicatorData.regime.regimeFamilyConfirmed === true;
                 const recentRegimes = indicatorData.regime.recentRegimes || [];
@@ -2763,7 +2776,7 @@ Deno.serve(async (req) => {
                 // AND vol is accelerating → this is a breakout-from-range event.
                 // Carry forward the compression BB bands as range boundaries and use breakout-capture geometry.
                 } else if (
-                  !isCompressionPersonalityTrade &&
+                  !(indicatorRegime === "compression" && compressionActive && compressionReversionDirection !== "none") &&
                   indicatorRegime !== "compression" &&
                   familyLabel !== "neutral" &&
                   (recentRegimes || []).length >= 2 &&
@@ -3135,12 +3148,7 @@ Deno.serve(async (req) => {
       // ═══ CENTRALIZED CHOKE POINT — POST-INDICATOR CHECK ═══
       // Now we have direction + indicator regime — run full eligibility check.
       {
-        const regimeFamilyHoldBars = (() => {
-          try {
-            const gp = indicatorBreakdown ? indicatorBreakdown : {};
-            return 0; // Will be refined below from parsed regime data
-          } catch { return 0; }
-        })();
+        const regimeFamilyHoldBars = parsedRegimeFamilyHoldBars;
         
         const postCheck = canPlaceLiveOrder(
           {
@@ -3200,7 +3208,8 @@ Deno.serve(async (req) => {
         console.log(`[REGIME-AUTH] ${pair} ${direction}: BREAKOUT CAPTURE — auto-authorized (transition compression→${indicatorRegime}, volAccel=${breakoutVolAccel})`);
       } else if (hasIndicatorRegime && isLearningPhase) {
         // Learning: trust indicator regime exclusively — ATR is directionally blind
-        regimeAuthorized = indicatorRegimeAuthorized;
+        // ALSO authorize neutral regimes that passed the learning-phase gate (neutralRegimeReducedSizing)
+        regimeAuthorized = indicatorRegimeAuthorized || neutralRegimeReducedSizing;
         effectiveRegimeForAuth = indicatorRegime;
       } else if (hasIndicatorRegime) {
         // Post-maturity: both must agree
