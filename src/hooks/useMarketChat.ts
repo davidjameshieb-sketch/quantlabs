@@ -156,6 +156,28 @@ export const useMarketChat = () => {
     }
   }, [messages, isLoading]);
 
+  const executeAction = useCallback(async (action: Record<string, unknown>): Promise<{ success: boolean; detail?: string }> => {
+    try {
+      const response = await fetch(CHAT_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+        },
+        body: JSON.stringify({ mode: 'action', action, environment: 'live' }),
+      });
+
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        return { success: false, detail: data.error || `Failed: ${response.status}` };
+      }
+      const detail = data.results?.[0]?.detail || 'Action executed';
+      return { success: true, detail };
+    } catch (err) {
+      return { success: false, detail: (err as Error).message };
+    }
+  }, []);
+
   const clearMessages = useCallback(() => {
     setMessages([]);
     setError(null);
@@ -167,5 +189,6 @@ export const useMarketChat = () => {
     error,
     sendMessage,
     clearMessages,
+    executeAction,
   };
 };
