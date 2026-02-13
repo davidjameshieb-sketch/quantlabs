@@ -2592,6 +2592,13 @@ Deno.serve(async (req) => {
       let compressionS1: number | null = null;
       let compressionStochK: number | null = null;
       let compressionCCI: number | null = null;
+      // ═══ PHASE 3: COMPRESSION → BREAKOUT TRANSITION DETECTION ═══
+      let isBreakoutCaptureTrade = false;
+      let breakoutFromCompression = false;
+      let breakoutRangeHigh: number | null = null;   // BB upper from compression phase
+      let breakoutRangeLow: number | null = null;    // BB lower from compression phase
+      let breakoutVolAccel = 0;
+      let breakoutAccelLevel = "stable";
 
       if (forceMode) {
         direction = reqBody.direction || "long";
@@ -2750,6 +2757,35 @@ Deno.serve(async (req) => {
                     results.push({ pair, direction: "none", status: "compression-no-extreme", govState, agentId,
                       error: `revScore=${compressionReversionScore},threshold=${adaptiveReversionThreshold},dir=${compressionReversionDirection}` });
                     continue;
+                  }
+                // ═══ PHASE 3: COMPRESSION → BREAKOUT TRANSITION DETECTION ═══
+                // When regime just shifted FROM compression to a directional regime (expansion/momentum/breakdown)
+                // AND vol is accelerating → this is a breakout-from-range event.
+                // Carry forward the compression BB bands as range boundaries and use breakout-capture geometry.
+                } else if (
+                  !isCompressionPersonalityTrade &&
+                  indicatorRegime !== "compression" &&
+                  familyLabel !== "neutral" &&
+                  (recentRegimes || []).length >= 2 &&
+                  (recentRegimes || []).slice(1).some((r: string) => r === "compression" || r === "flat") &&
+                  (accelLevel === "accelerating" || volAcceleration > 20) &&
+                  compressionBBUpper !== null && compressionBBLower !== null
+                ) {
+                  // This is a breakout-from-compression transition
+                  const BREAKOUT_REGIMES = ["expansion", "momentum", "breakdown", "risk-off", "ignition"];
+                  if (BREAKOUT_REGIMES.includes(indicatorRegime)) {
+                    isBreakoutCaptureTrade = true;
+                    breakoutFromCompression = true;
+                    breakoutRangeHigh = compressionBBUpper;
+                    breakoutRangeLow = compressionBBLower;
+                    breakoutVolAccel = volAcceleration;
+                    breakoutAccelLevel = accelLevel;
+                    neutralRegimeReducedSizing = false; // Full personality trade
+                    
+                    const rangeWidthPips = Math.abs(compressionBBUpper - compressionBBLower) / (pair.includes("JPY") ? 0.01 : 0.0001);
+                    console.log(`[BREAKOUT-CAPTURE] ${pair}: Compression→${indicatorRegime} transition detected! volAccel=${volAcceleration}(${accelLevel}) | range=${rangeWidthPips.toFixed(1)}p (BB ${compressionBBLower?.toFixed(5)}-${compressionBBUpper?.toFixed(5)}) | recent=[${(recentRegimes||[]).join(',')}]`);
+                  } else {
+                    console.log(`[BREAKOUT-SKIP] ${pair}: Compression transition but regime=${indicatorRegime} not in breakout list — standard routing`);
                   }
                 } else if ((indicatorRegime === "compression" && !compressionActive) || NEUTRAL_BLOCKED_REGIMES.includes(indicatorRegime) || familyLabel === "neutral") {
                   if (isInLearningPhase) {
@@ -3139,10 +3175,10 @@ Deno.serve(async (req) => {
       const isCompressionPersonalityTrade = indicatorRegime === "compression" && compressionActive && compressionReversionDirection !== "none";
       const LONG_AUTHORIZED_REGIMES = ["expansion", "momentum", "exhaustion", "ignition"];
       const SHORT_AUTHORIZED_REGIMES = ["breakdown", "risk-off", "exhaustion", "shock-breakdown", "risk-off-impulse", "liquidity-vacuum", "breakdown-continuation"];
-      const atrRegimeAuthorized = isCompressionPersonalityTrade || (direction === "long"
+      const atrRegimeAuthorized = isCompressionPersonalityTrade || isBreakoutCaptureTrade || (direction === "long"
         ? LONG_AUTHORIZED_REGIMES.includes(regime)
         : SHORT_AUTHORIZED_REGIMES.includes(regime));
-      const indicatorRegimeAuthorized = isCompressionPersonalityTrade || indicatorRegime === "unknown" || (direction === "long"
+      const indicatorRegimeAuthorized = isCompressionPersonalityTrade || isBreakoutCaptureTrade || indicatorRegime === "unknown" || (direction === "long"
         ? LONG_AUTHORIZED_REGIMES.includes(indicatorRegime)
         : SHORT_AUTHORIZED_REGIMES.includes(indicatorRegime));
       // LEARNING PHASE: indicator regime is SOLE authority when available
@@ -3157,6 +3193,11 @@ Deno.serve(async (req) => {
         regimeAuthorized = true;
         effectiveRegimeForAuth = "compression";
         console.log(`[REGIME-AUTH] ${pair} ${direction}: COMPRESSION PERSONALITY — auto-authorized (revScore=${compressionReversionScore})`);
+      } else if (isBreakoutCaptureTrade) {
+        // Breakout-capture: authorized by transition detection — regime already directional
+        regimeAuthorized = true;
+        effectiveRegimeForAuth = `breakout-from-compression→${indicatorRegime}`;
+        console.log(`[REGIME-AUTH] ${pair} ${direction}: BREAKOUT CAPTURE — auto-authorized (transition compression→${indicatorRegime}, volAccel=${breakoutVolAccel})`);
       } else if (hasIndicatorRegime && isLearningPhase) {
         // Learning: trust indicator regime exclusively — ATR is directionally blind
         regimeAuthorized = indicatorRegimeAuthorized;
@@ -3322,6 +3363,11 @@ Deno.serve(async (req) => {
       deploymentMultiplier *= regimeSizingMult;
       if (regimeSizingMult !== 1.0) {
         console.log(`[SCALP-TRADE] ${pair}: Regime ${effectiveRegimeForSizing} sizing multiplier: ${regimeSizingMult}x (Kelly-informed)`);
+      }
+      // PHASE 3: Breakout-capture trades get 0.8x sizing (higher conviction than compression 0.6x)
+      if (isBreakoutCaptureTrade) {
+        deploymentMultiplier = discoveryMultiplier * 0.8;
+        console.log(`[BREAKOUT-SIZING] ${pair}: Breakout-capture sizing override → 0.8x (compression→${indicatorRegime} transition)`);
       }
 
       // ═══ PHASE D: ROLLING KELLY-INFORMED SIZING (REGIME-LEVEL) ═══
@@ -3496,6 +3542,22 @@ Deno.serve(async (req) => {
               pivotS1: compressionS1,
               exitGeometry: "pivot-to-pivot",
               personalityType: "mean-reversion",
+            } : { active: false },
+            // ═══ PHASE 3: BREAKOUT CAPTURE METADATA ═══
+            breakoutCapture: isBreakoutCaptureTrade ? {
+              active: true,
+              transitionFrom: "compression",
+              transitionTo: indicatorRegime,
+              rangeHigh: breakoutRangeHigh,
+              rangeLow: breakoutRangeLow,
+              rangeWidthPips: breakoutRangeHigh !== null && breakoutRangeLow !== null
+                ? Math.abs(breakoutRangeHigh - breakoutRangeLow) / (pair.includes("JPY") ? 0.01 : 0.0001)
+                : null,
+              volAcceleration: breakoutVolAccel,
+              accelLevel: breakoutAccelLevel,
+              exitGeometry: "breakout-range-anchor",
+              personalityType: "breakout-capture",
+              sizingMultiplier: 0.8,
             } : { active: false },
           },
         })
@@ -3681,6 +3743,69 @@ Deno.serve(async (req) => {
                 }
                 
                 console.log(`[COMPRESSION-EXIT] ${pair} ${direction}: SL=${stopLossPrice} (${slDistPips.toFixed(1)}p, BB+buffer, min=${minStopDistancePips}p) | TP=${takeProfitPrice} (${tpDistPips.toFixed(1)}p, pivot-to-pivot) | R:R=1:${rrRatio.toFixed(1)} | entry ~${entryEstimate}`);
+              }
+              // ═══ PHASE 3: BREAKOUT-CAPTURE EXIT GEOMETRY ═══
+              // SL: Just inside the old compression range (range boundary + 3p buffer)
+              // TP: 2.5× R:R — breakouts that clear the range tend to run
+              // The old BB bands become S/R reference: SL anchored to the range you just left
+              else if (isBreakoutCaptureTrade && breakoutRangeHigh !== null && breakoutRangeLow !== null) {
+                const rangeBuffer = 3 * slPipMult; // 3 pip buffer inside range
+                const minBreakoutSL = 10; // minimum 10 pip SL for breakout trades
+                
+                if (direction === "long") {
+                  // Long breakout: SL at bottom of old compression range + buffer
+                  // Price broke above range → protect at range low
+                  stopLossPrice = Math.round((breakoutRangeLow - rangeBuffer) * 100000) / 100000;
+                  
+                  // If range was very wide, tighten SL to midpoint of range instead
+                  const rangeMid = (breakoutRangeHigh + breakoutRangeLow) / 2;
+                  const slFromRangeLow = Math.abs(entryEstimate - stopLossPrice) / slPipMult;
+                  if (slFromRangeLow > 25) {
+                    // Range too wide — use range midpoint as SL anchor instead
+                    stopLossPrice = Math.round((rangeMid - rangeBuffer) * 100000) / 100000;
+                    console.log(`[BREAKOUT-SL] ${pair}: Range too wide (${slFromRangeLow.toFixed(1)}p) — anchoring SL to range midpoint`);
+                  }
+                } else {
+                  // Short breakout: SL at top of old compression range + buffer
+                  stopLossPrice = Math.round((breakoutRangeHigh + rangeBuffer) * 100000) / 100000;
+                  
+                  const rangeMid = (breakoutRangeHigh + breakoutRangeLow) / 2;
+                  const slFromRangeHigh = Math.abs(stopLossPrice - entryEstimate) / slPipMult;
+                  if (slFromRangeHigh > 25) {
+                    stopLossPrice = Math.round((rangeMid + rangeBuffer) * 100000) / 100000;
+                    console.log(`[BREAKOUT-SL] ${pair}: Range too wide (${slFromRangeHigh.toFixed(1)}p) — anchoring SL to range midpoint`);
+                  }
+                }
+                
+                let breakoutSlDist = Math.abs(entryEstimate - stopLossPrice) / slPipMult;
+                
+                // Enforce minimum SL distance
+                if (breakoutSlDist < minBreakoutSL) {
+                  console.log(`[BREAKOUT-SL] ${pair}: SL too tight (${breakoutSlDist.toFixed(1)}p < ${minBreakoutSL}p floor) — widening`);
+                  stopLossPrice = direction === "long"
+                    ? Math.round((entryEstimate - minBreakoutSL * slPipMult) * 100000) / 100000
+                    : Math.round((entryEstimate + minBreakoutSL * slPipMult) * 100000) / 100000;
+                  breakoutSlDist = minBreakoutSL;
+                }
+                
+                // Safety: SL must be on correct side of entry
+                if ((direction === "long" && stopLossPrice >= entryEstimate) ||
+                    (direction === "short" && stopLossPrice <= entryEstimate)) {
+                  stopLossPrice = direction === "long"
+                    ? Math.round((entryEstimate - 12 * slPipMult) * 100000) / 100000
+                    : Math.round((entryEstimate + 12 * slPipMult) * 100000) / 100000;
+                  breakoutSlDist = 12;
+                  console.log(`[BREAKOUT-SL] ${pair}: Range SL invalid — using 12p fallback`);
+                }
+                
+                // TP at 2.5× R:R — breakouts from compression tend to run
+                const breakoutTpDist = breakoutSlDist * 2.5;
+                takeProfitPrice = direction === "long"
+                  ? Math.round((entryEstimate + breakoutTpDist * slPipMult) * 100000) / 100000
+                  : Math.round((entryEstimate - breakoutTpDist * slPipMult) * 100000) / 100000;
+                
+                const rangeWidthPips = Math.abs(breakoutRangeHigh - breakoutRangeLow) / slPipMult;
+                console.log(`[BREAKOUT-EXIT] ${pair} ${direction}: SL=${stopLossPrice} (${breakoutSlDist.toFixed(1)}p, range-anchor) | TP=${takeProfitPrice} (${breakoutTpDist.toFixed(1)}p, 2.5R) | range=${rangeWidthPips.toFixed(1)}p | entry ~${entryEstimate}`);
               }
               // ═══ STANDARD TREND-FOLLOWING: Dynamic SL + 5R SAFETY CEILING TP ═══
               else if (supertrendValue15m !== null && atr15mValue !== null) {
