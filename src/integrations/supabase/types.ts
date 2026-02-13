@@ -77,6 +77,42 @@ export type Database = {
         }
         Relationships: []
       }
+      gate_bypasses: {
+        Row: {
+          bypassed_at: string
+          created_at: string
+          created_by: string
+          expires_at: string
+          gate_id: string
+          id: string
+          pair: string | null
+          reason: string
+          revoked: boolean
+        }
+        Insert: {
+          bypassed_at?: string
+          created_at?: string
+          created_by?: string
+          expires_at: string
+          gate_id: string
+          id?: string
+          pair?: string | null
+          reason?: string
+          revoked?: boolean
+        }
+        Update: {
+          bypassed_at?: string
+          created_at?: string
+          created_by?: string
+          expires_at?: string
+          gate_id?: string
+          id?: string
+          pair?: string | null
+          reason?: string
+          revoked?: boolean
+        }
+        Relationships: []
+      }
       oanda_orders: {
         Row: {
           agent_id: string | null

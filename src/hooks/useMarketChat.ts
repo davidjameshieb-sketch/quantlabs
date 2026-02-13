@@ -176,21 +176,21 @@ export const useMarketChat = () => {
           try {
             let result: { success: boolean; detail?: string };
 
-            // ── Handle bypass_gate locally (client-side registry) ──
+            // ── All actions route to edge function (server-side persistence) ──
             if (action.type === 'bypass_gate' && action.gateId) {
+              // Route to server AND register locally for client-side governance
+              result = await executeAction(action);
               const gateId = action.gateId as GateId;
               const reason = (action.reason as string) || 'Floor Manager override';
               const ttlMinutes = typeof action.ttlMinutes === 'number' ? action.ttlMinutes : 15;
               const pair = action.pair as string | undefined;
               registerBypass(gateId, reason, ttlMinutes * 60 * 1000, pair);
-              result = { success: true, detail: `Gate ${gateId} bypassed for ${ttlMinutes}m${pair ? ` on ${pair}` : ''} — ${reason}` };
 
             } else if (action.type === 'revoke_bypass' && action.gateId) {
-              const revoked = revokeBypass(action.gateId as GateId, action.pair as string | undefined);
-              result = { success: true, detail: revoked ? `Gate ${action.gateId} bypass revoked` : `No active bypass for ${action.gateId}` };
+              result = await executeAction(action);
+              revokeBypass(action.gateId as GateId, action.pair as string | undefined);
 
             } else {
-              // All other actions go to the edge function
               result = await executeAction(action);
             }
 
