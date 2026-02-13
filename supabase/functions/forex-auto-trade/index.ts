@@ -1400,7 +1400,7 @@ function canPlaceLiveOrder(
 
   // ─── SHADOW CHECK 4B-4D: COMPRESSION/EXHAUSTION/TRANSITION REGIMES ───
   if (tradeIntent.indicatorRegime === "compression") {
-    console.log(`[GOV_SHADOW_REGIME] regime=compression — COMPRESSION PERSONALITY active, mean-reversion routing enabled`);
+    console.log(`[GOV_SHADOW_REGIME] regime=compression — checking if compression personality is active for mean-reversion routing`);
   }
   if (tradeIntent.indicatorRegime === "exhaustion") {
     console.log(`[GOV_SHADOW_REGIME] regime=exhaustion — shadow-logged, gathering new data`);
@@ -2871,11 +2871,22 @@ Deno.serve(async (req) => {
                   } else {
                     console.log(`[BREAKOUT-SKIP] ${pair}: Compression transition but regime=${indicatorRegime} not in breakout list — standard routing`);
                   }
-                } else if ((indicatorRegime === "compression" && !compressionActive) || NEUTRAL_BLOCKED_REGIMES.includes(indicatorRegime) || familyLabel === "neutral") {
+                } else if ((indicatorRegime === "compression" && !compressionActive) || indicatorRegime === "flat") {
+                  // ═══ HARD BLOCK: flat/compression-without-personality ═══
+                  // These are non-directional markets. Directional trades here have no edge.
+                  // Compression is ONLY tradeable via the compression personality (mean-reversion).
+                  // Flat markets have no structure to exploit — always skip.
+                  // This block applies even during learning phase — collecting losing directional
+                  // trades in structureless markets pollutes the learning data.
+                  console.log(`[REGIME-HARD-BLOCK] ${pair}: ${indicatorRegime} (family=${familyLabel}) — BLOCKED (no personality active for non-directional market)`);
+                  results.push({ pair, direction: "none", status: "flat-regime-blocked", govState, agentId,
+                    error: `regime=${indicatorRegime},compressionActive=${compressionActive},family=${familyLabel}` });
+                  continue;
+                } else if (NEUTRAL_BLOCKED_REGIMES.includes(indicatorRegime) || familyLabel === "neutral") {
                   if (isInLearningPhase) {
-                    // LEARNING PHASE: Allow neutral regimes at 0.5x sizing for trade density
+                    // LEARNING PHASE: Allow other neutral regimes (exhaustion, transition) at 0.5x for data density
+                    // But NOT flat/compression — those are hard-blocked above
                     neutralRegimeReducedSizing = true;
-                    // Override regime friendliness — consensus alone drives direction at reduced sizing
                     indicatorLongFriendly = true;
                     indicatorShortFriendly = true;
                     console.log(`[REGIME-NEUTRAL-LEARN] ${pair}: ${indicatorRegime} (family=${familyLabel}) — allowed at 0.5x during learning (${(rawOrders||[]).length}/500 trades)`);
