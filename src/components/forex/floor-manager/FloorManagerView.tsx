@@ -12,6 +12,7 @@ import { RegimeMismatchPanel } from './RegimeMismatchPanel';
 import { ConfidenceCompetencePanel } from './ConfidenceCompetencePanel';
 import { FailurePatternTicker } from './FailurePatternTicker';
 import { IndicatorConsensusPanel } from './IndicatorConsensusPanel';
+import { PairOpportunityHeatmap } from './PairOpportunityHeatmap';
 
 interface Props {
   openTrades?: Array<{
@@ -81,6 +82,9 @@ export function FloorManagerView({ openTrades }: Props) {
         <RegimeMismatchPanel />
         <ConfidenceCompetencePanel />
       </div>
+
+      {/* Live Pair Opportunity Heatmap */}
+      <PairOpportunityHeatmap />
 
       {/* Indicator Consensus Engine Room */}
       <IndicatorConsensusPanel />
