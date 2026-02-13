@@ -385,6 +385,7 @@ serve(async (req) => {
       return ERR.internal();
     }
 
+    const body = await req.json();
     const { messages, mode } = body;
     const isVoice = mode === 'voice';
 
