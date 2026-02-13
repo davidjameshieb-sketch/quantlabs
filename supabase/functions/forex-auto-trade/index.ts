@@ -1689,14 +1689,32 @@ async function loadServerBypasses(supabase: ReturnType<typeof createClient>): Pr
   }
 }
 
+// ─── Dynamic Gate Check (Sovereign-created G13+ gates) ───
+function isDynamicGateBlocking(pair: string): { blocked: boolean; gateId: string; reason: string } | null {
+  const now = new Date().toISOString();
+  for (const bp of _serverBypasses) {
+    if (bp.expires_at < now) continue;
+    if (!bp.gate_id.startsWith("DYNAMIC_GATE:")) continue;
+    // Check pair-specific or global
+    if (bp.pair && bp.pair !== pair) continue;
+    try {
+      const meta = JSON.parse(bp.reason);
+      const gateId = bp.gate_id.replace("DYNAMIC_GATE:", "");
+      console.log(`[SOVEREIGN-GATE] ${gateId} ACTIVE${bp.pair ? ` for ${pair}` : ""} — ${meta.description}`);
+      return { blocked: true, gateId, reason: meta.description || bp.reason };
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
 function isGateBypassedServer(gateId: string, pair?: string): boolean {
   const now = new Date().toISOString();
   for (const bp of _serverBypasses) {
     if (bp.expires_at < now) continue;
     if (!bp.gate_id.startsWith(gateId)) continue;
-    // Pair-specific bypass: must match
     if (bp.pair && pair && bp.pair !== pair) continue;
-    // Global bypass (no pair) always applies
     console.log(`[GATE-BYPASS-DB] ✅ ${gateId} BYPASSED${pair ? ` for ${pair}` : ""} — ${bp.reason}`);
     return true;
   }
