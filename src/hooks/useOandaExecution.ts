@@ -205,6 +205,33 @@ export function useOandaExecution() {
     }
   }, [callOanda, fetchAccountSummary, fetchOrderHistory]);
 
+  const updateTradeOrders = useCallback(async (params: {
+    oandaTradeId: string;
+    stopLossPrice?: number;
+    takeProfitPrice?: number;
+    environment?: OandaEnvironment;
+  }) => {
+    setLoading(true);
+    try {
+      const data = await callOanda({
+        action: 'update-orders',
+        oandaTradeId: params.oandaTradeId,
+        stopLossPrice: params.stopLossPrice,
+        takeProfitPrice: params.takeProfitPrice,
+        environment: params.environment || 'live',
+      });
+      if (data.success) {
+        toast.success(`Trade ${params.oandaTradeId} orders updated`);
+      }
+      return data;
+    } catch (err) {
+      toast.error('Order update failed: ' + (err as Error).message);
+      throw err;
+    } finally {
+      setLoading(false);
+    }
+  }, [callOanda]);
+
   return {
     loading,
     connected,
@@ -215,5 +242,6 @@ export function useOandaExecution() {
     fetchOrderHistory,
     executeTrade,
     closeTrade,
+    updateTradeOrders,
   };
 }
