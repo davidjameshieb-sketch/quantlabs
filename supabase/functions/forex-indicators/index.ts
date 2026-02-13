@@ -875,6 +875,72 @@ Deno.serve(async (req) => {
         recentRegimes,
         shortFriendly: ["breakdown", "risk-off"].includes(marketRegime), // exhaustion removed — it's neutral now
         longFriendly: ["expansion", "momentum", "exhaustion"].includes(marketRegime),
+        // ═══ COMPRESSION PERSONALITY: Mean-reversion signals for compression regime ═══
+        compressionFriendly: marketRegime === "compression",
+      },
+      // ═══ COMPRESSION PERSONALITY: Pre-computed mean-reversion signals ═══
+      // Only meaningful when regime=compression — provides entry/exit levels for range fading
+      compressionSignals: {
+        active: marketRegime === "compression",
+        // BB extremes: pctB > 0.9 = overbought (fade short), pctB < 0.1 = oversold (fade long)
+        bbPctB: indicators.bollingerBands.pctB,
+        bbUpper: indicators.bollingerBands.upper,
+        bbMid: indicators.bollingerBands.mid,
+        bbLower: indicators.bollingerBands.lower,
+        bbBandwidth: indicators.bollingerBands.bandwidth,
+        // Stochastics: K > 80 = overbought, K < 20 = oversold
+        stochK: indicators.stochastics.k,
+        stochD: indicators.stochastics.d,
+        stochSignal: indicators.stochastics.signal,
+        // CCI: > 100 = overbought, < -100 = oversold
+        cciValue: indicators.cci.value,
+        cciSignal: indicators.cci.signal,
+        // Keltner: confirms BB squeeze when price at Keltner extremes
+        keltnerUpper: indicators.keltnerChannels.upper,
+        keltnerLower: indicators.keltnerChannels.lower,
+        // Pivot levels: mean-reversion targets
+        pivotPivot: indicators.pivotPoints.pivot,
+        pivotR1: indicators.pivotPoints.r1,
+        pivotS1: indicators.pivotPoints.s1,
+        pivotR2: indicators.pivotPoints.r2,
+        pivotS2: indicators.pivotPoints.s2,
+        // RSI for confirmation
+        rsiValue: indicators.rsi.value,
+        // Composite mean-reversion score (0-100, higher = stronger reversion signal)
+        reversionScore: (() => {
+          let score = 0;
+          const pk = indicators.stochastics.k;
+          const pb = indicators.bollingerBands.pctB;
+          const cc = indicators.cci.value;
+          const rs = indicators.rsi.value;
+          // Stoch extreme (weight: 30)
+          if (pk > 80 || pk < 20) score += 30;
+          else if (pk > 70 || pk < 30) score += 15;
+          // BB extreme (weight: 25)
+          if (pb > 0.9 || pb < 0.1) score += 25;
+          else if (pb > 0.8 || pb < 0.2) score += 12;
+          // CCI extreme (weight: 20)
+          if (cc > 100 || cc < -100) score += 20;
+          else if (cc > 80 || cc < -80) score += 10;
+          // RSI extreme (weight: 15)
+          if (rs > 70 || rs < 30) score += 15;
+          else if (rs > 60 || rs < 40) score += 7;
+          // ADX low confirms range (weight: 10)
+          if (adxVal < 20) score += 10;
+          else if (adxVal < 25) score += 5;
+          return score;
+        })(),
+        // Reversion direction: which way to fade
+        reversionDirection: (() => {
+          const pk = indicators.stochastics.k;
+          const pb = indicators.bollingerBands.pctB;
+          const cc = indicators.cci.value;
+          const overboughtSignals = (pk > 70 ? 1 : 0) + (pb > 0.8 ? 1 : 0) + (cc > 80 ? 1 : 0);
+          const oversoldSignals = (pk < 30 ? 1 : 0) + (pb < 0.2 ? 1 : 0) + (cc < -80 ? 1 : 0);
+          if (overboughtSignals >= 2) return "short"; // Fade overbought → go short
+          if (oversoldSignals >= 2) return "long";    // Fade oversold → go long
+          return "none"; // No clear extreme
+        })(),
       },
     }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },

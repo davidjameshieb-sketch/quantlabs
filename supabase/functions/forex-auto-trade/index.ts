@@ -1389,7 +1389,7 @@ function canPlaceLiveOrder(
 
   // ─── SHADOW CHECK 4B-4D: COMPRESSION/EXHAUSTION/TRANSITION REGIMES ───
   if (tradeIntent.indicatorRegime === "compression") {
-    console.log(`[GOV_SHADOW_REGIME] regime=compression — shadow-logged, gathering new data`);
+    console.log(`[GOV_SHADOW_REGIME] regime=compression — COMPRESSION PERSONALITY active, mean-reversion routing enabled`);
   }
   if (tradeIntent.indicatorRegime === "exhaustion") {
     console.log(`[GOV_SHADOW_REGIME] regime=exhaustion — shadow-logged, gathering new data`);
@@ -2365,7 +2365,7 @@ Deno.serve(async (req) => {
       "expansion": 0.5,      // Same — entries too late, halved
       "exhaustion": 0.7,     // Mixed — cautious
       "ignition": 0.8,       // Early move — moderate
-      "compression": 0.4,    // No trend — very low
+      "compression": 0.6,    // COMPRESSION PERSONALITY: elevated from 0.4 — has mean-reversion edge
       "flat": 0.3,           // Dead market — minimum
       "transition": 0.0,     // Already blocked, double-lock
     };
@@ -2580,6 +2580,18 @@ Deno.serve(async (req) => {
       let neutralRegimeReducedSizing = false;
       let supertrendValue15m: number | null = null;
       let atr15mValue: number | null = null;
+      // ═══ COMPRESSION PERSONALITY: Mean-reversion signal extraction ═══
+      let compressionActive = false;
+      let compressionReversionScore = 0;
+      let compressionReversionDirection: "long" | "short" | "none" = "none";
+      let compressionBBMid: number | null = null;
+      let compressionBBUpper: number | null = null;
+      let compressionBBLower: number | null = null;
+      let compressionPivot: number | null = null;
+      let compressionR1: number | null = null;
+      let compressionS1: number | null = null;
+      let compressionStochK: number | null = null;
+      let compressionCCI: number | null = null;
 
       if (forceMode) {
         direction = reqBody.direction || "long";
@@ -2631,6 +2643,24 @@ Deno.serve(async (req) => {
               supertrendValue15m = ind.supertrend?.value ?? null;
               atr15mValue = ind.atr?.value ?? null;
             }
+            // ═══ COMPRESSION PERSONALITY: Extract mean-reversion signals ═══
+            if (indicatorData?.compressionSignals) {
+              const cs = indicatorData.compressionSignals;
+              compressionActive = cs.active === true;
+              compressionReversionScore = cs.reversionScore || 0;
+              compressionReversionDirection = cs.reversionDirection || "none";
+              compressionBBMid = cs.bbMid ?? null;
+              compressionBBUpper = cs.bbUpper ?? null;
+              compressionBBLower = cs.bbLower ?? null;
+              compressionPivot = cs.pivotPivot ?? null;
+              compressionR1 = cs.pivotR1 ?? null;
+              compressionS1 = cs.pivotS1 ?? null;
+              compressionStochK = cs.stochK ?? null;
+              compressionCCI = cs.cciValue ?? null;
+              if (compressionActive) {
+                console.log(`[COMPRESSION-SIGNAL] ${pair}: revScore=${compressionReversionScore} dir=${compressionReversionDirection} stochK=${compressionStochK?.toFixed(0)} cci=${compressionCCI?.toFixed(0)} bbPctB=${cs.bbPctB?.toFixed(2)} pivot=${compressionPivot?.toFixed(5)}`);
+              }
+            }
             if (indicatorData?.consensus) {
               indicatorConsensusScore = indicatorData.consensus.score || 0;
               indicatorDirection = indicatorData.consensus.direction || "neutral";
@@ -2661,11 +2691,67 @@ Deno.serve(async (req) => {
                 console.log(`[REGIME-INDICATOR] ${pair}: regime=${indicatorRegime} strength=${indicatorRegimeStrength} longFriendly=${indicatorLongFriendly} shortFriendly=${indicatorShortFriendly} bullishMom=${indicatorBullishMomentum} bearishMom=${indicatorBearishMomentum} hold=${regimeHoldBars} familyHold=${regimeFamilyHoldBars} family=${familyLabel} dir=${regimeDirection} confirmed=${regimeFamilyConfirmed} divergent=${divergentBars} diverging=${regimeDiverging} earlyWarn=${regimeEarlyWarning} accel=${volAcceleration}(${accelLevel}) recentRegimes=[${recentRegimes.join(',')}]`);
 
                 // ═══ ANTI-FLICKER GATE 0: NEUTRAL family regimes ═══
-                // Post-learning: hard block. During learning: allow at 0.5x for trade density.
-                // FIX: Removed "ignition" — it's a directional breakout regime, not neutral
-                const NEUTRAL_BLOCKED_REGIMES = ["compression", "flat", "exhaustion", "transition"];
+                // COMPRESSION PERSONALITY: Compression is no longer blocked — it has its own trading personality.
+                // Other neutral regimes: learning phase = 0.5x, post-learning = hard block.
+                const NEUTRAL_BLOCKED_REGIMES = ["flat", "exhaustion", "transition"]; // compression REMOVED — has personality
                 const isInLearningPhase = (rawOrders||[]).length < 500;
-                if (NEUTRAL_BLOCKED_REGIMES.includes(indicatorRegime) || familyLabel === "neutral") {
+                
+                // ═══ COMPRESSION PERSONALITY ROUTING ═══
+                // When regime is compression AND compression signals detect an extreme → route to mean-reversion
+                if (indicatorRegime === "compression" && compressionActive) {
+                  // ── ADAPTIVE THRESHOLD: Start at 50, tighten/loosen based on rolling compression WR ──
+                  const compressionOrders = (rawOrders || []).filter((o: Record<string, unknown>) => 
+                    o.regime_label === "compression" && 
+                    (o.status === "filled" || o.status === "closed") &&
+                    o.entry_price != null && o.exit_price != null
+                  );
+                  const compressionWins = compressionOrders.filter((o: Record<string, unknown>) => {
+                    const dir = o.direction as string;
+                    const entry = Number(o.entry_price);
+                    const exit = Number(o.exit_price);
+                    return dir === "long" ? exit > entry : exit < entry;
+                  }).length;
+                  const compressionTotal = compressionOrders.length;
+                  const compressionWR = compressionTotal > 0 ? compressionWins / compressionTotal : 0.5;
+                  
+                  // Adaptive reversion threshold: starts at 50, tightens if WR < 35%, loosens if WR > 55%
+                  let adaptiveReversionThreshold = 50;
+                  if (compressionTotal >= 10) {
+                    if (compressionWR > 0.55) adaptiveReversionThreshold = Math.max(30, 50 - Math.round((compressionWR - 0.55) * 100));
+                    else if (compressionWR < 0.35) adaptiveReversionThreshold = Math.min(75, 50 + Math.round((0.35 - compressionWR) * 100));
+                  }
+                  
+                  console.log(`[COMPRESSION-PERSONALITY] ${pair}: revScore=${compressionReversionScore} threshold=${adaptiveReversionThreshold} dir=${compressionReversionDirection} | history: ${compressionTotal} trades, WR=${(compressionWR*100).toFixed(0)}%`);
+                  
+                  if (compressionReversionScore >= adaptiveReversionThreshold && compressionReversionDirection !== "none") {
+                    // ── COMPRESSION TRADE AUTHORIZED ──
+                    direction = compressionReversionDirection as "long" | "short";
+                    mtfConfirmed = true;
+                    mtf_1m_ignition = true;
+                    mtf_5m_momentum = true;
+                    mtf_15m_bias = true;
+                    // Override regime friendliness for compression direction
+                    if (direction === "long") { indicatorLongFriendly = true; }
+                    else { indicatorShortFriendly = true; }
+                    // Mark as compression personality trade (affects sizing + SL/TP later)
+                    neutralRegimeReducedSizing = false; // NOT neutral — it's a personality trade
+                    
+                    console.log(`[COMPRESSION-ENTRY] ${pair}: ${direction.toUpperCase()} AUTHORIZED — revScore=${compressionReversionScore}>=${adaptiveReversionThreshold} stochK=${compressionStochK?.toFixed(0)} cci=${compressionCCI?.toFixed(0)} | target=pivot-to-pivot`);
+                    
+                    // Store compression metadata for governance payload
+                    indicatorConsensusScore = compressionReversionScore; // Use reversion score as consensus
+                    indicatorDirection = direction === "long" ? "bullish" : "bearish";
+                    
+                    // Skip normal consensus/direction flow — compression has its own entry logic
+                    // Jump directly to regime authorization (compression trades are always regime-authorized)
+                  } else {
+                    // Compression detected but no extreme — shadow log and skip
+                    console.log(`[COMPRESSION-SKIP] ${pair}: revScore=${compressionReversionScore} < threshold=${adaptiveReversionThreshold} or dir=${compressionReversionDirection} — no extreme to fade`);
+                    results.push({ pair, direction: "none", status: "compression-no-extreme", govState, agentId,
+                      error: `revScore=${compressionReversionScore},threshold=${adaptiveReversionThreshold},dir=${compressionReversionDirection}` });
+                    continue;
+                  }
+                } else if ((indicatorRegime === "compression" && !compressionActive) || NEUTRAL_BLOCKED_REGIMES.includes(indicatorRegime) || familyLabel === "neutral") {
                   if (isInLearningPhase) {
                     // LEARNING PHASE: Allow neutral regimes at 0.5x sizing for trade density
                     neutralRegimeReducedSizing = true;
@@ -3049,12 +3135,14 @@ Deno.serve(async (req) => {
       // During learning phase: indicator regime takes precedence when available (it uses 16 real-time indicators).
       // ATR regime is a simple volatility measure that can disagree on direction (e.g., "expansion" during a breakdown).
       // Post-maturity (500+ trades): both must agree for additional safety.
+      // COMPRESSION PERSONALITY: compression trades are ALWAYS regime-authorized (they have their own entry logic)
+      const isCompressionPersonalityTrade = indicatorRegime === "compression" && compressionActive && compressionReversionDirection !== "none";
       const LONG_AUTHORIZED_REGIMES = ["expansion", "momentum", "exhaustion", "ignition"];
       const SHORT_AUTHORIZED_REGIMES = ["breakdown", "risk-off", "exhaustion", "shock-breakdown", "risk-off-impulse", "liquidity-vacuum", "breakdown-continuation"];
-      const atrRegimeAuthorized = direction === "long"
+      const atrRegimeAuthorized = isCompressionPersonalityTrade || (direction === "long"
         ? LONG_AUTHORIZED_REGIMES.includes(regime)
-        : SHORT_AUTHORIZED_REGIMES.includes(regime);
-      const indicatorRegimeAuthorized = indicatorRegime === "unknown" || (direction === "long"
+        : SHORT_AUTHORIZED_REGIMES.includes(regime));
+      const indicatorRegimeAuthorized = isCompressionPersonalityTrade || indicatorRegime === "unknown" || (direction === "long"
         ? LONG_AUTHORIZED_REGIMES.includes(indicatorRegime)
         : SHORT_AUTHORIZED_REGIMES.includes(indicatorRegime));
       // LEARNING PHASE: indicator regime is SOLE authority when available
@@ -3064,7 +3152,12 @@ Deno.serve(async (req) => {
       const hasIndicatorRegime = indicatorRegime !== "unknown";
       let regimeAuthorized: boolean;
       let effectiveRegimeForAuth: string;
-      if (hasIndicatorRegime && isLearningPhase) {
+      if (isCompressionPersonalityTrade) {
+        // Compression personality: always authorized — entry logic is self-contained
+        regimeAuthorized = true;
+        effectiveRegimeForAuth = "compression";
+        console.log(`[REGIME-AUTH] ${pair} ${direction}: COMPRESSION PERSONALITY — auto-authorized (revScore=${compressionReversionScore})`);
+      } else if (hasIndicatorRegime && isLearningPhase) {
         // Learning: trust indicator regime exclusively — ATR is directionally blind
         regimeAuthorized = indicatorRegimeAuthorized;
         effectiveRegimeForAuth = indicatorRegime;
@@ -3388,6 +3481,22 @@ Deno.serve(async (req) => {
               recentMomentum: agentKelly.globalExpectancy.recentMomentum,
               isRecovering: agentKelly.globalExpectancy.isRecovering,
             },
+            // ═══ COMPRESSION PERSONALITY METADATA ═══
+            compressionPersonality: isCompressionPersonalityTrade ? {
+              active: true,
+              reversionScore: compressionReversionScore,
+              reversionDirection: compressionReversionDirection,
+              stochK: compressionStochK,
+              cci: compressionCCI,
+              bbMid: compressionBBMid,
+              bbUpper: compressionBBUpper,
+              bbLower: compressionBBLower,
+              pivotTarget: compressionPivot,
+              pivotR1: compressionR1,
+              pivotS1: compressionS1,
+              exitGeometry: "pivot-to-pivot",
+              personalityType: "mean-reversion",
+            } : { active: false },
           },
         })
         .select()
@@ -3511,11 +3620,59 @@ Deno.serve(async (req) => {
               ? parseFloat(currentPrice.asks?.[0]?.price || "0")
               : parseFloat(currentPrice.bids?.[0]?.price || "0");
             if (entryEstimate > 0) {
-              // ═══ PHASE 2: DYNAMIC SL with 5R SAFETY CEILING TP ═══
-              // ATR-trailing in the trade monitor handles actual exits (1.5R→lock 1R, 2R→ATR trail)
-              // OANDA TP is set at 5R as emergency ceiling only — NOT the target exit
               const slPipMult = pair.includes("JPY") ? 0.01 : 0.0001;
-              if (supertrendValue15m !== null && atr15mValue !== null) {
+              
+              // ═══ COMPRESSION PERSONALITY: PIVOT-TO-PIVOT EXIT GEOMETRY ═══
+              // Mean-reversion: TP at nearest pivot toward mean, SL at BB outer band + buffer
+              // R:R target: 1.0-1.5x (high win-rate, small captures)
+              if (isCompressionPersonalityTrade && compressionBBUpper !== null && compressionBBLower !== null && compressionPivot !== null) {
+                const pivotTarget = direction === "long"
+                  ? (compressionPivot && compressionPivot > entryEstimate ? compressionPivot : compressionBBMid!)
+                  : (compressionPivot && compressionPivot < entryEstimate ? compressionPivot : compressionBBMid!);
+                
+                // SL at BB outer band + small buffer
+                const bbBuffer = 3 * slPipMult; // 3 pip buffer beyond BB
+                if (direction === "long") {
+                  stopLossPrice = Math.round((compressionBBLower - bbBuffer) * 100000) / 100000;
+                  // TP: nearest pivot/BB-mid ABOVE entry
+                  const s1Target = compressionS1 !== null && compressionS1 < entryEstimate ? null : compressionS1;
+                  const pivotAbove = compressionPivot !== null && compressionPivot > entryEstimate ? compressionPivot : null;
+                  const bbMidAbove = compressionBBMid !== null && compressionBBMid > entryEstimate ? compressionBBMid : null;
+                  const candidates = [pivotAbove, bbMidAbove, compressionR1].filter(v => v !== null && v > entryEstimate) as number[];
+                  takeProfitPrice = candidates.length > 0
+                    ? Math.round(Math.min(...candidates) * 100000) / 100000
+                    : Math.round((entryEstimate + 8 * slPipMult) * 100000) / 100000; // 8p fallback
+                } else {
+                  stopLossPrice = Math.round((compressionBBUpper + bbBuffer) * 100000) / 100000;
+                  // TP: nearest pivot/BB-mid BELOW entry
+                  const r1Target = compressionR1 !== null && compressionR1 > entryEstimate ? null : compressionR1;
+                  const pivotBelow = compressionPivot !== null && compressionPivot < entryEstimate ? compressionPivot : null;
+                  const bbMidBelow = compressionBBMid !== null && compressionBBMid < entryEstimate ? compressionBBMid : null;
+                  const candidates = [pivotBelow, bbMidBelow, compressionS1].filter(v => v !== null && v < entryEstimate) as number[];
+                  takeProfitPrice = candidates.length > 0
+                    ? Math.round(Math.max(...candidates) * 100000) / 100000
+                    : Math.round((entryEstimate - 8 * slPipMult) * 100000) / 100000; // 8p fallback
+                }
+                
+                const slDistPips = Math.abs(entryEstimate - stopLossPrice) / slPipMult;
+                const tpDistPips = Math.abs(takeProfitPrice - entryEstimate) / slPipMult;
+                const rrRatio = slDistPips > 0 ? tpDistPips / slDistPips : 0;
+                
+                // Safety: if SL is invalid (>= entry for long, <= entry for short), fallback
+                if ((direction === "long" && stopLossPrice >= entryEstimate) ||
+                    (direction === "short" && stopLossPrice <= entryEstimate)) {
+                  stopLossPrice = direction === "long"
+                    ? Math.round((entryEstimate - 10 * slPipMult) * 100000) / 100000
+                    : Math.round((entryEstimate + 10 * slPipMult) * 100000) / 100000;
+                  console.log(`[COMPRESSION-SL] ${pair}: BB SL invalid, using 10p fallback`);
+                }
+                
+                console.log(`[COMPRESSION-EXIT] ${pair} ${direction}: SL=${stopLossPrice} (${slDistPips.toFixed(1)}p, BB+buffer) | TP=${takeProfitPrice} (${tpDistPips.toFixed(1)}p, pivot-to-pivot) | R:R=1:${rrRatio.toFixed(1)} | entry ~${entryEstimate}`);
+              }
+              // ═══ STANDARD TREND-FOLLOWING: Dynamic SL + 5R SAFETY CEILING TP ═══
+              else if (supertrendValue15m !== null && atr15mValue !== null) {
+                // ATR-trailing in the trade monitor handles actual exits (1.5R→lock 1R, 2R→ATR trail)
+                // OANDA TP is set at 5R as emergency ceiling only — NOT the target exit
                 const minBufferPrice = 5 * slPipMult;
                 const atrBufferPrice = 0.25 * atr15mValue;
                 const buffer = Math.max(minBufferPrice, atrBufferPrice);
