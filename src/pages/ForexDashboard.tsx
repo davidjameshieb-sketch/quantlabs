@@ -6,7 +6,7 @@ import { useState, useMemo, useEffect, useCallback } from 'react';
 import { LongOnlyFilterProvider } from '@/contexts/LongOnlyFilterContext';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  Globe, TrendingUp, ChevronDown, BookOpen, Archive, Brain, HeartPulse, MessageSquare, X,
+  Globe, TrendingUp, ChevronDown, BookOpen, Archive, Brain, HeartPulse, MessageSquare, Mic, X,
 } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
@@ -21,6 +21,7 @@ import { SystemLearningPanel } from '@/components/forex/SystemLearningPanel';
 import { SystemConfidenceMeter } from '@/components/forex/SystemConfidenceMeter';
 import { GovernanceStateBanner } from '@/components/forex/GovernanceStateBanner';
 import { ChatInterface } from '@/components/chat/ChatInterface';
+import { VoiceChatInterface } from '@/components/chat/VoiceChatInterface';
 
 // Archive (lazy-loaded legacy dashboards)
 import { ForexArchiveDashboards } from '@/components/forex/ForexArchiveDashboards';
@@ -49,6 +50,7 @@ import { useRealtimeOrders } from '@/hooks/useRealtimeOrders';
 
 const ForexDashboard = () => {
   const [chatOpen, setChatOpen] = useState(false);
+  const [chatMode, setChatMode] = useState<'text' | 'voice'>('voice');
   const [longOnlyFilter, setLongOnlyFilter] = useState(false);
   const [filters, setFilters] = useState<ForexDashboardFilters>({
     period: '30d',
@@ -272,15 +274,31 @@ const ForexDashboard = () => {
               className="fixed top-0 right-0 h-full w-full sm:w-[420px] z-50 shadow-2xl"
             >
               <div className="relative h-full flex flex-col">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => setChatOpen(false)}
-                  className="absolute top-3 right-3 z-10 h-8 w-8"
-                >
-                  <X className="w-4 h-4" />
-                </Button>
-                <ChatInterface className="h-full rounded-none" />
+                {/* Close + mode toggle */}
+                <div className="absolute top-3 right-3 z-10 flex items-center gap-1">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => setChatMode(chatMode === 'voice' ? 'text' : 'voice')}
+                    className="h-8 w-8"
+                    title={chatMode === 'voice' ? 'Switch to text' : 'Switch to voice'}
+                  >
+                    {chatMode === 'voice' ? <MessageSquare className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => setChatOpen(false)}
+                    className="h-8 w-8"
+                  >
+                    <X className="w-4 h-4" />
+                  </Button>
+                </div>
+                {chatMode === 'voice' ? (
+                  <VoiceChatInterface className="h-full rounded-none" />
+                ) : (
+                  <ChatInterface className="h-full rounded-none" />
+                )}
               </div>
             </motion.div>
           )}
@@ -295,7 +313,7 @@ const ForexDashboard = () => {
             onClick={() => setChatOpen(true)}
             className="fixed bottom-6 right-6 z-50 w-14 h-14 rounded-full bg-gradient-to-br from-primary to-secondary shadow-lg flex items-center justify-center text-primary-foreground"
           >
-            <MessageSquare className="w-6 h-6" />
+            <Mic className="w-6 h-6" />
           </motion.button>
         )}
       </DashboardLayout>

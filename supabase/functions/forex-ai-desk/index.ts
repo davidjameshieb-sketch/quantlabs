@@ -385,8 +385,8 @@ serve(async (req) => {
       return ERR.internal();
     }
 
-    const body = await req.json();
-    const { messages } = body;
+    const { messages, mode } = body;
+    const isVoice = mode === 'voice';
 
     if (!messages || !Array.isArray(messages) || messages.length === 0) {
       return ERR.bad("Messages array is required");
@@ -427,6 +427,20 @@ serve(async (req) => {
     const systemState = buildSystemState(openTrades, recentClosed, rollups, blocked, stats);
     const stateContext = `\n\n<SYSTEM_STATE>\n${JSON.stringify(systemState)}\n</SYSTEM_STATE>`;
 
+    const voiceAddendum = isVoice ? `\n\n## VOICE MODE ACTIVE
+You are speaking aloud to the operator. Adjust your style:
+- **Be conversational and natural** — talk like a senior trading partner in a morning briefing, not a report generator
+- **No markdown tables** — describe comparisons conversationally ("USD CAD is your worst performer at minus 12 pips, while EUR USD is carrying the book at plus 8")
+- **No bullet points or numbered lists** — use flowing sentences with natural transitions
+- **Be opinionated and direct** — "Look, the breakdown shorts are killing you. Seven of the last ten lost money. You need the exhaustion gate at 1.8x ATR, not 2x."
+- **Use emphasis through repetition and pacing** — "That's three losses in a row. Three. All in London session on CAD pairs."
+- **Keep it under 90 seconds of speaking time** — about 250 words max
+- **Still reference specific numbers** — pips, win rates, R-multiples, but weave them into sentences
+- **Always end with one clear action item** — "Here's what I'd do right now: suspend the support-friction agent and tighten G11 to 1.8x"
+- **Always include the Prime Directive Score** as a spoken number — "Prime Directive Score: 38 out of 100. We're not there yet."
+- **Focus relentlessly on the 6 failure patterns** — Breakdown Trap, Agent Over-Correlation, Session Toxicity, Governance Over-Filtering, Profit Capture Decay, Drawdown Clustering. Scan for ALL of them on every question.
+- **Be proactive** — even if they ask a simple question, if you see a critical pattern, call it out: "Before I answer that — I'm seeing a drawdown cluster forming in London session. Three consecutive losses on GBP pairs. That needs attention first."` : '';
+
     const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -436,12 +450,12 @@ serve(async (req) => {
       body: JSON.stringify({
         model: "google/gemini-3-flash-preview",
         messages: [
-          { role: "system", content: SYSTEM_PROMPT + stateContext },
+          { role: "system", content: SYSTEM_PROMPT + voiceAddendum + stateContext },
           ...messages.map((m: any) => ({ role: m.role, content: m.content })),
         ],
         stream: true,
-        temperature: 0.4,
-        max_tokens: 6000,
+        temperature: isVoice ? 0.6 : 0.4,
+        max_tokens: isVoice ? 2000 : 6000,
       }),
     });
 
