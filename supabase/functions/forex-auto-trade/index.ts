@@ -1355,63 +1355,55 @@ function canPlaceLiveOrder(
     return { allowed: true, reason_code: "FORCE_MODE", metadata: {} };
   }
 
-  // ─── CHECK 1: TOXIC HOURS (13-14 UTC) ───
+  // ─── SHADOW CHECK 1: TOXIC HOURS 13-14 UTC (shadow-log, gathering fresh data) ───
+  // Old data cited "NY lunch liquidity vacuum" but was from flawed entry/exit system.
   if (tradeIntent.hourUtc === 13 || tradeIntent.hourUtc === 14) {
-    console.log(`[GOV_BLOCK_TOXIC_HOUR] hour_utc=${tradeIntent.hourUtc} — NY lunch liquidity vacuum`);
-    return { allowed: false, reason_code: "GOV_BLOCK_TOXIC_HOUR", metadata: { hour_utc: tradeIntent.hourUtc, zone: "NY-lunch" } };
+    console.log(`[GOV_SHADOW_TOXIC_HOUR] hour_utc=${tradeIntent.hourUtc} zone=NY-lunch — shadow-logged (was: hard-blocked)`);
   }
 
-  // ─── CHECK 2: SESSION HARD-BLOCKS (asian + late-ny) ───
+  // ─── SHADOW CHECK 2: SESSION BLOCKS (shadow-log, gathering fresh data) ───
+  // Old stats (15.8% WR asian, 12.5% WR late-ny) were from flawed system. Re-evaluate.
   if (tradeIntent.session === "asian") {
-    console.log(`[GOV_BLOCK_SESSION] session_label=${tradeIntent.session} — 15.8% WR, destructive`);
-    return { allowed: false, reason_code: "GOV_BLOCK_SESSION", metadata: { session_label: tradeIntent.session } };
+    console.log(`[GOV_SHADOW_SESSION] session_label=${tradeIntent.session} — shadow-logged, gathering new data (was: hard-blocked, old WR=15.8%)`);
   }
   if (tradeIntent.session === "late-ny") {
-    console.log(`[GOV_BLOCK_SESSION] session_label=${tradeIntent.session} — 12.5% WR, destructive`);
-    return { allowed: false, reason_code: "GOV_BLOCK_SESSION", metadata: { session_label: tradeIntent.session } };
+    console.log(`[GOV_SHADOW_SESSION] session_label=${tradeIntent.session} — shadow-logged, gathering new data (was: hard-blocked, old WR=12.5%)`);
   }
 
-  // ─── CHECK 3: AGENT SUSPENSION (uses module-level SUSPENDED_AGENTS) ───
+  // ─── CHECK 3: AGENT SUSPENSION (structural — kept as hard-block) ───
+  // Agent suspension is execution integrity, not data-derived.
   if (SUSPENDED_AGENTS[tradeIntent.agentId]) {
     console.log(`[GOV_BLOCK_AGENT] agent_id=${tradeIntent.agentId} mode=${SUSPENDED_AGENTS[tradeIntent.agentId]} — suspended from live execution`);
     return { allowed: false, reason_code: "GOV_BLOCK_AGENT", metadata: { agent_id: tradeIntent.agentId, mode: SUSPENDED_AGENTS[tradeIntent.agentId] } };
   }
 
-  // ─── CHECK 4: REGIME-DIRECTION BLOCK (Longs in momentum/expansion) ───
-  const REGIME_LONG_BLOCKED = ["momentum", "expansion"];
-  if (tradeIntent.direction === "long" && REGIME_LONG_BLOCKED.includes(tradeIntent.indicatorRegime)) {
+  // ─── SHADOW CHECK 4: REGIME-DIRECTION BLOCK (shadow-log during bootstrap) ───
+  // Old data showed longs in momentum/expansion losing. With new entries, re-evaluate.
+  const REGIME_LONG_SHADOW = ["momentum", "expansion"];
+  if (tradeIntent.direction === "long" && REGIME_LONG_SHADOW.includes(tradeIntent.indicatorRegime)) {
     const regimeData = context.longLearningProfile.regimeStats[tradeIntent.indicatorRegime];
     const regimeTotal = regimeData ? regimeData.wins + regimeData.losses : 0;
     const regimeWR = regimeTotal > 0 ? regimeData!.wins / regimeTotal : 0;
-    // Block until N=200 trades in this regime AND WR > 30%
-    if (regimeTotal < 200 || regimeWR < 0.30) {
-      console.log(`[GOV_BLOCK_REGIME_LONG] regime_label=${tradeIntent.indicatorRegime} direction=long WR=${(regimeWR*100).toFixed(1)}% trades=${regimeTotal} — blocked until WR>30% over 200 trades`);
-      return { allowed: false, reason_code: "GOV_BLOCK_REGIME_LONG", metadata: { regime_label: tradeIntent.indicatorRegime, regimeWR, regimeTotal, threshold: 0.30, minTrades: 200 } };
-    }
+    console.log(`[GOV_SHADOW_REGIME_LONG] regime=${tradeIntent.indicatorRegime} direction=long WR=${(regimeWR*100).toFixed(1)}% trades=${regimeTotal} — shadow-logged (was: hard-blocked until WR>30% over 200)`);
   }
 
-  // ─── SHADOW CHECK 4B: COMPRESSION REGIME (shadow-log only, not blocked) ───
-  // Previously hard-blocked based on old data. Now shadow-logged to gather new evidence.
+  // ─── SHADOW CHECK 4B-4D: COMPRESSION/EXHAUSTION/TRANSITION REGIMES ───
   if (tradeIntent.indicatorRegime === "compression") {
-    console.log(`[GOV_SHADOW_REGIME] regime=compression — shadow-logged, gathering new data (was: hard-blocked)`);
+    console.log(`[GOV_SHADOW_REGIME] regime=compression — shadow-logged, gathering new data`);
   }
-
-  // ─── SHADOW CHECK 4C: EXHAUSTION REGIME (shadow-log only) ───
   if (tradeIntent.indicatorRegime === "exhaustion") {
-    console.log(`[GOV_SHADOW_REGIME] regime=exhaustion — shadow-logged, gathering new data (was: hard-blocked)`);
+    console.log(`[GOV_SHADOW_REGIME] regime=exhaustion — shadow-logged, gathering new data`);
   }
-
-  // ─── SHADOW CHECK 4D: TRANSITION REGIME (shadow-log only) ───
   if (tradeIntent.indicatorRegime === "transition") {
-    console.log(`[GOV_SHADOW_REGIME] regime=transition — shadow-logged, gathering new data (was: hard-blocked)`);
+    console.log(`[GOV_SHADOW_REGIME] regime=transition — shadow-logged, gathering new data`);
   }
 
-  // ─── CHECK 5: EXPANDED TOXIC HOURS (structural — kept as hard-block) ───
-  const EXTENDED_TOXIC_HOURS = [1, 2, 3, 4, 18, 19, 20, 21];
-  if (EXTENDED_TOXIC_HOURS.includes(tradeIntent.hourUtc)) {
+  // ─── SHADOW CHECK 5: EXTENDED HOURS (shadow-log, not blocked) ───
+  // Hours 1-4, 18-21 were blocked based on old data. Re-evaluate with new entries/exits.
+  const SHADOW_HOURS = [1, 2, 3, 4, 18, 19, 20, 21];
+  if (SHADOW_HOURS.includes(tradeIntent.hourUtc)) {
     const zone = tradeIntent.hourUtc <= 4 ? "Asian-dead-zone" : "late-NY";
-    console.log(`[GOV_BLOCK_TOXIC_HOUR] hour_utc=${tradeIntent.hourUtc} zone=${zone} — structural toxic block`);
-    return { allowed: false, reason_code: "GOV_BLOCK_TOXIC_HOUR", metadata: { hour_utc: tradeIntent.hourUtc, zone } };
+    console.log(`[GOV_SHADOW_TOXIC_HOUR] hour_utc=${tradeIntent.hourUtc} zone=${zone} — shadow-logged (was: hard-blocked)`);
   }
 
   // ─── SHADOW CHECK 6: HIGH CONSENSUS REGIMES (shadow-log only) ───
