@@ -1390,6 +1390,27 @@ function canPlaceLiveOrder(
     }
   }
 
+  // ─── CHECK 4B: COMPRESSION REGIME HARD-BLOCK (ALL DIRECTIONS) ───
+  // Data: compression longs = -113.4p across all agents (16-23% WR). Zero edge.
+  if (tradeIntent.indicatorRegime === "compression") {
+    console.log(`[GOV_BLOCK_REGIME] regime=compression — 16-23% WR across all agents, -113.4p net. Hard-blocked.`);
+    return { allowed: false, reason_code: "GOV_BLOCK_REGIME", metadata: { regime_label: "compression", reason: "Zero edge — 16-23% WR, -113.4p net across all agents" } };
+  }
+
+  // ─── CHECK 4C: EXHAUSTION REGIME HARD-BLOCK ───
+  // Data: exhaustion longs = -8.9p (20% WR). Not tradeable yet.
+  if (tradeIntent.indicatorRegime === "exhaustion") {
+    console.log(`[GOV_BLOCK_REGIME] regime=exhaustion — 20% WR, negative expectancy. Hard-blocked.`);
+    return { allowed: false, reason_code: "GOV_BLOCK_REGIME", metadata: { regime_label: "exhaustion", reason: "20% WR, negative expectancy" } };
+  }
+
+  // ─── CHECK 4D: TRANSITION REGIME HARD-BLOCK ───
+  // Transition is informational only — never trade.
+  if (tradeIntent.indicatorRegime === "transition") {
+    console.log(`[GOV_BLOCK_REGIME] regime=transition — informational only, blocked from execution`);
+    return { allowed: false, reason_code: "GOV_BLOCK_REGIME", metadata: { regime_label: "transition" } };
+  }
+
   // ─── CHECK 5: EXPANDED TOXIC HOURS (Asian dead zone + late-NY hours) ───
   const EXTENDED_TOXIC_HOURS = [1, 2, 3, 4, 18, 19, 20, 21];
   if (EXTENDED_TOXIC_HOURS.includes(tradeIntent.hourUtc)) {
@@ -1409,10 +1430,18 @@ function canPlaceLiveOrder(
     }
   }
 
-  // ─── CHECK 7: REGIME TRANSITION AGE — prioritize age 1-3, block stale ───
+  // ─── CHECK 7: PAIR PERFORMANCE BLOCK — block pairs with significantly negative edge ───
+  // Data: EUR_CHF -34.7p (0% WR), USD_CHF -30.5p (0% WR), GBP_AUD -28.0p (0% WR)
+  const BLOCKED_PAIRS = ["EUR_CHF", "USD_CHF", "GBP_AUD", "AUD_NZD", "EUR_AUD"];
+  if (BLOCKED_PAIRS.includes(tradeIntent.pair)) {
+    console.log(`[GOV_BLOCK_PAIR] pair=${tradeIntent.pair} — negative expectancy, blocked until evidence of edge`);
+    return { allowed: false, reason_code: "GOV_BLOCK_PAIR", metadata: { pair: tradeIntent.pair } };
+  }
+
+  // ─── CHECK 8: REGIME TRANSITION AGE — block stale regimes (>15 bars) ───
   if (tradeIntent.regimeFamilyHoldBars > 15) {
-    console.log(`[GOV_WARN_STALE_REGIME] regime_transition_age=${tradeIntent.regimeFamilyHoldBars} — stale regime, reducing priority (allowed but logged)`);
-    // Not blocked, just logged — sizing handles this via regime multipliers
+    console.log(`[GOV_BLOCK_STALE_REGIME] regime_transition_age=${tradeIntent.regimeFamilyHoldBars} — regime too stale for entry`);
+    return { allowed: false, reason_code: "GOV_BLOCK_STALE_REGIME", metadata: { regimeAge: tradeIntent.regimeFamilyHoldBars } };
   }
 
   return { allowed: true, reason_code: "PASS", metadata: {} };
