@@ -23,7 +23,7 @@ export const ChatInterface = ({
   const [input, setInput] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const { messages, isLoading, error, sendMessage, clearMessages } = useMarketChat();
+  const { messages, isLoading, error, sendMessage, clearMessages, executeAction } = useMarketChat();
 
   // Auto-scroll to bottom on new messages
   useEffect(() => {
@@ -108,7 +108,7 @@ export const ChatInterface = ({
           ) : (
             <div className="space-y-4">
               {messages.map((message) => (
-                <ChatMessage key={message.id} message={message} />
+                <ChatMessage key={message.id} message={message} onExecuteAction={executeAction} />
               ))}
               {isLoading && messages[messages.length - 1]?.content === '' && (
                 <motion.div

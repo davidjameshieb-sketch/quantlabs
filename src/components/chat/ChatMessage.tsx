@@ -1,10 +1,13 @@
+import { useState } from 'react';
 import { motion } from 'framer-motion';
-import { Bot, User } from 'lucide-react';
+import { Bot, User, Zap, Loader2, CheckCircle, XCircle } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { Button } from '@/components/ui/button';
 import type { ChatMessage as Message } from '@/hooks/useMarketChat';
 
 interface ChatMessageProps {
   message: Message;
+  onExecuteAction?: (action: Record<string, unknown>) => Promise<{ success: boolean; detail?: string }>;
 }
 
 // Enhanced markdown formatting with tables, headers, and alerts
@@ -31,8 +34,6 @@ const formatContent = (content: string) => {
             </thead>
             <tbody>
               {bodyRows.map((row, rIdx) => {
-                const cells = row.split('|').filter(c => c.trim() !== '' || c.includes(' '));
-                // Filter out empty leading/trailing from pipe split
                 const cleanCells = row.startsWith('|') ? row.slice(1, row.endsWith('|') ? -1 : undefined).split('|') : row.split('|');
                 return (
                   <tr key={rIdx} className="border-b border-border/30 last:border-0 hover:bg-muted/30">
@@ -220,8 +221,64 @@ const formatInline = (text: string): React.ReactNode => {
   return parts.length === 1 ? parts[0] : <>{parts}</>;
 };
 
-export const ChatMessage = ({ message }: ChatMessageProps) => {
+// Parse action blocks from AI response
+function extractActionBlocks(content: string): { text: string; actions: Record<string, unknown>[] } {
+  const actions: Record<string, unknown>[] = [];
+  const text = content.replace(/```action\n([\s\S]*?)```/g, (_match, json) => {
+    try {
+      actions.push(JSON.parse(json.trim()));
+    } catch { /* ignore malformed */ }
+    return '';
+  });
+  return { text: text.trim(), actions };
+}
+
+function ActionButton({ action, onExecute }: { action: Record<string, unknown>; onExecute?: (a: Record<string, unknown>) => Promise<{ success: boolean; detail?: string }> }) {
+  const [state, setState] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
+  const [detail, setDetail] = useState('');
+
+  const label = action.type === 'close_trade'
+    ? `Close Trade ${action.tradeId}`
+    : action.type === 'update_sl_tp'
+    ? `Update SL/TP on ${action.tradeId}`
+    : String(action.type);
+
+  const handleClick = async () => {
+    if (!onExecute || state === 'loading') return;
+    setState('loading');
+    try {
+      const result = await onExecute(action);
+      setState(result.success ? 'success' : 'error');
+      setDetail(result.detail || '');
+    } catch (err) {
+      setState('error');
+      setDetail((err as Error).message);
+    }
+  };
+
+  return (
+    <div className="my-2 flex items-center gap-2">
+      <Button
+        size="sm"
+        variant={state === 'success' ? 'outline' : 'default'}
+        disabled={state === 'loading' || state === 'success'}
+        onClick={handleClick}
+        className="gap-2"
+      >
+        {state === 'loading' && <Loader2 className="w-3 h-3 animate-spin" />}
+        {state === 'success' && <CheckCircle className="w-3 h-3 text-green-500" />}
+        {state === 'error' && <XCircle className="w-3 h-3 text-destructive" />}
+        {state === 'idle' && <Zap className="w-3 h-3" />}
+        {state === 'success' ? 'Executed' : label}
+      </Button>
+      {detail && <span className="text-xs text-muted-foreground">{detail}</span>}
+    </div>
+  );
+}
+
+export const ChatMessage = ({ message, onExecuteAction }: ChatMessageProps) => {
   const isUser = message.role === 'user';
+  const { text, actions } = isUser ? { text: message.content, actions: [] } : extractActionBlocks(message.content);
 
   return (
     <motion.div
@@ -258,8 +315,16 @@ export const ChatMessage = ({ message }: ChatMessageProps) => {
           <p className="text-sm text-foreground">{message.content}</p>
         ) : (
           <div className="text-sm text-foreground/90 prose-sm">
-            {message.content ? formatContent(message.content) : (
+            {text ? formatContent(text) : (
               <span className="text-muted-foreground animate-pulse">Thinking...</span>
+            )}
+            {actions.length > 0 && (
+              <div className="mt-3 pt-3 border-t border-border/50">
+                <p className="text-xs font-semibold text-primary mb-1">⚡ Floor Manager Actions</p>
+                {actions.map((action, i) => (
+                  <ActionButton key={i} action={action} onExecute={onExecuteAction} />
+                ))}
+              </div>
             )}
           </div>
         )}

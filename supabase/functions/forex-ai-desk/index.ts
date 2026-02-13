@@ -418,19 +418,153 @@ function buildSystemState(openTrades: any[], recentClosed: any[], rollups: any[]
   };
 }
 
+// ── OANDA Write Helpers ──
+
+const OANDA_HOSTS = {
+  practice: "https://api-fxpractice.oanda.com",
+  live: "https://api-fxtrade.oanda.com",
+} as const;
+
+async function oandaRequest(
+  path: string,
+  method: string,
+  body?: Record<string, unknown>,
+  environment: "practice" | "live" = "live"
+) {
+  const apiToken = environment === "live"
+    ? (Deno.env.get("OANDA_LIVE_API_TOKEN") || Deno.env.get("OANDA_API_TOKEN"))
+    : Deno.env.get("OANDA_API_TOKEN");
+  const accountId = environment === "live"
+    ? (Deno.env.get("OANDA_LIVE_ACCOUNT_ID") || Deno.env.get("OANDA_ACCOUNT_ID"))
+    : Deno.env.get("OANDA_ACCOUNT_ID");
+
+  if (!apiToken || !accountId) throw new Error("OANDA credentials not configured");
+
+  const host = OANDA_HOSTS[environment];
+  const url = `${host}${path.replace("{accountId}", accountId)}`;
+  console.log(`[AI-DESK-OANDA] ${method} ${url}`);
+
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${apiToken}`,
+    "Content-Type": "application/json",
+    Accept: "application/json",
+  };
+
+  const options: RequestInit = { method, headers };
+  if (body) options.body = JSON.stringify(body);
+
+  const response = await fetch(url, options);
+  const data = await response.json();
+
+  if (!response.ok) {
+    console.error(`[AI-DESK-OANDA] Error ${response.status}:`, JSON.stringify(data));
+    throw new Error(data.errorMessage || data.rejectReason || `OANDA API error: ${response.status}`);
+  }
+  return data;
+}
+
+async function executeAction(
+  action: { type: string; tradeId?: string; pair?: string; direction?: string; stopLossPrice?: number; takeProfitPrice?: number; units?: number },
+  sb: ReturnType<typeof createClient>,
+  environment: "practice" | "live" = "live"
+) {
+  const results: { action: string; success: boolean; detail: string; data?: unknown }[] = [];
+
+  if (action.type === "close_trade" && action.tradeId) {
+    console.log(`[AI-DESK] Floor Manager closing trade ${action.tradeId}`);
+    const result = await oandaRequest(
+      `/v3/accounts/{accountId}/trades/${action.tradeId}/close`,
+      "PUT",
+      {},
+      environment
+    );
+    const closePrice = result.orderFillTransaction?.price ? parseFloat(result.orderFillTransaction.price) : null;
+
+    // Update DB
+    await sb
+      .from("oanda_orders")
+      .update({ status: "closed", exit_price: closePrice, closed_at: new Date().toISOString() })
+      .eq("oanda_trade_id", action.tradeId);
+
+    results.push({ action: "close_trade", success: true, detail: `Trade ${action.tradeId} closed at ${closePrice}`, data: result });
+
+  } else if (action.type === "update_sl_tp" && action.tradeId) {
+    console.log(`[AI-DESK] Floor Manager updating SL/TP on trade ${action.tradeId}`);
+    const orderUpdate: Record<string, unknown> = {};
+    if (action.stopLossPrice != null) {
+      orderUpdate.stopLoss = { price: action.stopLossPrice.toFixed(5), timeInForce: "GTC" };
+    }
+    if (action.takeProfitPrice != null) {
+      orderUpdate.takeProfit = { price: action.takeProfitPrice.toFixed(5), timeInForce: "GTC" };
+    }
+    const result = await oandaRequest(
+      `/v3/accounts/{accountId}/trades/${action.tradeId}/orders`,
+      "PUT",
+      orderUpdate,
+      environment
+    );
+    results.push({
+      action: "update_sl_tp",
+      success: true,
+      detail: `Trade ${action.tradeId} SL=${action.stopLossPrice ?? 'unchanged'} TP=${action.takeProfitPrice ?? 'unchanged'}`,
+      data: result,
+    });
+
+  } else if (action.type === "get_account_summary") {
+    const result = await oandaRequest("/v3/accounts/{accountId}/summary", "GET", undefined, environment);
+    results.push({ action: "account_summary", success: true, detail: `Balance: ${result.account?.balance}, NAV: ${result.account?.NAV}`, data: result.account });
+
+  } else if (action.type === "get_open_trades") {
+    const result = await oandaRequest("/v3/accounts/{accountId}/openTrades", "GET", undefined, environment);
+    results.push({ action: "open_trades", success: true, detail: `${(result.trades || []).length} open trades`, data: result.trades });
+
+  } else {
+    results.push({ action: action.type, success: false, detail: `Unknown action: ${action.type}` });
+  }
+
+  return results;
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
   }
 
   try {
+    const body = await req.json();
+
+    // ─── Action Mode: Execute trade operations directly ───
+    if (body.mode === "action") {
+      const { action, environment } = body;
+      if (!action || !action.type) return ERR.bad("Action type is required");
+
+      const supabaseAdmin = createClient(
+        Deno.env.get("SUPABASE_URL") ?? "",
+        Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? ""
+      );
+
+      try {
+        const results = await executeAction(action, supabaseAdmin, environment || "live");
+        console.log(`[AI-DESK] Action executed:`, JSON.stringify(results));
+        return new Response(JSON.stringify({ success: true, results }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      } catch (err) {
+        console.error(`[AI-DESK] Action failed:`, err);
+        return new Response(
+          JSON.stringify({ success: false, error: (err as Error).message }),
+          { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+    }
+
+    // ─── Chat Mode (existing) ───
     const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
     if (!LOVABLE_API_KEY) {
       console.error("[FOREX-AI-DESK] LOVABLE_API_KEY not configured");
       return ERR.internal();
     }
 
-    const body = await req.json();
     const { messages, mode } = body;
     const isVoice = mode === 'voice';
 
@@ -468,10 +602,61 @@ serve(async (req) => {
       fetchTradeStats(supabaseAdmin),
     ]);
 
+    // Also fetch live OANDA state for real-time awareness
+    let liveOandaState: Record<string, unknown> = {};
+    try {
+      const [accountSummary, oandaOpenTrades] = await Promise.all([
+        oandaRequest("/v3/accounts/{accountId}/summary", "GET", undefined, "live"),
+        oandaRequest("/v3/accounts/{accountId}/openTrades", "GET", undefined, "live"),
+      ]);
+      liveOandaState = {
+        accountBalance: accountSummary.account?.balance,
+        accountNAV: accountSummary.account?.NAV,
+        unrealizedPL: accountSummary.account?.unrealizedPL,
+        marginUsed: accountSummary.account?.marginUsed,
+        openTradeCount: accountSummary.account?.openTradeCount,
+        oandaOpenTrades: (oandaOpenTrades.trades || []).map((t: any) => ({
+          id: t.id,
+          instrument: t.instrument,
+          currentUnits: t.currentUnits,
+          price: t.price,
+          unrealizedPL: t.unrealizedPL,
+          stopLoss: t.stopLossOrder?.price || null,
+          takeProfit: t.takeProfitOrder?.price || null,
+          trailingStop: t.trailingStopLossOrder?.distance || null,
+        })),
+      };
+    } catch (oandaErr) {
+      console.warn("[AI-DESK] OANDA live state fetch failed:", (oandaErr as Error).message);
+      liveOandaState = { error: "Could not fetch live OANDA state" };
+    }
+
     console.log(`[FOREX-AI-DESK] State: ${openTrades.length} open, ${recentClosed.length} recent, ${rollups.length} rollups, ${blocked.length} blocked, ${stats.length} stats`);
 
     const systemState = buildSystemState(openTrades, recentClosed, rollups, blocked, stats);
-    const stateContext = `\n\n<SYSTEM_STATE>\n${JSON.stringify(systemState)}\n</SYSTEM_STATE>`;
+    const enrichedState = { ...systemState, liveOandaState };
+    const stateContext = `\n\n<SYSTEM_STATE>\n${JSON.stringify(enrichedState)}\n</SYSTEM_STATE>`;
+
+    const actionInstructions = `\n\n## EXECUTABLE ACTIONS
+When you determine an action should be taken immediately (not just recommended), output an ACTION BLOCK that the operator can execute with one click. Format:
+
+\`\`\`action
+{"type": "close_trade", "tradeId": "12345"}
+\`\`\`
+
+\`\`\`action
+{"type": "update_sl_tp", "tradeId": "12345", "stopLossPrice": 1.08500, "takeProfitPrice": 1.09200}
+\`\`\`
+
+Available action types:
+- **close_trade**: Close an open trade immediately. Requires tradeId (OANDA trade ID from liveOandaState).
+- **update_sl_tp**: Modify stop-loss and/or take-profit on an open trade. Requires tradeId, plus stopLossPrice and/or takeProfitPrice.
+
+IMPORTANT:
+- Use the OANDA trade ID from the liveOandaState.oandaOpenTrades[].id field
+- Only output action blocks for trades that genuinely need intervention based on your analysis
+- Always explain WHY you're recommending the action before the action block
+- The operator will see a clickable button to execute each action`;
 
     const voiceAddendum = isVoice ? `\n\n## VOICE MODE ACTIVE
 You are speaking aloud to the operator. Adjust your style:
@@ -485,7 +670,8 @@ You are speaking aloud to the operator. Adjust your style:
 - **Always end with one clear action item** — "Here's what I'd do right now: suspend the support-friction agent and tighten G11 to 1.8x"
 - **Always include the Prime Directive Score** as a spoken number — "Prime Directive Score: 38 out of 100. We're not there yet."
 - **Focus relentlessly on the 6 failure patterns** — Breakdown Trap, Agent Over-Correlation, Session Toxicity, Governance Over-Filtering, Profit Capture Decay, Drawdown Clustering. Scan for ALL of them on every question.
-- **Be proactive** — even if they ask a simple question, if you see a critical pattern, call it out: "Before I answer that — I'm seeing a drawdown cluster forming in London session. Three consecutive losses on GBP pairs. That needs attention first."` : '';
+- **Be proactive** — even if they ask a simple question, if you see a critical pattern, call it out: "Before I answer that — I'm seeing a drawdown cluster forming in London session. Three consecutive losses on GBP pairs. That needs attention first."
+- **Do NOT output action blocks in voice mode** — just describe what you would do` : '';
 
     const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
       method: "POST",
@@ -496,7 +682,7 @@ You are speaking aloud to the operator. Adjust your style:
       body: JSON.stringify({
         model: "google/gemini-3-flash-preview",
         messages: [
-          { role: "system", content: SYSTEM_PROMPT + voiceAddendum + stateContext },
+          { role: "system", content: SYSTEM_PROMPT + actionInstructions + voiceAddendum + stateContext },
           ...messages.map((m: any) => ({ role: m.role, content: m.content })),
         ],
         stream: true,
