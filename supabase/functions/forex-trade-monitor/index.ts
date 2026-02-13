@@ -433,12 +433,30 @@ function evaluateExit(
         currentPnlPips, progressToTp, tradeAgeMinutes,
       };
     }
+  } else if (mfeR >= 1.2) {
+    // ═══ ACTIVE HARVEST RULE — MFE >= 1.2R: lock in 0.5R profit ═══
+    // Pattern 5 fix: Stop "hoping for home runs" — bank doubles.
+    // Prevents healthy trades from round-tripping back to scratch/loss.
+    const harvestRDistance = 0.5 * effectiveRPips * pipMult;
+    const harvestSlPrice = direction === "long"
+      ? entryPrice + harvestRDistance * healthTrailingFactor
+      : entryPrice - harvestRDistance * healthTrailingFactor;
+
+    const harvestHit = direction === "long"
+      ? currentPrice <= harvestSlPrice
+      : currentPrice >= harvestSlPrice;
+
+    if (harvestHit) {
+      return {
+        action: "close-trailing",
+        reason: `Active harvest: ${currentPnlPips.toFixed(1)}p (${currentR.toFixed(2)}R) | MFE=${mfeR.toFixed(2)}R reached 1.2R — locking 0.5R profit`,
+        currentPnlPips, progressToTp, tradeAgeMinutes,
+      };
+    }
   } else if (mfeR >= 1.0) {
-    // ═══ FIX #5: BREAKEVEN STOP — once MFE reaches 1.0R, move SL to entry ═══
-    // Protects trades that go positive from reverting to losses.
-    // Only triggers exit if price has come back to entry after reaching 1.0R MFE.
+    // ═══ BREAKEVEN STOP — once MFE reaches 1.0R, move SL to entry ═══
     const breakevenSlPrice = direction === "long"
-      ? entryPrice + 0.5 * pipMult  // breakeven + 0.5 pip buffer
+      ? entryPrice + 0.5 * pipMult
       : entryPrice - 0.5 * pipMult;
 
     const breakevenHit = direction === "long"
@@ -453,9 +471,7 @@ function evaluateExit(
       };
     }
   } else if (mfeR >= 0.8) {
-    // ═══ FIX #6: EARLY PROFIT LOCK — once MFE reaches 0.8R, lock 0.2R profit ═══
-    // Pattern 5 (Profit Capture Decay): Trades reaching 0.8-1.0R MFE reverting to scratch/loss.
-    // Tighter trailing ensures we capture partial winners instead of giving back all progress.
+    // ═══ EARLY PROFIT LOCK — once MFE reaches 0.8R, lock 0.2R profit ═══
     const lockRDistance = 0.2 * effectiveRPips * pipMult;
     const earlyTrailSlPrice = direction === "long"
       ? entryPrice + lockRDistance
@@ -826,14 +842,31 @@ Deno.serve(async (req) => {
         .eq("id", order.id);
 
       // ═══ MAE-BASED KILL SWITCH (0.65R) ═══
-      // If trade hits 0.65R adverse excursion, the edge is gone — close at market immediately.
-      // Saves hundreds of pips by cutting losers before they hit the full stop.
       const MAE_KILL_THRESHOLD = 0.65;
       if (maeRValue >= MAE_KILL_THRESHOLD && decision.action === "hold") {
         console.log(`[MAE-KILL] ${order.currency_pair} ${order.direction}: MAE=${maeRValue}R >= ${MAE_KILL_THRESHOLD}R — KILLING trade at market (edge gone)`);
-        // Override the hold decision — force close
         decision.action = "mae-kill" as typeof decision.action;
         decision.reason = `MAE kill switch: ${maeRValue}R adverse excursion exceeds ${MAE_KILL_THRESHOLD}R threshold — edge invalidated`;
+      }
+
+      // ═══ THS-BASED EXIT ACCELERATION ═══
+      // If trade is in profit but THS collapsed below 40, the behavioral probability is gone.
+      // No reason to hold a "sick" trade hoping for recovery — close at market.
+      const THS_EXIT_THRESHOLD = 40;
+      if (decision.action === "hold" && ueRValue > 0 && healthResult.tradeHealthScore < THS_EXIT_THRESHOLD) {
+        console.log(`[THS-EXIT] ${order.currency_pair} ${order.direction}: In profit (${ueRValue}R) but THS=${healthResult.tradeHealthScore} < ${THS_EXIT_THRESHOLD} — behavioral probability collapsed, closing at market`);
+        decision.action = "ths-exit" as typeof decision.action;
+        decision.reason = `THS exit: profitable (${ueRValue}R) but THS=${healthResult.tradeHealthScore} collapsed below ${THS_EXIT_THRESHOLD} — behavioral edge gone`;
+      }
+
+      // ═══ FRIDAY FLUSH — Close all positions at 20:00 UTC Friday ═══
+      const nowUtc = new Date();
+      const isFriday = nowUtc.getUTCDay() === 5;
+      const hourUtc = nowUtc.getUTCHours();
+      if (isFriday && hourUtc >= 20 && decision.action === "hold") {
+        console.log(`[FRIDAY-FLUSH] ${order.currency_pair} ${order.direction}: Friday ${hourUtc}:00 UTC — closing all positions before weekend gap risk`);
+        decision.action = "friday-flush" as typeof decision.action;
+        decision.reason = `Friday flush: ${currentPnlPips.toFixed(1)}p — closing before weekend gap (Friday ${hourUtc}:00 UTC)`;
       }
 
       if (decision.action === "hold") {

@@ -895,7 +895,8 @@ function isWeekend(): boolean {
   const day = new Date().getUTCDay();
   if (day === 0) return true;
   if (day === 6) return true;
-  if (day === 5 && new Date().getUTCHours() >= 22) return true;
+  // FRIDAY FLUSH: No new entries after 18:00 UTC Friday — trade monitor closes all at 20:00 UTC
+  if (day === 5 && new Date().getUTCHours() >= 18) return true;
   return false;
 }
 
