@@ -6,7 +6,7 @@ import { useState, useMemo, useEffect } from 'react';
 import { LongOnlyFilterProvider } from '@/contexts/LongOnlyFilterContext';
 import { motion } from 'framer-motion';
 import {
-  Globe, TrendingUp, BookOpen, Archive, Brain, HeartPulse, Mic,
+  Globe, TrendingUp, BookOpen, Archive, Brain, HeartPulse, Mic, Eye,
 } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { DashboardLayout } from '@/components/dashboard/DashboardLayout';
@@ -20,6 +20,7 @@ import { SystemLearningPanel } from '@/components/forex/SystemLearningPanel';
 import { SystemConfidenceMeter } from '@/components/forex/SystemConfidenceMeter';
 import { GovernanceStateBanner } from '@/components/forex/GovernanceStateBanner';
 import { VoiceChatInterface } from '@/components/chat/VoiceChatInterface';
+import { FloorManagerView } from '@/components/forex/floor-manager/FloorManagerView';
 
 // Archive (lazy-loaded legacy dashboards)
 import { ForexArchiveDashboards } from '@/components/forex/ForexArchiveDashboards';
@@ -212,6 +213,9 @@ const ForexDashboard = () => {
               <TabsTrigger value="ai-desk" className="text-xs gap-1.5 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
                 <Mic className="w-3.5 h-3.5" />AI Desk
               </TabsTrigger>
+              <TabsTrigger value="fm-view" className="text-xs gap-1.5 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
+                <Eye className="w-3.5 h-3.5" />FM View
+              </TabsTrigger>
               <TabsTrigger value="archive" className="text-xs gap-1.5 text-muted-foreground">
                 <Archive className="w-3.5 h-3.5" />Archive
               </TabsTrigger>
@@ -248,7 +252,22 @@ const ForexDashboard = () => {
               </LazyTabContent>
             </TabsContent>
 
-            {/* ─── TAB 5: Archive (all legacy dashboards) ─── */}
+            {/* ─── TAB 5: FM View ─── */}
+            <TabsContent value="fm-view" className="space-y-4">
+              <LazyTabContent label="FM View">
+                <FloorManagerView
+                  openTrades={openTrades?.map(t => ({
+                    currency_pair: t.instrument || '',
+                    direction: Number(t.currentUnits) > 0 ? 'long' : 'short',
+                    trade_health_score: null,
+                    mae_r: null,
+                    agent_id: null,
+                  }))}
+                />
+              </LazyTabContent>
+            </TabsContent>
+
+            {/* ─── TAB 6: Archive (all legacy dashboards) ─── */}
             <TabsContent value="archive" className="space-y-4">
               <LazyTabContent label="Archive">
                 <ForexArchiveDashboards
