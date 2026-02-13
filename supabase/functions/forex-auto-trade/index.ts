@@ -43,6 +43,7 @@ const SUSPENDED_AGENTS: Record<string, string> = {
   "support-regime-confirmer": "shadow",   // Suspended: breakdown trap offender — 24-trade loss streak, -116 pips. Requires WR>50% over 30 trades to reinstate.
   "sentiment-reactor": "disabled",
   "range-navigator": "disabled",
+  "manual-test": "disabled",         // KILLED: pollutes behavioral analytics with discretionary data. Positive P&L (+8.3p) is noise, not signal.
 };
 const USER_ID = "11edc350-4c81-4d9f-82ae-cd2209b7581d";
 
@@ -983,11 +984,11 @@ function buildLongLearningProfile(orders: Array<Record<string, unknown>>): LongL
   else if (totalLongTrades >= 20) maturity = "growing";
   else if (totalLongTrades >= 5) maturity = "early";
 
-  // Adaptive bullish momentum threshold: start permissive, tighten only with statistical significance
-  // MINIMUM 50 trades before tightening — early WR is noise, not signal
-  let adaptiveBullishThreshold = 4; // Default: require 4/7 bullish indicators
-  if (totalLongTrades >= 50 && overallWR < 0.35) adaptiveBullishThreshold = 5;
-  else if (totalLongTrades >= 75 && overallWR >= 0.55) adaptiveBullishThreshold = 3;
+  // Adaptive bullish momentum threshold: TIGHTENED per L3 audit
+  // With 27% system WR, 4/7 was letting coin-flip noise through. 6/7 = near-total agreement required.
+  let adaptiveBullishThreshold = 6; // Default: require 6/7 bullish indicators (was 4)
+  if (totalLongTrades >= 100 && overallWR >= 0.50) adaptiveBullishThreshold = 5; // Only relax if proven profitable
+  // No further relaxation — system must prove edge before lowering the bar
 
   // Adaptive regime strength minimum — PERMISSIVE during learning to collect data
   // Don't tighten until 50+ trades — early losses may be from bugs/SL issues, not regime quality
@@ -1105,11 +1106,11 @@ function buildShortLearningProfile(orders: Array<Record<string, unknown>>): Shor
 
   // EQUALIZED: Short thresholds now match longs during learning phase.
   // Previous "EMERGENCY FIX" (5/7 bearish, regimeMin=45) was based on practice-era data
-  // poisoned by the 8-pip SL bug. With 12-pip fallback SL fix applied, shorts deserve
-  // the same signal density as longs to collect unbiased learning data.
-  let adaptiveBearishThreshold = 4; // Parity with longs (was 5)
-  if (totalShortTrades >= 50 && overallWR < 0.35) adaptiveBearishThreshold = 5;
-  else if (totalShortTrades >= 75 && overallWR >= 0.55) adaptiveBearishThreshold = 3;
+  // L3 AUDIT: Tightened to 6/7 parity with longs — 27% WR means we need near-total agreement.
+  // No more "coin-flip consensus" entries on either side.
+  let adaptiveBearishThreshold = 6; // Default: require 6/7 bearish indicators (was 4)
+  if (totalShortTrades >= 100 && overallWR >= 0.50) adaptiveBearishThreshold = 5; // Only relax if proven
+  // No further relaxation — must prove edge first
 
   // Regime strength minimum — PARITY with longs (was 30, longs are 25)
   let adaptiveRegimeStrengthMin = 25; // Parity with longs (was 30)
@@ -2668,7 +2669,7 @@ Deno.serve(async (req) => {
         ? null
         : selectAgentFromSnapshot(snapshot, "");
 
-      const agentId = forceMode ? "manual-test" : (selectedAgent?.agentId || "forex-macro");
+      const agentId = forceMode ? "force-override" : (selectedAgent?.agentId || "forex-macro"); // "manual-test" KILLED — pollutes behavioral data
       const agentSizeMult = forceMode ? 1.0 : ((selectedAgent?.sizeMultiplier || 1.0) * (selectedAgent?.roleMult || 1.0));
       const agentTier = forceMode ? "manual" : (selectedAgent?.effectiveTier || "unknown");
       const agentRole = forceMode ? "manual" : (selectedAgent?.role || "stabilizer");
@@ -3100,18 +3101,18 @@ Deno.serve(async (req) => {
 
               // Indicator consensus extracted — direction check follows below
 
-              // ═══ ADAPTIVE CONSENSUS THRESHOLD ═══
-              // Tightens as indicator learning matures — more data = higher bar
-              // Base: 25, scales up to 45 based on learning quality + noise count
-              let MIN_CONSENSUS = 25;
+              // ═══ L3 CONSENSUS THRESHOLD (TIGHTENED) ═══
+              // With 27% WR, 4/7 was a coin flip. Raised base to 55 (~6/7 agreement).
+              // Learning can push it higher but NEVER lower than 55.
+              let MIN_CONSENSUS = 55; // ~6/7 indicator agreement required (was 25)
               if (pairLearningProfile && pairLearningProfile.totalTrades >= 20) {
                 const learningMaturity = Math.min(1, pairLearningProfile.totalTrades / 100);
                 const noiseRatio = pairLearningProfile.noiseIndicators.length / 16;
-                // More noise found = system is more selective = raise threshold
                 const qualityBoost = Math.round(pairLearningProfile.qualityScore * 0.15);
                 const noiseBoost = Math.round(noiseRatio * 10);
-                MIN_CONSENSUS = Math.min(45, 25 + Math.round((qualityBoost + noiseBoost) * learningMaturity));
-                console.log(`[INDICATOR-LEARN] ${pair}: Adaptive threshold=${MIN_CONSENSUS} (maturity=${(learningMaturity*100).toFixed(0)}%, quality=${pairLearningProfile.qualityScore}, noise=${pairLearningProfile.noiseIndicators.length})`);
+                // Floor at 55, ceiling at 75 — never drops below 6/7 equivalent
+                MIN_CONSENSUS = Math.max(55, Math.min(75, 55 + Math.round((qualityBoost + noiseBoost) * learningMaturity)));
+                console.log(`[L3-CONSENSUS] ${pair}: Threshold=${MIN_CONSENSUS} (maturity=${(learningMaturity*100).toFixed(0)}%, quality=${pairLearningProfile.qualityScore}, noise=${pairLearningProfile.noiseIndicators.length})`);
               }
               if (Math.abs(indicatorConsensusScore) >= MIN_CONSENSUS) {
                 if (indicatorDirection === "bullish") {
