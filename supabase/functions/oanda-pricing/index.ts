@@ -24,7 +24,7 @@ const ALL_OANDA_INSTRUMENTS = [
 // In-memory cache with 60s TTL
 let cachedPrices: Record<string, { bid: number; ask: number; mid: number }> = {};
 let cacheTimestamp = 0;
-const CACHE_TTL_MS = 60_000;
+const CACHE_TTL_MS = 5_000; // 5 seconds for near-realtime pricing
 
 function oandaToDisplay(instrument: string): string {
   return instrument.replace("_", "/");

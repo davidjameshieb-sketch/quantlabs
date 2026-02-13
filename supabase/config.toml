@@ -50,3 +50,6 @@ verify_jwt = false
 
 [functions.forex-counterfactual-resolver]
 verify_jwt = false
+
+[functions.oanda-market-intel]
+verify_jwt = false
