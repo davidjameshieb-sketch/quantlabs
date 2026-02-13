@@ -205,15 +205,17 @@ export const useVoiceChat = () => {
             let result: { success: boolean; detail?: string };
 
             if (action.type === 'bypass_gate' && action.gateId) {
+              // Route to edge function for server-side persistence
+              result = await executeAction(action);
+              // Also register locally for client-side governance
               const gateId = action.gateId as GateId;
               const reason = (action.reason as string) || 'Floor Manager override';
               const ttlMinutes = typeof action.ttlMinutes === 'number' ? action.ttlMinutes : 15;
               const pair = action.pair as string | undefined;
               registerBypass(gateId, reason, ttlMinutes * 60 * 1000, pair);
-              result = { success: true, detail: `Gate ${gateId} bypassed for ${ttlMinutes}m${pair ? ` on ${pair}` : ''} — ${reason}` };
             } else if (action.type === 'revoke_bypass' && action.gateId) {
-              const revoked = revokeBypass(action.gateId as GateId, action.pair as string | undefined);
-              result = { success: true, detail: revoked ? `Gate ${action.gateId} bypass revoked` : `No active bypass for ${action.gateId}` };
+              result = await executeAction(action);
+              revokeBypass(action.gateId as GateId, action.pair as string | undefined);
             } else {
               result = await executeAction(action);
             }

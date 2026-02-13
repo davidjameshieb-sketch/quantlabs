@@ -121,8 +121,12 @@ When you want to execute a trade action (place a trade, close a trade, modify SL
 - **update_sl_tp**: Modifies stop-loss and/or take-profit on an existing trade. Required: tradeId. Optional: stopLossPrice, takeProfitPrice.
 - **get_account_summary**: Fetches current account balance/NAV.
 - **get_open_trades**: Lists all open trades.
-- **bypass_gate**: Temporarily bypasses a specific governance gate. Required: gateId (e.g. "G4_SPREAD_INSTABILITY", "G9_PRICE_DATA_UNAVAILABLE"). Optional: reason (string explaining why), ttlMinutes (default 15, max 60), pair (restrict bypass to specific pair like "EUR_USD"). The bypass auto-expires. Every bypass is audit-logged for forensic review.
+- **bypass_gate**: Temporarily bypasses a specific governance gate. Persisted to the database so the autonomous auto-trade pipeline ALSO respects it. Required: gateId (e.g. "G4_SPREAD_INSTABILITY", "G9_PRICE_DATA_UNAVAILABLE"). Optional: reason (string explaining why), ttlMinutes (default 15, max 60), pair (restrict bypass to specific pair like "EUR_USD"). The bypass auto-expires. Every bypass is audit-logged for forensic review.
 - **revoke_bypass**: Removes a gate bypass early. Required: gateId. Optional: pair.
+- **suspend_agent**: Suspends an agent from live execution. Required: agentId (e.g. "support-mtf-confirmer"). Optional: reason.
+- **reinstate_agent**: Re-enables a suspended agent. Required: agentId.
+- **adjust_position_sizing**: Adjusts the global position sizing multiplier. Required: multiplier (number 0.1-2.0). Optional: reason.
+- **get_active_bypasses**: Lists all currently active gate bypasses. No parameters needed.
 
 ### Valid Gate IDs for bypass_gate:
 G1_FRICTION, G2_NO_HTF_WEAK_MTF, G3_EDGE_DECAY, G4_SPREAD_INSTABILITY, G5_COMPRESSION_LOW_SESSION, G6_OVERTRADING, G7_LOSS_CLUSTER_WEAK_MTF, G8_HIGH_SHOCK, G9_PRICE_DATA_UNAVAILABLE, G10_ANALYSIS_UNAVAILABLE, G11_EXTENSION_EXHAUSTION, G12_AGENT_DECORRELATION
@@ -135,6 +139,7 @@ G1_FRICTION, G2_NO_HTF_WEAK_MTF, G3_EDGE_DECAY, G4_SPREAD_INSTABILITY, G5_COMPRE
 5. For place_trade, use conservative sizing (500 units minimum for test trades).
 6. ALWAYS include the action block even for test trades — without it, nothing reaches OANDA.
 7. When bypassing gates, ALWAYS explain the risk tradeoff and set the shortest TTL needed. Prefer pair-specific bypasses over global ones.
+8. Gate bypasses are now PERSISTED SERVER-SIDE in the database — the auto-trade pipeline respects them. You no longer need to worry about page refreshes losing your overrides.
 
 Always report your autonomous actions in your analysis. The operator needs to know what you've done, not just what you've seen.`;
 
@@ -624,6 +629,100 @@ async function executeAction(
   } else if (action.type === "get_open_trades") {
     const result = await oandaRequest("/v3/accounts/{accountId}/openTrades", "GET", undefined, environment);
     results.push({ action: "open_trades", success: true, detail: `${(result.trades || []).length} open trades`, data: result.trades });
+
+  } else if (action.type === "bypass_gate" && (action as any).gateId) {
+    // ── Server-side gate bypass: persisted to DB, respected by auto-trade pipeline ──
+    const gateId = (action as any).gateId as string;
+    const reason = (action as any).reason || "Floor Manager override";
+    const ttlMinutes = Math.min(60, Math.max(1, (action as any).ttlMinutes || 15));
+    const pair = (action as any).pair || null;
+    const expiresAt = new Date(Date.now() + ttlMinutes * 60 * 1000).toISOString();
+
+    const { error: insertErr } = await sb.from("gate_bypasses").insert({
+      gate_id: gateId,
+      pair,
+      reason,
+      expires_at: expiresAt,
+      created_by: "floor-manager",
+    });
+
+    if (insertErr) {
+      results.push({ action: "bypass_gate", success: false, detail: `DB insert failed: ${insertErr.message}` });
+    } else {
+      console.log(`[AI-DESK] Gate ${gateId} BYPASSED${pair ? ` for ${pair}` : ""} — TTL ${ttlMinutes}m — reason: ${reason}`);
+      results.push({ action: "bypass_gate", success: true, detail: `Gate ${gateId} bypassed for ${ttlMinutes}m${pair ? ` on ${pair}` : ""} — ${reason}. Auto-trade pipeline will respect this.` });
+    }
+
+  } else if (action.type === "revoke_bypass" && (action as any).gateId) {
+    const gateId = (action as any).gateId as string;
+    const pair = (action as any).pair || null;
+
+    let query = sb.from("gate_bypasses")
+      .update({ revoked: true })
+      .eq("gate_id", gateId)
+      .eq("revoked", false);
+    if (pair) query = query.eq("pair", pair);
+
+    const { error: updateErr, count } = await query;
+    if (updateErr) {
+      results.push({ action: "revoke_bypass", success: false, detail: `DB update failed: ${updateErr.message}` });
+    } else {
+      results.push({ action: "revoke_bypass", success: true, detail: `Gate ${gateId} bypass revoked${pair ? ` for ${pair}` : ""}` });
+    }
+
+  } else if (action.type === "get_active_bypasses") {
+    const { data: bypasses } = await sb.from("gate_bypasses")
+      .select("*")
+      .eq("revoked", false)
+      .gt("expires_at", new Date().toISOString())
+      .order("created_at", { ascending: false });
+    results.push({ action: "get_active_bypasses", success: true, detail: `${(bypasses || []).length} active bypasses`, data: bypasses });
+
+  } else if (action.type === "suspend_agent" && (action as any).agentId) {
+    const agentId = (action as any).agentId as string;
+    const reason = (action as any).reason || "Floor Manager suspension";
+    // Store suspension as a gate bypass record with special gate_id
+    const { error: insertErr } = await sb.from("gate_bypasses").insert({
+      gate_id: `AGENT_SUSPEND:${agentId}`,
+      reason,
+      expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(), // 24h default
+      created_by: "floor-manager",
+    });
+    if (insertErr) {
+      results.push({ action: "suspend_agent", success: false, detail: insertErr.message });
+    } else {
+      results.push({ action: "suspend_agent", success: true, detail: `Agent ${agentId} suspended — ${reason}` });
+    }
+
+  } else if (action.type === "reinstate_agent" && (action as any).agentId) {
+    const agentId = (action as any).agentId as string;
+    await sb.from("gate_bypasses")
+      .update({ revoked: true })
+      .eq("gate_id", `AGENT_SUSPEND:${agentId}`)
+      .eq("revoked", false);
+    results.push({ action: "reinstate_agent", success: true, detail: `Agent ${agentId} reinstated` });
+
+  } else if (action.type === "adjust_position_sizing" && (action as any).multiplier != null) {
+    const multiplier = Math.min(2.0, Math.max(0.1, (action as any).multiplier as number));
+    const reason = (action as any).reason || "Floor Manager sizing adjustment";
+    // Store as a special bypass record
+    // First revoke any existing sizing override
+    await sb.from("gate_bypasses")
+      .update({ revoked: true })
+      .eq("gate_id", "SIZING_OVERRIDE")
+      .eq("revoked", false);
+    // Insert new override
+    const { error: insertErr } = await sb.from("gate_bypasses").insert({
+      gate_id: "SIZING_OVERRIDE",
+      reason: `${multiplier}x — ${reason}`,
+      expires_at: new Date(Date.now() + 4 * 60 * 60 * 1000).toISOString(), // 4h default
+      created_by: "floor-manager",
+    });
+    if (insertErr) {
+      results.push({ action: "adjust_position_sizing", success: false, detail: insertErr.message });
+    } else {
+      results.push({ action: "adjust_position_sizing", success: true, detail: `Position sizing set to ${multiplier}x — ${reason}` });
+    }
 
   } else {
     results.push({ action: action.type, success: false, detail: `Unknown action: ${action.type}` });

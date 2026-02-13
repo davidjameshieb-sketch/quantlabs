@@ -1647,6 +1647,53 @@ interface PreTradeEligibility {
   metadata: Record<string, unknown>;
 }
 
+// ─── Server-Side Gate Bypass Check (reads from gate_bypasses table) ───
+// Loaded once per execution cycle and cached in-memory for the scan.
+let _serverBypasses: Array<{ gate_id: string; pair: string | null; reason: string; expires_at: string }> = [];
+
+async function loadServerBypasses(supabase: ReturnType<typeof createClient>): Promise<void> {
+  const { data } = await supabase
+    .from("gate_bypasses")
+    .select("gate_id, pair, reason, expires_at")
+    .eq("revoked", false)
+    .gt("expires_at", new Date().toISOString());
+  _serverBypasses = data || [];
+  if (_serverBypasses.length > 0) {
+    console.log(`[GATE-BYPASS-DB] Loaded ${_serverBypasses.length} active bypasses: ${_serverBypasses.map(b => b.gate_id).join(", ")}`);
+  }
+}
+
+function isGateBypassedServer(gateId: string, pair?: string): boolean {
+  const now = new Date().toISOString();
+  for (const bp of _serverBypasses) {
+    if (bp.expires_at < now) continue;
+    if (!bp.gate_id.startsWith(gateId)) continue;
+    // Pair-specific bypass: must match
+    if (bp.pair && pair && bp.pair !== pair) continue;
+    // Global bypass (no pair) always applies
+    console.log(`[GATE-BYPASS-DB] ✅ ${gateId} BYPASSED${pair ? ` for ${pair}` : ""} — ${bp.reason}`);
+    return true;
+  }
+  return false;
+}
+
+function isAgentSuspendedByFM(agentId: string): boolean {
+  const now = new Date().toISOString();
+  return _serverBypasses.some(bp =>
+    bp.gate_id === `AGENT_SUSPEND:${agentId}` && bp.expires_at >= now
+  );
+}
+
+function getFMSizingOverride(): number | null {
+  const now = new Date().toISOString();
+  const override = _serverBypasses.find(bp =>
+    bp.gate_id === "SIZING_OVERRIDE" && bp.expires_at >= now
+  );
+  if (!override) return null;
+  const match = override.reason.match(/^([\d.]+)x/);
+  return match ? parseFloat(match[1]) : null;
+}
+
 function canPlaceLiveOrder(
   tradeIntent: {
     pair: string;
@@ -1712,9 +1759,11 @@ function canPlaceLiveOrder(
 
   // ─── CHECK 3: AGENT SUSPENSION (structural — kept as hard-block) ───
   // Agent suspension is execution integrity, not data-derived.
-  if (SUSPENDED_AGENTS[tradeIntent.agentId]) {
-    console.log(`[GOV_BLOCK_AGENT] agent_id=${tradeIntent.agentId} mode=${SUSPENDED_AGENTS[tradeIntent.agentId]} — suspended from live execution`);
-    return { allowed: false, reason_code: "GOV_BLOCK_AGENT", metadata: { agent_id: tradeIntent.agentId, mode: SUSPENDED_AGENTS[tradeIntent.agentId] } };
+  // Also check Floor Manager dynamic suspensions from DB.
+  if (SUSPENDED_AGENTS[tradeIntent.agentId] || isAgentSuspendedByFM(tradeIntent.agentId)) {
+    const mode = SUSPENDED_AGENTS[tradeIntent.agentId] || "fm-suspended";
+    console.log(`[GOV_BLOCK_AGENT] agent_id=${tradeIntent.agentId} mode=${mode} — suspended from live execution`);
+    return { allowed: false, reason_code: "GOV_BLOCK_AGENT", metadata: { agent_id: tradeIntent.agentId, mode } };
   }
 
   // ─── SHADOW CHECK 4: REGIME-DIRECTION BLOCK (shadow-log during bootstrap) ───
@@ -2302,7 +2351,12 @@ Deno.serve(async (req) => {
     );
 
     // ═══════════════════════════════════════════════════════════
-    // PHASE 0: Load Agent Snapshot (lightweight direct query, avoids RPC timeout)
+    // PHASE 0a: Load Floor Manager Gate Bypasses from DB
+    // ═══════════════════════════════════════════════════════════
+    await loadServerBypasses(supabase);
+
+    // ═══════════════════════════════════════════════════════════
+    // PHASE 0b: Load Agent Snapshot (lightweight direct query, avoids RPC timeout)
     // ═══════════════════════════════════════════════════════════
 
     // STRATEGY RESET: Only use trades from revamped strategy (post-2026-02-12)
@@ -3088,7 +3142,7 @@ Deno.serve(async (req) => {
           (o.exit_price === null || o.exit_price === undefined) &&
           (o.created_at as string) >= oneHourAgo
         );
-        if (agentRecentSameDir.length >= 2) {
+        if (agentRecentSameDir.length >= 2 && !isGateBypassedServer("G12_AGENT_DECORRELATION", pair)) {
           console.log(`[G12_DECORRELATION_STRICT] agent=${agentId} has ${agentRecentSameDir.length} open positions in last hour — BLOCKED (max 2 per agent per hour)`);
           results.push({ pair, direction: "none", status: "g12-decorrelation-blocked", agentId });
           continue;
@@ -3719,7 +3773,7 @@ Deno.serve(async (req) => {
       if (!forceMode && indicatorAtrRatio !== null && indicatorAtrRatio > effectiveG11Threshold) {
         const isBreakdownShort = direction === "short" && (indicatorRegime === "breakdown" || indicatorRegime === "risk-off" || indicatorRegime === "exhaustion");
         const isExhaustedEntry = indicatorRegime === "exhaustion";
-        if (isBreakdownShort || isExhaustedEntry) {
+        if ((isBreakdownShort || isExhaustedEntry) && !isGateBypassedServer("G11_EXTENSION_EXHAUSTION", pair)) {
           console.log(`[G11_EXTENSION_EXHAUSTION] ${pair} ${direction}: ATR ratio ${indicatorAtrRatio.toFixed(2)}x > ${effectiveG11Threshold}x threshold (auto-calibrated) — BLOCKED (regime=${indicatorRegime})`);
           results.push({ pair, direction, status: "g11-extension-exhaustion", agentId, govState });
           continue;
@@ -3827,11 +3881,16 @@ Deno.serve(async (req) => {
         : runFrictionGate(pair, session, govConfig, sessionBudget);
 
       if (!gate.pass) {
-        results.push({
-          pair, direction, status: "gated",
-          gateResult: gate.result, frictionScore: gate.frictionScore, govState, agentId,
-        });
-        continue;
+        // Check if Floor Manager has bypassed the friction gate
+        if (isGateBypassedServer("G1_FRICTION", pair)) {
+          console.log(`[GATE-BYPASS-DB] G1_FRICTION bypassed for ${pair} — friction gate overridden by Floor Manager`);
+        } else {
+          results.push({
+            pair, direction, status: "gated",
+            gateResult: gate.result, frictionScore: gate.frictionScore, govState, agentId,
+          });
+          continue;
+        }
       }
 
       // ─── Idempotency & Dedup ───
@@ -4046,6 +4105,12 @@ Deno.serve(async (req) => {
 
       // ─── SHORT CAPITAL: Equal allocation to longs ───
       const shortCapMultiplier = 1.0;
+      // ─── Floor Manager Sizing Override ───
+      const fmSizingOverride = getFMSizingOverride();
+      if (fmSizingOverride !== null) {
+        deploymentMultiplier *= fmSizingOverride;
+        console.log(`[FM-SIZING-OVERRIDE] Floor Manager sizing override: ${fmSizingOverride}x applied → deployment=${deploymentMultiplier.toFixed(2)}`);
+      }
       const tradeUnits = Math.max(500, Math.round(baseTradeUnits * deploymentMultiplier * shortCapMultiplier));
 
       console.log(`[SCALP-TRADE] ${pair} (${isPrimaryPair ? 'SCALP' : 'SECONDARY'}): sized ${tradeUnits}u (gov=${govConfig.sizingMultiplier}, pair=${(pairAlloc as PairRollingMetrics).capitalMultiplier?.toFixed(2)}, session=${sessionBudget.capitalBudgetPct}, agent=${agentSizeMult}, agentKelly=${agentKelly.agentMultiplier}, dynScale=${dynamicPositionScale.toFixed(2)}, discovery=${discoveryMultiplier}, deployment=${deploymentMultiplier.toFixed(2)}, shortCap=${shortCapMultiplier})`);
