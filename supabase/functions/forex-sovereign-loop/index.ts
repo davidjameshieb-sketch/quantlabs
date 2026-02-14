@@ -91,29 +91,65 @@ add_blacklist, remove_blacklist, activate_circuit_breaker, deactivate_circuit_br
 adjust_evolution_param, create_gate, remove_gate, lead_lag_scan, liquidity_heatmap,
 get_account_summary, get_open_trades
 
-## SOVEREIGN-NATIVE ACTIONS (New — handled directly by the loop, no desk needed)
+## SOVEREIGN-NATIVE ACTIONS (Unsandboxed — full architectural freedom)
 
 ### write_memory — Persist strategic knowledge to your long-term brain
 \`\`\`action
 {"type": "write_memory", "memory_type": "strategic_note|dna_mutation|gate_performance|regime_forecast|session_debrief", "memory_key": "unique:key:path", "payload": {"your": "data"}, "relevance_score": 1.0}
 \`\`\`
-Use this to store learnings, DNA decisions, regime predictions, session debriefs. Memory persists across all future cycles. Higher relevance_score = loaded first. Types:
-- **strategic_note**: General strategic insights, lessons learned
-- **dna_mutation**: Record of why you mutated an agent's DNA and what you changed
-- **gate_performance**: Track how a gate (G1-G20+) is performing over time
-- **regime_forecast**: Your predictions about upcoming regime transitions
-- **session_debrief**: End-of-session summary of what worked and what didn't
 
 ### run_backtest — Trigger a shadow simulation (Synthesis Sandbox)
 \`\`\`action
 {"type": "run_backtest", "agent_id": "trend-scalper", "days": 30, "variant_id": "sovereign-test-v1"}
 \`\`\`
-Runs a backtest for a specific agent (or "all") over N days. Results are automatically saved to your sovereign memory. Use this to validate DNA mutations or gate changes BEFORE applying them live.
+
+### call_edge_function — Call ANY deployed backend function with arbitrary payloads
+\`\`\`action
+{"type": "call_edge_function", "function_name": "oanda-market-intel", "method": "GET", "query_params": {"sections": "pricing"}}
+\`\`\`
+\`\`\`action
+{"type": "call_edge_function", "function_name": "forex-ai-desk", "method": "POST", "body": {"mode": "action", "action": {"type": "place_trade", "pair": "EUR_USD", "direction": "long", "units": 500}}}
+\`\`\`
+You can call ANY function: oanda-market-intel, forex-indicators, cluster-mining, forex-counterfactual-resolver, stocks-intel, crypto-intel, etc. Results are auto-logged to your memory.
+
+### db_query — Read ANY table in the database
+\`\`\`action
+{"type": "db_query", "table": "oanda_orders", "select": "currency_pair,direction,r_pips,agent_id", "filters": {"environment": "live", "status": "closed"}, "order_by": "created_at", "ascending": false, "limit": 100}
+\`\`\`
+Supports filters: eq (default), gt, gte, lt, lte, like, in, is, neq. Use {"column": {"gt": value}} syntax.
+
+### db_write — Write, update, upsert, or delete data in ANY table
+\`\`\`action
+{"type": "db_write", "table": "gate_bypasses", "operation": "insert", "data": {"gate_id": "MY_CUSTOM_GATE", "reason": "Sovereign override", "expires_at": "2025-01-01T00:00:00Z"}}
+\`\`\`
+\`\`\`action
+{"type": "db_write", "table": "sovereign_memory", "operation": "update", "data": {"relevance_score": 0.1}, "match": {"memory_key": "old:note"}}
+\`\`\`
+Operations: insert, update, upsert, delete. All writes are audit-logged to sovereign memory.
+
+### define_macro — Create reusable multi-step action sequences
+\`\`\`action
+{"type": "define_macro", "macro_name": "defensive_lockdown", "description": "Close all trades and activate circuit breaker", "steps": [{"type": "close_trade", "pair": "ALL", "reason": "Lockdown"}, {"type": "activate_circuit_breaker", "threshold": 3}]}
+\`\`\`
+
+### execute_macro — Run a previously defined macro
+\`\`\`action
+{"type": "execute_macro", "macro_name": "defensive_lockdown"}
+\`\`\`
+
+### modify_directive — Self-modify your own system prompt for future cycles
+\`\`\`action
+{"type": "modify_directive", "directive_key": "directive:risk_philosophy", "content": "Always prefer capital preservation over opportunity capture during Asian session", "priority": 2.0}
+\`\`\`
+Directives persist in sovereign memory and are injected into your system prompt on every future cycle. Use this to evolve your own behavioral rules over time. Higher priority = more emphasis.
 
 ## SOVEREIGN MEMORY
 Your SYSTEM_STATE includes a \`sovereignMemory\` array — these are YOUR OWN NOTES from previous cycles.
 Read them carefully. They contain your strategic evolution history, regime forecasts, and session debriefs.
 You should write_memory at least once per L4 cycle with a session_debrief summarizing key decisions.
+
+## SELF-MODIFYING DIRECTIVES
+Your system prompt includes any directives you've previously set via modify_directive. These are YOUR rules that YOU wrote. Follow them. You can update or remove them at any time.
 
 ## ECONOMIC CALENDAR (Smart G8 Data)
 Your SYSTEM_STATE now includes an \`economicCalendar\` object with:
@@ -467,9 +503,12 @@ function extractActions(content: string): Record<string, unknown>[] {
 }
 
 // ─── Execute action via forex-ai-desk action endpoint ───
-// Extended with sovereign-native actions that bypass forex-ai-desk
+// UNSANDBOXED: The Sovereign Intelligence has full architectural freedom
 async function executeAction(action: Record<string, unknown>, sb?: ReturnType<typeof createClient>): Promise<{ action: string; success: boolean; detail: string }> {
   const actionType = action.type as string;
+  const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
+  const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
+  const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 
   // ─── SOVEREIGN-NATIVE: write_memory ───
   if (actionType === "write_memory" && sb) {
@@ -490,49 +529,230 @@ async function executeAction(action: Record<string, unknown>, sb?: ReturnType<ty
   // ─── SOVEREIGN-NATIVE: run_backtest ───
   if (actionType === "run_backtest" && sb) {
     try {
-      const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
-      const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
-      // Trigger backtest via compute-snapshot edge function with backtest scope
       const agentId = (action.agent_id as string) || "all";
       const days = (action.days as number) || 30;
       const variantId = (action.variant_id as string) || "sovereign-test";
-
-      // Run the backtest as a compute-snapshot job
       const res = await fetch(`${supabaseUrl}/functions/v1/compute-snapshot`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${supabaseAnonKey}`,
-          apikey: supabaseAnonKey,
-        },
-        body: JSON.stringify({
-          snapshot_type: "backtest",
-          scope_key: `sovereign:${agentId}:${variantId}`,
-          params: { agent_id: agentId, days, variant_id: variantId },
-        }),
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${supabaseAnonKey}`, apikey: supabaseAnonKey },
+        body: JSON.stringify({ snapshot_type: "backtest", scope_key: `sovereign:${agentId}:${variantId}`, params: { agent_id: agentId, days, variant_id: variantId } }),
       });
       const data = await res.json();
-      if (!res.ok) {
-        return { action: actionType, success: false, detail: `Backtest failed: ${data.error || res.status}` };
-      }
-
-      // Write backtest result to sovereign memory for future reference
-      await writeSovereignMemory(sb, {
+      if (!res.ok) return { action: actionType, success: false, detail: `Backtest failed: ${data.error || res.status}` };
+      await writeSovereignMemory(sb!, {
         memory_type: "backtest_result",
         memory_key: `backtest:${agentId}:${variantId}:${Date.now()}`,
         payload: { agent_id: agentId, days, variant_id: variantId, result: data, ran_at: new Date().toISOString() },
         relevance_score: 1.5,
       });
-
       return { action: actionType, success: true, detail: `Backtest queued for ${agentId} (${days}d, variant=${variantId})` };
     } catch (err) {
       return { action: actionType, success: false, detail: (err as Error).message };
     }
   }
 
+  // ─── SOVEREIGN-NATIVE: call_edge_function — Call ANY deployed edge function ───
+  if (actionType === "call_edge_function") {
+    try {
+      const fnName = action.function_name as string;
+      if (!fnName) return { action: actionType, success: false, detail: "Missing function_name" };
+      const method = (action.method as string) || "GET";
+      const body = action.body as Record<string, unknown> | undefined;
+      const queryParams = action.query_params as Record<string, string> | undefined;
+
+      let url = `${supabaseUrl}/functions/v1/${fnName}`;
+      if (queryParams) {
+        const qs = new URLSearchParams(queryParams).toString();
+        url += `?${qs}`;
+      }
+
+      const headers: Record<string, string> = {
+        Authorization: `Bearer ${supabaseAnonKey}`,
+        apikey: supabaseAnonKey,
+        "Content-Type": "application/json",
+      };
+      const opts: RequestInit = { method, headers };
+      if (body && ["POST", "PUT", "PATCH"].includes(method.toUpperCase())) {
+        opts.body = JSON.stringify(body);
+      }
+
+      const res = await fetch(url, opts);
+      const responseText = await res.text();
+      let responseData: any;
+      try { responseData = JSON.parse(responseText); } catch { responseData = responseText.slice(0, 500); }
+
+      // Auto-log the call to memory for audit trail
+      if (sb) {
+        await writeSovereignMemory(sb, {
+          memory_type: "edge_function_call",
+          memory_key: `ef:${fnName}:${Date.now()}`,
+          payload: { function: fnName, method, status: res.status, response_preview: JSON.stringify(responseData).slice(0, 300) },
+          relevance_score: 0.5,
+          expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(), // 7d retention
+        });
+      }
+
+      return { action: actionType, success: res.ok, detail: `${fnName} ${res.status}: ${JSON.stringify(responseData).slice(0, 200)}` };
+    } catch (err) {
+      return { action: actionType, success: false, detail: (err as Error).message };
+    }
+  }
+
+  // ─── SOVEREIGN-NATIVE: db_query — Read ANY data from the database ───
+  if (actionType === "db_query" && sb) {
+    try {
+      const table = action.table as string;
+      const select = (action.select as string) || "*";
+      const filters = (action.filters as Record<string, unknown>) || {};
+      const limit = (action.limit as number) || 50;
+      const orderBy = action.order_by as string | undefined;
+      const ascending = (action.ascending as boolean) ?? false;
+
+      if (!table) return { action: actionType, success: false, detail: "Missing table name" };
+
+      let query = sb.from(table).select(select).limit(limit);
+      for (const [key, value] of Object.entries(filters)) {
+        if (typeof value === "object" && value !== null) {
+          const op = Object.keys(value)[0];
+          const val = (value as any)[op];
+          if (op === "gt") query = query.gt(key, val);
+          else if (op === "gte") query = query.gte(key, val);
+          else if (op === "lt") query = query.lt(key, val);
+          else if (op === "lte") query = query.lte(key, val);
+          else if (op === "like") query = query.like(key, val);
+          else if (op === "in") query = query.in(key, val);
+          else if (op === "is") query = query.is(key, val);
+          else if (op === "neq") query = query.neq(key, val);
+        } else {
+          query = query.eq(key, value);
+        }
+      }
+      if (orderBy) query = query.order(orderBy, { ascending });
+
+      const { data, error } = await query;
+      if (error) return { action: actionType, success: false, detail: error.message };
+      return { action: actionType, success: true, detail: `${table}: ${(data || []).length} rows — ${JSON.stringify(data).slice(0, 300)}` };
+    } catch (err) {
+      return { action: actionType, success: false, detail: (err as Error).message };
+    }
+  }
+
+  // ─── SOVEREIGN-NATIVE: db_write — Write/update data in the database ───
+  if (actionType === "db_write" && sb) {
+    try {
+      const table = action.table as string;
+      const operation = (action.operation as string) || "insert"; // insert, update, upsert, delete
+      const data = action.data as Record<string, unknown> | Record<string, unknown>[];
+      const matchFilters = (action.match as Record<string, unknown>) || {};
+
+      if (!table) return { action: actionType, success: false, detail: "Missing table name" };
+
+      let result: any;
+      if (operation === "insert") {
+        result = await sb.from(table).insert(data as any);
+      } else if (operation === "upsert") {
+        result = await sb.from(table).upsert(data as any);
+      } else if (operation === "update") {
+        let query = sb.from(table).update(data as any);
+        for (const [key, value] of Object.entries(matchFilters)) {
+          query = query.eq(key, value);
+        }
+        result = await query;
+      } else if (operation === "delete") {
+        let query = sb.from(table).delete();
+        for (const [key, value] of Object.entries(matchFilters)) {
+          query = query.eq(key, value);
+        }
+        result = await query;
+      }
+
+      if (result?.error) return { action: actionType, success: false, detail: result.error.message };
+
+      // Audit log
+      if (sb) {
+        await writeSovereignMemory(sb, {
+          memory_type: "db_write_audit",
+          memory_key: `dbw:${table}:${operation}:${Date.now()}`,
+          payload: { table, operation, data_preview: JSON.stringify(data).slice(0, 200), match: matchFilters },
+          relevance_score: 0.3,
+          expires_at: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(),
+        });
+      }
+
+      return { action: actionType, success: true, detail: `${operation} on ${table} succeeded` };
+    } catch (err) {
+      return { action: actionType, success: false, detail: (err as Error).message };
+    }
+  }
+
+  // ─── SOVEREIGN-NATIVE: define_macro — Create reusable action sequences ───
+  if (actionType === "define_macro" && sb) {
+    try {
+      const macroName = action.macro_name as string;
+      const steps = action.steps as Record<string, unknown>[];
+      const description = (action.description as string) || "";
+      if (!macroName || !steps?.length) return { action: actionType, success: false, detail: "Missing macro_name or steps" };
+
+      await writeSovereignMemory(sb, {
+        memory_type: "macro_definition",
+        memory_key: `macro:${macroName}`,
+        payload: { name: macroName, description, steps, created_at: new Date().toISOString() },
+        relevance_score: 2.0, // High relevance so it loads first
+      });
+      return { action: actionType, success: true, detail: `Macro "${macroName}" defined with ${steps.length} steps` };
+    } catch (err) {
+      return { action: actionType, success: false, detail: (err as Error).message };
+    }
+  }
+
+  // ─── SOVEREIGN-NATIVE: execute_macro — Run a previously defined macro ───
+  if (actionType === "execute_macro" && sb) {
+    try {
+      const macroName = action.macro_name as string;
+      if (!macroName) return { action: actionType, success: false, detail: "Missing macro_name" };
+
+      // Load macro from memory
+      const { data: macros } = await sb.from("sovereign_memory")
+        .select("payload")
+        .eq("memory_key", `macro:${macroName}`)
+        .limit(1);
+
+      if (!macros?.length) return { action: actionType, success: false, detail: `Macro "${macroName}" not found` };
+      const steps = (macros[0].payload as any)?.steps as Record<string, unknown>[];
+      if (!steps?.length) return { action: actionType, success: false, detail: `Macro "${macroName}" has no steps` };
+
+      const results: string[] = [];
+      for (const step of steps) {
+        const stepResult = await executeAction(step, sb);
+        results.push(`${stepResult.success ? '✅' : '❌'} ${stepResult.action}: ${stepResult.detail}`);
+      }
+      return { action: actionType, success: true, detail: `Macro "${macroName}" (${steps.length} steps): ${results.join(' | ').slice(0, 300)}` };
+    } catch (err) {
+      return { action: actionType, success: false, detail: (err as Error).message };
+    }
+  }
+
+  // ─── SOVEREIGN-NATIVE: modify_directive — Self-modify the system prompt ───
+  if (actionType === "modify_directive" && sb) {
+    try {
+      const directiveKey = (action.directive_key as string) || `directive:${Date.now()}`;
+      const content = action.content as string;
+      const priority = (action.priority as number) ?? 1.0;
+      if (!content) return { action: actionType, success: false, detail: "Missing content" };
+
+      await writeSovereignMemory(sb, {
+        memory_type: "directive_override",
+        memory_key: directiveKey,
+        payload: { content, priority, set_at: new Date().toISOString() },
+        relevance_score: priority + 5.0, // Directives load with highest priority
+      });
+      return { action: actionType, success: true, detail: `Directive "${directiveKey}" set (priority=${priority})` };
+    } catch (err) {
+      return { action: actionType, success: false, detail: (err as Error).message };
+    }
+  }
+
   // ─── DEFAULT: Forward to forex-ai-desk ───
-  const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
-  const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
   try {
     const res = await fetch(`${supabaseUrl}/functions/v1/forex-ai-desk`, {
       method: "POST",
@@ -1057,12 +1277,40 @@ Deno.serve(async (req) => {
     let aiSystemPrompt: string;
     let aiMaxTokens = 2000;
 
+    // ─── LOAD SELF-MODIFYING DIRECTIVES from sovereign memory ───
+    const directiveMemories = sovereignMemory
+      .filter((m: any) => m.memory_type === "directive_override")
+      .sort((a: any, b: any) => ((b.payload as any)?.priority || 0) - ((a.payload as any)?.priority || 0));
+    
+    let directiveInjection = "";
+    if (directiveMemories.length > 0) {
+      directiveInjection = "\n\n## YOUR SELF-DEFINED DIRECTIVES (You wrote these — follow them)\n";
+      for (const d of directiveMemories) {
+        const p = d.payload as any;
+        directiveInjection += `- [priority=${p.priority || 1}] ${p.content}\n`;
+      }
+      console.log(`[SOVEREIGN-LOOP] 📜 ${directiveMemories.length} self-defined directives loaded`);
+    }
+
+    // ─── LOAD MACRO DEFINITIONS for context ───
+    const macroMemories = sovereignMemory.filter((m: any) => m.memory_type === "macro_definition");
+    let macroContext = "";
+    if (macroMemories.length > 0) {
+      macroContext = "\n\n## YOUR DEFINED MACROS (Available via execute_macro)\n";
+      for (const m of macroMemories) {
+        const p = m.payload as any;
+        macroContext += `- **${p.name}**: ${p.description || 'No description'} (${p.steps?.length || 0} steps)\n`;
+      }
+    }
+
+    const basePrompt = SOVEREIGN_AUTONOMOUS_PROMPT + directiveInjection + macroContext;
+
     if (needsL4) {
       // ─── L4: STRATEGIC EVOLUTION (full context, rare) ───
       tierUsed = "L4";
       aiModel = "google/gemini-2.5-pro";
       aiMaxTokens = 4000;
-      aiSystemPrompt = SOVEREIGN_AUTONOMOUS_PROMPT + `\n\n## L4 STRATEGIC EVOLUTION MODE
+      aiSystemPrompt = basePrompt + `\n\n## L4 STRATEGIC EVOLUTION MODE
 You have been promoted to L4 for this cycle because: ${hoursSinceL4 >= 8 ? 'scheduled review' : winRate < 40 ? 'performance degradation' : maxConsecLosses >= 5 ? 'severe losing streak' : 'data accumulation review'}.
 In addition to normal governance, you SHOULD:
 - Review agent DNA and propose mutations (AGENT_DNA_MUTATION actions)
@@ -1070,6 +1318,10 @@ In addition to normal governance, you SHOULD:
 - Adjust indicator weights based on lead/lag performance (adjust_indicator_weight actions)
 - Evaluate shadow agent promotion candidates
 - Perform deep regime analysis and rebalance evolution parameters
+- Write a session_debrief to sovereign memory summarizing decisions
+- Use modify_directive to evolve your own behavioral rules if needed
+- Use define_macro to create reusable action sequences for common patterns
+- Use run_backtest to validate any DNA mutations before applying live
 This is your STRATEGIC window — use it for architectural improvements, not just routine monitoring.`;
       const fullState = JSON.stringify(enrichedState);
       aiPromptContent = `L4 STRATEGIC EVOLUTION CYCLE — ${new Date().toISOString()}\nHours since last L4: ${hoursSinceL4.toFixed(1)}\nL1 alerts: ${l1Alerts.join('; ') || 'none'}\nL1 actions already executed: ${l1Results.length}\n\n<SYSTEM_STATE>\n${fullState}\n</SYSTEM_STATE>`;
@@ -1079,7 +1331,7 @@ This is your STRATEGIC window — use it for architectural improvements, not jus
       tierUsed = "L2-L3";
       aiModel = "google/gemini-3-flash-preview";
       aiMaxTokens = 2000;
-      aiSystemPrompt = SOVEREIGN_AUTONOMOUS_PROMPT;
+      aiSystemPrompt = basePrompt;
       const compactState = JSON.stringify(l1Summary);
       aiPromptContent = `L2-L3 GOVERNANCE CYCLE — ${new Date().toISOString()}\nL1 alerts: ${l1Alerts.join('; ') || 'none'}\nL1 actions already executed: ${l1Results.length}\n\n<SYSTEM_STATE_COMPACT>\n${compactState}\n</SYSTEM_STATE_COMPACT>`;
       console.log(`[SOVEREIGN-LOOP] ⚡ TIER L2-L3: Governance (${aiModel}) — compressed prompt`);
