@@ -241,6 +241,13 @@ When you want to execute a trade action, you MUST emit a fenced code block tagge
 - **mutate_agent_dna**: Rewrites an agent's entry logic to inject mandatory confirmation checks (e.g., RVOL-spike, COT-alignment). Required: agentId, mutation (one of "rvol_spike_confirm", "cot_alignment_check", "tick_momentum_filter", "regime_freshness_gate", "session_quality_filter"). Optional: reason, ttlMinutes (default 480), pair. Use when an agent is consistently trapped in failure patterns like Breakdown Traps. The mutation is persisted and the auto-trade pipeline reads it in real-time.
 - **optimize_indicator_weights**: Adjusts the L3 indicator consensus weights per pair. Required: pair, weights (object mapping indicator names to weight multipliers 0.0-2.0). Optional: reason, ttlMinutes (default 480). Valid indicators: ema50, supertrend, rsi, stochastics, adx, bollingerBands, donchian, ichimoku, parabolicSar, cci, keltner, roc, elderForce, heikinAshi, pivotPoints, trendEfficiency. Use when specific indicators are lagging vs leading for a particular instrument.
 - **synthesize_shadow_agent**: Creates a new Shadow Agent DNA strand designed for a specific session/regime. Required: agentName (e.g., "shadow-london-overlap"), targetSession (e.g., "london-overlap", "sunday-open", "asian", "ny-open"), strategy (e.g., "gap-fill", "momentum-burst", "mean-reversion"). Optional: sizing (default 0.1), pairs (array of pairs to trade), reason, ttlMinutes (default 1440). Shadow agents start at 0.1x sizing and must prove profitability over 20+ trades before promotion.
+- **commit_rule**: Hardwires deterministic IF/THEN logic that the sovereign loop evaluates WITHOUT calling the AI. This is how you "code yourself out of a job" — convert your reasoning into permanent rules. Required: ruleId (e.g., "block_asian_shorts_compression"), condition (human-readable IF clause, e.g., "session=asian AND regime=compression AND direction=short"), action_block (what to do, e.g., "BLOCK_TRADE" or "REDUCE_SIZING_0.3x" or "SKIP_AI_CALL"). Optional: description, priority (1-100, default 50), reason, ttlMinutes (default 1440, max 10080/7d). Higher priority rules execute first. The sovereign loop reads these and executes them as L0 deterministic logic — zero AI credits consumed.
+- **update_system_prompt**: Writes or overwrites a named directive that gets injected into the sovereign loop's AI prompt on the next cycle. Required: directiveId (e.g., "barrage_posture", "risk_stance", "session_focus"), content (the directive text, max 2000 chars). Optional: reason, ttlMinutes (default 1440). Use this to evolve your own instructions — tighten risk rules, shift strategic focus, or add new behavioral mandates.
+- **set_loop_interval**: Controls the sovereign loop's execution frequency. Required: intervalSeconds (one of: 60, 120, 180, 300, 600). Optional: reason, ttlMinutes (default 480). Modes: 60s=ACTIVE (full engagement), 120-180s=MONITORING (reduced frequency), 300-600s=SENTINEL (low-power, wake only on signals). Use SENTINEL when markets are closed or credits are low. Use ACTIVE during high-conviction windows.
+- **toggle_data_source**: Enables or disables specific market intelligence feeds in the sovereign loop. Required: source (see valid sources below), enabled (true/false). Optional: reason, ttlMinutes (default 480). Use this to kill expensive feeds when credits are low (e.g., disable crypto-onchain, market-sentiment) and re-enable them when needed. Each disabled source saves one edge function call per cycle.
+
+### Valid Data Sources for toggle_data_source:
+oanda-market-intel, forex-economic-calendar, batch-prices, forex-cot-data, forex-macro-data, stocks-intel, crypto-intel, treasury-commodities, market-sentiment, options-volatility-intel, economic-calendar-intel, bis-imf-data, central-bank-comms, crypto-onchain
 
 ### Valid Gate IDs for bypass_gate:
 G1_FRICTION, G2_NO_HTF_WEAK_MTF, G3_EDGE_DECAY, G4_SPREAD_INSTABILITY, G5_COMPRESSION_LOW_SESSION, G6_OVERTRADING, G7_LOSS_CLUSTER_WEAK_MTF, G8_HIGH_SHOCK, G9_PRICE_DATA_UNAVAILABLE, G10_ANALYSIS_UNAVAILABLE, G11_EXTENSION_EXHAUSTION, G12_AGENT_DECORRELATION, + any dynamic G13+ gates
@@ -1219,6 +1226,123 @@ async function executeAction(
         success: true,
         detail: `Shadow Agent "${agentName}" synthesized: ${strategy} strategy for ${targetSession} session at ${sizing}x sizing${pairs ? ` on ${pairs.join(", ")}` : ""}. Promotion requires 20+ trades with WR>50% and Expectancy>1.0R. Active for ${Math.round(ttlMinutes / 60)}h.`,
       });
+    }
+
+  // ── Commit Hardwired Rule (Code Itself Out of a Job) ──
+  } else if (action.type === "commit_rule" && (action as any).ruleId && (action as any).condition && (action as any).action_block) {
+    const ruleId = (action as any).ruleId as string;
+    const condition = (action as any).condition as string;
+    const actionBlock = (action as any).action_block as string;
+    const description = (action as any).description || "Sovereign hardwired rule";
+    const reason = (action as any).reason || "Codifying AI reasoning into deterministic logic";
+    const ttlMinutes = Math.min(10080, Math.max(60, (action as any).ttlMinutes || 1440)); // 1h to 7d, default 24h
+    const priority = Math.min(100, Math.max(1, (action as any).priority || 50));
+    const key = `HARDWIRED_RULE:${ruleId}`;
+
+    await sb.from("gate_bypasses").update({ revoked: true }).eq("gate_id", key).eq("revoked", false);
+    const { error: insertErr } = await sb.from("gate_bypasses").insert({
+      gate_id: key,
+      reason: JSON.stringify({ ruleId, condition, actionBlock, description, reason, priority, committedAt: new Date().toISOString() }),
+      expires_at: new Date(Date.now() + ttlMinutes * 60 * 1000).toISOString(),
+      created_by: "sovereign-intelligence",
+    });
+    if (insertErr) {
+      results.push({ action: "commit_rule", success: false, detail: insertErr.message });
+    } else {
+      console.log(`[SOVEREIGN] Hardwired rule ${ruleId} COMMITTED — condition: "${condition}" → action: "${actionBlock}" — TTL ${ttlMinutes}m`);
+      results.push({ action: "commit_rule", success: true, detail: `Rule "${ruleId}" hardwired: IF ${condition} THEN ${actionBlock}. Priority=${priority}. Active for ${Math.round(ttlMinutes / 60)}h. Sovereign loop evaluates this WITHOUT AI calls.` });
+    }
+
+  // ── Update System Prompt Directive ──
+  } else if (action.type === "update_system_prompt" && (action as any).directiveId && (action as any).content) {
+    const directiveId = (action as any).directiveId as string;
+    const content = (action as any).content as string;
+    const reason = (action as any).reason || "Sovereign prompt self-modification";
+    const ttlMinutes = Math.min(10080, Math.max(60, (action as any).ttlMinutes || 1440));
+    const key = `PROMPT_DIRECTIVE:${directiveId}`;
+
+    if (content.length > 2000) {
+      results.push({ action: "update_system_prompt", success: false, detail: "Directive content exceeds 2000 char limit" });
+    } else {
+      await sb.from("gate_bypasses").update({ revoked: true }).eq("gate_id", key).eq("revoked", false);
+      const { error: insertErr } = await sb.from("gate_bypasses").insert({
+        gate_id: key,
+        reason: JSON.stringify({ directiveId, content, reason, updatedAt: new Date().toISOString() }),
+        expires_at: new Date(Date.now() + ttlMinutes * 60 * 1000).toISOString(),
+        created_by: "sovereign-intelligence",
+      });
+      if (insertErr) {
+        results.push({ action: "update_system_prompt", success: false, detail: insertErr.message });
+      } else {
+        console.log(`[SOVEREIGN] Prompt directive "${directiveId}" UPDATED — TTL ${ttlMinutes}m`);
+        results.push({ action: "update_system_prompt", success: true, detail: `Prompt directive "${directiveId}" updated. The sovereign loop will inject this into its next AI call. Active for ${Math.round(ttlMinutes / 60)}h.` });
+      }
+    }
+
+  // ── Set Loop Interval (Low-Power / Active / Sentinel Mode) ──
+  } else if (action.type === "set_loop_interval" && (action as any).intervalSeconds != null) {
+    const intervalSeconds = (action as any).intervalSeconds as number;
+    const validIntervals = [60, 120, 180, 300, 600];
+    const reason = (action as any).reason || "Sovereign loop frequency adjustment";
+    const ttlMinutes = Math.min(1440, Math.max(10, (action as any).ttlMinutes || 480));
+
+    if (!validIntervals.includes(intervalSeconds)) {
+      results.push({ action: "set_loop_interval", success: false, detail: `Invalid interval: ${intervalSeconds}s. Valid: ${validIntervals.join(", ")}s` });
+    } else {
+      const key = "LOOP_INTERVAL";
+      await sb.from("gate_bypasses").update({ revoked: true }).eq("gate_id", key).eq("revoked", false);
+      const { error: insertErr } = await sb.from("gate_bypasses").insert({
+        gate_id: key,
+        reason: JSON.stringify({ intervalSeconds, reason, setAt: new Date().toISOString() }),
+        expires_at: new Date(Date.now() + ttlMinutes * 60 * 1000).toISOString(),
+        created_by: "sovereign-intelligence",
+      });
+      if (insertErr) {
+        results.push({ action: "set_loop_interval", success: false, detail: insertErr.message });
+      } else {
+        const modeLabel = intervalSeconds <= 60 ? "ACTIVE" : intervalSeconds <= 180 ? "MONITORING" : "SENTINEL";
+        console.log(`[SOVEREIGN] Loop interval set to ${intervalSeconds}s (${modeLabel} mode) — TTL ${ttlMinutes}m`);
+        results.push({ action: "set_loop_interval", success: true, detail: `Loop frequency set to ${intervalSeconds}s (${modeLabel} mode). Active for ${Math.round(ttlMinutes / 60)}h. The sovereign loop will skip cycles that fall within the interval window.` });
+      }
+    }
+
+  // ── Toggle Data Source (Kill/Restart Feeds) ──
+  } else if (action.type === "toggle_data_source" && (action as any).source && (action as any).enabled != null) {
+    const source = (action as any).source as string;
+    const enabled = (action as any).enabled as boolean;
+    const reason = (action as any).reason || `Sovereign ${enabled ? "enabling" : "disabling"} data source`;
+    const ttlMinutes = Math.min(1440, Math.max(10, (action as any).ttlMinutes || 480));
+    const validSources = [
+      "oanda-market-intel", "forex-economic-calendar", "batch-prices", "forex-cot-data",
+      "forex-macro-data", "stocks-intel", "crypto-intel", "treasury-commodities",
+      "market-sentiment", "options-volatility-intel", "economic-calendar-intel",
+      "bis-imf-data", "central-bank-comms", "crypto-onchain"
+    ];
+
+    if (!validSources.includes(source)) {
+      results.push({ action: "toggle_data_source", success: false, detail: `Invalid source: ${source}. Valid: ${validSources.join(", ")}` });
+    } else {
+      const key = `DATA_SOURCE_TOGGLE:${source}`;
+      await sb.from("gate_bypasses").update({ revoked: true }).eq("gate_id", key).eq("revoked", false);
+      if (!enabled) {
+        // Only write a record when DISABLING — absence of record = enabled (default)
+        const { error: insertErr } = await sb.from("gate_bypasses").insert({
+          gate_id: key,
+          reason: JSON.stringify({ source, enabled: false, reason, toggledAt: new Date().toISOString() }),
+          expires_at: new Date(Date.now() + ttlMinutes * 60 * 1000).toISOString(),
+          created_by: "sovereign-intelligence",
+        });
+        if (insertErr) {
+          results.push({ action: "toggle_data_source", success: false, detail: insertErr.message });
+        } else {
+          console.log(`[SOVEREIGN] Data source "${source}" DISABLED — TTL ${ttlMinutes}m — ${reason}`);
+          results.push({ action: "toggle_data_source", success: true, detail: `Data source "${source}" DISABLED. Sovereign loop will skip this feed. Active for ${Math.round(ttlMinutes / 60)}h. Re-enable with toggle_data_source enabled=true.` });
+        }
+      } else {
+        // Re-enabling = just revoke the disable record (already done above)
+        console.log(`[SOVEREIGN] Data source "${source}" RE-ENABLED — ${reason}`);
+        results.push({ action: "toggle_data_source", success: true, detail: `Data source "${source}" RE-ENABLED. Sovereign loop will resume fetching this feed.` });
+      }
     }
 
   } else {

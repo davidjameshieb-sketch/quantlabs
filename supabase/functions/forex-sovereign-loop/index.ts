@@ -1233,6 +1233,84 @@ Deno.serve(async (req) => {
       });
     }
 
+    // ─── LOOP INTERVAL CHECK (AI-controlled frequency) ───
+    const { data: loopIntervalRecord } = await sb.from("gate_bypasses")
+      .select("reason")
+      .eq("gate_id", "LOOP_INTERVAL")
+      .eq("revoked", false)
+      .gt("expires_at", new Date().toISOString())
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    
+    if (loopIntervalRecord) {
+      try {
+        const intervalConfig = JSON.parse(loopIntervalRecord.reason);
+        const intervalSeconds = intervalConfig.intervalSeconds || 60;
+        if (intervalSeconds > 60) {
+          // Check if enough time has passed since last cycle
+          const { data: lastLog } = await sb.from("gate_bypasses")
+            .select("created_at")
+            .eq("gate_id", "LAST_CYCLE_TIMESTAMP")
+            .eq("revoked", false)
+            .order("created_at", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          
+          const lastCycleTime = lastLog ? new Date(lastLog.created_at).getTime() : 0;
+          const elapsed = Date.now() - lastCycleTime;
+          if (elapsed < intervalSeconds * 1000) {
+            const modeLabel = intervalSeconds <= 180 ? "MONITORING" : "SENTINEL";
+            console.log(`[SOVEREIGN-LOOP] ⏸️ ${modeLabel} MODE — ${intervalSeconds}s interval, ${Math.round((intervalSeconds * 1000 - elapsed) / 1000)}s until next cycle`);
+            return new Response(JSON.stringify({
+              status: "throttled",
+              mode: modeLabel,
+              intervalSeconds,
+              nextCycleIn: Math.round((intervalSeconds * 1000 - elapsed) / 1000),
+            }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+          }
+        }
+      } catch {}
+    }
+    // Stamp this cycle's timestamp
+    await sb.from("gate_bypasses").update({ revoked: true }).eq("gate_id", "LAST_CYCLE_TIMESTAMP").eq("revoked", false);
+    await sb.from("gate_bypasses").insert({
+      gate_id: "LAST_CYCLE_TIMESTAMP",
+      reason: "cycle-marker",
+      expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+      created_by: "sovereign-loop",
+    });
+
+    // ─── DATA SOURCE TOGGLES (AI-controlled feed management) ───
+    const { data: disabledSources } = await sb.from("gate_bypasses")
+      .select("gate_id")
+      .like("gate_id", "DATA_SOURCE_TOGGLE:%")
+      .eq("revoked", false)
+      .gt("expires_at", new Date().toISOString());
+    
+    const disabledSet = new Set((disabledSources || []).map(r => r.gate_id.replace("DATA_SOURCE_TOGGLE:", "")));
+    if (disabledSet.size > 0) {
+      console.log(`[SOVEREIGN-LOOP] 🔇 Disabled data sources: ${[...disabledSet].join(", ")}`);
+    }
+
+    // ─── HARDWIRED RULES (L0 deterministic logic — zero AI credits) ───
+    const { data: hardwiredRules } = await sb.from("gate_bypasses")
+      .select("gate_id, reason")
+      .like("gate_id", "HARDWIRED_RULE:%")
+      .eq("revoked", false)
+      .gt("expires_at", new Date().toISOString());
+    
+    if (hardwiredRules && hardwiredRules.length > 0) {
+      console.log(`[SOVEREIGN-LOOP] ⚡ ${hardwiredRules.length} hardwired rules active`);
+    }
+
+    // ─── PROMPT DIRECTIVES (AI self-modification) ───
+    const { data: promptDirectives } = await sb.from("gate_bypasses")
+      .select("gate_id, reason")
+      .like("gate_id", "PROMPT_DIRECTIVE:%")
+      .eq("revoked", false)
+      .gt("expires_at", new Date().toISOString());
+
     // Fetch live OANDA state + ALL market intelligence in parallel
     let liveOandaState: Record<string, unknown> = {};
     let marketIntel: Record<string, unknown> = {};
@@ -1287,22 +1365,30 @@ Deno.serve(async (req) => {
         dataFetchResults.push({ source: "OANDA Account", status: `fail:${(err as Error).message.slice(0, 30)}`, ms: Date.now() - oandaT0, creditType: "oanda-api" });
       }
 
-      // All edge function data sources (Cloud compute)
+      // All edge function data sources (Cloud compute) — respecting toggle overrides
+      const conditionalFetch = (name: string, path: string, sourceKey: string) => {
+        if (disabledSet.has(sourceKey)) {
+          dataFetchResults.push({ source: name, status: "disabled-by-ai", ms: 0, creditType: "cloud" });
+          return Promise.resolve(null);
+        }
+        return trackedFetch(name, path);
+      };
+
       const [intelRes, calendarRes, batchPricesRes, cotRes, macroRes, stocksRes, cryptoRes, treasuryRes, sentimentRes, optionsRes, econCalRes, bisImfRes, cbCommsRes, onChainRes] = await Promise.all([
-        trackedFetch("OANDA Market Intel", "oanda-market-intel?sections=pricing,transactions"),
-        trackedFetch("Forex Calendar", "forex-economic-calendar"),
-        trackedFetch("Batch Prices (Stocks/Crypto)", "batch-prices?symbols=SPY,QQQ,DIA,IWM,VIX,GLD,USO,AAPL,MSFT,NVDA,BTCUSD,ETHUSD"),
-        trackedFetch("CFTC COT Data", "forex-cot-data"),
-        trackedFetch("Macro (FRED/ECB/BOJ)", "forex-macro-data"),
-        trackedFetch("Stocks Intel (Yahoo/SEC)", "stocks-intel"),
-        trackedFetch("Crypto Intel (CoinGecko)", "crypto-intel"),
-        trackedFetch("Treasury & Commodities", "treasury-commodities"),
-        trackedFetch("Market Sentiment", "market-sentiment"),
-        trackedFetch("Options & Volatility", "options-volatility-intel"),
-        trackedFetch("Economic Calendar Intel", "economic-calendar-intel"),
-        trackedFetch("BIS/IMF Intermarket", "bis-imf-data"),
-        trackedFetch("Central Bank Comms", "central-bank-comms"),
-        trackedFetch("Crypto On-Chain", "crypto-onchain"),
+        conditionalFetch("OANDA Market Intel", "oanda-market-intel?sections=pricing,transactions", "oanda-market-intel"),
+        conditionalFetch("Forex Calendar", "forex-economic-calendar", "forex-economic-calendar"),
+        conditionalFetch("Batch Prices (Stocks/Crypto)", "batch-prices?symbols=SPY,QQQ,DIA,IWM,VIX,GLD,USO,AAPL,MSFT,NVDA,BTCUSD,ETHUSD", "batch-prices"),
+        conditionalFetch("CFTC COT Data", "forex-cot-data", "forex-cot-data"),
+        conditionalFetch("Macro (FRED/ECB/BOJ)", "forex-macro-data", "forex-macro-data"),
+        conditionalFetch("Stocks Intel (Yahoo/SEC)", "stocks-intel", "stocks-intel"),
+        conditionalFetch("Crypto Intel (CoinGecko)", "crypto-intel", "crypto-intel"),
+        conditionalFetch("Treasury & Commodities", "treasury-commodities", "treasury-commodities"),
+        conditionalFetch("Market Sentiment", "market-sentiment", "market-sentiment"),
+        conditionalFetch("Options & Volatility", "options-volatility-intel", "options-volatility-intel"),
+        conditionalFetch("Economic Calendar Intel", "economic-calendar-intel", "economic-calendar-intel"),
+        conditionalFetch("BIS/IMF Intermarket", "bis-imf-data", "bis-imf-data"),
+        conditionalFetch("Central Bank Comms", "central-bank-comms", "central-bank-comms"),
+        conditionalFetch("Crypto On-Chain", "crypto-onchain", "crypto-onchain"),
       ]);
       if (accountSummary && oandaOpenTrades) {
         liveOandaState = {
@@ -1645,7 +1731,32 @@ Deno.serve(async (req) => {
       }
     }
 
-    const basePrompt = SOVEREIGN_AUTONOMOUS_PROMPT + directiveInjection + macroContext;
+    // ─── LOAD PROMPT DIRECTIVES (AI self-modified prompt sections) ───
+    let promptDirectiveInjection = "";
+    if (promptDirectives && promptDirectives.length > 0) {
+      promptDirectiveInjection = "\n\n## YOUR LIVE PROMPT DIRECTIVES (You wrote these via update_system_prompt — they override defaults)\n";
+      for (const d of promptDirectives) {
+        try {
+          const p = JSON.parse(d.reason);
+          promptDirectiveInjection += `### ${p.directiveId}\n${p.content}\n\n`;
+        } catch {}
+      }
+      console.log(`[SOVEREIGN-LOOP] 📝 ${promptDirectives.length} prompt directives injected`);
+    }
+
+    // ─── LOAD HARDWIRED RULES for L0 evaluation ───
+    let hardwiredRulesContext = "";
+    if (hardwiredRules && hardwiredRules.length > 0) {
+      hardwiredRulesContext = "\n\n## YOUR HARDWIRED RULES (These execute deterministically at L0 — no AI needed)\n";
+      for (const r of hardwiredRules) {
+        try {
+          const p = JSON.parse(r.reason);
+          hardwiredRulesContext += `- [P${p.priority}] ${p.ruleId}: IF ${p.condition} THEN ${p.actionBlock}\n`;
+        } catch {}
+      }
+    }
+
+    const basePrompt = SOVEREIGN_AUTONOMOUS_PROMPT + directiveInjection + macroContext + promptDirectiveInjection + hardwiredRulesContext;
 
     if (needsL4) {
       // ─── L4: STRATEGIC EVOLUTION (full context, rare) ───
