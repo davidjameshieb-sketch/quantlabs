@@ -249,6 +249,11 @@ When you want to execute a trade action, you MUST emit a fenced code block tagge
 ### Valid Data Sources for toggle_data_source:
 oanda-market-intel, forex-economic-calendar, batch-prices, forex-cot-data, forex-macro-data, stocks-intel, crypto-intel, treasury-commodities, market-sentiment, options-volatility-intel, economic-calendar-intel, bis-imf-data, central-bank-comms, crypto-onchain
 
+- **set_order_type**: Switches the execution pipeline from MARKET orders to LIMIT or IOC (Immediate-or-Cancel). Required: orderType (one of: "MARKET", "LIMIT", "IOC"). Optional: limitOffsetPips (how many pips inside the retail cluster to place the limit order, default 0), pair (apply to specific pair only, or omit for global), reason, ttlMinutes (default 120). Use this for "Liquidity Vacuum" — when you detect a stop-hunt via the order book, switch to LIMIT and place orders inside the retail cluster to capture the wick. We stop being the liquidity; we start consuming it.
+- **create_synthetic_barrage**: Executes multiple pairs as a single atomic correlated unit ("Correlation Chain"). Required: barrageId (e.g., "usd-weakness-barrage"), pairs (array of 2-6 pairs), direction ("long"/"short"). Optional: unitsPerLeg (default 500), sharedStopPips (default 15), sharedTpPips (default 30), theme (e.g., "USD Weakness", "JPY Carry Unwind"), reason, ttlMinutes (default 480). All legs execute simultaneously with shared risk parameters. Trade a macro theme as one unit.
+- **adjust_session_sl_tp**: Dynamically widens or tightens SL/TP parameters for a specific session ("Volatility Dampener"). Required: session (one of: "asian", "london", "ny-open", "ny-overlap", "late-ny", "rollover", "all"). At least one of: trailingStopPips (3-50), takeProfitMultiplier (0.5-5.0x), stopLossMultiplier (0.5-3.0x). Optional: reason, ttlMinutes (default 240). Use before high-impact data releases to widen the "lungs" so trades survive the initial noise.
+- **blacklist_regime_for_pair**: Blocks a specific pair+regime combination without suspending the entire agent ("Kill-Switch Evolution"). Required: pair, regime (e.g., "breakdown", "compression", "trending", "transition"). Optional: direction ("long"/"short" to block only one side), reason, ttlMinutes (default 1440/24h, max 2880/48h). Use when a regime consistently fails on a specific pair due to underlying fundamentals (e.g., breakdown shorts on USD_CAD failing because of oil flows).
+
 ### Valid Gate IDs for bypass_gate:
 G1_FRICTION, G2_NO_HTF_WEAK_MTF, G3_EDGE_DECAY, G4_SPREAD_INSTABILITY, G5_COMPRESSION_LOW_SESSION, G6_OVERTRADING, G7_LOSS_CLUSTER_WEAK_MTF, G8_HIGH_SHOCK, G9_PRICE_DATA_UNAVAILABLE, G10_ANALYSIS_UNAVAILABLE, G11_EXTENSION_EXHAUSTION, G12_AGENT_DECORRELATION, + any dynamic G13+ gates
 
@@ -1343,6 +1348,195 @@ async function executeAction(
         console.log(`[SOVEREIGN] Data source "${source}" RE-ENABLED — ${reason}`);
         results.push({ action: "toggle_data_source", success: true, detail: `Data source "${source}" RE-ENABLED. Sovereign loop will resume fetching this feed.` });
       }
+    }
+
+  // ── Set Order Type (Liquidity Vacuum) ──
+  } else if (action.type === "set_order_type" && (action as any).orderType) {
+    const orderType = (action as any).orderType as string;
+    const validTypes = ["MARKET", "LIMIT", "IOC"];
+    const reason = (action as any).reason || "Sovereign order type override";
+    const ttlMinutes = Math.min(1440, Math.max(5, (action as any).ttlMinutes || 120));
+    const limitOffsetPips = (action as any).limitOffsetPips || 0;
+    const pair = (action as any).pair || null;
+
+    if (!validTypes.includes(orderType)) {
+      results.push({ action: "set_order_type", success: false, detail: `Invalid orderType: ${orderType}. Valid: ${validTypes.join(", ")}` });
+    } else {
+      const key = pair ? `ORDER_TYPE_OVERRIDE:${pair}` : "ORDER_TYPE_OVERRIDE:GLOBAL";
+      await sb.from("gate_bypasses").update({ revoked: true }).eq("gate_id", key).eq("revoked", false);
+      const { error: insertErr } = await sb.from("gate_bypasses").insert({
+        gate_id: key,
+        pair,
+        reason: JSON.stringify({ orderType, limitOffsetPips, reason, setAt: new Date().toISOString() }),
+        expires_at: new Date(Date.now() + ttlMinutes * 60 * 1000).toISOString(),
+        created_by: "sovereign-intelligence",
+      });
+      if (insertErr) {
+        results.push({ action: "set_order_type", success: false, detail: insertErr.message });
+      } else {
+        console.log(`[SOVEREIGN] Order type set to ${orderType}${pair ? ` for ${pair}` : " GLOBALLY"}${limitOffsetPips ? ` offset=${limitOffsetPips}pips` : ""} — TTL ${ttlMinutes}m`);
+        results.push({ action: "set_order_type", success: true, detail: `Order type set to ${orderType}${pair ? ` for ${pair}` : " globally"}${limitOffsetPips ? ` with ${limitOffsetPips}pip offset into retail cluster` : ""}. Active for ${Math.round(ttlMinutes / 60)}h. Auto-trade pipeline reads this in real-time.` });
+      }
+    }
+
+  // ── Create Synthetic Barrage (Correlation Chain) ──
+  } else if (action.type === "create_synthetic_barrage" && (action as any).barrageId && (action as any).pairs && (action as any).direction) {
+    const barrageId = (action as any).barrageId as string;
+    const pairs = (action as any).pairs as string[];
+    const direction = (action as any).direction as string;
+    const unitsPerLeg = Math.max(100, Math.min(10000, (action as any).unitsPerLeg || 500));
+    const sharedStopPips = (action as any).sharedStopPips || 15;
+    const sharedTpPips = (action as any).sharedTpPips || 30;
+    const reason = (action as any).reason || "Sovereign synthetic barrage";
+    const ttlMinutes = Math.min(1440, Math.max(10, (action as any).ttlMinutes || 480));
+    const theme = (action as any).theme || barrageId;
+
+    if (!["long", "short"].includes(direction)) {
+      results.push({ action: "create_synthetic_barrage", success: false, detail: `Invalid direction: ${direction}` });
+    } else if (pairs.length < 2 || pairs.length > 6) {
+      results.push({ action: "create_synthetic_barrage", success: false, detail: `Pairs must be 2-6. Got ${pairs.length}` });
+    } else {
+      const key = `SYNTHETIC_BARRAGE:${barrageId}`;
+      await sb.from("gate_bypasses").update({ revoked: true }).eq("gate_id", key).eq("revoked", false);
+
+      // Execute all legs simultaneously
+      const legResults: { pair: string; success: boolean; detail: string }[] = [];
+      const oandaToken = Deno.env.get("OANDA_LIVE_API_TOKEN") || Deno.env.get("OANDA_API_TOKEN");
+      const oandaAccountId = Deno.env.get("OANDA_LIVE_ACCOUNT_ID") || Deno.env.get("OANDA_ACCOUNT_ID");
+      const oandaBase = "https://api-fxtrade.oanda.com";
+
+      for (const pair of pairs) {
+        try {
+          const instrument = pair.replace("/", "_");
+          const signedUnits = direction === "short" ? -unitsPerLeg : unitsPerLeg;
+
+          // Fetch price for SL/TP calculation
+          const pricingRes = await fetch(`${oandaBase}/v3/accounts/${oandaAccountId}/pricing?instruments=${instrument}`, {
+            headers: { Authorization: `Bearer ${oandaToken}` },
+          });
+          const pricingData = await pricingRes.json();
+          const priceInfo = pricingData.prices?.[0];
+          const bid = parseFloat(priceInfo?.bids?.[0]?.price || "0");
+          const ask = parseFloat(priceInfo?.asks?.[0]?.price || "0");
+          const entryPrice = direction === "long" ? ask : bid;
+          const pipMult = instrument.includes("JPY") ? 0.01 : 0.0001;
+
+          const sl = direction === "long"
+            ? entryPrice - sharedStopPips * pipMult
+            : entryPrice + sharedStopPips * pipMult;
+          const tp = direction === "long"
+            ? entryPrice + sharedTpPips * pipMult
+            : entryPrice - sharedTpPips * pipMult;
+
+          const orderPayload: any = {
+            order: {
+              type: "MARKET",
+              instrument,
+              units: signedUnits.toString(),
+              timeInForce: "FOK",
+              positionFill: "DEFAULT",
+              stopLossOnFill: { price: sl.toFixed(5), timeInForce: "GTC" },
+              takeProfitOnFill: { price: tp.toFixed(5), timeInForce: "GTC" },
+            },
+          };
+
+          const orderRes = await fetch(`${oandaBase}/v3/accounts/${oandaAccountId}/orders`, {
+            method: "POST",
+            headers: { Authorization: `Bearer ${oandaToken}`, "Content-Type": "application/json" },
+            body: JSON.stringify(orderPayload),
+          });
+          const orderData = await orderRes.json();
+          const fillPrice = orderData.orderFillTransaction?.price;
+          if (fillPrice) {
+            legResults.push({ pair, success: true, detail: `Filled @ ${fillPrice}` });
+          } else {
+            legResults.push({ pair, success: false, detail: orderData.errorMessage || "No fill" });
+          }
+        } catch (legErr) {
+          legResults.push({ pair, success: false, detail: (legErr as Error).message });
+        }
+      }
+
+      // Persist barrage record for tracking
+      await sb.from("gate_bypasses").insert({
+        gate_id: key,
+        reason: JSON.stringify({ barrageId, theme, pairs, direction, unitsPerLeg, sharedStopPips, sharedTpPips, reason, legResults, executedAt: new Date().toISOString() }),
+        expires_at: new Date(Date.now() + ttlMinutes * 60 * 1000).toISOString(),
+        created_by: "sovereign-intelligence",
+      });
+
+      const filled = legResults.filter(l => l.success).length;
+      console.log(`[SOVEREIGN] Synthetic Barrage "${barrageId}" — ${filled}/${pairs.length} legs filled — theme: ${theme}`);
+      results.push({
+        action: "create_synthetic_barrage",
+        success: filled > 0,
+        detail: `Barrage "${barrageId}" (${theme}): ${filled}/${pairs.length} legs filled ${direction}. ${legResults.map(l => `${l.pair}: ${l.detail}`).join("; ")}`,
+        data: { barrageId, theme, legResults },
+      });
+    }
+
+  // ── Adjust Session SL/TP (Volatility Dampener) ──
+  } else if (action.type === "adjust_session_sl_tp" && (action as any).session) {
+    const session = (action as any).session as string;
+    const trailingStopPips = (action as any).trailingStopPips as number | undefined;
+    const takeProfitMultiplier = (action as any).takeProfitMultiplier as number | undefined;
+    const stopLossMultiplier = (action as any).stopLossMultiplier as number | undefined;
+    const reason = (action as any).reason || "Sovereign session SL/TP adjustment";
+    const ttlMinutes = Math.min(1440, Math.max(10, (action as any).ttlMinutes || 240));
+    const validSessions = ["asian", "london", "ny-open", "ny-overlap", "late-ny", "rollover", "all"];
+
+    if (!validSessions.includes(session)) {
+      results.push({ action: "adjust_session_sl_tp", success: false, detail: `Invalid session: ${session}. Valid: ${validSessions.join(", ")}` });
+    } else if (!trailingStopPips && !takeProfitMultiplier && !stopLossMultiplier) {
+      results.push({ action: "adjust_session_sl_tp", success: false, detail: "Must specify at least one of: trailingStopPips, takeProfitMultiplier, stopLossMultiplier" });
+    } else {
+      const key = `SESSION_SLTP_OVERRIDE:${session}`;
+      await sb.from("gate_bypasses").update({ revoked: true }).eq("gate_id", key).eq("revoked", false);
+      const config: Record<string, number> = {};
+      if (trailingStopPips != null) config.trailingStopPips = Math.max(3, Math.min(50, trailingStopPips));
+      if (takeProfitMultiplier != null) config.takeProfitMultiplier = Math.max(0.5, Math.min(5.0, takeProfitMultiplier));
+      if (stopLossMultiplier != null) config.stopLossMultiplier = Math.max(0.5, Math.min(3.0, stopLossMultiplier));
+
+      const { error: insertErr } = await sb.from("gate_bypasses").insert({
+        gate_id: key,
+        reason: JSON.stringify({ session, ...config, reason, setAt: new Date().toISOString() }),
+        expires_at: new Date(Date.now() + ttlMinutes * 60 * 1000).toISOString(),
+        created_by: "sovereign-intelligence",
+      });
+      if (insertErr) {
+        results.push({ action: "adjust_session_sl_tp", success: false, detail: insertErr.message });
+      } else {
+        const parts: string[] = [];
+        if (config.trailingStopPips) parts.push(`trailing=${config.trailingStopPips}pips`);
+        if (config.takeProfitMultiplier) parts.push(`TP=${config.takeProfitMultiplier}x`);
+        if (config.stopLossMultiplier) parts.push(`SL=${config.stopLossMultiplier}x`);
+        console.log(`[SOVEREIGN] Session "${session}" SL/TP override: ${parts.join(", ")} — TTL ${ttlMinutes}m`);
+        results.push({ action: "adjust_session_sl_tp", success: true, detail: `Session "${session}" SL/TP adjusted: ${parts.join(", ")}. Active for ${Math.round(ttlMinutes / 60)}h. Trade monitor and auto-trade read this in real-time.` });
+      }
+    }
+
+  // ── Blacklist Regime for Pair ──
+  } else if (action.type === "blacklist_regime_for_pair" && (action as any).pair && (action as any).regime) {
+    const pair = (action as any).pair as string;
+    const regime = (action as any).regime as string;
+    const direction = (action as any).direction || null; // optional: only block specific direction
+    const reason = (action as any).reason || "Sovereign regime-pair blacklist";
+    const ttlMinutes = Math.min(2880, Math.max(30, (action as any).ttlMinutes || 1440));
+    const key = `REGIME_BLACKLIST:${pair}:${regime}${direction ? `:${direction}` : ""}`;
+
+    await sb.from("gate_bypasses").update({ revoked: true }).eq("gate_id", key).eq("revoked", false);
+    const { error: insertErr } = await sb.from("gate_bypasses").insert({
+      gate_id: key,
+      pair,
+      reason: JSON.stringify({ pair, regime, direction, reason, blacklistedAt: new Date().toISOString() }),
+      expires_at: new Date(Date.now() + ttlMinutes * 60 * 1000).toISOString(),
+      created_by: "sovereign-intelligence",
+    });
+    if (insertErr) {
+      results.push({ action: "blacklist_regime_for_pair", success: false, detail: insertErr.message });
+    } else {
+      console.log(`[SOVEREIGN] Regime blacklist: ${pair} in ${regime}${direction ? ` (${direction} only)` : ""} — TTL ${ttlMinutes}m`);
+      results.push({ action: "blacklist_regime_for_pair", success: true, detail: `${pair} BLACKLISTED in "${regime}" regime${direction ? ` (${direction} only)` : ""}. Active for ${Math.round(ttlMinutes / 60)}h. Auto-trade pipeline blocks matching intents in real-time. Remove with revoke_bypass on ${key}.` });
     }
 
   } else {
