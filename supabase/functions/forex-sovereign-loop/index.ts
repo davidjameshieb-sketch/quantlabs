@@ -1186,6 +1186,53 @@ Deno.serve(async (req) => {
     ]);
     console.log(`[SOVEREIGN-LOOP] 🧠 Sovereign Memory: ${sovereignMemory.length} memories loaded`);
 
+    // ─── CREDIT-SAVING IDLE DETECTION (early exit before expensive fetches) ───
+    // If no open trades AND no recent consecutive losses, skip ALL 16 data source fetches + AI call
+    // This saves ~43K tokens + 16 edge function calls per cycle
+    const recentTwoHoursEarly = recentClosed.filter(t => {
+      const closedAt = t.closed_at ? new Date(t.closed_at).getTime() : 0;
+      return closedAt > Date.now() - 2 * 60 * 60 * 1000;
+    });
+    let earlyConsecLosses = 0;
+    for (const t of recentTwoHoursEarly) {
+      if (t.r_pips !== null && t.r_pips <= 0) earlyConsecLosses++;
+      else break;
+    }
+    const hasUrgentL1 = openTrades.some(t => t.trade_health_score !== null && t.trade_health_score < 25) || earlyConsecLosses >= 3;
+
+    if (openTrades.length === 0 && !hasUrgentL1) {
+      const idleMsg = `IDLE — 0 open trades, no urgent L1 conditions. Skipping AI + data fetches to conserve credits.`;
+      console.log(`[SOVEREIGN-LOOP] 💤 ${idleMsg}`);
+      await logCycleResult(sb, {
+        actionsExecuted: 0,
+        actionDetails: [],
+        assessment: "IDLE_SKIP — no positions, no urgency",
+        sovereigntyScore: 50,
+        durationMs: Date.now() - startTime,
+      });
+      return new Response(JSON.stringify({
+        status: "idle",
+        reason: idleMsg,
+        cycle: {
+          timestamp: new Date().toISOString(),
+          durationMs: Date.now() - startTime,
+          tier: "L0-idle",
+          model: "none",
+          promptTokens: 0,
+          actionsExecuted: 0,
+          actionsFailed: 0,
+          l1Actions: 0,
+          aiActions: 0,
+          results: [],
+          assessment: "IDLE_SKIP",
+          sovereigntyScore: 50,
+          aiResponseLength: 0,
+        },
+      }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
     // Fetch live OANDA state + ALL market intelligence in parallel
     let liveOandaState: Record<string, unknown> = {};
     let marketIntel: Record<string, unknown> = {};
