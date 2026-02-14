@@ -1045,7 +1045,7 @@ async function executeAction(action: Record<string, unknown>, sb?: ReturnType<ty
     } catch (err) {
       return { action: actionType, success: false, detail: (err as Error).message };
     }
-  }
+    }
 
 
   try {
@@ -1615,6 +1615,153 @@ Deno.serve(async (req) => {
           l1Actions.push({ type: "close_trade", pair: t.currency_pair, reason: `L1-AUTO: EXTREME SHOCK RISK — ${smartG8.slice(0, 80)}` });
           l1Alerts.push(`🔴 L1 SHOCK CLOSE: ${t.currency_pair}`);
         }
+      }
+    }
+
+    // ─── L0: HARDWIRED RULE ENGINE (AI-committed deterministic logic — zero credits) ───
+    // Evaluates rules the AI wrote via commit_rule against live market state
+    const l0RuleResults: { ruleId: string; fired: boolean; action: string }[] = [];
+    if (hardwiredRules && hardwiredRules.length > 0) {
+      // Build evaluation context from available market data
+      const pricingMap: Record<string, { bid: number; ask: number; spread: number }> = {};
+      const livePricing = (marketIntel as any)?.livePricing;
+      if (Array.isArray(livePricing)) {
+        for (const p of livePricing) {
+          const bid = parseFloat(p.bids?.[0]?.price || "0");
+          const ask = parseFloat(p.asks?.[0]?.price || "0");
+          const pipMult = p.instrument?.includes("JPY") ? 0.01 : 0.0001;
+          pricingMap[p.instrument] = { bid, ask, spread: (ask - bid) / pipMult };
+        }
+      } else if (livePricing && typeof livePricing === "object") {
+        for (const [inst, pData] of Object.entries(livePricing as Record<string, any>)) {
+          const bid = parseFloat(pData?.bid || pData?.bids?.[0]?.price || "0");
+          const ask = parseFloat(pData?.ask || pData?.asks?.[0]?.price || "0");
+          const pipMult = inst.includes("JPY") ? 0.01 : 0.0001;
+          pricingMap[inst] = { bid, ask, spread: (ask - bid) / pipMult };
+        }
+      }
+
+      // Sort rules by priority (highest first)
+      const sortedRules = [...hardwiredRules].sort((a, b) => {
+        try {
+          return (JSON.parse(b.reason).priority || 50) - (JSON.parse(a.reason).priority || 50);
+        } catch { return 0; }
+      });
+
+      for (const rule of sortedRules) {
+        try {
+          const parsed = JSON.parse(rule.reason);
+          const { ruleId, condition, actionBlock } = parsed;
+          const condLower = condition.toLowerCase();
+          let fired = false;
+
+          // ── Evaluate known condition patterns ──
+
+          // Pattern: "spread > (atr_1m * X)" or "spread > X"
+          const spreadMatch = condLower.match(/spread\s*>\s*\(?atr_1m\s*\*\s*([\d.]+)\)?/);
+          const spreadStaticMatch = !spreadMatch ? condLower.match(/spread\s*>\s*([\d.]+)/) : null;
+          if (spreadMatch || spreadStaticMatch) {
+            for (const t of openTrades) {
+              const pricing = pricingMap[t.currency_pair];
+              if (pricing) {
+                if (spreadMatch) {
+                  const atrProxy = t.spread_at_entry || pricing.spread * 2;
+                  const threshold = atrProxy * parseFloat(spreadMatch[1]);
+                  if (pricing.spread > threshold) fired = true;
+                } else if (spreadStaticMatch) {
+                  if (pricing.spread > parseFloat(spreadStaticMatch[1])) fired = true;
+                }
+              }
+            }
+          }
+
+          // Pattern: "regime_age_bars > X"
+          const regimeAgeMatch = condLower.match(/regime_age_bars?\s*>\s*(\d+)/);
+          if (regimeAgeMatch) {
+            const threshold = parseInt(regimeAgeMatch[1]);
+            for (const t of openTrades) {
+              if ((t.bars_since_entry || 0) > threshold) fired = true;
+            }
+          }
+
+          // Pattern: "session=X AND regime=Y"
+          const sessionRegimeMatch = condLower.match(/session\s*=\s*(\w+)\s+and\s+regime\s*=\s*(\w+)/);
+          if (sessionRegimeMatch) {
+            for (const t of openTrades) {
+              const matchSession = (t.session_label || "").toLowerCase() === sessionRegimeMatch[1];
+              const matchRegime = (t.regime_label || "").toLowerCase() === sessionRegimeMatch[2];
+              if (matchSession && matchRegime) fired = true;
+            }
+          }
+
+          // Pattern: "session=X AND regime=Y AND direction=Z"
+          const sessionRegimeDirMatch = condLower.match(/session\s*=\s*(\w+)\s+and\s+regime\s*=\s*(\w+)\s+and\s+direction\s*=\s*(\w+)/);
+          if (sessionRegimeDirMatch) {
+            for (const t of openTrades) {
+              const matchSession = (t.session_label || "").toLowerCase() === sessionRegimeDirMatch[1];
+              const matchRegime = (t.regime_label || "").toLowerCase() === sessionRegimeDirMatch[2];
+              const matchDir = t.direction?.toLowerCase() === sessionRegimeDirMatch[3];
+              if (matchSession && matchRegime && matchDir) fired = true;
+            }
+          }
+
+          // Pattern: "direction=X AND regime=Y"
+          const dirRegimeMatch = !sessionRegimeDirMatch ? condLower.match(/direction\s*=\s*(long|short)\s+and\s+regime\s*=\s*(\w+)/) : null;
+          if (dirRegimeMatch) {
+            for (const t of openTrades) {
+              const matchDir = t.direction?.toLowerCase() === dirRegimeMatch[1];
+              const matchRegime = (t.regime_label || "").toLowerCase() === dirRegimeMatch[2];
+              if (matchDir && matchRegime) fired = true;
+            }
+          }
+
+          // Pattern: "regime=X" (standalone)
+          if (!sessionRegimeMatch && !dirRegimeMatch && !sessionRegimeDirMatch) {
+            const regimeOnlyMatch = condLower.match(/^regime\s*=\s*(\w+)$/);
+            if (regimeOnlyMatch) {
+              for (const t of openTrades) {
+                if ((t.regime_label || "").toLowerCase() === regimeOnlyMatch[1]) fired = true;
+              }
+            }
+          }
+
+          // Pattern: "consecutive_losses >= X"
+          const lossMatch = condLower.match(/consecutive_losses?\s*>=?\s*(\d+)/);
+          if (lossMatch && consecLosses >= parseInt(lossMatch[1])) fired = true;
+
+          l0RuleResults.push({ ruleId, fired, action: actionBlock });
+
+          if (fired) {
+            const actionLower = actionBlock.toLowerCase();
+            if (actionLower.includes("block_trade") || actionLower.includes("skip_ai_call")) {
+              l1Alerts.push(`⚡ L0 HARDWIRED: Rule "${ruleId}" FIRED — ${condition} → ${actionBlock}`);
+              console.log(`[SOVEREIGN-LOOP] ⚡ L0 RULE FIRED: ${ruleId} — ${condition} → ${actionBlock}`);
+            } else if (actionLower.includes("close_trade")) {
+              for (const t of openTrades) {
+                l1Actions.push({ type: "close_trade", pair: t.currency_pair, reason: `L0-HARDWIRED: Rule "${ruleId}" — ${condition}` });
+                l1Alerts.push(`⚡ L0 CLOSE: ${t.currency_pair} — Rule "${ruleId}"`);
+              }
+            } else if (actionLower.match(/reduce_sizing_([\d.]+)x/)) {
+              const sizeMatch = actionLower.match(/reduce_sizing_([\d.]+)x/);
+              if (sizeMatch) {
+                l1Actions.push({ type: "adjust_position_sizing", multiplier: parseFloat(sizeMatch[1]), reason: `L0-HARDWIRED: Rule "${ruleId}" — ${condition}` });
+                l1Alerts.push(`⚡ L0 SIZING: ${sizeMatch[1]}x — Rule "${ruleId}"`);
+              }
+            } else if (actionLower.includes("circuit_breaker")) {
+              l1Actions.push({ type: "activate_circuit_breaker", threshold: 1, reason: `L0-HARDWIRED: Rule "${ruleId}" — ${condition}` });
+              l1Alerts.push(`⚡ L0 CIRCUIT BREAKER — Rule "${ruleId}"`);
+            }
+          }
+        } catch (ruleErr) {
+          console.warn(`[SOVEREIGN-LOOP] L0 rule parse error: ${(ruleErr as Error).message}`);
+        }
+      }
+
+      const firedCount = l0RuleResults.filter(r => r.fired).length;
+      if (firedCount > 0) {
+        console.log(`[SOVEREIGN-LOOP] ⚡ L0 HARDWIRED ENGINE: ${firedCount}/${l0RuleResults.length} rules fired`);
+      } else {
+        console.log(`[SOVEREIGN-LOOP] ⚡ L0 HARDWIRED ENGINE: ${l0RuleResults.length} rules evaluated, 0 fired`);
       }
     }
 
