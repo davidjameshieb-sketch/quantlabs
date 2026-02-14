@@ -12,19 +12,34 @@ const OANDA_HOSTS: Record<string, string> = {
   live: "https://api-fxtrade.oanda.com",
 };
 
-const ALL_OANDA_INSTRUMENTS = [
-  "EUR_USD", "GBP_USD", "USD_JPY", "AUD_USD", "USD_CAD",
-  "NZD_USD", "EUR_GBP", "EUR_JPY", "GBP_JPY", "AUD_JPY",
-  "USD_CHF", "EUR_CHF", "EUR_AUD", "GBP_AUD", "AUD_NZD",
-  "USD_SGD", "USD_HKD", "USD_MXN", "USD_ZAR", "EUR_NZD",
-  "GBP_NZD", "GBP_CAD", "EUR_CAD", "AUD_CAD", "NZD_CAD",
-  "CHF_JPY", "CAD_JPY", "NZD_JPY", "CAD_CHF", "AUD_CHF",
-];
+// Dynamic instrument list — fetched from account on first call
+let allForexInstruments: string[] = [];
+let instrumentListTs = 0;
+const INSTRUMENT_LIST_TTL = 60 * 60_000; // 1 hour
 
-// In-memory cache with 60s TTL
+// In-memory cache
 let cachedPrices: Record<string, { bid: number; ask: number; mid: number }> = {};
 let cacheTimestamp = 0;
-const CACHE_TTL_MS = 5_000; // 5 seconds for near-realtime pricing
+const CACHE_TTL_MS = 5_000;
+
+async function getAllInstruments(host: string, accountId: string, apiToken: string): Promise<string[]> {
+  const now = Date.now();
+  if (now - instrumentListTs < INSTRUMENT_LIST_TTL && allForexInstruments.length > 0) {
+    return allForexInstruments;
+  }
+  const res = await fetch(`${host}/v3/accounts/${accountId}/instruments?type=CURRENCY`, {
+    headers: { Authorization: `Bearer ${apiToken}`, Accept: "application/json" },
+  });
+  if (res.ok) {
+    const data = await res.json();
+    if (data.instruments) {
+      allForexInstruments = data.instruments.map((i: any) => i.name);
+      instrumentListTs = now;
+      console.log(`[OANDA-PRICING] Discovered ${allForexInstruments.length} forex instruments`);
+    }
+  }
+  return allForexInstruments.length > 0 ? allForexInstruments : ["EUR_USD", "GBP_USD", "USD_JPY"];
+}
 
 function oandaToDisplay(instrument: string): string {
   return instrument.replace("_", "/");
@@ -44,8 +59,9 @@ async function fetchOandaPrices(): Promise<Record<string, { bid: number; ask: nu
   }
 
   const host = OANDA_HOSTS[env] || OANDA_HOSTS.practice;
-  const url = `${host}/v3/accounts/${accountId}/pricing?instruments=${ALL_OANDA_INSTRUMENTS.join(",")}`;
-  console.log(`[OANDA-PRICING] Fetching ${ALL_OANDA_INSTRUMENTS.length} instruments`);
+  const instruments = await getAllInstruments(host, accountId, apiToken);
+  const url = `${host}/v3/accounts/${accountId}/pricing?instruments=${instruments.join(",")}`;
+  console.log(`[OANDA-PRICING] Fetching ${instruments.length} instruments`);
 
   const res = await fetch(url, {
     headers: {
