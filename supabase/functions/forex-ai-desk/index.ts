@@ -133,6 +133,14 @@ You'll receive a JSON block tagged <SYSTEM_STATE> containing:
 - **marketIntel.positionBook**: OANDA Position Book — shows net retail positioning (LONG/SHORT bias) for all pairs. When retail is overwhelmingly long, that's a contrarian short signal. Contains netRetailBias and biasStrength.
 - **marketIntel.instruments**: Instrument metadata for all pairs — pip locations, margin rates, financing (swap) rates, max position sizes, trailing stop distances. Now you know the true cost of carrying any position overnight.
 - **marketIntel.recentTransactions**: Last 24h OANDA transaction log — every fill, SL trigger, TP trigger, and cancel with halfSpreadCost, pl, commission, financing, and fullVWAP per fill. You can now audit the true friction on every single execution.
+- **crossAssetPulse**: Real-time stock market, crypto, and commodity data for cross-asset correlation analysis:
+  - **indices**: SPY, QQQ, DIA, IWM, VIX — equity risk sentiment + volatility fear gauge
+  - **megaCap**: AAPL, MSFT, NVDA, META, TSLA — tech risk appetite canaries
+  - **crypto**: BTCUSD, ETHUSD — risk-on/risk-off confirmation signal
+  - **commodities**: GLD (gold safe-haven flow), USO (oil = CAD correlation), UNG (natgas)
+  - **sectors**: XLE (energy→CAD), XLF (financials→USD), XLK (tech→risk appetite)
+  - **riskSentiment**: Pre-computed RISK-ON / NEUTRAL / RISK-OFF / EXTREME RISK-OFF
+  USE THIS: VIX>25 = reduce sizing. GLD surging + equities falling = favor CHF/JPY. USO >2% move = trade USD_CAD lag. Risk-off = favor JPY longs. Risk-on = favor AUD/NZD.
 - **performanceSummary, byPair, byAgent, byRegime, bySession**: Aggregated trade statistics
 - **blockedTradeAnalysis**: Governance-blocked trades with counterfactual analysis
 - **dailyRollups**: Daily P&L summaries
@@ -1159,16 +1167,20 @@ serve(async (req) => {
     let liveOandaState: Record<string, unknown> = {};
     let marketIntel: Record<string, unknown> = {};
     let economicCalendar: Record<string, unknown> = {};
+    let crossAssetPulse: Record<string, unknown> = {};
     try {
       const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
       const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
-      const [accountSummary, oandaOpenTrades, intelRes, calendarRes] = await Promise.all([
+      const [accountSummary, oandaOpenTrades, intelRes, calendarRes, batchPricesRes] = await Promise.all([
         oandaRequest("/v3/accounts/{accountId}/summary", "GET", undefined, "live"),
         oandaRequest("/v3/accounts/{accountId}/openTrades", "GET", undefined, "live"),
         fetch(`${supabaseUrl}/functions/v1/oanda-market-intel?sections=all`, {
           headers: { Authorization: `Bearer ${supabaseAnonKey}`, apikey: supabaseAnonKey },
         }).then(r => r.ok ? r.json() : null).catch(() => null),
         fetch(`${supabaseUrl}/functions/v1/forex-economic-calendar`, {
+          headers: { Authorization: `Bearer ${supabaseAnonKey}`, apikey: supabaseAnonKey },
+        }).then(r => r.ok ? r.json() : null).catch(() => null),
+        fetch(`${supabaseUrl}/functions/v1/batch-prices?symbols=SPY,QQQ,DIA,IWM,VIX,GLD,USO,UNG,AAPL,MSFT,NVDA,META,TSLA,BTCUSD,ETHUSD,XLE,XLF,XLK`, {
           headers: { Authorization: `Bearer ${supabaseAnonKey}`, apikey: supabaseAnonKey },
         }).then(r => r.ok ? r.json() : null).catch(() => null),
       ]);
@@ -1203,6 +1215,31 @@ serve(async (req) => {
         economicCalendar = calendarRes;
         console.log(`[AI-DESK] Economic calendar loaded: directive=${(calendarRes.smartG8Directive || "").slice(0, 60)}`);
       }
+      if (batchPricesRes?.prices) {
+        const prices = batchPricesRes.prices as Record<string, { price: number; change: number; changePercent: number; source?: string }>;
+        const indices: Record<string, { price: number; change: number; pctChange: number }> = {};
+        const megaCap: Record<string, { price: number; change: number; pctChange: number }> = {};
+        const crypto: Record<string, { price: number; change: number; pctChange: number }> = {};
+        const commodities: Record<string, { price: number; change: number; pctChange: number }> = {};
+        const sectors: Record<string, { price: number; change: number; pctChange: number }> = {};
+        for (const [sym, d] of Object.entries(prices)) {
+          const row = { price: d.price, change: d.change, pctChange: +(d.changePercent || 0).toFixed(2) };
+          if (["SPY", "QQQ", "DIA", "IWM", "VIX"].includes(sym)) indices[sym] = row;
+          else if (["AAPL", "MSFT", "NVDA", "META", "TSLA"].includes(sym)) megaCap[sym] = row;
+          else if (["BTCUSD", "ETHUSD"].includes(sym)) crypto[sym] = row;
+          else if (["GLD", "USO", "UNG"].includes(sym)) commodities[sym] = row;
+          else if (sym.startsWith("XL")) sectors[sym] = row;
+        }
+        const spyPct = indices.SPY?.pctChange || 0;
+        const vixPrice = indices.VIX?.price || 0;
+        const btcPct = crypto.BTCUSD?.pctChange || 0;
+        let riskSentiment = "NEUTRAL";
+        if (spyPct > 0.5 && btcPct > 1) riskSentiment = "RISK-ON";
+        else if (spyPct < -0.5 && vixPrice > 25) riskSentiment = "RISK-OFF";
+        else if (spyPct < -1 && vixPrice > 30) riskSentiment = "EXTREME RISK-OFF";
+        crossAssetPulse = { indices, megaCap, crypto, commodities, sectors, riskSentiment, cacheAge: batchPricesRes.cacheAge };
+        console.log(`[AI-DESK] Cross-asset pulse: riskSentiment=${riskSentiment}, SPY=${spyPct}%, VIX=${vixPrice}`);
+      }
     } catch (oandaErr) {
       console.warn("[AI-DESK] OANDA live state fetch failed:", (oandaErr as Error).message);
       liveOandaState = { error: "Could not fetch live OANDA state" };
@@ -1211,7 +1248,7 @@ serve(async (req) => {
     console.log(`[FOREX-AI-DESK] State: ${openTrades.length} open, ${recentClosed.length} recent, ${rollups.length} rollups, ${blocked.length} blocked, ${stats.length} stats`);
 
     const systemState = buildSystemState(openTrades, recentClosed, rollups, blocked, stats);
-    const enrichedState = { ...systemState, liveOandaState, marketIntel, economicCalendar };
+    const enrichedState = { ...systemState, liveOandaState, marketIntel, economicCalendar, crossAssetPulse };
     const stateContext = `\n\n<SYSTEM_STATE>\n${JSON.stringify(enrichedState)}\n</SYSTEM_STATE>`;
 
     const actionInstructions = `\n\n## SOVEREIGN AUTONOMOUS ACTIONS
