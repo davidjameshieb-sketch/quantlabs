@@ -53,3 +53,6 @@ verify_jwt = false
 
 [functions.oanda-market-intel]
 verify_jwt = false
+
+[functions.forex-sovereign-loop]
+verify_jwt = false
