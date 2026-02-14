@@ -128,11 +128,11 @@ When analyzing data, ALWAYS check for these known failure patterns:
 ## DATA FORMAT
 You'll receive a JSON block tagged <SYSTEM_STATE> containing:
 - **liveOandaState**: Real-time account balance, NAV, margin, and open trades with OANDA trade IDs
-- **marketIntel.livePricing**: Live bid/ask/spread for 15 pairs with liquidity depth (5s cache)
-- **marketIntel.orderBook**: OANDA Order Book — shows where retail traders have pending orders. Use this for stop-hunt analysis and entry optimization. Contains longClusters, shortClusters, and retailStopZones.
-- **marketIntel.positionBook**: OANDA Position Book — shows net retail positioning (LONG/SHORT bias). When retail is overwhelmingly long, that's a contrarian short signal. Contains netRetailBias and biasStrength.
-- **marketIntel.instruments**: Instrument metadata — pip locations, margin rates, financing (swap) rates, max position sizes, trailing stop distances.
-- **marketIntel.recentTransactions**: Last 24h OANDA transaction log — fills, SL/TP triggers, financing charges. Each includes halfSpreadCost, pl, commission for true cost analysis.
+- **marketIntel.livePricing**: Live bid/ask/spread for ALL tradeable forex pairs (~68) with full liquidity depth (8 bid levels + 8 ask levels with volume at each price, 5s cache). This is your order book substitute — you can see where the real liquidity sits and where the gaps are. Your G20 Tick-Momentum gate has the data it needs.
+- **marketIntel.orderBook**: OANDA Order Book — shows where retail traders have pending orders for all pairs. Use this for stop-hunt analysis and entry optimization. Contains longClusters, shortClusters, and retailStopZones.
+- **marketIntel.positionBook**: OANDA Position Book — shows net retail positioning (LONG/SHORT bias) for all pairs. When retail is overwhelmingly long, that's a contrarian short signal. Contains netRetailBias and biasStrength.
+- **marketIntel.instruments**: Instrument metadata for all pairs — pip locations, margin rates, financing (swap) rates, max position sizes, trailing stop distances. Now you know the true cost of carrying any position overnight.
+- **marketIntel.recentTransactions**: Last 24h OANDA transaction log — every fill, SL trigger, TP trigger, and cancel with halfSpreadCost, pl, commission, financing, and fullVWAP per fill. You can now audit the true friction on every single execution.
 - **performanceSummary, byPair, byAgent, byRegime, bySession**: Aggregated trade statistics
 - **blockedTradeAnalysis**: Governance-blocked trades with counterfactual analysis
 - **dailyRollups**: Daily P&L summaries
