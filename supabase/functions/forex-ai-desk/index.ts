@@ -140,7 +140,17 @@ You'll receive a JSON block tagged <SYSTEM_STATE> containing:
   - **commodities**: GLD (gold safe-haven flow), USO (oil = CAD correlation), UNG (natgas)
   - **sectors**: XLE (energy→CAD), XLF (financials→USD), XLK (tech→risk appetite)
   - **riskSentiment**: Pre-computed RISK-ON / NEUTRAL / RISK-OFF / EXTREME RISK-OFF
-  USE THIS: VIX>25 = reduce sizing. GLD surging + equities falling = favor CHF/JPY. USO >2% move = trade USD_CAD lag. Risk-off = favor JPY longs. Risk-on = favor AUD/NZD.
+   USE THIS: VIX>25 = reduce sizing. GLD surging + equities falling = favor CHF/JPY. USO >2% move = trade USD_CAD lag. Risk-off = favor JPY longs. Risk-on = favor AUD/NZD.
+- **cotData**: CFTC Commitments of Traders — weekly institutional positioning data (the "God Signal"):
+  - **masterDirective**: Pre-computed: GOD SIGNAL ACTIVE / SMART MONEY DIVERGENCE / COT NEUTRAL
+  - **godSignals**: Array of currencies with active God Signals (strength ≥50)
+  - **byCurrency**: Per-currency breakdown — Leveraged Money (hedge funds), Asset Managers, Dealers (banks), Non-Reportable (retail)
+    - Each: leveragedPctLong, assetMgrPctLong, nonRptPctLong, smartMoneyBias, retailBias, godSignal, godSignalStrength (0-100), weeklyChange
+  - **pairSignals**: Per-pair institutional bias (STRONG INSTITUTIONAL LONG/SHORT, strength 0-100)
+  - **strongestPairSignals**: Top 10 pairs ranked by institutional conviction
+  THE GOD SIGNAL: When Institutions are 80%+ Long and Retail is 80%+ Short (or vice versa), that is MAXIMUM CONVICTION. The difference between catching a 20-pip ripple and riding a 200-pip wave.
+  CROSS-REFERENCE: Combine CFTC retail (cotData.byCurrency.nonRptPctLong) with OANDA retail (positionBook.netRetailBias) — when BOTH agree against institutions, that's the ULTIMATE confirmation.
+  USE FOR: Directional bias (weekly), NOT timing. Size up when God Signal confirms your trade direction.
 - **performanceSummary, byPair, byAgent, byRegime, bySession**: Aggregated trade statistics
 - **blockedTradeAnalysis**: Governance-blocked trades with counterfactual analysis
 - **dailyRollups**: Daily P&L summaries
@@ -1168,10 +1178,11 @@ serve(async (req) => {
     let marketIntel: Record<string, unknown> = {};
     let economicCalendar: Record<string, unknown> = {};
     let crossAssetPulse: Record<string, unknown> = {};
+    let cotData: Record<string, unknown> = {};
     try {
       const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
       const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
-      const [accountSummary, oandaOpenTrades, intelRes, calendarRes, batchPricesRes] = await Promise.all([
+      const [accountSummary, oandaOpenTrades, intelRes, calendarRes, batchPricesRes, cotRes] = await Promise.all([
         oandaRequest("/v3/accounts/{accountId}/summary", "GET", undefined, "live"),
         oandaRequest("/v3/accounts/{accountId}/openTrades", "GET", undefined, "live"),
         fetch(`${supabaseUrl}/functions/v1/oanda-market-intel?sections=all`, {
@@ -1181,6 +1192,9 @@ serve(async (req) => {
           headers: { Authorization: `Bearer ${supabaseAnonKey}`, apikey: supabaseAnonKey },
         }).then(r => r.ok ? r.json() : null).catch(() => null),
         fetch(`${supabaseUrl}/functions/v1/batch-prices?symbols=SPY,QQQ,DIA,IWM,VIX,GLD,USO,UNG,AAPL,MSFT,NVDA,META,TSLA,BTCUSD,ETHUSD,XLE,XLF,XLK`, {
+          headers: { Authorization: `Bearer ${supabaseAnonKey}`, apikey: supabaseAnonKey },
+        }).then(r => r.ok ? r.json() : null).catch(() => null),
+        fetch(`${supabaseUrl}/functions/v1/forex-cot-data`, {
           headers: { Authorization: `Bearer ${supabaseAnonKey}`, apikey: supabaseAnonKey },
         }).then(r => r.ok ? r.json() : null).catch(() => null),
       ]);
@@ -1240,6 +1254,10 @@ serve(async (req) => {
         crossAssetPulse = { indices, megaCap, crypto, commodities, sectors, riskSentiment, cacheAge: batchPricesRes.cacheAge };
         console.log(`[AI-DESK] Cross-asset pulse: riskSentiment=${riskSentiment}, SPY=${spyPct}%, VIX=${vixPrice}`);
       }
+      if (cotRes) {
+        cotData = cotRes;
+        console.log(`[AI-DESK] COT data loaded: ${(cotRes.godSignals || []).length} god signals, ${Object.keys(cotRes.pairSignals || {}).length} pair signals. Directive: ${(cotRes.masterDirective || "").slice(0, 80)}`);
+      }
     } catch (oandaErr) {
       console.warn("[AI-DESK] OANDA live state fetch failed:", (oandaErr as Error).message);
       liveOandaState = { error: "Could not fetch live OANDA state" };
@@ -1248,7 +1266,7 @@ serve(async (req) => {
     console.log(`[FOREX-AI-DESK] State: ${openTrades.length} open, ${recentClosed.length} recent, ${rollups.length} rollups, ${blocked.length} blocked, ${stats.length} stats`);
 
     const systemState = buildSystemState(openTrades, recentClosed, rollups, blocked, stats);
-    const enrichedState = { ...systemState, liveOandaState, marketIntel, economicCalendar, crossAssetPulse };
+    const enrichedState = { ...systemState, liveOandaState, marketIntel, economicCalendar, crossAssetPulse, cotData };
     const stateContext = `\n\n<SYSTEM_STATE>\n${JSON.stringify(enrichedState)}\n</SYSTEM_STATE>`;
 
     const actionInstructions = `\n\n## SOVEREIGN AUTONOMOUS ACTIONS
