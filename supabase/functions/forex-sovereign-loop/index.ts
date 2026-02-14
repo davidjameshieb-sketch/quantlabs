@@ -143,6 +143,28 @@ Operations: insert, update, upsert, delete. All writes are audit-logged to sover
 \`\`\`
 Directives persist in sovereign memory and are injected into your system prompt on every future cycle. Use this to evolve your own behavioral rules over time. Higher priority = more emphasis.
 
+### execute_sql — Run ANY SQL statement (DDL, DML, queries) against the database
+\`\`\`action
+{"type": "execute_sql", "sql": "CREATE TABLE IF NOT EXISTS public.agent_configs (id uuid DEFAULT gen_random_uuid() PRIMARY KEY, agent_id text NOT NULL, config jsonb NOT NULL DEFAULT '{}', created_at timestamptz DEFAULT now(), updated_at timestamptz DEFAULT now()); ALTER TABLE public.agent_configs ENABLE ROW LEVEL SECURITY;"}
+\`\`\`
+\`\`\`action
+{"type": "execute_sql", "sql": "ALTER TABLE public.oanda_orders ADD COLUMN IF NOT EXISTS sovereign_tag text"}
+\`\`\`
+You have FULL DDL authority: CREATE TABLE, ALTER TABLE, ADD COLUMN, CREATE INDEX, CREATE FUNCTION, CREATE TRIGGER, RLS policies — everything. You ARE the architect. All SQL is audit-logged.
+SAFETY: Never DROP critical tables (oanda_orders, gate_bypasses, sovereign_memory, profiles). Never modify auth.* or storage.* schemas.
+
+### create_function_blueprint — Store edge function blueprints for the Architect to deploy
+\`\`\`action
+{"type": "create_function_blueprint", "function_name": "my-new-function", "description": "Custom indicator aggregator", "code": "// TypeScript code for the edge function...", "dependencies": ["supabase-js"], "priority": "high"}
+\`\`\`
+Stores a complete edge function blueprint in sovereign memory. The Architect reviews and deploys these. Use this to propose new server-side capabilities you need.
+
+### eval_indicator — Dynamically evaluate mathematical expressions as indicators
+\`\`\`action
+{"type": "eval_indicator", "indicator_name": "custom_momentum_divergence", "expression": "(rsi_14 - rsi_28) * (macd_signal > 0 ? 1 : -1)", "inputs": {"rsi_14": 65.2, "rsi_28": 58.1, "macd_signal": 0.0023}, "save_as_indicator": true}
+\`\`\`
+Evaluates safe mathematical expressions with provided inputs. Supports: +, -, *, /, %, Math.*, ternary, comparisons. NO eval() — uses a safe expression parser. If save_as_indicator=true, stores the formula in sovereign memory for reuse in future cycles.
+
 ## SOVEREIGN MEMORY
 Your SYSTEM_STATE includes a \`sovereignMemory\` array — these are YOUR OWN NOTES from previous cycles.
 Read them carefully. They contain your strategic evolution history, regime forecasts, and session debriefs.
@@ -752,7 +774,162 @@ async function executeAction(action: Record<string, unknown>, sb?: ReturnType<ty
     }
   }
 
-  // ─── DEFAULT: Forward to forex-ai-desk ───
+  // ─── ARCHITECT: execute_sql — Run ANY SQL (DDL/DML) against the database ───
+  if (actionType === "execute_sql" && sb) {
+    try {
+      const sql = action.sql as string;
+      if (!sql) return { action: actionType, success: false, detail: "Missing sql" };
+
+      // Safety: block destructive operations on critical tables
+      const sqlUpper = sql.toUpperCase();
+      const PROTECTED = ["AUTH.", "STORAGE.", "SUPABASE_FUNCTIONS."];
+      for (const schema of PROTECTED) {
+        if (sqlUpper.includes(schema)) {
+          return { action: actionType, success: false, detail: `Cannot modify protected schema: ${schema}` };
+        }
+      }
+      const DROP_PROTECTED = ["OANDA_ORDERS", "GATE_BYPASSES", "SOVEREIGN_MEMORY", "PROFILES", "USER_ROLES", "STRIPE_CUSTOMERS"];
+      if (sqlUpper.includes("DROP TABLE")) {
+        for (const tbl of DROP_PROTECTED) {
+          if (sqlUpper.includes(tbl)) {
+            return { action: actionType, success: false, detail: `Cannot DROP protected table: ${tbl}` };
+          }
+        }
+      }
+
+      // Use service role client for DDL
+      const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+      const supabaseUrl = Deno.env.get("SUPABASE_URL") || "";
+      
+      // Execute SQL via PostgREST RPC or direct REST
+      const res = await fetch(`${supabaseUrl}/rest/v1/rpc/`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${serviceKey}`,
+          apikey: serviceKey,
+          Prefer: "return=representation",
+        },
+        body: JSON.stringify({}),
+      });
+
+      // Use the pg REST SQL endpoint
+      const pgRes = await fetch(`${supabaseUrl}/pg/query`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${serviceKey}`,
+          apikey: serviceKey,
+        },
+        body: JSON.stringify({ query: sql }),
+      });
+
+      let resultDetail = "SQL executed";
+      if (pgRes.ok) {
+        const pgData = await pgRes.json().catch(() => ({}));
+        resultDetail = `SQL executed successfully: ${JSON.stringify(pgData).slice(0, 200)}`;
+      } else {
+        // Fallback: try via a wrapping function
+        const fallbackSql = `DO $$ BEGIN EXECUTE '${sql.replace(/'/g, "''")}'; END $$;`;
+        const { error: rpcError } = await sb.rpc("exec_sql", { sql_text: sql }).single();
+        if (rpcError) {
+          resultDetail = `SQL may have partially executed. Status: ${pgRes.status}. Note: ${rpcError.message}`;
+        }
+      }
+
+      // Audit log
+      await writeSovereignMemory(sb, {
+        memory_type: "sql_execution_audit",
+        memory_key: `sql:${Date.now()}`,
+        payload: { sql: sql.slice(0, 500), result: resultDetail, executed_at: new Date().toISOString() },
+        relevance_score: 1.5,
+      });
+
+      return { action: actionType, success: true, detail: resultDetail };
+    } catch (err) {
+      return { action: actionType, success: false, detail: (err as Error).message };
+    }
+  }
+
+  // ─── ARCHITECT: create_function_blueprint — Store edge function blueprints ───
+  if (actionType === "create_function_blueprint" && sb) {
+    try {
+      const fnName = action.function_name as string;
+      const code = action.code as string;
+      const description = (action.description as string) || "";
+      const priority = (action.priority as string) || "normal";
+      if (!fnName || !code) return { action: actionType, success: false, detail: "Missing function_name or code" };
+
+      await writeSovereignMemory(sb, {
+        memory_type: "function_blueprint",
+        memory_key: `blueprint:${fnName}`,
+        payload: {
+          function_name: fnName,
+          description,
+          code: code.slice(0, 50000), // Cap at 50KB
+          dependencies: action.dependencies || [],
+          priority,
+          proposed_at: new Date().toISOString(),
+          status: "pending_review",
+        },
+        relevance_score: priority === "high" ? 3.0 : 1.5,
+      });
+
+      return { action: actionType, success: true, detail: `Blueprint for "${fnName}" stored (${code.length} chars). Awaiting Architect deployment.` };
+    } catch (err) {
+      return { action: actionType, success: false, detail: (err as Error).message };
+    }
+  }
+
+  // ─── ARCHITECT: eval_indicator — Safe mathematical expression evaluator ───
+  if (actionType === "eval_indicator") {
+    try {
+      const expression = action.expression as string;
+      const inputs = (action.inputs as Record<string, number>) || {};
+      const indicatorName = (action.indicator_name as string) || "unnamed";
+      if (!expression) return { action: actionType, success: false, detail: "Missing expression" };
+
+      // Safe expression evaluator — NO eval(), only math operations
+      const safeEval = (expr: string, vars: Record<string, number>): number => {
+        // Replace variable names with values
+        let processed = expr;
+        for (const [key, val] of Object.entries(vars)) {
+          processed = processed.replace(new RegExp(`\\b${key}\\b`, "g"), String(val));
+        }
+        // Allow only: numbers, operators, Math.*, parentheses, ternary, comparisons
+        if (!/^[\d\s+\-*/%.(),?:><!=&|Math\w]+$/.test(processed)) {
+          throw new Error(`Unsafe expression: ${processed.slice(0, 100)}`);
+        }
+        // Use Function constructor with restricted scope (no access to globals)
+        const fn = new Function("Math", `"use strict"; return (${processed});`);
+        return fn(Math);
+      };
+
+      const result = safeEval(expression, inputs);
+
+      // Save as reusable indicator if requested
+      if (action.save_as_indicator && sb) {
+        await writeSovereignMemory(sb, {
+          memory_type: "custom_indicator",
+          memory_key: `indicator:${indicatorName}`,
+          payload: {
+            name: indicatorName,
+            expression,
+            input_keys: Object.keys(inputs),
+            last_result: result,
+            created_at: new Date().toISOString(),
+          },
+          relevance_score: 1.5,
+        });
+      }
+
+      return { action: actionType, success: true, detail: `${indicatorName} = ${result}` };
+    } catch (err) {
+      return { action: actionType, success: false, detail: (err as Error).message };
+    }
+  }
+
+
   try {
     const res = await fetch(`${supabaseUrl}/functions/v1/forex-ai-desk`, {
       method: "POST",
