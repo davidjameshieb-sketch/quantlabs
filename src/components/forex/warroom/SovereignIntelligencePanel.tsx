@@ -4,7 +4,7 @@ import { motion } from 'framer-motion';
 import {
   Dna, Brain, Ghost, Ban, FlaskConical, Gauge,
   ShieldAlert, Sparkles, Clock, Zap, Search, Cpu,
-  Globe, ExternalLink,
+  Globe, ExternalLink, Database, Activity, Server,
 } from 'lucide-react';
 import { useFloorManagerState, type GateBypasses } from '@/hooks/useFloorManagerState';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -86,7 +86,26 @@ function parseModelLog(reason: string) {
   const actions = reason.match(/actions=(\d+)/)?.[1] || '0';
   const score = reason.match(/score=(\d+)/)?.[1] || '0';
   const latency = reason.match(/latency=(\d+)ms/)?.[1] || '0';
-  return { model, promptTokens, completionTokens, total, actions, score, latency };
+  const purpose = reason.match(/purpose=([^\s|]+)/)?.[1] || '';
+  const assessment = reason.match(/assessment=([^|]+)/)?.[1]?.trim() || '';
+  const acted = reason.match(/acted=([^|]+)/)?.[1]?.trim() || '';
+  return { model, promptTokens, completionTokens, total, actions, score, latency, purpose, assessment, acted };
+}
+
+// ─── Parse data fetch log reason ───
+function parseDataFetchLog(reason: string) {
+  const sources = reason.match(/sources=(\d+)/)?.[1] || '0';
+  const ok = reason.match(/ok=(\d+)/)?.[1] || '0';
+  const fail = reason.match(/fail=(\d+)/)?.[1] || '0';
+  const totalMs = reason.match(/total_ms=(\d+)/)?.[1] || '0';
+  // Parse individual source entries: "SourceName:status(ms)[creditType]"
+  const entries: { source: string; status: string; ms: string; creditType: string }[] = [];
+  const entryRegex = /([^:]+):(ok|err:\d+|fail[^(]*)\((\d+)ms\)\[([^\]]+)\]/g;
+  let match: RegExpExecArray | null;
+  while ((match = entryRegex.exec(reason)) !== null) {
+    entries.push({ source: match[1].trim(), status: match[2], ms: match[3], creditType: match[4] });
+  }
+  return { sources: parseInt(sources), ok: parseInt(ok), fail: parseInt(fail), totalMs: parseInt(totalMs), entries };
 }
 
 export function SovereignIntelligencePanel() {
@@ -106,6 +125,8 @@ export function SovereignIntelligencePanel() {
       ...state.bypasses.map(e => ({ ...e, _type: 'Bypass' as const })),
       ...state.webSearchLogs.map(e => ({ ...e, _type: 'Web Search' as const })),
       ...state.aiModelLogs.map(e => ({ ...e, _type: 'AI Model' as const })),
+      ...state.dataFetchLogs.map(e => ({ ...e, _type: 'Data Fetch' as const })),
+      ...state.cycleLogs.map(e => ({ ...e, _type: 'Cycle Log' as const })),
     ];
     return all.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()).slice(0, 40);
   }, [state]);
@@ -122,6 +143,8 @@ export function SovereignIntelligencePanel() {
     'Bypass': 'bg-muted text-muted-foreground',
     'Web Search': 'bg-sky-500/20 text-sky-300',
     'AI Model': 'bg-violet-500/20 text-violet-300',
+    'Data Fetch': 'bg-teal-500/20 text-teal-300',
+    'Cycle Log': 'bg-zinc-500/20 text-zinc-300',
   };
 
   // ─── Compute AI model stats ───
@@ -188,13 +211,12 @@ export function SovereignIntelligencePanel() {
         )}
       </IPanel>
 
-      {/* ─── AI MODEL USAGE ─── */}
-      <IPanel title="🧠 AI Model Usage" icon={Cpu} count={state.aiModelLogs.length}>
+      {/* ─── AI MODEL USAGE (💰 Lovable AI Credits) ─── */}
+      <IPanel title="🧠 AI Model Usage (Credits)" icon={Cpu} count={state.aiModelLogs.length}>
         {state.aiModelLogs.length === 0 ? (
           <Empty icon={Cpu} label="No AI model calls logged yet" />
         ) : (
           <div className="space-y-3">
-            {/* Summary stats */}
             {aiStats && (
               <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
                 {[
@@ -211,31 +233,106 @@ export function SovereignIntelligencePanel() {
                 ))}
               </div>
             )}
-            {/* Recent logs */}
-            <ScrollArea className="h-[180px]">
+            <ScrollArea className="h-[220px]">
               <div className="space-y-1.5 pr-2">
                 {state.aiModelLogs.slice(0, 20).map((log, i) => {
                   const p = parseModelLog(log.reason);
                   const age = Math.round((Date.now() - new Date(log.created_at).getTime()) / 60_000);
                   const ageStr = age < 60 ? `${age}m` : `${Math.round(age / 60)}h`;
                   return (
-                    <div key={log.id || i} className="flex items-center gap-2 text-[11px] py-1.5 px-2 rounded-md bg-muted/15 hover:bg-muted/30 transition-colors">
-                      <Cpu className="w-3 h-3 text-violet-400 flex-shrink-0" />
-                      <Badge className="text-[9px] h-4 px-1.5 font-mono border-0 bg-violet-500/20 text-violet-300">
-                        {p.model.split('/')[1] || p.model}
-                      </Badge>
-                      <span className="text-muted-foreground font-mono text-[9px]">{p.total} tok</span>
-                      <span className="text-muted-foreground font-mono text-[9px]">{p.latency}ms</span>
-                      <Badge variant="outline" className="text-[9px] h-4 px-1 font-mono border-emerald-500/30 text-emerald-400 ml-auto">
-                        {p.actions} acts
-                      </Badge>
-                      <span className="text-[9px] text-muted-foreground">{ageStr}</span>
+                    <div key={log.id || i} className="bg-muted/15 rounded-lg px-3 py-2 hover:bg-muted/30 transition-colors">
+                      <div className="flex items-center gap-2 text-[11px]">
+                        <Cpu className="w-3 h-3 text-violet-400 flex-shrink-0" />
+                        <Badge className="text-[9px] h-4 px-1.5 font-mono border-0 bg-violet-500/20 text-violet-300">
+                          {p.model.split('/')[1] || p.model}
+                        </Badge>
+                        <span className="text-muted-foreground font-mono text-[9px]">{p.total} tok</span>
+                        <span className="text-muted-foreground font-mono text-[9px]">{p.latency}ms</span>
+                        <Badge variant="outline" className="text-[9px] h-4 px-1 font-mono border-emerald-500/30 text-emerald-400 ml-auto">
+                          {p.actions} acts
+                        </Badge>
+                        <span className="text-[9px] text-muted-foreground">{ageStr}</span>
+                      </div>
+                      {/* Purpose & what AI decided */}
+                      {(p.assessment || p.acted) && (
+                        <div className="mt-1 pl-5 space-y-0.5">
+                          {p.assessment && (
+                            <p className="text-[10px] text-muted-foreground line-clamp-1">
+                              <span className="text-foreground font-medium">Assessment:</span> {p.assessment}
+                            </p>
+                          )}
+                          {p.acted && p.acted !== 'NO_ACTION' && (
+                            <p className="text-[10px] text-emerald-400 line-clamp-1">
+                              <span className="text-foreground font-medium">Executed:</span> {p.acted}
+                            </p>
+                          )}
+                          {p.acted === 'NO_ACTION' && (
+                            <p className="text-[10px] text-muted-foreground">
+                              <span className="text-foreground font-medium">Result:</span> No action needed
+                            </p>
+                          )}
+                        </div>
+                      )}
                     </div>
                   );
                 })}
               </div>
             </ScrollArea>
           </div>
+        )}
+      </IPanel>
+
+      {/* ─── CLOUD DATA SOURCES (per-cycle resource consumption) ─── */}
+      <IPanel title="☁️ Cloud Data Sources" icon={Server} count={state.dataFetchLogs.length}>
+        {state.dataFetchLogs.length === 0 ? (
+          <Empty icon={Database} label="No data fetch cycles logged yet — logs appear after each sovereign loop cycle" />
+        ) : (
+          <ScrollArea className="h-[220px]">
+            <div className="space-y-2 pr-2">
+              {state.dataFetchLogs.slice(0, 10).map((log, i) => {
+                const parsed = parseDataFetchLog(log.reason);
+                const age = Math.round((Date.now() - new Date(log.created_at).getTime()) / 60_000);
+                const ageStr = age < 60 ? `${age}m` : `${Math.round(age / 60)}h`;
+                return (
+                  <div key={log.id || i} className="bg-muted/15 rounded-lg px-3 py-2 hover:bg-muted/30 transition-colors">
+                    <div className="flex items-center gap-2 text-[11px]">
+                      <Activity className="w-3 h-3 text-teal-400 flex-shrink-0" />
+                      <span className="font-mono font-bold text-foreground">{parsed.sources} sources</span>
+                      <Badge variant="outline" className="text-[9px] h-4 px-1 font-mono border-emerald-500/30 text-emerald-400">
+                        {parsed.ok} ok
+                      </Badge>
+                      {parsed.fail > 0 && (
+                        <Badge variant="outline" className="text-[9px] h-4 px-1 font-mono border-red-500/30 text-red-400">
+                          {parsed.fail} fail
+                        </Badge>
+                      )}
+                      <span className="text-muted-foreground font-mono text-[9px] ml-auto">{parsed.totalMs}ms</span>
+                      <span className="text-[9px] text-muted-foreground">{ageStr}</span>
+                    </div>
+                    {/* Per-source breakdown */}
+                    {parsed.entries.length > 0 && (
+                      <div className="mt-1.5 grid grid-cols-1 md:grid-cols-2 gap-0.5 pl-5">
+                        {parsed.entries.map((entry, j) => {
+                          const isOk = entry.status === 'ok';
+                          const creditIcon = entry.creditType === 'firecrawl' ? '🔥' 
+                            : entry.creditType === 'oanda-api' ? '🏦' 
+                            : '☁️';
+                          return (
+                            <div key={j} className="flex items-center gap-1 text-[9px]">
+                              <span>{creditIcon}</span>
+                              <span className={isOk ? 'text-muted-foreground' : 'text-red-400'}>{entry.source}</span>
+                              <span className="text-muted-foreground font-mono ml-auto">{entry.ms}ms</span>
+                              {!isOk && <span className="text-red-400 font-mono">{entry.status}</span>}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </ScrollArea>
         )}
       </IPanel>
 
@@ -273,17 +370,41 @@ export function SovereignIntelligencePanel() {
                   const p = parseModelLog(e.reason);
                   const modelShort = p.model.split('/')[1] || p.model;
                   detail = (
+                    <div className="flex flex-col gap-0.5 flex-1 min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        <Cpu className="w-3 h-3 text-violet-400 flex-shrink-0" />
+                        <Badge className="text-[9px] h-4 px-1.5 font-mono border-0 bg-violet-500/20 text-violet-300 flex-shrink-0">
+                          {modelShort}
+                        </Badge>
+                        <span className="text-muted-foreground font-mono text-[9px]">{p.total} tok</span>
+                        <span className="text-muted-foreground font-mono text-[9px]">{p.latency}ms</span>
+                        <Badge variant="outline" className="text-[9px] h-4 px-1 font-mono border-emerald-500/30 text-emerald-400">
+                          {p.actions} acts
+                        </Badge>
+                      </div>
+                      {p.assessment && (
+                        <p className="text-[9px] text-muted-foreground line-clamp-1 pl-4">{p.assessment}</p>
+                      )}
+                      {p.acted && p.acted !== 'NO_ACTION' && (
+                        <p className="text-[9px] text-emerald-400 line-clamp-1 pl-4">→ {p.acted}</p>
+                      )}
+                    </div>
+                  );
+                } else if (e._type === 'Data Fetch') {
+                  const df = parseDataFetchLog(e.reason);
+                  detail = (
                     <div className="flex items-center gap-1.5 flex-1 min-w-0">
-                      <Cpu className="w-3 h-3 text-violet-400 flex-shrink-0" />
-                      <Badge className="text-[9px] h-4 px-1.5 font-mono border-0 bg-violet-500/20 text-violet-300 flex-shrink-0">
-                        {modelShort}
-                      </Badge>
-                      <span className="text-muted-foreground font-mono text-[9px]">{p.total} tokens</span>
-                      <span className="text-muted-foreground font-mono text-[9px]">{p.latency}ms</span>
+                      <Server className="w-3 h-3 text-teal-400 flex-shrink-0" />
+                      <span className="font-mono text-foreground text-[10px]">{df.sources} sources</span>
                       <Badge variant="outline" className="text-[9px] h-4 px-1 font-mono border-emerald-500/30 text-emerald-400">
-                        {p.actions} actions
+                        {df.ok} ok
                       </Badge>
-                      <span className="text-[9px] text-muted-foreground">score:{p.score}</span>
+                      {df.fail > 0 && (
+                        <Badge variant="outline" className="text-[9px] h-4 px-1 font-mono border-red-500/30 text-red-400">
+                          {df.fail} fail
+                        </Badge>
+                      )}
+                      <span className="text-muted-foreground font-mono text-[9px] ml-auto">{df.totalMs}ms</span>
                     </div>
                   );
                 }

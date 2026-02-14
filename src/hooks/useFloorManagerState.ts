@@ -26,6 +26,8 @@ export interface FloorManagerState {
   shadowAgents: GateBypasses[];
   webSearchLogs: GateBypasses[];
   aiModelLogs: GateBypasses[];
+  dataFetchLogs: GateBypasses[];
+  cycleLogs: GateBypasses[];
   loading: boolean;
   lastUpdated: Date | null;
 }
@@ -44,6 +46,8 @@ const EMPTY: FloorManagerState = {
   shadowAgents: [],
   webSearchLogs: [],
   aiModelLogs: [],
+  dataFetchLogs: [],
+  cycleLogs: [],
   loading: true,
   lastUpdated: null,
 };
@@ -68,7 +72,7 @@ export function useFloorManagerState(pollMs = 15_000): FloorManagerState {
 
       const active = data as GateBypasses[];
 
-      const CATEGORIES = ['AGENT_SUSPEND', 'CIRCUIT_BREAKER', 'SIZING_OVERRIDE', 'SESSION_BLACKLIST', 'BLACKLIST_ADD', 'GATE_THRESHOLD', 'EVOLUTION_PARAM', 'DYNAMIC_GATE', 'AGENT_DNA_MUTATION', 'INDICATOR_WEIGHT', 'SHADOW_AGENT', 'WEB_SEARCH_LOG', 'AI_MODEL_LOG', 'SOVEREIGN_LOOP_LOG'];
+      const CATEGORIES = ['AGENT_SUSPEND', 'CIRCUIT_BREAKER', 'SIZING_OVERRIDE', 'SESSION_BLACKLIST', 'BLACKLIST_ADD', 'GATE_THRESHOLD', 'EVOLUTION_PARAM', 'DYNAMIC_GATE', 'AGENT_DNA_MUTATION', 'INDICATOR_WEIGHT', 'SHADOW_AGENT', 'WEB_SEARCH_LOG', 'AI_MODEL_LOG', 'DATA_FETCH_LOG', 'SOVEREIGN_LOOP_LOG'];
       const startsWith = (id: string, prefix: string) => id === prefix || id.startsWith(prefix + ':');
       const matchesAny = (id: string) => CATEGORIES.some(c => startsWith(id, c));
 
@@ -86,6 +90,8 @@ export function useFloorManagerState(pollMs = 15_000): FloorManagerState {
         shadowAgents: active.filter(b => startsWith(b.gate_id, 'SHADOW_AGENT')),
         webSearchLogs: active.filter(b => startsWith(b.gate_id, 'WEB_SEARCH_LOG')),
         aiModelLogs: active.filter(b => startsWith(b.gate_id, 'AI_MODEL_LOG')),
+        dataFetchLogs: active.filter(b => startsWith(b.gate_id, 'DATA_FETCH_LOG')),
+        cycleLogs: active.filter(b => startsWith(b.gate_id, 'SOVEREIGN_LOOP_LOG')),
         loading: false,
         lastUpdated: new Date(),
       });
