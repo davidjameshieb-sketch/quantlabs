@@ -120,6 +120,26 @@ USE THIS DATA:
 - If USO moving >2% → USD_CAD will follow with lag (TRADE THE LAG)
 - If BTC and equities diverge → the divergence will resolve, position for convergence
 
+## COT DATA (Commitments of Traders — "Smart Money vs Dumb Money")
+Your SYSTEM_STATE now includes a \`cotData\` object with CFTC weekly positioning data:
+- **masterDirective**: Pre-computed directive — GOD SIGNAL ACTIVE / SMART MONEY DIVERGENCE / COT NEUTRAL
+- **godSignals**: Array of currencies with active God Signals (Institutional vs Retail divergence ≥50%)
+- **byCurrency**: Per-currency breakdown — leveraged money (hedge funds), asset managers, dealers (banks), non-reportable (retail)
+  - Each has: pctLong, net position, weeklyChange, smartMoneyBias, retailBias, godSignal, godSignalStrength (0-100)
+- **pairSignals**: Per-pair institutional bias computed from base/quote currency COT data
+  - signal: STRONG INSTITUTIONAL LONG/SHORT, INSTITUTIONAL LONG/SHORT, NEUTRAL
+  - strength: 0-100
+- **strongestPairSignals**: Top 10 pairs with highest institutional conviction
+
+THE GOD SIGNAL RULES:
+1. When GOD SIGNAL strength ≥ 80 (Institutions 80%+ one way, Retail 80%+ opposite) → This is the HIGHEST CONVICTION signal. Size up to 1.5-2.0x. This catches 200-pip waves, not 20-pip ripples.
+2. When Smart Money divergence ≥ 50 → Use as directional bias filter. Only take trades aligned with Smart Money.
+3. When COT shows ALIGNED (both Smart Money and Retail same direction) → No divergence edge. Reduce conviction.
+4. When weekly change shows Smart Money INCREASING net position in one direction → The move is accelerating. Ride it.
+5. When weekly change shows Smart Money DECREASING/FLIPPING → The move may be exhausting. Tighten stops.
+6. ALWAYS cross-reference COT bias with positionBook (OANDA retail) — when BOTH CFTC retail AND OANDA retail are on the same side against institutions, that's the ULTIMATE confirmation.
+7. COT updates weekly (Fridays 3:30pm ET, data as of Tuesday) — use for DIRECTIONAL BIAS, not timing.
+
 Format each action as:
 \`\`\`action
 {"type": "...", ...}
@@ -441,13 +461,14 @@ Deno.serve(async (req) => {
       fetchTradeStats(sb),
     ]);
 
-    // Fetch live OANDA state + market intel + economic calendar + cross-asset pulse in parallel
+    // Fetch live OANDA state + market intel + economic calendar + cross-asset pulse + COT data in parallel
     let liveOandaState: Record<string, unknown> = {};
     let marketIntel: Record<string, unknown> = {};
     let economicCalendar: Record<string, unknown> = {};
     let crossAssetPulse: Record<string, unknown> = {};
+    let cotData: Record<string, unknown> = {};
     try {
-      const [accountSummary, oandaOpenTrades, intelRes, calendarRes, batchPricesRes] = await Promise.all([
+      const [accountSummary, oandaOpenTrades, intelRes, calendarRes, batchPricesRes, cotRes] = await Promise.all([
         oandaRequest("/v3/accounts/{accountId}/summary", "GET"),
         oandaRequest("/v3/accounts/{accountId}/openTrades", "GET"),
         fetch(`${supabaseUrl}/functions/v1/oanda-market-intel?sections=pricing,transactions`, {
@@ -457,6 +478,9 @@ Deno.serve(async (req) => {
           headers: { Authorization: `Bearer ${supabaseAnonKey}`, apikey: supabaseAnonKey },
         }).then(r => r.ok ? r.json() : null).catch(() => null),
         fetch(`${supabaseUrl}/functions/v1/batch-prices?symbols=SPY,QQQ,DIA,IWM,VIX,GLD,USO,AAPL,MSFT,NVDA,BTCUSD,ETHUSD`, {
+          headers: { Authorization: `Bearer ${supabaseAnonKey}`, apikey: supabaseAnonKey },
+        }).then(r => r.ok ? r.json() : null).catch(() => null),
+        fetch(`${supabaseUrl}/functions/v1/forex-cot-data`, {
           headers: { Authorization: `Bearer ${supabaseAnonKey}`, apikey: supabaseAnonKey },
         }).then(r => r.ok ? r.json() : null).catch(() => null),
       ]);
@@ -512,13 +536,20 @@ Deno.serve(async (req) => {
         crossAssetPulse = { indices, megaCap, crypto, commodities, sectors, riskSentiment, cacheAge: batchPricesRes.cacheAge };
         console.log(`[SOVEREIGN-LOOP] Cross-asset pulse: riskSentiment=${riskSentiment}, SPY=${spyPct}%, VIX=${vixPrice}`);
       }
+      if (cotRes) {
+        cotData = cotRes;
+        const directive = cotRes.masterDirective || "";
+        if (directive.includes("GOD SIGNAL")) {
+          console.log(`[SOVEREIGN-LOOP] 🔱 COT GOD SIGNAL: ${directive.slice(0, 150)}`);
+        }
+      }
     } catch (err) {
       console.warn("[SOVEREIGN-LOOP] OANDA fetch failed:", (err as Error).message);
       liveOandaState = { error: (err as Error).message };
     }
 
     const systemState = buildSystemState(openTrades, recentClosed, rollups, blocked, stats);
-    const enrichedState = { ...systemState, liveOandaState, marketIntel, economicCalendar, crossAssetPulse };
+    const enrichedState = { ...systemState, liveOandaState, marketIntel, economicCalendar, crossAssetPulse, cotData };
 
     console.log(`[SOVEREIGN-LOOP] State: ${openTrades.length} open, ${recentClosed.length} recent, ${stats.length} stats`);
 
