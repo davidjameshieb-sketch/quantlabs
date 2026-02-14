@@ -547,41 +547,76 @@ Deno.serve(async (req) => {
     let bisImfData: Record<string, unknown> = {};
     let cbCommsData: Record<string, unknown> = {};
     let cryptoOnChainData: Record<string, unknown> = {};
+    // Tracked edge function fetcher — logs timing + status for resource visibility
+    const dataFetchResults: { source: string; status: string; ms: number; creditType: string }[] = [];
+    const trackedFetch = async (name: string, path: string, creditType = "cloud") => {
+      const t0 = Date.now();
+      try {
+        const r = await fetch(`${supabaseUrl}/functions/v1/${path}`, {
+          headers: { Authorization: `Bearer ${supabaseAnonKey}`, apikey: supabaseAnonKey },
+        });
+        const ms = Date.now() - t0;
+        if (r.ok) {
+          const data = await r.json();
+          dataFetchResults.push({ source: name, status: "ok", ms, creditType });
+          return data;
+        }
+        dataFetchResults.push({ source: name, status: `err:${r.status}`, ms, creditType });
+        return null;
+      } catch (err) {
+        dataFetchResults.push({ source: name, status: `fail:${(err as Error).message.slice(0, 30)}`, ms: Date.now() - t0, creditType });
+        return null;
+      }
+    };
     const edgeFetch = (path: string) => fetch(`${supabaseUrl}/functions/v1/${path}`, {
       headers: { Authorization: `Bearer ${supabaseAnonKey}`, apikey: supabaseAnonKey },
     }).then(r => r.ok ? r.json() : null).catch(() => null);
     try {
-      const [accountSummary, oandaOpenTrades, intelRes, calendarRes, batchPricesRes, cotRes, macroRes, stocksRes, cryptoRes, treasuryRes, sentimentRes, optionsRes, econCalRes, bisImfRes, cbCommsRes, onChainRes] = await Promise.all([
-        oandaRequest("/v3/accounts/{accountId}/summary", "GET"),
-        oandaRequest("/v3/accounts/{accountId}/openTrades", "GET"),
-        edgeFetch("oanda-market-intel?sections=pricing,transactions"),
-        edgeFetch("forex-economic-calendar"),
-        edgeFetch("batch-prices?symbols=SPY,QQQ,DIA,IWM,VIX,GLD,USO,AAPL,MSFT,NVDA,BTCUSD,ETHUSD"),
-        edgeFetch("forex-cot-data"),
-        edgeFetch("forex-macro-data"),
-        edgeFetch("stocks-intel"),
-        edgeFetch("crypto-intel"),
-        edgeFetch("treasury-commodities"),
-        edgeFetch("market-sentiment"),
-        edgeFetch("options-volatility-intel"),
-        edgeFetch("economic-calendar-intel"),
-        edgeFetch("bis-imf-data"),
-        edgeFetch("central-bank-comms"),
-        edgeFetch("crypto-onchain"),
+      // OANDA API calls (external API — no Lovable credits, but tracked)
+      const oandaT0 = Date.now();
+      let accountSummary: any = null, oandaOpenTrades: any = null;
+      try {
+        [accountSummary, oandaOpenTrades] = await Promise.all([
+          oandaRequest("/v3/accounts/{accountId}/summary", "GET"),
+          oandaRequest("/v3/accounts/{accountId}/openTrades", "GET"),
+        ]);
+        dataFetchResults.push({ source: "OANDA Account", status: "ok", ms: Date.now() - oandaT0, creditType: "oanda-api" });
+      } catch (err) {
+        dataFetchResults.push({ source: "OANDA Account", status: `fail:${(err as Error).message.slice(0, 30)}`, ms: Date.now() - oandaT0, creditType: "oanda-api" });
+      }
+
+      // All edge function data sources (Cloud compute)
+      const [intelRes, calendarRes, batchPricesRes, cotRes, macroRes, stocksRes, cryptoRes, treasuryRes, sentimentRes, optionsRes, econCalRes, bisImfRes, cbCommsRes, onChainRes] = await Promise.all([
+        trackedFetch("OANDA Market Intel", "oanda-market-intel?sections=pricing,transactions"),
+        trackedFetch("Forex Calendar", "forex-economic-calendar"),
+        trackedFetch("Batch Prices (Stocks/Crypto)", "batch-prices?symbols=SPY,QQQ,DIA,IWM,VIX,GLD,USO,AAPL,MSFT,NVDA,BTCUSD,ETHUSD"),
+        trackedFetch("CFTC COT Data", "forex-cot-data"),
+        trackedFetch("Macro (FRED/ECB/BOJ)", "forex-macro-data"),
+        trackedFetch("Stocks Intel (Yahoo/SEC)", "stocks-intel"),
+        trackedFetch("Crypto Intel (CoinGecko)", "crypto-intel"),
+        trackedFetch("Treasury & Commodities", "treasury-commodities"),
+        trackedFetch("Market Sentiment", "market-sentiment"),
+        trackedFetch("Options & Volatility", "options-volatility-intel"),
+        trackedFetch("Economic Calendar Intel", "economic-calendar-intel"),
+        trackedFetch("BIS/IMF Intermarket", "bis-imf-data"),
+        trackedFetch("Central Bank Comms", "central-bank-comms"),
+        trackedFetch("Crypto On-Chain", "crypto-onchain"),
       ]);
-      liveOandaState = {
-        accountBalance: accountSummary.account?.balance,
-        accountNAV: accountSummary.account?.NAV,
-        unrealizedPL: accountSummary.account?.unrealizedPL,
-        marginUsed: accountSummary.account?.marginUsed,
-        openTradeCount: accountSummary.account?.openTradeCount,
-        oandaOpenTrades: (oandaOpenTrades.trades || []).map((t: any) => ({
-          id: t.id, instrument: t.instrument, currentUnits: t.currentUnits,
-          price: t.price, unrealizedPL: t.unrealizedPL,
-          stopLoss: t.stopLossOrder?.price || null,
-          takeProfit: t.takeProfitOrder?.price || null,
-        })),
-      };
+      if (accountSummary && oandaOpenTrades) {
+        liveOandaState = {
+          accountBalance: accountSummary.account?.balance,
+          accountNAV: accountSummary.account?.NAV,
+          unrealizedPL: accountSummary.account?.unrealizedPL,
+          marginUsed: accountSummary.account?.marginUsed,
+          openTradeCount: accountSummary.account?.openTradeCount,
+          oandaOpenTrades: (oandaOpenTrades.trades || []).map((t: any) => ({
+            id: t.id, instrument: t.instrument, currentUnits: t.currentUnits,
+            price: t.price, unrealizedPL: t.unrealizedPL,
+            stopLoss: t.stopLossOrder?.price || null,
+            takeProfit: t.takeProfitOrder?.price || null,
+          })),
+        };
+      }
       if (intelRes) {
         marketIntel = {
           livePricing: intelRes.livePricing || {},
@@ -672,25 +707,35 @@ Deno.serve(async (req) => {
       liveOandaState = { error: (err as Error).message };
     }
 
-    // ─── WEB SEARCH: Live breaking news ───
+    // ─── WEB SEARCH: Live breaking news (Firecrawl credits) ───
     let webSearchData: Record<string, unknown> = {};
     try {
       const searchQueries = [
         "forex market breaking news central bank",
         "geopolitical risk market impact today",
       ];
-      const searchPromises = searchQueries.map(q =>
-        edgeFetch(`web-search`).catch(() => null)
-      );
-      // Use POST for web-search
       const searchResults = await Promise.all(
-        searchQueries.map(q =>
-          fetch(`${supabaseUrl}/functions/v1/web-search`, {
-            method: "POST",
-            headers: { Authorization: `Bearer ${supabaseAnonKey}`, apikey: supabaseAnonKey, "Content-Type": "application/json" },
-            body: JSON.stringify({ query: q, limit: 3, tbs: "qdr:h" }),
-          }).then(r => r.ok ? r.json() : null).catch(() => null)
-        )
+        searchQueries.map(async (q) => {
+          const t0 = Date.now();
+          try {
+            const r = await fetch(`${supabaseUrl}/functions/v1/web-search`, {
+              method: "POST",
+              headers: { Authorization: `Bearer ${supabaseAnonKey}`, apikey: supabaseAnonKey, "Content-Type": "application/json" },
+              body: JSON.stringify({ query: q, limit: 3, tbs: "qdr:h" }),
+            });
+            const ms = Date.now() - t0;
+            if (r.ok) {
+              const data = await r.json();
+              dataFetchResults.push({ source: `Firecrawl: "${q.slice(0, 30)}"`, status: "ok", ms, creditType: "firecrawl" });
+              return data;
+            }
+            dataFetchResults.push({ source: `Firecrawl: "${q.slice(0, 30)}"`, status: `err:${r.status}`, ms, creditType: "firecrawl" });
+            return null;
+          } catch (err) {
+            dataFetchResults.push({ source: `Firecrawl: "${q.slice(0, 30)}"`, status: "fail", ms: Date.now() - t0, creditType: "firecrawl" });
+            return null;
+          }
+        })
       );
       const allResults: any[] = [];
       for (const sr of searchResults) {
@@ -712,6 +757,18 @@ Deno.serve(async (req) => {
     } catch (err) {
       console.warn("[SOVEREIGN-LOOP] Web search failed:", (err as Error).message);
     }
+
+    // ─── LOG ALL DATA SOURCE FETCHES for UI resource tracking ───
+    const okCount = dataFetchResults.filter(d => d.status === "ok").length;
+    const failCount = dataFetchResults.filter(d => d.status !== "ok").length;
+    const totalFetchMs = dataFetchResults.reduce((s, d) => s + d.ms, 0);
+    const sourceSummary = dataFetchResults.map(d => `${d.source}:${d.status}(${d.ms}ms)[${d.creditType}]`).join(' | ');
+    await sb.from("gate_bypasses").insert({
+      gate_id: `DATA_FETCH_LOG:${Date.now()}`,
+      reason: `sources=${dataFetchResults.length} | ok=${okCount} | fail=${failCount} | total_ms=${totalFetchMs} | ${sourceSummary}`.slice(0, 500),
+      expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+      created_by: "sovereign-loop",
+    });
 
     const systemState = buildSystemState(openTrades, recentClosed, rollups, blocked, stats);
     const enrichedState = { ...systemState, liveOandaState, marketIntel, economicCalendar, crossAssetPulse, cotData, macroData, stocksIntel, cryptoIntel, treasuryData, sentimentData, optionsVolData, econCalendarData, bisImfData, cbCommsData, cryptoOnChainData, webSearchData };
@@ -796,14 +853,18 @@ Deno.serve(async (req) => {
     const assessment = assessmentMatch?.[1]?.trim() || "Cycle complete";
     const sovereigntyScore = scoreMatch ? parseInt(scoreMatch[1]) : 0;
 
-    // ─── 6.5 LOG AI MODEL USAGE ───
+    // ─── 6.5 LOG AI MODEL USAGE (Lovable AI credits) ───
     const aiModel = "google/gemini-2.5-flash";
     const aiTokensUsed = aiData.usage?.total_tokens || 0;
     const aiPromptTokens = aiData.usage?.prompt_tokens || 0;
     const aiCompletionTokens = aiData.usage?.completion_tokens || 0;
+    // Build action summary for visibility
+    const actionSummary = cappedActions.length > 0
+      ? cappedActions.map((a: any) => a.type || "unknown").join(",")
+      : "NO_ACTION";
     await sb.from("gate_bypasses").insert({
       gate_id: `AI_MODEL_LOG:${Date.now()}`,
-      reason: `model=${aiModel} | prompt_tokens=${aiPromptTokens} | completion_tokens=${aiCompletionTokens} | total=${aiTokensUsed} | actions=${cappedActions.length} | score=${sovereigntyScore} | latency=${Date.now() - startTime}ms`,
+      reason: `model=${aiModel} | prompt_tokens=${aiPromptTokens} | completion_tokens=${aiCompletionTokens} | total=${aiTokensUsed} | actions=${cappedActions.length} | score=${sovereigntyScore} | latency=${Date.now() - startTime}ms | purpose=autonomous_cycle | assessment=${assessment.slice(0, 100)} | acted=${actionSummary.slice(0, 100)}`,
       expires_at: new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString(),
       created_by: "sovereign-loop",
     });
