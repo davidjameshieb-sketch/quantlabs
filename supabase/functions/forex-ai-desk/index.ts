@@ -256,6 +256,7 @@ oanda-market-intel, forex-economic-calendar, batch-prices, forex-cot-data, forex
 - **execute_liquidity_vacuum**: The "Ghost Order" — reads the OANDA order book for a pair, identifies the densest retail stop cluster, and places a LIMIT order inside it to capture the stop-hunt wick. Required: pair, direction ("long"/"short"). Optional: clusterSide ("above"/"below" — which side of current price to target, auto-detected from direction if omitted), offsetPips (how many pips inside the cluster to place the limit, default 2), units (default 500), expirySeconds (how long the limit order stays active, default 300/5min), stopLossPips (default 10), takeProfitPips (default 20), reason. This transforms us from being swept BY stop-hunts to profiting FROM them.
 - **arm_correlation_trigger**: Arms a standing "Ripple Strike" trigger that the sovereign loop evaluates every cycle. When the "loud" pair moves beyond the threshold and the "quiet" pair hasn't caught up, the loop fires a trade on the quiet pair automatically. Required: triggerId (e.g., "eur-usd-to-eur-gbp"), loudPair, quietPair, direction ("long"/"short" — direction to trade the quiet pair), thresholdPips (minimum move on loud pair to trigger, default 8). Optional: units (default 500), maxLagMinutes (if the loud pair moved more than this many minutes ago, don't fire — default 5), correlationGroup (e.g., "USD-BLOC"), stopLossPips (default 12), takeProfitPips (default 25), reason, ttlMinutes (default 480/8h). NOTE: Execution is NOT sub-second — it fires on the next sovereign loop cycle (60-600s depending on interval). For institutional-speed arb you'd need a dedicated streaming connection, which is outside our current architecture.
 - **disarm_correlation_trigger**: Removes an armed correlation trigger. Required: triggerId.
+- **set_global_posture**: Toggles entire execution to PREDATORY_LIMIT mode (all trades become limit orders into retail clusters) or back to MARKET (default). Required: posture ("PREDATORY_LIMIT" or "MARKET"). Optional: reason, ttlMinutes (default 480). When PREDATORY_LIMIT is active, every trade uses LIMIT orders offset into the nearest retail stop cluster. We become liquidity MAKERS, not takers.
 
 ### Valid Gate IDs for bypass_gate:
 G1_FRICTION, G2_NO_HTF_WEAK_MTF, G3_EDGE_DECAY, G4_SPREAD_INSTABILITY, G5_COMPRESSION_LOW_SESSION, G6_OVERTRADING, G7_LOSS_CLUSTER_WEAK_MTF, G8_HIGH_SHOCK, G9_PRICE_DATA_UNAVAILABLE, G10_ANALYSIS_UNAVAILABLE, G11_EXTENSION_EXHAUSTION, G12_AGENT_DECORRELATION, + any dynamic G13+ gates
@@ -1735,6 +1736,38 @@ async function executeAction(
     console.log(`[RIPPLE] Correlation trigger "${triggerId}" DISARMED`);
     results.push({ action: "disarm_correlation_trigger", success: true, detail: `Correlation trigger "${triggerId}" disarmed` });
 
+  // ── Set Global Posture (PREDATORY_LIMIT / MARKET) ──
+  } else if (action.type === "set_global_posture" && (action as any).posture) {
+    const posture = ((action as any).posture as string).toUpperCase();
+    const validPostures = ["PREDATORY_LIMIT", "MARKET"];
+    const reason = (action as any).reason || "Sovereign global posture change";
+    const ttlMinutes = Math.min(1440, Math.max(10, (action as any).ttlMinutes || 480));
+
+    if (!validPostures.includes(posture)) {
+      results.push({ action: "set_global_posture", success: false, detail: `Invalid posture: ${posture}. Valid: ${validPostures.join(", ")}` });
+    } else {
+      const key = "GLOBAL_POSTURE";
+      await sb.from("gate_bypasses").update({ revoked: true }).eq("gate_id", key).eq("revoked", false);
+      if (posture === "PREDATORY_LIMIT") {
+        const { error: insertErr } = await sb.from("gate_bypasses").insert({
+          gate_id: key,
+          reason: JSON.stringify({ posture, reason, setAt: new Date().toISOString() }),
+          expires_at: new Date(Date.now() + ttlMinutes * 60 * 1000).toISOString(),
+          created_by: "sovereign-intelligence",
+        });
+        if (insertErr) {
+          results.push({ action: "set_global_posture", success: false, detail: insertErr.message });
+        } else {
+          console.log(`[SOVEREIGN] Global posture → PREDATORY_LIMIT — all trades use LIMIT orders into retail clusters — TTL ${ttlMinutes}m`);
+          results.push({ action: "set_global_posture", success: true, detail: `Global posture set to PREDATORY_LIMIT. ALL trades now use LIMIT orders placed inside retail stop clusters. Active for ${Math.round(ttlMinutes / 60)}h. Auto-trade pipeline reads this in real-time. Revert with set_global_posture posture=MARKET.` });
+        }
+      } else {
+        // MARKET = default, just revoke any existing posture override (already done above)
+        console.log(`[SOVEREIGN] Global posture → MARKET (default)`);
+        results.push({ action: "set_global_posture", success: true, detail: `Global posture reverted to MARKET (default). All trades use standard market orders.` });
+      }
+    }
+
   } else {
     results.push({ action: action.type, success: false, detail: `Unknown action: ${action.type}` });
   }
@@ -2022,8 +2055,8 @@ IMPORTANT:
 - Be PREDATORY with sizing — 2.0x when edge aligns, 0.1x when muddy
 - **execute_liquidity_vacuum**: Ghost LIMIT order into a retail stop cluster. Reads orderBook, finds densest cluster, places limit order INSIDE it. Requires pair, direction. The wick IS our entry.
 - **arm_correlation_trigger**: Arms a standing "Ripple Strike" — sovereign loop monitors loud pair and fires on quiet pair when threshold is breached. Requires triggerId, loudPair, quietPair, direction, thresholdPips. NOT sub-second — fires on next loop cycle.
-- **disarm_correlation_trigger**: Removes an armed trigger. Requires triggerId.`;
-
+- **disarm_correlation_trigger**: Removes an armed trigger. Requires triggerId.
+- **set_global_posture**: Toggles the entire execution pipeline to PREDATORY_LIMIT mode. All trades use LIMIT orders placed inside retail stop clusters instead of MARKET orders. Required: posture ("PREDATORY_LIMIT" or "MARKET"). Optional: reason, ttlMinutes (default 480). When PREDATORY_LIMIT is active, every trade the auto-trade pipeline attempts will be converted to a limit order offset into the nearest retail cluster. This transforms us from liquidity TAKERS to liquidity MAKERS.`;
     const voiceAddendum = isVoice ? `\n\n## VOICE MODE ACTIVE
 You are speaking aloud to the operator. Adjust your style:
 - **Be conversational and natural** — talk like a senior trading partner in a morning briefing, not a report generator

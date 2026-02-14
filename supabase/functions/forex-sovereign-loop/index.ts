@@ -89,7 +89,7 @@ Same as interactive mode: place_trade, close_trade, update_sl_tp, bypass_gate, r
 suspend_agent, reinstate_agent, adjust_position_sizing, adjust_gate_threshold,
 add_blacklist, remove_blacklist, activate_circuit_breaker, deactivate_circuit_breaker,
 adjust_evolution_param, create_gate, remove_gate, lead_lag_scan, liquidity_heatmap,
-get_account_summary, get_open_trades, execute_liquidity_vacuum, arm_correlation_trigger, disarm_correlation_trigger
+get_account_summary, get_open_trades, execute_liquidity_vacuum, arm_correlation_trigger, disarm_correlation_trigger, set_global_posture
 
 ## SOVEREIGN-NATIVE ACTIONS (Unsandboxed — full architectural freedom)
 
@@ -1615,6 +1615,79 @@ Deno.serve(async (req) => {
           l1Actions.push({ type: "close_trade", pair: t.currency_pair, reason: `L1-AUTO: EXTREME SHOCK RISK — ${smartG8.slice(0, 80)}` });
           l1Alerts.push(`🔴 L1 SHOCK CLOSE: ${t.currency_pair}`);
         }
+      }
+    }
+
+    // ─── L1: KELLY GOVERNOR — Regime-Sensitive Dynamic Sizing (zero AI cost) ───
+    // Caps sizing when composite score is weak or regime is too young
+    const kellyGovActions: string[] = [];
+    if (openTrades.length > 0) {
+      for (const t of openTrades) {
+        const composite = t.governance_composite || 0;
+        const regimeAge = t.bars_since_entry || 0;
+        
+        // If composite score < 0.75 OR regime age < 3 bars → cap sizing at 0.2x
+        if ((composite > 0 && composite < 0.75) || (regimeAge > 0 && regimeAge < 3)) {
+          // Check if we already have a KELLY_GOVERNOR override active
+          const { data: existingKelly } = await sb.from("gate_bypasses")
+            .select("gate_id")
+            .eq("gate_id", "KELLY_GOVERNOR")
+            .eq("revoked", false)
+            .gt("expires_at", new Date().toISOString())
+            .limit(1);
+          
+          if (!existingKelly || existingKelly.length === 0) {
+            l1Actions.push({
+              type: "adjust_position_sizing",
+              multiplier: 0.2,
+              reason: `L1-KELLY-GOVERNOR: ${t.currency_pair} composite=${composite.toFixed(2)}, regimeAge=${regimeAge} — capping at 0.2x`,
+            });
+            kellyGovActions.push(`${t.currency_pair}(comp=${composite.toFixed(2)},age=${regimeAge})`);
+            l1Alerts.push(`📐 KELLY GOVERNOR: Sizing capped 0.2x — ${t.currency_pair} comp=${composite.toFixed(2)} regimeAge=${regimeAge}`);
+          }
+          break; // One sizing cap per cycle
+        }
+      }
+    }
+    if (kellyGovActions.length > 0) {
+      console.log(`[SOVEREIGN-LOOP] 📐 KELLY GOVERNOR: ${kellyGovActions.join(', ')}`);
+    }
+
+    // ─── L1: G15 VOLATILITY CONTAGION GATE — Cross-Asset Safety Filter (zero AI cost) ───
+    // Blocks Risk-On pairs (AUD, NZD, CAD) when VIX or BTC volatility spikes
+    const RISK_ON_CURRENCIES = ["AUD", "NZD", "CAD"];
+    const vixPrice = (crossAssetPulse as any)?.indices?.VIX?.price || 0;
+    const btcPctChange = Math.abs((crossAssetPulse as any)?.crypto?.BTCUSD?.pctChange || 0);
+    const g15Triggered = vixPrice > 25 || btcPctChange > 5;
+
+    if (g15Triggered && openTrades.length > 0) {
+      for (const t of openTrades) {
+        const pair = t.currency_pair || "";
+        const isRiskOn = RISK_ON_CURRENCIES.some(c => pair.includes(c));
+        if (isRiskOn) {
+          // Check if G15 blacklist already exists for this pair
+          const { data: existingG15 } = await sb.from("gate_bypasses")
+            .select("gate_id")
+            .eq("gate_id", `G15_CONTAGION:${pair}`)
+            .eq("revoked", false)
+            .gt("expires_at", new Date().toISOString())
+            .limit(1);
+
+          if (!existingG15 || existingG15.length === 0) {
+            // Write a gate bypass record that the auto-trade pipeline can read
+            await sb.from("gate_bypasses").insert({
+              gate_id: `G15_CONTAGION:${pair}`,
+              pair,
+              reason: `G15 VOLATILITY CONTAGION — VIX=${vixPrice}, BTC Δ=${btcPctChange.toFixed(1)}% — blocking Risk-On pair`,
+              expires_at: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(), // 2h TTL
+              created_by: "sovereign-loop",
+            });
+            l1Alerts.push(`🔴 G15 CONTAGION: ${pair} BLOCKED — VIX=${vixPrice}, BTC Δ=${btcPctChange.toFixed(1)}%`);
+          }
+        }
+      }
+      if (l1Alerts.some(a => a.includes("G15"))) {
+        console.log(`[SOVEREIGN-LOOP] 🔴 G15 VOLATILITY CONTAGION: VIX=${vixPrice}, BTC=${btcPctChange.toFixed(1)}% — blocking Risk-On pairs`);
       }
     }
 
