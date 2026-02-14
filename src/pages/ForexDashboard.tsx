@@ -3,12 +3,13 @@
 
 import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Globe, TrendingUp, Mic, Swords } from 'lucide-react';
+import { Globe, TrendingUp, Mic, Swords, Brain } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { DashboardLayout } from '@/components/dashboard/DashboardLayout';
 import { IntelligenceModeBadge } from '@/components/dashboard/IntelligenceModeBadge';
 import { WarRoomDashboard } from '@/components/forex/warroom/WarRoomDashboard';
 import { VoiceChatInterface } from '@/components/chat/VoiceChatInterface';
+import { SovereignIntelligencePanel } from '@/components/forex/warroom/SovereignIntelligencePanel';
 
 import { fetchOandaLivePrices, hasLivePrices } from '@/lib/forex';
 import {
@@ -112,6 +113,9 @@ const ForexDashboard = () => {
             <TabsTrigger value="war-room" className="text-xs gap-1.5 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
               <Swords className="w-3.5 h-3.5" />War Room
             </TabsTrigger>
+            <TabsTrigger value="intelligence" className="text-xs gap-1.5 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
+              <Brain className="w-3.5 h-3.5" />Sovereign Intelligence
+            </TabsTrigger>
             <TabsTrigger value="ai-desk" className="text-xs gap-1.5 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
               <Mic className="w-3.5 h-3.5" />AI Floor Manager
             </TabsTrigger>
@@ -124,6 +128,10 @@ const ForexDashboard = () => {
               tradeAnalytics={tradeAnalytics}
               connected={connected}
             />
+          </TabsContent>
+
+          <TabsContent value="intelligence" className="space-y-4">
+            <SovereignIntelligencePanel />
           </TabsContent>
 
           <TabsContent value="ai-desk" className="space-y-4">
