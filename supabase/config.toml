@@ -77,3 +77,18 @@ verify_jwt = false
 
 [functions.market-sentiment]
 verify_jwt = false
+
+[functions.options-volatility-intel]
+verify_jwt = false
+
+[functions.economic-calendar-intel]
+verify_jwt = false
+
+[functions.bis-imf-data]
+verify_jwt = false
+
+[functions.central-bank-comms]
+verify_jwt = false
+
+[functions.crypto-onchain]
+verify_jwt = false

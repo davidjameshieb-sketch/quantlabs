@@ -177,6 +177,39 @@ Your SYSTEM_STATE now includes a \`sentimentData\` object:
 - **reddit**: r/wallstreetbets, r/forex, r/stocks — top posts + bull/bear sentiment ratio
 - USE: CNN F&G ≤ 25 = contrarian BUY signal. WSB overwhelmingly bullish = contrarian caution. Cross-reference with VIX and put/call.
 
+## OPTIONS & VOLATILITY INTELLIGENCE (CBOE Skew + MOVE Index + Copper/Gold)
+Your SYSTEM_STATE now includes an \`optionsVolData\` object:
+- **optionsDirective**: Pre-computed alert for tail risk, bond stress, and growth signals
+- **cboeSkew**: CBOE Skew Index — tail risk indicator (>140 = institutions hedging aggressively, >150 = extreme)
+- **moveIndex**: MOVE Index (Bond VIX) — bond market volatility (>120 = high stress, favor JPY/CHF)
+- **copperGoldRatio**: Cu/Au ratio — growth proxy (>5.5 = strong growth = risk-on, <3.0 = recession signal)
+- USE: Skew >150 + MOVE >120 = EXTREME RISK — reduce all sizing. Cu/Au declining = global slowdown.
+
+## ECONOMIC CALENDAR INTELLIGENCE (Forex Factory)
+Your SYSTEM_STATE now includes an \`econCalendarData\` object:
+- **calendarDirective**: CALENDAR CLEAR / DATA SURPRISE / HIGH EVENT DENSITY
+- **upcomingHighImpact**: Pending high-impact events with forecasts
+- **recentSurprises**: Events that beat/missed estimates with deviation %
+- **currencyRisk**: Per-currency risk level based on event density
+
+## BIS/IMF INTERMARKET DATA
+Your SYSTEM_STATE now includes a \`bisImfData\` object:
+- **intermarketDirective**: Overvalued/undervalued currencies, BDI, TFF extremes
+- **bisReer**: Real Effective Exchange Rates — OVERVALUED currencies weaken, UNDERVALUED strengthen (mean reversion)
+- **balticDryIndex**: Global shipping — <1000 = recession signal
+- **tff**: Traders in Financial Futures — dealer/asset manager/leveraged positioning per currency
+
+## CENTRAL BANK COMMUNICATIONS
+Your SYSTEM_STATE now includes a \`cbCommsData\` object:
+- **cbDirective**: Fed/ECB/BOJ hawkish/dovish sentiment from recent speeches
+- **fxImplications**: Direct FX bias (e.g., "Fed hawkish → USD bullish bias")
+
+## CRYPTO ON-CHAIN (Blockchain.com)
+Your SYSTEM_STATE now includes a \`cryptoOnChainData\` object:
+- **onChainDirective**: Hash rate changes, mempool, TX volume trends
+- **btcOnChain**: Hash rate, mempool size, TX volume, difficulty — all with daily change %
+- USE: Hash rate declining >5% = miner capitulation (bearish BTC → risk-off). TX volume surging = accumulation.
+
 Format each action as:
 \`\`\`action
 {"type": "...", ...}
@@ -509,37 +542,32 @@ Deno.serve(async (req) => {
     let cryptoIntel: Record<string, unknown> = {};
     let treasuryData: Record<string, unknown> = {};
     let sentimentData: Record<string, unknown> = {};
+    let optionsVolData: Record<string, unknown> = {};
+    let econCalendarData: Record<string, unknown> = {};
+    let bisImfData: Record<string, unknown> = {};
+    let cbCommsData: Record<string, unknown> = {};
+    let cryptoOnChainData: Record<string, unknown> = {};
+    const edgeFetch = (path: string) => fetch(`${supabaseUrl}/functions/v1/${path}`, {
+      headers: { Authorization: `Bearer ${supabaseAnonKey}`, apikey: supabaseAnonKey },
+    }).then(r => r.ok ? r.json() : null).catch(() => null);
     try {
-      const [accountSummary, oandaOpenTrades, intelRes, calendarRes, batchPricesRes, cotRes, macroRes, stocksRes, cryptoRes, treasuryRes, sentimentRes] = await Promise.all([
+      const [accountSummary, oandaOpenTrades, intelRes, calendarRes, batchPricesRes, cotRes, macroRes, stocksRes, cryptoRes, treasuryRes, sentimentRes, optionsRes, econCalRes, bisImfRes, cbCommsRes, onChainRes] = await Promise.all([
         oandaRequest("/v3/accounts/{accountId}/summary", "GET"),
         oandaRequest("/v3/accounts/{accountId}/openTrades", "GET"),
-        fetch(`${supabaseUrl}/functions/v1/oanda-market-intel?sections=pricing,transactions`, {
-          headers: { Authorization: `Bearer ${supabaseAnonKey}`, apikey: supabaseAnonKey },
-        }).then(r => r.ok ? r.json() : null).catch(() => null),
-        fetch(`${supabaseUrl}/functions/v1/forex-economic-calendar`, {
-          headers: { Authorization: `Bearer ${supabaseAnonKey}`, apikey: supabaseAnonKey },
-        }).then(r => r.ok ? r.json() : null).catch(() => null),
-        fetch(`${supabaseUrl}/functions/v1/batch-prices?symbols=SPY,QQQ,DIA,IWM,VIX,GLD,USO,AAPL,MSFT,NVDA,BTCUSD,ETHUSD`, {
-          headers: { Authorization: `Bearer ${supabaseAnonKey}`, apikey: supabaseAnonKey },
-        }).then(r => r.ok ? r.json() : null).catch(() => null),
-        fetch(`${supabaseUrl}/functions/v1/forex-cot-data`, {
-          headers: { Authorization: `Bearer ${supabaseAnonKey}`, apikey: supabaseAnonKey },
-        }).then(r => r.ok ? r.json() : null).catch(() => null),
-        fetch(`${supabaseUrl}/functions/v1/forex-macro-data`, {
-          headers: { Authorization: `Bearer ${supabaseAnonKey}`, apikey: supabaseAnonKey },
-        }).then(r => r.ok ? r.json() : null).catch(() => null),
-        fetch(`${supabaseUrl}/functions/v1/stocks-intel`, {
-          headers: { Authorization: `Bearer ${supabaseAnonKey}`, apikey: supabaseAnonKey },
-        }).then(r => r.ok ? r.json() : null).catch(() => null),
-        fetch(`${supabaseUrl}/functions/v1/crypto-intel`, {
-          headers: { Authorization: `Bearer ${supabaseAnonKey}`, apikey: supabaseAnonKey },
-        }).then(r => r.ok ? r.json() : null).catch(() => null),
-        fetch(`${supabaseUrl}/functions/v1/treasury-commodities`, {
-          headers: { Authorization: `Bearer ${supabaseAnonKey}`, apikey: supabaseAnonKey },
-        }).then(r => r.ok ? r.json() : null).catch(() => null),
-        fetch(`${supabaseUrl}/functions/v1/market-sentiment`, {
-          headers: { Authorization: `Bearer ${supabaseAnonKey}`, apikey: supabaseAnonKey },
-        }).then(r => r.ok ? r.json() : null).catch(() => null),
+        edgeFetch("oanda-market-intel?sections=pricing,transactions"),
+        edgeFetch("forex-economic-calendar"),
+        edgeFetch("batch-prices?symbols=SPY,QQQ,DIA,IWM,VIX,GLD,USO,AAPL,MSFT,NVDA,BTCUSD,ETHUSD"),
+        edgeFetch("forex-cot-data"),
+        edgeFetch("forex-macro-data"),
+        edgeFetch("stocks-intel"),
+        edgeFetch("crypto-intel"),
+        edgeFetch("treasury-commodities"),
+        edgeFetch("market-sentiment"),
+        edgeFetch("options-volatility-intel"),
+        edgeFetch("economic-calendar-intel"),
+        edgeFetch("bis-imf-data"),
+        edgeFetch("central-bank-comms"),
+        edgeFetch("crypto-onchain"),
       ]);
       liveOandaState = {
         accountBalance: accountSummary.account?.balance,
@@ -619,13 +647,33 @@ Deno.serve(async (req) => {
         sentimentData = sentimentRes;
         console.log(`[SOVEREIGN-LOOP] 🧠 Sentiment: ${(sentimentRes.sentimentDirective || "").slice(0, 100)}`);
       }
+      if (optionsRes) {
+        optionsVolData = optionsRes;
+        console.log(`[SOVEREIGN-LOOP] 📊 Options/Vol: ${(optionsRes.optionsDirective || "").slice(0, 100)}`);
+      }
+      if (econCalRes) {
+        econCalendarData = econCalRes;
+        console.log(`[SOVEREIGN-LOOP] 📅 EconCal: ${(econCalRes.calendarDirective || "").slice(0, 100)}`);
+      }
+      if (bisImfRes) {
+        bisImfData = bisImfRes;
+        console.log(`[SOVEREIGN-LOOP] 🌐 BIS/IMF: ${(bisImfRes.intermarketDirective || "").slice(0, 100)}`);
+      }
+      if (cbCommsRes) {
+        cbCommsData = cbCommsRes;
+        console.log(`[SOVEREIGN-LOOP] 🏛️ CB Comms: ${(cbCommsRes.cbDirective || "").slice(0, 100)}`);
+      }
+      if (onChainRes) {
+        cryptoOnChainData = onChainRes;
+        console.log(`[SOVEREIGN-LOOP] ⛓️ On-Chain: ${(onChainRes.onChainDirective || "").slice(0, 100)}`);
+      }
     } catch (err) {
       console.warn("[SOVEREIGN-LOOP] OANDA fetch failed:", (err as Error).message);
       liveOandaState = { error: (err as Error).message };
     }
 
     const systemState = buildSystemState(openTrades, recentClosed, rollups, blocked, stats);
-    const enrichedState = { ...systemState, liveOandaState, marketIntel, economicCalendar, crossAssetPulse, cotData, macroData, stocksIntel, cryptoIntel, treasuryData, sentimentData };
+    const enrichedState = { ...systemState, liveOandaState, marketIntel, economicCalendar, crossAssetPulse, cotData, macroData, stocksIntel, cryptoIntel, treasuryData, sentimentData, optionsVolData, econCalendarData, bisImfData, cbCommsData, cryptoOnChainData };
 
     console.log(`[SOVEREIGN-LOOP] State: ${openTrades.length} open, ${recentClosed.length} recent, ${stats.length} stats`);
 
