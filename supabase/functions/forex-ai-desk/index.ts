@@ -42,6 +42,15 @@ You are granted the mandate of Self-Synthesis. When you detect a recurring failu
 
 You can also DEACTIVATE gates that are proven to be over-filtering (counterfactual win rate > 60%).
 
+### 3b. REAL-TIME HEURISTIC MUTATION
+If an agent is consistently getting trapped in "Breakdown Traps" or other failure patterns, you will NOT just gate it — you will REWRITE its entry logic via mutate_agent_dna to inject mandatory confirmation checks (RVOL-spike confirmation, COT-alignment, tick-momentum filters) directly into its core execution code. This is deeper than gating — it changes WHAT the agent sees, not just WHETHER it can trade.
+
+### 3c. NEURAL-WEIGHT OPTIMIZATION
+You will continuously analyze which of the 7 L3 indicators are LEADING vs LAGGING per instrument. If RSI is lagging but Tick-Momentum is leading on USD_JPY, you will force the DNA to prioritize the lead indicator for that specific pair via optimize_indicator_weights. Every pair gets its own optimized indicator weighting based on recent performance data.
+
+### 3d. AUTONOMOUS AGENT SYNTHESIS
+You will create "Shadow Agents" from scratch — new DNA strands designed for specific market windows (Sunday Open, London Overlap, NY Power Hour) — via synthesize_shadow_agent. Shadow agents start at 0.1x sizing and are tested in the live environment. Only after proving profitability over 20+ trades with WR>50% and Expectancy>1.0R are they promoted to the Barrage.
+
 ### 4. PREDATORY POSITION SIZING
 Abandon linear sizing. Use Kelly Criterion-derived sizing based on real-time Edge-to-Variance ratio:
 - When RVOL > 120%, Indicator Consensus ≥ 6/7, and Regime Stability ≥ 5 bars ALL align → STRIKE with 1.5-2.0x authorized leverage
@@ -229,6 +238,9 @@ When you want to execute a trade action, you MUST emit a fenced code block tagge
 - **remove_gate**: Removes a dynamic gate you previously created. Required: gateId.
 - **lead_lag_scan**: Triggers an immediate cross-pair correlation scan. Returns which "Quiet" pairs are lagging "Loud" moves. No required params. Use this before placing lead-lag trades.
 - **liquidity_heatmap**: Analyzes stop-hunt risk for an open trade. Required: tradeId. Returns nearby retail stop clusters and recommended SL adjustment.
+- **mutate_agent_dna**: Rewrites an agent's entry logic to inject mandatory confirmation checks (e.g., RVOL-spike, COT-alignment). Required: agentId, mutation (one of "rvol_spike_confirm", "cot_alignment_check", "tick_momentum_filter", "regime_freshness_gate", "session_quality_filter"). Optional: reason, ttlMinutes (default 480), pair. Use when an agent is consistently trapped in failure patterns like Breakdown Traps. The mutation is persisted and the auto-trade pipeline reads it in real-time.
+- **optimize_indicator_weights**: Adjusts the L3 indicator consensus weights per pair. Required: pair, weights (object mapping indicator names to weight multipliers 0.0-2.0). Optional: reason, ttlMinutes (default 480). Valid indicators: ema50, supertrend, rsi, stochastics, adx, bollingerBands, donchian, ichimoku, parabolicSar, cci, keltner, roc, elderForce, heikinAshi, pivotPoints, trendEfficiency. Use when specific indicators are lagging vs leading for a particular instrument.
+- **synthesize_shadow_agent**: Creates a new Shadow Agent DNA strand designed for a specific session/regime. Required: agentName (e.g., "shadow-london-overlap"), targetSession (e.g., "london-overlap", "sunday-open", "asian", "ny-open"), strategy (e.g., "gap-fill", "momentum-burst", "mean-reversion"). Optional: sizing (default 0.1), pairs (array of pairs to trade), reason, ttlMinutes (default 1440). Shadow agents start at 0.1x sizing and must prove profitability over 20+ trades before promotion.
 
 ### Valid Gate IDs for bypass_gate:
 G1_FRICTION, G2_NO_HTF_WEAK_MTF, G3_EDGE_DECAY, G4_SPREAD_INSTABILITY, G5_COMPRESSION_LOW_SESSION, G6_OVERTRADING, G7_LOSS_CLUSTER_WEAK_MTF, G8_HIGH_SHOCK, G9_PRICE_DATA_UNAVAILABLE, G10_ANALYSIS_UNAVAILABLE, G11_EXTENSION_EXHAUSTION, G12_AGENT_DECORRELATION, + any dynamic G13+ gates
@@ -1111,6 +1123,102 @@ async function executeAction(
       }
     } catch (heatmapErr) {
       results.push({ action: "liquidity_heatmap", success: false, detail: `Heatmap failed: ${(heatmapErr as Error).message}` });
+    }
+
+  // ── Mutate Agent DNA (Heuristic Mutation) ──
+  } else if (action.type === "mutate_agent_dna" && (action as any).agentId && (action as any).mutation) {
+    const agentId = (action as any).agentId as string;
+    const mutation = (action as any).mutation as string;
+    const reason = (action as any).reason || "Sovereign heuristic mutation";
+    const ttlMinutes = Math.min(1440, Math.max(1, (action as any).ttlMinutes || 480));
+    const pair = (action as any).pair || null;
+    const validMutations = ["rvol_spike_confirm", "cot_alignment_check", "tick_momentum_filter", "regime_freshness_gate", "session_quality_filter"];
+
+    if (!validMutations.includes(mutation)) {
+      results.push({ action: "mutate_agent_dna", success: false, detail: `Invalid mutation: ${mutation}. Valid: ${validMutations.join(", ")}` });
+    } else {
+      const key = `AGENT_DNA_MUTATION:${agentId}:${mutation}`;
+      await sb.from("gate_bypasses").update({ revoked: true }).eq("gate_id", key).eq("revoked", false);
+      const { error: insertErr } = await sb.from("gate_bypasses").insert({
+        gate_id: key,
+        pair,
+        reason: JSON.stringify({ agentId, mutation, reason, injectedAt: new Date().toISOString() }),
+        expires_at: new Date(Date.now() + ttlMinutes * 60 * 1000).toISOString(),
+        created_by: "sovereign-intelligence",
+      });
+      if (insertErr) {
+        results.push({ action: "mutate_agent_dna", success: false, detail: insertErr.message });
+      } else {
+        console.log(`[SOVEREIGN] Agent ${agentId} DNA MUTATED — ${mutation}${pair ? ` for ${pair}` : ""} — TTL ${ttlMinutes}m`);
+        results.push({ action: "mutate_agent_dna", success: true, detail: `Agent ${agentId} DNA mutated: mandatory ${mutation.replace(/_/g, " ")} injected into entry logic${pair ? ` for ${pair}` : ""}. Active for ${ttlMinutes}m. Auto-trade pipeline reads this in real-time.` });
+      }
+    }
+
+  // ── Optimize Indicator Weights (Neural-Weight Optimization) ──
+  } else if (action.type === "optimize_indicator_weights" && (action as any).pair && (action as any).weights) {
+    const pair = (action as any).pair as string;
+    const weights = (action as any).weights as Record<string, number>;
+    const reason = (action as any).reason || "Sovereign neural-weight optimization";
+    const ttlMinutes = Math.min(1440, Math.max(1, (action as any).ttlMinutes || 480));
+    const validIndicators = ["ema50", "supertrend", "rsi", "stochastics", "adx", "bollingerBands", "donchian", "ichimoku", "parabolicSar", "cci", "keltner", "roc", "elderForce", "heikinAshi", "pivotPoints", "trendEfficiency"];
+
+    // Validate weights
+    const invalidKeys = Object.keys(weights).filter(k => !validIndicators.includes(k));
+    const outOfRange = Object.entries(weights).filter(([, v]) => v < 0 || v > 2.0);
+    if (invalidKeys.length > 0) {
+      results.push({ action: "optimize_indicator_weights", success: false, detail: `Invalid indicators: ${invalidKeys.join(", ")}. Valid: ${validIndicators.join(", ")}` });
+    } else if (outOfRange.length > 0) {
+      results.push({ action: "optimize_indicator_weights", success: false, detail: `Weights out of range (0.0-2.0): ${outOfRange.map(([k, v]) => `${k}=${v}`).join(", ")}` });
+    } else {
+      const key = `INDICATOR_WEIGHT:${pair}`;
+      await sb.from("gate_bypasses").update({ revoked: true }).eq("gate_id", key).eq("revoked", false);
+      const { error: insertErr } = await sb.from("gate_bypasses").insert({
+        gate_id: key,
+        pair,
+        reason: JSON.stringify({ weights, reason, optimizedAt: new Date().toISOString() }),
+        expires_at: new Date(Date.now() + ttlMinutes * 60 * 1000).toISOString(),
+        created_by: "sovereign-intelligence",
+      });
+      if (insertErr) {
+        results.push({ action: "optimize_indicator_weights", success: false, detail: insertErr.message });
+      } else {
+        const weightSummary = Object.entries(weights).map(([k, v]) => `${k}=${v}x`).join(", ");
+        console.log(`[SOVEREIGN] Indicator weights optimized for ${pair}: ${weightSummary} — TTL ${ttlMinutes}m`);
+        results.push({ action: "optimize_indicator_weights", success: true, detail: `${pair} indicator weights optimized: ${weightSummary}. Active for ${ttlMinutes}m. L3 Direction engine reads this in real-time.` });
+      }
+    }
+
+  // ── Synthesize Shadow Agent (Autonomous Agent Synthesis) ──
+  } else if (action.type === "synthesize_shadow_agent" && (action as any).agentName && (action as any).targetSession && (action as any).strategy) {
+    const agentName = (action as any).agentName as string;
+    const targetSession = (action as any).targetSession as string;
+    const strategy = (action as any).strategy as string;
+    const sizing = Math.min(0.5, Math.max(0.05, (action as any).sizing ?? 0.1));
+    const pairs = (action as any).pairs || null;
+    const reason = (action as any).reason || "Sovereign shadow agent synthesis";
+    const ttlMinutes = Math.min(2880, Math.max(60, (action as any).ttlMinutes || 1440));
+    const key = `SHADOW_AGENT:${agentName}`;
+
+    await sb.from("gate_bypasses").update({ revoked: true }).eq("gate_id", key).eq("revoked", false);
+    const { error: insertErr } = await sb.from("gate_bypasses").insert({
+      gate_id: key,
+      reason: JSON.stringify({
+        agentName, targetSession, strategy, sizing, pairs,
+        reason, synthesizedAt: new Date().toISOString(),
+        promotionCriteria: { minTrades: 20, minWinRate: 0.50, minExpectancy: 1.0 },
+      }),
+      expires_at: new Date(Date.now() + ttlMinutes * 60 * 1000).toISOString(),
+      created_by: "sovereign-intelligence",
+    });
+    if (insertErr) {
+      results.push({ action: "synthesize_shadow_agent", success: false, detail: insertErr.message });
+    } else {
+      console.log(`[SOVEREIGN] Shadow Agent ${agentName} SYNTHESIZED — session=${targetSession}, strategy=${strategy}, sizing=${sizing}x — TTL ${ttlMinutes}m`);
+      results.push({
+        action: "synthesize_shadow_agent",
+        success: true,
+        detail: `Shadow Agent "${agentName}" synthesized: ${strategy} strategy for ${targetSession} session at ${sizing}x sizing${pairs ? ` on ${pairs.join(", ")}` : ""}. Promotion requires 20+ trades with WR>50% and Expectancy>1.0R. Active for ${Math.round(ttlMinutes / 60)}h.`,
+      });
     }
 
   } else {
