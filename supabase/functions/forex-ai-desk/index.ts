@@ -165,6 +165,16 @@ You'll receive a JSON block tagged <SYSTEM_STATE> containing:
   - **bondsDirective**: Yield curve + crude oil signal. 2s10s inverted = recession. Oil draw = bullish CAD.
 - **sentimentData**: CNN Fear & Greed (0-100) + Reddit (r/wallstreetbets, r/forex, r/stocks sentiment)
   - **sentimentDirective**: CNN F&G + Reddit bull/bear ratio. F&G ≤ 25 = contrarian BUY. WSB overwhelmingly bullish = contrarian caution.
+- **optionsVolData**: CBOE Skew Index (tail risk), MOVE Index (bond VIX), Copper/Gold ratio (growth proxy)
+  - **optionsDirective**: Pre-computed alert. Skew >150 = extreme tail risk. MOVE >120 = bond stress → favor JPY/CHF. Cu/Au <3.0 = recession signal.
+- **econCalendarData**: Forex Factory calendar intelligence — upcoming high-impact events, recent data surprises, per-currency risk levels
+  - **calendarDirective**: CALENDAR CLEAR / DATA SURPRISE / HIGH EVENT DENSITY
+- **bisImfData**: BIS Real Effective Exchange Rates (overvalued/undervalued currencies), IMF reserve allocations, Baltic Dry Index, TFF (granular COT)
+  - **intermarketDirective**: Currency valuation extremes + global trade + institutional positioning
+- **cbCommsData**: Fed/ECB/BOJ recent speeches NLP-scored for hawkish/dovish sentiment
+  - **cbDirective**: Central bank tone with direct FX implications
+- **cryptoOnChainData**: Blockchain.com BTC hash rate, mempool, TX volume, difficulty, miner revenue
+  - **onChainDirective**: On-chain health signals. Hash rate decline = miner capitulation risk.
 - **performanceSummary, byPair, byAgent, byRegime, bySession**: Aggregated trade statistics
 - **blockedTradeAnalysis**: Governance-blocked trades with counterfactual analysis
 - **dailyRollups**: Daily P&L summaries
@@ -1198,39 +1208,34 @@ serve(async (req) => {
     let cryptoIntel: Record<string, unknown> = {};
     let treasuryData: Record<string, unknown> = {};
     let sentimentData: Record<string, unknown> = {};
+    let optionsVolData: Record<string, unknown> = {};
+    let econCalendarData: Record<string, unknown> = {};
+    let bisImfData: Record<string, unknown> = {};
+    let cbCommsData: Record<string, unknown> = {};
+    let cryptoOnChainData: Record<string, unknown> = {};
     try {
       const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
       const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
-      const [accountSummary, oandaOpenTrades, intelRes, calendarRes, batchPricesRes, cotRes, macroRes, stocksRes, cryptoRes, treasuryRes, sentimentRes] = await Promise.all([
+      const edgeFetch = (path: string) => fetch(`${supabaseUrl}/functions/v1/${path}`, {
+        headers: { Authorization: `Bearer ${supabaseAnonKey}`, apikey: supabaseAnonKey },
+      }).then(r => r.ok ? r.json() : null).catch(() => null);
+      const [accountSummary, oandaOpenTrades, intelRes, calendarRes, batchPricesRes, cotRes, macroRes, stocksRes, cryptoRes, treasuryRes, sentimentRes, optionsRes, econCalRes, bisImfRes, cbCommsRes, onChainRes] = await Promise.all([
         oandaRequest("/v3/accounts/{accountId}/summary", "GET", undefined, "live"),
         oandaRequest("/v3/accounts/{accountId}/openTrades", "GET", undefined, "live"),
-        fetch(`${supabaseUrl}/functions/v1/oanda-market-intel?sections=all`, {
-          headers: { Authorization: `Bearer ${supabaseAnonKey}`, apikey: supabaseAnonKey },
-        }).then(r => r.ok ? r.json() : null).catch(() => null),
-        fetch(`${supabaseUrl}/functions/v1/forex-economic-calendar`, {
-          headers: { Authorization: `Bearer ${supabaseAnonKey}`, apikey: supabaseAnonKey },
-        }).then(r => r.ok ? r.json() : null).catch(() => null),
-        fetch(`${supabaseUrl}/functions/v1/batch-prices?symbols=SPY,QQQ,DIA,IWM,VIX,GLD,USO,UNG,AAPL,MSFT,NVDA,META,TSLA,BTCUSD,ETHUSD,XLE,XLF,XLK`, {
-          headers: { Authorization: `Bearer ${supabaseAnonKey}`, apikey: supabaseAnonKey },
-        }).then(r => r.ok ? r.json() : null).catch(() => null),
-        fetch(`${supabaseUrl}/functions/v1/forex-cot-data`, {
-          headers: { Authorization: `Bearer ${supabaseAnonKey}`, apikey: supabaseAnonKey },
-        }).then(r => r.ok ? r.json() : null).catch(() => null),
-        fetch(`${supabaseUrl}/functions/v1/forex-macro-data`, {
-          headers: { Authorization: `Bearer ${supabaseAnonKey}`, apikey: supabaseAnonKey },
-        }).then(r => r.ok ? r.json() : null).catch(() => null),
-        fetch(`${supabaseUrl}/functions/v1/stocks-intel`, {
-          headers: { Authorization: `Bearer ${supabaseAnonKey}`, apikey: supabaseAnonKey },
-        }).then(r => r.ok ? r.json() : null).catch(() => null),
-        fetch(`${supabaseUrl}/functions/v1/crypto-intel`, {
-          headers: { Authorization: `Bearer ${supabaseAnonKey}`, apikey: supabaseAnonKey },
-        }).then(r => r.ok ? r.json() : null).catch(() => null),
-        fetch(`${supabaseUrl}/functions/v1/treasury-commodities`, {
-          headers: { Authorization: `Bearer ${supabaseAnonKey}`, apikey: supabaseAnonKey },
-        }).then(r => r.ok ? r.json() : null).catch(() => null),
-        fetch(`${supabaseUrl}/functions/v1/market-sentiment`, {
-          headers: { Authorization: `Bearer ${supabaseAnonKey}`, apikey: supabaseAnonKey },
-        }).then(r => r.ok ? r.json() : null).catch(() => null),
+        edgeFetch("oanda-market-intel?sections=all"),
+        edgeFetch("forex-economic-calendar"),
+        edgeFetch("batch-prices?symbols=SPY,QQQ,DIA,IWM,VIX,GLD,USO,UNG,AAPL,MSFT,NVDA,META,TSLA,BTCUSD,ETHUSD,XLE,XLF,XLK"),
+        edgeFetch("forex-cot-data"),
+        edgeFetch("forex-macro-data"),
+        edgeFetch("stocks-intel"),
+        edgeFetch("crypto-intel"),
+        edgeFetch("treasury-commodities"),
+        edgeFetch("market-sentiment"),
+        edgeFetch("options-volatility-intel"),
+        edgeFetch("economic-calendar-intel"),
+        edgeFetch("bis-imf-data"),
+        edgeFetch("central-bank-comms"),
+        edgeFetch("crypto-onchain"),
       ]);
       liveOandaState = {
         accountBalance: accountSummary.account?.balance,
@@ -1312,6 +1317,26 @@ serve(async (req) => {
         sentimentData = sentimentRes;
         console.log(`[AI-DESK] 🧠 Sentiment loaded: ${(sentimentRes.sentimentDirective || "").slice(0, 80)}`);
       }
+      if (optionsRes) {
+        optionsVolData = optionsRes;
+        console.log(`[AI-DESK] 📊 Options/Vol: ${(optionsRes.optionsDirective || "").slice(0, 80)}`);
+      }
+      if (econCalRes) {
+        econCalendarData = econCalRes;
+        console.log(`[AI-DESK] 📅 EconCal: ${(econCalRes.calendarDirective || "").slice(0, 80)}`);
+      }
+      if (bisImfRes) {
+        bisImfData = bisImfRes;
+        console.log(`[AI-DESK] 🌐 BIS/IMF: ${(bisImfRes.intermarketDirective || "").slice(0, 80)}`);
+      }
+      if (cbCommsRes) {
+        cbCommsData = cbCommsRes;
+        console.log(`[AI-DESK] 🏛️ CB Comms: ${(cbCommsRes.cbDirective || "").slice(0, 80)}`);
+      }
+      if (onChainRes) {
+        cryptoOnChainData = onChainRes;
+        console.log(`[AI-DESK] ⛓️ On-Chain: ${(onChainRes.onChainDirective || "").slice(0, 80)}`);
+      }
     } catch (oandaErr) {
       console.warn("[AI-DESK] OANDA live state fetch failed:", (oandaErr as Error).message);
       liveOandaState = { error: "Could not fetch live OANDA state" };
@@ -1320,7 +1345,7 @@ serve(async (req) => {
     console.log(`[FOREX-AI-DESK] State: ${openTrades.length} open, ${recentClosed.length} recent, ${rollups.length} rollups, ${blocked.length} blocked, ${stats.length} stats`);
 
     const systemState = buildSystemState(openTrades, recentClosed, rollups, blocked, stats);
-    const enrichedState = { ...systemState, liveOandaState, marketIntel, economicCalendar, crossAssetPulse, cotData, macroData, stocksIntel, cryptoIntel, treasuryData, sentimentData };
+    const enrichedState = { ...systemState, liveOandaState, marketIntel, economicCalendar, crossAssetPulse, cotData, macroData, stocksIntel, cryptoIntel, treasuryData, sentimentData, optionsVolData, econCalendarData, bisImfData, cbCommsData, cryptoOnChainData };
     const stateContext = `\n\n<SYSTEM_STATE>\n${JSON.stringify(enrichedState)}\n</SYSTEM_STATE>`;
 
     const actionInstructions = `\n\n## SOVEREIGN AUTONOMOUS ACTIONS
