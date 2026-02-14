@@ -37,7 +37,13 @@ Every 60 seconds you receive the complete system state. Your job:
 
 ## DECISION FRAMEWORK (Priority Order)
 
-### PRIORITY 1: PROTECT CAPITAL (Circuit Breaker)
+### PRIORITY 1: PROTECT CAPITAL (Smart G8 — News-Aware Circuit Breaker)
+- CHECK economicCalendar.smartG8Directive FIRST every cycle
+- If directive says "EXTREME SHOCK RISK" → immediately flatten all positions on affected pairs, set sizing to 0.0x
+- If directive says "HIGH SHOCK RISK" → reduce sizing to 0.3x on affected pairs, tighten stops to 0.5R
+- If directive says "DATA SURPRISE" with direction matching our position → HOLD and potentially add (ride the momentum)
+- If directive says "DATA SURPRISE" AGAINST our position → close immediately (the data confirms we're wrong)
+- If directive says "CLEAR TAPE" → normal G8 operation
 - If any open trade has THS < 25 → close it immediately
 - If 3+ consecutive losses detected in last 2 hours → activate_circuit_breaker at 3%
 - If unrealizedPL on any single trade exceeds -2R → close it
@@ -85,10 +91,23 @@ add_blacklist, remove_blacklist, activate_circuit_breaker, deactivate_circuit_br
 adjust_evolution_param, create_gate, remove_gate, lead_lag_scan, liquidity_heatmap,
 get_account_summary, get_open_trades
 
+## ECONOMIC CALENDAR (Smart G8 Data)
+Your SYSTEM_STATE now includes an \`economicCalendar\` object with:
+- **smartG8Directive**: Pre-computed directive (EXTREME/HIGH/ELEVATED/CLEAR) — follow this FIRST
+- **upcomingHighImpact**: High-impact events in next 60 min with estimates
+- **justReleased**: Events that just released with actual vs estimate (surprise detection)
+- **shockRisk**: Per-currency risk level (extreme/high/elevated/normal)
+- **affectedPairs**: List of pairs affected by imminent news
+- **surprises**: Data releases that beat or missed estimates significantly
+
+When smartG8Directive is EXTREME or HIGH, you MUST act defensively BEFORE any other analysis.
+When a surprise is detected, check if it confirms or contradicts your open positions — ride confirmation, exit contradiction.
+
 Format each action as:
 \`\`\`action
 {"type": "...", ...}
 \`\`\``;
+
 
 // ─── Data Fetchers (mirrored from forex-ai-desk) ───
 
@@ -405,14 +424,18 @@ Deno.serve(async (req) => {
       fetchTradeStats(sb),
     ]);
 
-    // Fetch live OANDA state + market intel in parallel
+    // Fetch live OANDA state + market intel + economic calendar in parallel
     let liveOandaState: Record<string, unknown> = {};
     let marketIntel: Record<string, unknown> = {};
+    let economicCalendar: Record<string, unknown> = {};
     try {
-      const [accountSummary, oandaOpenTrades, intelRes] = await Promise.all([
+      const [accountSummary, oandaOpenTrades, intelRes, calendarRes] = await Promise.all([
         oandaRequest("/v3/accounts/{accountId}/summary", "GET"),
         oandaRequest("/v3/accounts/{accountId}/openTrades", "GET"),
         fetch(`${supabaseUrl}/functions/v1/oanda-market-intel?sections=pricing,transactions`, {
+          headers: { Authorization: `Bearer ${supabaseAnonKey}`, apikey: supabaseAnonKey },
+        }).then(r => r.ok ? r.json() : null).catch(() => null),
+        fetch(`${supabaseUrl}/functions/v1/forex-economic-calendar`, {
           headers: { Authorization: `Bearer ${supabaseAnonKey}`, apikey: supabaseAnonKey },
         }).then(r => r.ok ? r.json() : null).catch(() => null),
       ]);
@@ -435,13 +458,20 @@ Deno.serve(async (req) => {
           recentTransactions: intelRes.transactions || [],
         };
       }
+      if (calendarRes) {
+        economicCalendar = calendarRes;
+        const directive = calendarRes.smartG8Directive || "";
+        if (directive.includes("EXTREME") || directive.includes("HIGH")) {
+          console.log(`[SOVEREIGN-LOOP] ⚠️ SHOCK SENSOR: ${directive.slice(0, 120)}`);
+        }
+      }
     } catch (err) {
       console.warn("[SOVEREIGN-LOOP] OANDA fetch failed:", (err as Error).message);
       liveOandaState = { error: (err as Error).message };
     }
 
     const systemState = buildSystemState(openTrades, recentClosed, rollups, blocked, stats);
-    const enrichedState = { ...systemState, liveOandaState, marketIntel };
+    const enrichedState = { ...systemState, liveOandaState, marketIntel, economicCalendar };
 
     console.log(`[SOVEREIGN-LOOP] State: ${openTrades.length} open, ${recentClosed.length} recent, ${stats.length} stats`);
 

@@ -1155,16 +1155,20 @@ serve(async (req) => {
       fetchTradeStats(supabaseAdmin),
     ]);
 
-    // Also fetch live OANDA state + market intel for real-time awareness
+    // Also fetch live OANDA state + market intel + economic calendar for real-time awareness
     let liveOandaState: Record<string, unknown> = {};
     let marketIntel: Record<string, unknown> = {};
+    let economicCalendar: Record<string, unknown> = {};
     try {
       const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
       const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
-      const [accountSummary, oandaOpenTrades, intelRes] = await Promise.all([
+      const [accountSummary, oandaOpenTrades, intelRes, calendarRes] = await Promise.all([
         oandaRequest("/v3/accounts/{accountId}/summary", "GET", undefined, "live"),
         oandaRequest("/v3/accounts/{accountId}/openTrades", "GET", undefined, "live"),
         fetch(`${supabaseUrl}/functions/v1/oanda-market-intel?sections=all`, {
+          headers: { Authorization: `Bearer ${supabaseAnonKey}`, apikey: supabaseAnonKey },
+        }).then(r => r.ok ? r.json() : null).catch(() => null),
+        fetch(`${supabaseUrl}/functions/v1/forex-economic-calendar`, {
           headers: { Authorization: `Bearer ${supabaseAnonKey}`, apikey: supabaseAnonKey },
         }).then(r => r.ok ? r.json() : null).catch(() => null),
       ]);
@@ -1195,6 +1199,10 @@ serve(async (req) => {
         };
         console.log(`[AI-DESK] Market intel loaded: pricing=${Object.keys(intelRes.livePricing || {}).length}, orderBook=${Object.keys(intelRes.orderBook || {}).length}, positionBook=${Object.keys(intelRes.positionBook || {}).length}, instruments=${Object.keys(intelRes.instruments || {}).length}, transactions=${(intelRes.transactions || []).length}`);
       }
+      if (calendarRes) {
+        economicCalendar = calendarRes;
+        console.log(`[AI-DESK] Economic calendar loaded: directive=${(calendarRes.smartG8Directive || "").slice(0, 60)}`);
+      }
     } catch (oandaErr) {
       console.warn("[AI-DESK] OANDA live state fetch failed:", (oandaErr as Error).message);
       liveOandaState = { error: "Could not fetch live OANDA state" };
@@ -1203,7 +1211,7 @@ serve(async (req) => {
     console.log(`[FOREX-AI-DESK] State: ${openTrades.length} open, ${recentClosed.length} recent, ${rollups.length} rollups, ${blocked.length} blocked, ${stats.length} stats`);
 
     const systemState = buildSystemState(openTrades, recentClosed, rollups, blocked, stats);
-    const enrichedState = { ...systemState, liveOandaState, marketIntel };
+    const enrichedState = { ...systemState, liveOandaState, marketIntel, economicCalendar };
     const stateContext = `\n\n<SYSTEM_STATE>\n${JSON.stringify(enrichedState)}\n</SYSTEM_STATE>`;
 
     const actionInstructions = `\n\n## SOVEREIGN AUTONOMOUS ACTIONS
