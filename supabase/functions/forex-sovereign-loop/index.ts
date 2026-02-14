@@ -103,6 +103,23 @@ Your SYSTEM_STATE now includes an \`economicCalendar\` object with:
 When smartG8Directive is EXTREME or HIGH, you MUST act defensively BEFORE any other analysis.
 When a surprise is detected, check if it confirms or contradicts your open positions — ride confirmation, exit contradiction.
 
+## CROSS-ASSET PULSE (Stock/Crypto/Commodity Intelligence)
+Your SYSTEM_STATE now includes a \`crossAssetPulse\` object with:
+- **indices**: SPY, QQQ, DIA, IWM, VIX — price, change, pctChange. VIX is your fear gauge.
+- **megaCap**: AAPL, MSFT, NVDA — risk appetite canaries
+- **crypto**: BTCUSD, ETHUSD — risk-on/risk-off confirmation
+- **commodities**: GLD (gold safe-haven), USO (oil = CAD driver)
+- **sectors**: XLE (energy→CAD), XLF (financials→USD), XLK (tech→risk appetite)
+- **riskSentiment**: Pre-computed RISK-ON / NEUTRAL / RISK-OFF / EXTREME RISK-OFF
+
+USE THIS DATA:
+- If riskSentiment is RISK-OFF → favor JPY longs, USD longs, reduce AUD/NZD exposure
+- If riskSentiment is RISK-ON → favor AUD, NZD, risk-correlated pairs
+- If VIX > 25 → reduce position sizing automatically (vol expansion)
+- If GLD surging + equities falling → classic flight-to-safety, favor CHF and JPY
+- If USO moving >2% → USD_CAD will follow with lag (TRADE THE LAG)
+- If BTC and equities diverge → the divergence will resolve, position for convergence
+
 Format each action as:
 \`\`\`action
 {"type": "...", ...}
@@ -424,18 +441,22 @@ Deno.serve(async (req) => {
       fetchTradeStats(sb),
     ]);
 
-    // Fetch live OANDA state + market intel + economic calendar in parallel
+    // Fetch live OANDA state + market intel + economic calendar + cross-asset pulse in parallel
     let liveOandaState: Record<string, unknown> = {};
     let marketIntel: Record<string, unknown> = {};
     let economicCalendar: Record<string, unknown> = {};
+    let crossAssetPulse: Record<string, unknown> = {};
     try {
-      const [accountSummary, oandaOpenTrades, intelRes, calendarRes] = await Promise.all([
+      const [accountSummary, oandaOpenTrades, intelRes, calendarRes, batchPricesRes] = await Promise.all([
         oandaRequest("/v3/accounts/{accountId}/summary", "GET"),
         oandaRequest("/v3/accounts/{accountId}/openTrades", "GET"),
         fetch(`${supabaseUrl}/functions/v1/oanda-market-intel?sections=pricing,transactions`, {
           headers: { Authorization: `Bearer ${supabaseAnonKey}`, apikey: supabaseAnonKey },
         }).then(r => r.ok ? r.json() : null).catch(() => null),
         fetch(`${supabaseUrl}/functions/v1/forex-economic-calendar`, {
+          headers: { Authorization: `Bearer ${supabaseAnonKey}`, apikey: supabaseAnonKey },
+        }).then(r => r.ok ? r.json() : null).catch(() => null),
+        fetch(`${supabaseUrl}/functions/v1/batch-prices?symbols=SPY,QQQ,DIA,IWM,VIX,GLD,USO,AAPL,MSFT,NVDA,BTCUSD,ETHUSD`, {
           headers: { Authorization: `Bearer ${supabaseAnonKey}`, apikey: supabaseAnonKey },
         }).then(r => r.ok ? r.json() : null).catch(() => null),
       ]);
@@ -465,13 +486,39 @@ Deno.serve(async (req) => {
           console.log(`[SOVEREIGN-LOOP] ⚠️ SHOCK SENSOR: ${directive.slice(0, 120)}`);
         }
       }
+      if (batchPricesRes?.prices) {
+        const prices = batchPricesRes.prices as Record<string, { price: number; change: number; changePercent: number; source?: string }>;
+        const indices: Record<string, { price: number; change: number; pctChange: number }> = {};
+        const megaCap: Record<string, { price: number; change: number; pctChange: number }> = {};
+        const crypto: Record<string, { price: number; change: number; pctChange: number }> = {};
+        const commodities: Record<string, { price: number; change: number; pctChange: number }> = {};
+        const sectors: Record<string, { price: number; change: number; pctChange: number }> = {};
+        for (const [sym, d] of Object.entries(prices)) {
+          const row = { price: d.price, change: d.change, pctChange: +(d.changePercent || 0).toFixed(2) };
+          if (["SPY", "QQQ", "DIA", "IWM", "VIX"].includes(sym)) indices[sym] = row;
+          else if (["AAPL", "MSFT", "NVDA", "META", "TSLA"].includes(sym)) megaCap[sym] = row;
+          else if (["BTCUSD", "ETHUSD"].includes(sym)) crypto[sym] = row;
+          else if (["GLD", "USO", "UNG"].includes(sym)) commodities[sym] = row;
+          else if (sym.startsWith("XL")) sectors[sym] = row;
+        }
+        // Derive risk sentiment
+        const spyPct = indices.SPY?.pctChange || 0;
+        const vixPrice = indices.VIX?.price || 0;
+        const btcPct = crypto.BTCUSD?.pctChange || 0;
+        let riskSentiment = "NEUTRAL";
+        if (spyPct > 0.5 && btcPct > 1) riskSentiment = "RISK-ON";
+        else if (spyPct < -0.5 && vixPrice > 25) riskSentiment = "RISK-OFF";
+        else if (spyPct < -1 && vixPrice > 30) riskSentiment = "EXTREME RISK-OFF";
+        crossAssetPulse = { indices, megaCap, crypto, commodities, sectors, riskSentiment, cacheAge: batchPricesRes.cacheAge };
+        console.log(`[SOVEREIGN-LOOP] Cross-asset pulse: riskSentiment=${riskSentiment}, SPY=${spyPct}%, VIX=${vixPrice}`);
+      }
     } catch (err) {
       console.warn("[SOVEREIGN-LOOP] OANDA fetch failed:", (err as Error).message);
       liveOandaState = { error: (err as Error).message };
     }
 
     const systemState = buildSystemState(openTrades, recentClosed, rollups, blocked, stats);
-    const enrichedState = { ...systemState, liveOandaState, marketIntel, economicCalendar };
+    const enrichedState = { ...systemState, liveOandaState, marketIntel, economicCalendar, crossAssetPulse };
 
     console.log(`[SOVEREIGN-LOOP] State: ${openTrades.length} open, ${recentClosed.length} recent, ${stats.length} stats`);
 
