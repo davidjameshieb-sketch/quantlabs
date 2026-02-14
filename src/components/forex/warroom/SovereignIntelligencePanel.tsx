@@ -3,7 +3,8 @@ import { useMemo } from 'react';
 import { motion } from 'framer-motion';
 import {
   Dna, Brain, Ghost, Ban, FlaskConical, Gauge,
-  ShieldAlert, Sparkles, Clock, Zap,
+  ShieldAlert, Sparkles, Clock, Zap, Search, Cpu,
+  Globe, ExternalLink,
 } from 'lucide-react';
 import { useFloorManagerState, type GateBypasses } from '@/hooks/useFloorManagerState';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -64,6 +65,30 @@ const Empty = ({ icon: Icon, label }: { icon: React.ElementType; label: string }
   </div>
 );
 
+// ─── Parse web search log reason ───
+function parseSearchLog(reason: string) {
+  const queryMatch = reason.match(/query="([^"]+)"/);
+  const resultsMatch = reason.match(/results=(\d+)/);
+  const titlesStr = reason.split(' | ').slice(1).join(' | ');
+  return {
+    query: queryMatch?.[1] || 'unknown',
+    resultCount: resultsMatch ? parseInt(resultsMatch[1]) : 0,
+    titles: titlesStr,
+  };
+}
+
+// ─── Parse AI model log reason ───
+function parseModelLog(reason: string) {
+  const model = reason.match(/model=([^\s|]+)/)?.[1] || 'unknown';
+  const promptTokens = reason.match(/prompt_tokens=(\d+)/)?.[1] || '0';
+  const completionTokens = reason.match(/completion_tokens=(\d+)/)?.[1] || '0';
+  const total = reason.match(/total=(\d+)/)?.[1] || '0';
+  const actions = reason.match(/actions=(\d+)/)?.[1] || '0';
+  const score = reason.match(/score=(\d+)/)?.[1] || '0';
+  const latency = reason.match(/latency=(\d+)ms/)?.[1] || '0';
+  return { model, promptTokens, completionTokens, total, actions, score, latency };
+}
+
 export function SovereignIntelligencePanel() {
   const state = useFloorManagerState(10_000);
 
@@ -79,8 +104,10 @@ export function SovereignIntelligencePanel() {
       ...state.evolutionParams.map(e => ({ ...e, _type: 'Evolution' as const })),
       ...state.dynamicGates.map(e => ({ ...e, _type: 'Dynamic Gate' as const })),
       ...state.bypasses.map(e => ({ ...e, _type: 'Bypass' as const })),
+      ...state.webSearchLogs.map(e => ({ ...e, _type: 'Web Search' as const })),
+      ...state.aiModelLogs.map(e => ({ ...e, _type: 'AI Model' as const })),
     ];
-    return all.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()).slice(0, 30);
+    return all.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()).slice(0, 40);
   }, [state]);
 
   const typeColor: Record<string, string> = {
@@ -93,7 +120,31 @@ export function SovereignIntelligencePanel() {
     'Evolution': 'bg-emerald-500/20 text-emerald-300',
     'Dynamic Gate': 'bg-yellow-500/20 text-yellow-300',
     'Bypass': 'bg-muted text-muted-foreground',
+    'Web Search': 'bg-sky-500/20 text-sky-300',
+    'AI Model': 'bg-violet-500/20 text-violet-300',
   };
+
+  // ─── Compute AI model stats ───
+  const aiStats = useMemo(() => {
+    const logs = state.aiModelLogs;
+    if (logs.length === 0) return null;
+    let totalTokens = 0, totalLatency = 0, totalActions = 0;
+    const modelCounts: Record<string, number> = {};
+    for (const log of logs) {
+      const p = parseModelLog(log.reason);
+      totalTokens += parseInt(p.total);
+      totalLatency += parseInt(p.latency);
+      totalActions += parseInt(p.actions);
+      modelCounts[p.model] = (modelCounts[p.model] || 0) + 1;
+    }
+    return {
+      cycles: logs.length,
+      totalTokens,
+      avgLatency: Math.round(totalLatency / logs.length),
+      totalActions,
+      models: modelCounts,
+    };
+  }, [state.aiModelLogs]);
 
   if (state.loading) {
     return (
@@ -105,6 +156,89 @@ export function SovereignIntelligencePanel() {
 
   return (
     <div className="space-y-4">
+      {/* ─── WEB SEARCH LOG (Firecrawl) ─── */}
+      <IPanel title="🔍 Live Web Search (Firecrawl)" icon={Globe} count={state.webSearchLogs.length}>
+        {state.webSearchLogs.length === 0 ? (
+          <Empty icon={Search} label="No web searches performed yet — searches execute during each sovereign loop cycle" />
+        ) : (
+          <ScrollArea className="h-[200px]">
+            <div className="space-y-1.5 pr-2">
+              {state.webSearchLogs.map((log, i) => {
+                const parsed = parseSearchLog(log.reason);
+                const age = Math.round((Date.now() - new Date(log.created_at).getTime()) / 60_000);
+                const ageStr = age < 60 ? `${age}m` : `${Math.round(age / 60)}h`;
+                return (
+                  <div key={log.id || i} className="bg-muted/15 rounded-lg px-3 py-2 hover:bg-muted/30 transition-colors">
+                    <div className="flex items-center gap-2">
+                      <Search className="w-3 h-3 text-sky-400 flex-shrink-0" />
+                      <span className="text-[11px] font-mono font-bold text-foreground truncate flex-1">{parsed.query}</span>
+                      <Badge variant="outline" className="text-[9px] h-4 px-1 font-mono border-sky-500/30 text-sky-400">
+                        {parsed.resultCount} results
+                      </Badge>
+                      <span className="text-[9px] text-muted-foreground">{ageStr}</span>
+                    </div>
+                    {parsed.titles && (
+                      <p className="text-[10px] text-muted-foreground mt-1 line-clamp-1 pl-5">{parsed.titles}</p>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </ScrollArea>
+        )}
+      </IPanel>
+
+      {/* ─── AI MODEL USAGE ─── */}
+      <IPanel title="🧠 AI Model Usage" icon={Cpu} count={state.aiModelLogs.length}>
+        {state.aiModelLogs.length === 0 ? (
+          <Empty icon={Cpu} label="No AI model calls logged yet" />
+        ) : (
+          <div className="space-y-3">
+            {/* Summary stats */}
+            {aiStats && (
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
+                {[
+                  { label: 'Cycles', value: aiStats.cycles, color: 'text-violet-400' },
+                  { label: 'Total Tokens', value: aiStats.totalTokens.toLocaleString(), color: 'text-sky-400' },
+                  { label: 'Avg Latency', value: `${aiStats.avgLatency}ms`, color: 'text-amber-400' },
+                  { label: 'Total Actions', value: aiStats.totalActions, color: 'text-emerald-400' },
+                  { label: 'Model', value: Object.keys(aiStats.models)[0]?.split('/')[1] || 'N/A', color: 'text-primary' },
+                ].map(s => (
+                  <div key={s.label} className="bg-muted/20 rounded-lg px-2 py-1.5 text-center">
+                    <div className={`text-[11px] font-mono font-bold ${s.color}`}>{s.value}</div>
+                    <div className="text-[9px] text-muted-foreground">{s.label}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {/* Recent logs */}
+            <ScrollArea className="h-[180px]">
+              <div className="space-y-1.5 pr-2">
+                {state.aiModelLogs.slice(0, 20).map((log, i) => {
+                  const p = parseModelLog(log.reason);
+                  const age = Math.round((Date.now() - new Date(log.created_at).getTime()) / 60_000);
+                  const ageStr = age < 60 ? `${age}m` : `${Math.round(age / 60)}h`;
+                  return (
+                    <div key={log.id || i} className="flex items-center gap-2 text-[11px] py-1.5 px-2 rounded-md bg-muted/15 hover:bg-muted/30 transition-colors">
+                      <Cpu className="w-3 h-3 text-violet-400 flex-shrink-0" />
+                      <Badge className="text-[9px] h-4 px-1.5 font-mono border-0 bg-violet-500/20 text-violet-300">
+                        {p.model.split('/')[1] || p.model}
+                      </Badge>
+                      <span className="text-muted-foreground font-mono text-[9px]">{p.total} tok</span>
+                      <span className="text-muted-foreground font-mono text-[9px]">{p.latency}ms</span>
+                      <Badge variant="outline" className="text-[9px] h-4 px-1 font-mono border-emerald-500/30 text-emerald-400 ml-auto">
+                        {p.actions} acts
+                      </Badge>
+                      <span className="text-[9px] text-muted-foreground">{ageStr}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </ScrollArea>
+          </div>
+        )}
+      </IPanel>
+
       {/* ─── SOVEREIGN ACTIVITY FEED ─── */}
       <IPanel title="Sovereign Activity Feed" icon={Zap} count={activityFeed.length}>
         {activityFeed.length === 0 ? (

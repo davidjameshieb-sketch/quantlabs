@@ -24,6 +24,8 @@ export interface FloorManagerState {
   dnaMutations: GateBypasses[];
   indicatorWeights: GateBypasses[];
   shadowAgents: GateBypasses[];
+  webSearchLogs: GateBypasses[];
+  aiModelLogs: GateBypasses[];
   loading: boolean;
   lastUpdated: Date | null;
 }
@@ -40,6 +42,8 @@ const EMPTY: FloorManagerState = {
   dnaMutations: [],
   indicatorWeights: [],
   shadowAgents: [],
+  webSearchLogs: [],
+  aiModelLogs: [],
   loading: true,
   lastUpdated: null,
 };
@@ -64,7 +68,7 @@ export function useFloorManagerState(pollMs = 15_000): FloorManagerState {
 
       const active = data as GateBypasses[];
 
-      const CATEGORIES = ['AGENT_SUSPEND', 'CIRCUIT_BREAKER', 'SIZING_OVERRIDE', 'SESSION_BLACKLIST', 'BLACKLIST_ADD', 'GATE_THRESHOLD', 'EVOLUTION_PARAM', 'DYNAMIC_GATE', 'AGENT_DNA_MUTATION', 'INDICATOR_WEIGHT', 'SHADOW_AGENT'];
+      const CATEGORIES = ['AGENT_SUSPEND', 'CIRCUIT_BREAKER', 'SIZING_OVERRIDE', 'SESSION_BLACKLIST', 'BLACKLIST_ADD', 'GATE_THRESHOLD', 'EVOLUTION_PARAM', 'DYNAMIC_GATE', 'AGENT_DNA_MUTATION', 'INDICATOR_WEIGHT', 'SHADOW_AGENT', 'WEB_SEARCH_LOG', 'AI_MODEL_LOG', 'SOVEREIGN_LOOP_LOG'];
       const startsWith = (id: string, prefix: string) => id === prefix || id.startsWith(prefix + ':');
       const matchesAny = (id: string) => CATEGORIES.some(c => startsWith(id, c));
 
@@ -80,6 +84,8 @@ export function useFloorManagerState(pollMs = 15_000): FloorManagerState {
         dnaMutations: active.filter(b => startsWith(b.gate_id, 'AGENT_DNA_MUTATION')),
         indicatorWeights: active.filter(b => startsWith(b.gate_id, 'INDICATOR_WEIGHT')),
         shadowAgents: active.filter(b => startsWith(b.gate_id, 'SHADOW_AGENT')),
+        webSearchLogs: active.filter(b => startsWith(b.gate_id, 'WEB_SEARCH_LOG')),
+        aiModelLogs: active.filter(b => startsWith(b.gate_id, 'AI_MODEL_LOG')),
         loading: false,
         lastUpdated: new Date(),
       });
