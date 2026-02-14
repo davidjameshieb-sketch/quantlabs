@@ -389,6 +389,42 @@ export type Database = {
         }
         Relationships: []
       }
+      sovereign_memory: {
+        Row: {
+          created_at: string
+          created_by: string
+          expires_at: string | null
+          id: string
+          memory_key: string
+          memory_type: string
+          payload: Json
+          relevance_score: number | null
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          created_by?: string
+          expires_at?: string | null
+          id?: string
+          memory_key: string
+          memory_type: string
+          payload?: Json
+          relevance_score?: number | null
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          created_by?: string
+          expires_at?: string | null
+          id?: string
+          memory_key?: string
+          memory_type?: string
+          payload?: Json
+          relevance_score?: number | null
+          updated_at?: string
+        }
+        Relationships: []
+      }
       stripe_customers: {
         Row: {
           current_period_end: string | null
