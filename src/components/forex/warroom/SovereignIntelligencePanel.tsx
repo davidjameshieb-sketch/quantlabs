@@ -250,13 +250,55 @@ export function SovereignIntelligencePanel() {
                 const age = Math.round((Date.now() - new Date(e.created_at).getTime()) / 60_000);
                 const ageStr = age < 60 ? `${age}m` : `${Math.round(age / 60)}h`;
                 const label = e.gate_id.includes(':') ? e.gate_id.split(':').slice(1).join(':') : e.gate_id;
+
+                // Enrich display for Web Search and AI Model entries
+                let detail: React.ReactNode = null;
+                if (e._type === 'Web Search') {
+                  const parsed = parseSearchLog(e.reason);
+                  detail = (
+                    <div className="flex flex-col gap-0.5 flex-1 min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        <Search className="w-3 h-3 text-sky-400 flex-shrink-0" />
+                        <span className="font-mono text-foreground font-medium truncate">"{parsed.query}"</span>
+                        <Badge variant="outline" className="text-[9px] h-4 px-1 font-mono border-sky-500/30 text-sky-400 flex-shrink-0">
+                          {parsed.resultCount} results
+                        </Badge>
+                      </div>
+                      {parsed.titles && (
+                        <p className="text-[9px] text-muted-foreground line-clamp-1 pl-4">{parsed.titles}</p>
+                      )}
+                    </div>
+                  );
+                } else if (e._type === 'AI Model') {
+                  const p = parseModelLog(e.reason);
+                  const modelShort = p.model.split('/')[1] || p.model;
+                  detail = (
+                    <div className="flex items-center gap-1.5 flex-1 min-w-0">
+                      <Cpu className="w-3 h-3 text-violet-400 flex-shrink-0" />
+                      <Badge className="text-[9px] h-4 px-1.5 font-mono border-0 bg-violet-500/20 text-violet-300 flex-shrink-0">
+                        {modelShort}
+                      </Badge>
+                      <span className="text-muted-foreground font-mono text-[9px]">{p.total} tokens</span>
+                      <span className="text-muted-foreground font-mono text-[9px]">{p.latency}ms</span>
+                      <Badge variant="outline" className="text-[9px] h-4 px-1 font-mono border-emerald-500/30 text-emerald-400">
+                        {p.actions} actions
+                      </Badge>
+                      <span className="text-[9px] text-muted-foreground">score:{p.score}</span>
+                    </div>
+                  );
+                }
+
                 return (
-                  <div key={e.id || i} className="flex items-center gap-2 text-[11px] py-1.5 px-2 rounded-md bg-muted/15 hover:bg-muted/30 transition-colors">
-                    <Badge className={`text-[9px] h-4 px-1.5 font-mono border-0 ${typeColor[e._type] || ''}`}>
+                  <div key={e.id || i} className="flex items-start gap-2 text-[11px] py-1.5 px-2 rounded-md bg-muted/15 hover:bg-muted/30 transition-colors">
+                    <Badge className={`text-[9px] h-4 px-1.5 font-mono border-0 flex-shrink-0 mt-0.5 ${typeColor[e._type] || ''}`}>
                       {e._type}
                     </Badge>
-                    <span className="font-mono text-foreground font-medium truncate flex-1">{label}</span>
-                    {e.pair && <span className="text-muted-foreground font-mono text-[9px]">{e.pair}</span>}
+                    {detail || (
+                      <>
+                        <span className="font-mono text-foreground font-medium truncate flex-1">{label}</span>
+                        {e.pair && <span className="text-muted-foreground font-mono text-[9px]">{e.pair}</span>}
+                      </>
+                    )}
                     <span className="text-muted-foreground text-[9px] flex-shrink-0">{ageStr}</span>
                   </div>
                 );
