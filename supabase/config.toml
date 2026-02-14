@@ -56,3 +56,6 @@ verify_jwt = false
 
 [functions.forex-sovereign-loop]
 verify_jwt = false
+
+[functions.forex-economic-calendar]
+verify_jwt = false
