@@ -88,6 +88,42 @@ export function WarRoomDashboard({ account, executionMetrics, tradeAnalytics, co
   // Sovereignty score: count of active hardwires / 6 * 100
   const sovereigntyScore = Math.min(100, Math.round((hardwires.length / 6) * 100));
 
+  // ─── ETA to $500 ───
+  const etaLabel = useMemo(() => {
+    if (nav >= TARGET) return '🏁 TARGET HIT';
+    if (!executionMetrics?.recentOrders || executionMetrics.recentOrders.length < 2) return 'Calculating...';
+    const closed = executionMetrics.recentOrders
+      .filter(o => o.closed_at && o.entry_price != null && o.exit_price != null)
+      .sort((a, b) => new Date(a.closed_at!).getTime() - new Date(b.closed_at!).getTime());
+    if (closed.length < 2) return 'Insufficient data';
+
+    const firstTime = new Date(closed[0].closed_at!).getTime();
+    const lastTime = new Date(closed[closed.length - 1].closed_at!).getTime();
+    const hoursElapsed = (lastTime - firstTime) / 3_600_000;
+    if (hoursElapsed < 0.01) return 'Calculating...';
+
+    // Compute realized $ P&L from closed trades
+    const JPY_PAIRS = ['USD_JPY','EUR_JPY','GBP_JPY','AUD_JPY','CAD_JPY','CHF_JPY','NZD_JPY'];
+    let totalDollarPnl = 0;
+    for (const o of closed) {
+      const mult = JPY_PAIRS.includes(o.currency_pair) ? 100 : 10000;
+      const pipPnl = o.direction === 'long'
+        ? (o.exit_price! - o.entry_price!) * mult
+        : (o.entry_price! - o.exit_price!) * mult;
+      // Rough $ estimate: ~$0.10 per pip per unit (micro lot approximation)
+      totalDollarPnl += pipPnl * (Math.abs(o.units) / 10000);
+    }
+
+    const dollarPerHour = totalDollarPnl / hoursElapsed;
+    if (dollarPerHour <= 0) return 'Negative velocity — recalibrating';
+
+    const hoursToTarget = remaining / dollarPerHour;
+    if (hoursToTarget > 720) return `${Math.round(hoursToTarget / 24)}d at current pace`;
+    if (hoursToTarget > 48) return `~${Math.round(hoursToTarget / 24)}d ${Math.round(hoursToTarget % 24)}h`;
+    if (hoursToTarget > 1) return `~${Math.round(hoursToTarget)}h`;
+    return `~${Math.round(hoursToTarget * 60)}min`;
+  }, [nav, remaining, executionMetrics]);
+
   return (
     <div className="space-y-4">
       {/* ─── 1. VELOCITY TO $500 ─── */}
@@ -105,6 +141,11 @@ export function WarRoomDashboard({ account, executionMetrics, tradeAnalytics, co
           <div className="flex justify-between text-[10px] text-muted-foreground">
             <span>$0</span>
             <span className="font-bold text-primary">${TARGET}</span>
+          </div>
+          <div className="flex items-center justify-center gap-2 py-2 px-3 rounded-lg bg-muted/40 border border-border/20">
+            <Activity className="w-3.5 h-3.5 text-primary" />
+            <span className="text-xs font-mono font-bold text-foreground">ETA to $500:</span>
+            <span className="text-xs font-mono text-primary">{etaLabel}</span>
           </div>
           <div className="grid grid-cols-3 gap-4 pt-2 border-t border-border/20">
             <Stat label="NAV Velocity" value={`${pnl >= 0 ? '+' : ''}${pnl.toFixed(1)}p`} positive={pnl >= 0} />
