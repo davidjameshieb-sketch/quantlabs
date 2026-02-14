@@ -672,8 +672,49 @@ Deno.serve(async (req) => {
       liveOandaState = { error: (err as Error).message };
     }
 
+    // ─── WEB SEARCH: Live breaking news ───
+    let webSearchData: Record<string, unknown> = {};
+    try {
+      const searchQueries = [
+        "forex market breaking news central bank",
+        "geopolitical risk market impact today",
+      ];
+      const searchPromises = searchQueries.map(q =>
+        edgeFetch(`web-search`).catch(() => null)
+      );
+      // Use POST for web-search
+      const searchResults = await Promise.all(
+        searchQueries.map(q =>
+          fetch(`${supabaseUrl}/functions/v1/web-search`, {
+            method: "POST",
+            headers: { Authorization: `Bearer ${supabaseAnonKey}`, apikey: supabaseAnonKey, "Content-Type": "application/json" },
+            body: JSON.stringify({ query: q, limit: 3, tbs: "qdr:h" }),
+          }).then(r => r.ok ? r.json() : null).catch(() => null)
+        )
+      );
+      const allResults: any[] = [];
+      for (const sr of searchResults) {
+        if (sr?.results) allResults.push(...sr.results);
+      }
+      webSearchData = { results: allResults, searchQueries, timestamp: new Date().toISOString() };
+      console.log(`[SOVEREIGN-LOOP] 🔍 Web Search: ${allResults.length} results from ${searchQueries.length} queries`);
+
+      // Log each search to gate_bypasses for UI visibility
+      for (let i = 0; i < searchQueries.length; i++) {
+        const sr = searchResults[i];
+        await sb.from("gate_bypasses").insert({
+          gate_id: `WEB_SEARCH_LOG:${Date.now()}-${i}`,
+          reason: `query="${searchQueries[i]}" | results=${sr?.results?.length || 0} | ${(sr?.results || []).slice(0, 2).map((r: any) => r.title).join(' | ').slice(0, 300)}`,
+          expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+          created_by: "sovereign-loop",
+        });
+      }
+    } catch (err) {
+      console.warn("[SOVEREIGN-LOOP] Web search failed:", (err as Error).message);
+    }
+
     const systemState = buildSystemState(openTrades, recentClosed, rollups, blocked, stats);
-    const enrichedState = { ...systemState, liveOandaState, marketIntel, economicCalendar, crossAssetPulse, cotData, macroData, stocksIntel, cryptoIntel, treasuryData, sentimentData, optionsVolData, econCalendarData, bisImfData, cbCommsData, cryptoOnChainData };
+    const enrichedState = { ...systemState, liveOandaState, marketIntel, economicCalendar, crossAssetPulse, cotData, macroData, stocksIntel, cryptoIntel, treasuryData, sentimentData, optionsVolData, econCalendarData, bisImfData, cbCommsData, cryptoOnChainData, webSearchData };
 
     console.log(`[SOVEREIGN-LOOP] State: ${openTrades.length} open, ${recentClosed.length} recent, ${stats.length} stats`);
 
@@ -754,6 +795,18 @@ Deno.serve(async (req) => {
     const scoreMatch = aiContent.match(/SOVEREIGNTY_SCORE:\s*(\d+)/i);
     const assessment = assessmentMatch?.[1]?.trim() || "Cycle complete";
     const sovereigntyScore = scoreMatch ? parseInt(scoreMatch[1]) : 0;
+
+    // ─── 6.5 LOG AI MODEL USAGE ───
+    const aiModel = "google/gemini-2.5-flash";
+    const aiTokensUsed = aiData.usage?.total_tokens || 0;
+    const aiPromptTokens = aiData.usage?.prompt_tokens || 0;
+    const aiCompletionTokens = aiData.usage?.completion_tokens || 0;
+    await sb.from("gate_bypasses").insert({
+      gate_id: `AI_MODEL_LOG:${Date.now()}`,
+      reason: `model=${aiModel} | prompt_tokens=${aiPromptTokens} | completion_tokens=${aiCompletionTokens} | total=${aiTokensUsed} | actions=${cappedActions.length} | score=${sovereigntyScore} | latency=${Date.now() - startTime}ms`,
+      expires_at: new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString(),
+      created_by: "sovereign-loop",
+    });
 
     // ─── 7. LOG CYCLE ───
     await logCycleResult(sb, {
