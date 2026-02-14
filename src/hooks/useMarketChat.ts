@@ -73,6 +73,12 @@ export const useMarketChat = () => {
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
+        if (response.status === 402) {
+          throw new Error('AI credits exhausted. Please top up your workspace credits in Settings → Workspace → Usage.');
+        }
+        if (response.status === 429) {
+          throw new Error('Rate limit exceeded. Please wait a moment and try again.');
+        }
         throw new Error(errorData.error || `Error: ${response.status}`);
       }
 
