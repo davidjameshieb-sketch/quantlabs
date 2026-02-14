@@ -547,6 +547,7 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      exec_sql: { Args: { sql_text: string }; Returns: Json }
       get_agent_simulator_stats: {
         Args: { p_user_id: string }
         Returns: {
