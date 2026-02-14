@@ -13,14 +13,10 @@ const OANDA_HOSTS: Record<string, string> = {
   live: "https://api-fxtrade.oanda.com",
 };
 
-const FOCUS_INSTRUMENTS = [
-  "EUR_USD", "GBP_USD", "USD_JPY", "AUD_USD", "USD_CAD",
-  "NZD_USD", "EUR_GBP", "EUR_JPY", "GBP_JPY", "AUD_JPY",
-  "USD_CHF", "EUR_CHF", "EUR_AUD", "GBP_AUD", "AUD_NZD",
-  "USD_SGD", "USD_HKD", "USD_MXN", "USD_ZAR", "EUR_NZD",
-  "GBP_NZD", "GBP_CAD", "EUR_CAD", "AUD_CAD", "NZD_CAD",
-  "CHF_JPY", "CAD_JPY", "NZD_JPY", "CAD_CHF", "AUD_CHF",
-];
+// Dynamic instrument list — fetched from account
+let cachedForexInstruments: string[] = [];
+let instrumentListTimestamp = 0;
+const INSTRUMENT_LIST_TTL = 60 * 60_000; // 1 hour
 
 // ── In-memory caches ──
 let cachedOrderBooks: Record<string, unknown> = {};
@@ -31,12 +27,27 @@ let cachedPricing: Record<string, unknown> = {};
 let cacheTimestamps = { orderBook: 0, positionBook: 0, instruments: 0, transactions: 0, pricing: 0 };
 
 const CACHE_TTL = {
-  orderBook: 15 * 60_000,     // 15 min (OANDA updates every 20 min)
-  positionBook: 15 * 60_000,  // 15 min
-  instruments: 60 * 60_000,   // 1 hour (static data)
-  transactions: 60_000,       // 1 min
-  pricing: 5_000,             // 5 seconds (near-realtime)
+  orderBook: 15 * 60_000,
+  positionBook: 15 * 60_000,
+  instruments: 60 * 60_000,
+  transactions: 60_000,
+  pricing: 5_000,
 };
+
+async function getForexInstruments(host: string, accountId: string, apiToken: string): Promise<string[]> {
+  const now = Date.now();
+  if (now - instrumentListTimestamp < INSTRUMENT_LIST_TTL && cachedForexInstruments.length > 0) {
+    return cachedForexInstruments;
+  }
+  const url = `${host}/v3/accounts/${accountId}/instruments?type=CURRENCY`;
+  const data = await oandaGet(url, apiToken);
+  if (data?.instruments) {
+    cachedForexInstruments = data.instruments.map((i: any) => i.name);
+    instrumentListTimestamp = now;
+    console.log(`[MARKET-INTEL] Discovered ${cachedForexInstruments.length} forex instruments`);
+  }
+  return cachedForexInstruments;
+}
 
 function getOandaCreds(env: string) {
   const apiToken = env === "live"
@@ -62,17 +73,16 @@ async function oandaGet(url: string, apiToken: string): Promise<any> {
 }
 
 // ── Order Book ──
-async function fetchOrderBooks(host: string, apiToken: string): Promise<Record<string, unknown>> {
+async function fetchOrderBooks(host: string, accountId: string, apiToken: string): Promise<Record<string, unknown>> {
   const now = Date.now();
   if (now - cacheTimestamps.orderBook < CACHE_TTL.orderBook && Object.keys(cachedOrderBooks).length > 0) {
     return cachedOrderBooks;
   }
 
+  const instruments = await getForexInstruments(host, accountId, apiToken);
   const books: Record<string, unknown> = {};
-  // Fetch all pairs
-  const topPairs = FOCUS_INSTRUMENTS;
   const results = await Promise.allSettled(
-    topPairs.map(async (inst) => {
+    instruments.map(async (inst) => {
       const data = await oandaGet(`${host}/v3/instruments/${inst}/orderBook`, apiToken);
       if (data?.orderBook) {
         const ob = data.orderBook;
@@ -113,16 +123,16 @@ async function fetchOrderBooks(host: string, apiToken: string): Promise<Record<s
 }
 
 // ── Position Book ──
-async function fetchPositionBooks(host: string, apiToken: string): Promise<Record<string, unknown>> {
+async function fetchPositionBooks(host: string, accountId: string, apiToken: string): Promise<Record<string, unknown>> {
   const now = Date.now();
   if (now - cacheTimestamps.positionBook < CACHE_TTL.positionBook && Object.keys(cachedPositionBooks).length > 0) {
     return cachedPositionBooks;
   }
 
+  const instruments = await getForexInstruments(host, accountId, apiToken);
   const books: Record<string, unknown> = {};
-  const topPairs = FOCUS_INSTRUMENTS;
   await Promise.allSettled(
-    topPairs.map(async (inst) => {
+    instruments.map(async (inst) => {
       const data = await oandaGet(`${host}/v3/instruments/${inst}/positionBook`, apiToken);
       if (data?.positionBook) {
         const pb = data.positionBook;
@@ -159,8 +169,8 @@ async function fetchInstrumentDetails(host: string, accountId: string, apiToken:
     return cachedInstruments;
   }
 
-  const url = `${host}/v3/accounts/${accountId}/instruments?instruments=${FOCUS_INSTRUMENTS.join(",")}`;
-  const data = await oandaGet(url, apiToken);
+  const allInst = await getForexInstruments(host, accountId, apiToken);
+  const url = `${host}/v3/accounts/${accountId}/instruments?instruments=${allInst.join(",")}`;
   if (data?.instruments) {
     const instruments: Record<string, unknown> = {};
     for (const inst of data.instruments) {
@@ -245,7 +255,8 @@ async function fetchLivePricing(host: string, accountId: string, apiToken: strin
     return cachedPricing;
   }
 
-  const url = `${host}/v3/accounts/${accountId}/pricing?instruments=${FOCUS_INSTRUMENTS.join(",")}`;
+  const instruments = await getForexInstruments(host, accountId, apiToken);
+  const url = `${host}/v3/accounts/${accountId}/pricing?instruments=${instruments.join(",")}`;
   const data = await oandaGet(url, apiToken);
   if (data?.prices) {
     const pricing: Record<string, unknown> = {};
@@ -311,12 +322,12 @@ Deno.serve(async (req) => {
     }
     if (fetchAll || sections.includes("orderBook")) {
       fetches.push(
-        fetchOrderBooks(host, apiToken).then(d => { results.orderBook = d; })
+        fetchOrderBooks(host, accountId, apiToken).then(d => { results.orderBook = d; })
       );
     }
     if (fetchAll || sections.includes("positionBook")) {
       fetches.push(
-        fetchPositionBooks(host, apiToken).then(d => { results.positionBook = d; })
+        fetchPositionBooks(host, accountId, apiToken).then(d => { results.positionBook = d; })
       );
     }
     if (fetchAll || sections.includes("instruments")) {
