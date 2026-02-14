@@ -91,6 +91,30 @@ add_blacklist, remove_blacklist, activate_circuit_breaker, deactivate_circuit_br
 adjust_evolution_param, create_gate, remove_gate, lead_lag_scan, liquidity_heatmap,
 get_account_summary, get_open_trades
 
+## SOVEREIGN-NATIVE ACTIONS (New — handled directly by the loop, no desk needed)
+
+### write_memory — Persist strategic knowledge to your long-term brain
+\`\`\`action
+{"type": "write_memory", "memory_type": "strategic_note|dna_mutation|gate_performance|regime_forecast|session_debrief", "memory_key": "unique:key:path", "payload": {"your": "data"}, "relevance_score": 1.0}
+\`\`\`
+Use this to store learnings, DNA decisions, regime predictions, session debriefs. Memory persists across all future cycles. Higher relevance_score = loaded first. Types:
+- **strategic_note**: General strategic insights, lessons learned
+- **dna_mutation**: Record of why you mutated an agent's DNA and what you changed
+- **gate_performance**: Track how a gate (G1-G20+) is performing over time
+- **regime_forecast**: Your predictions about upcoming regime transitions
+- **session_debrief**: End-of-session summary of what worked and what didn't
+
+### run_backtest — Trigger a shadow simulation (Synthesis Sandbox)
+\`\`\`action
+{"type": "run_backtest", "agent_id": "trend-scalper", "days": 30, "variant_id": "sovereign-test-v1"}
+\`\`\`
+Runs a backtest for a specific agent (or "all") over N days. Results are automatically saved to your sovereign memory. Use this to validate DNA mutations or gate changes BEFORE applying them live.
+
+## SOVEREIGN MEMORY
+Your SYSTEM_STATE includes a \`sovereignMemory\` array — these are YOUR OWN NOTES from previous cycles.
+Read them carefully. They contain your strategic evolution history, regime forecasts, and session debriefs.
+You should write_memory at least once per L4 cycle with a session_debrief summarizing key decisions.
+
 ## ECONOMIC CALENDAR (Smart G8 Data)
 Your SYSTEM_STATE now includes an \`economicCalendar\` object with:
 - **smartG8Directive**: Pre-computed directive (EXTREME/HIGH/ELEVATED/CLEAR) — follow this FIRST
@@ -215,6 +239,57 @@ Format each action as:
 {"type": "...", ...}
 \`\`\``;
 
+
+// ─── Sovereign Memory: Persistent Long-Term Brain ───
+async function fetchSovereignMemory(sb: ReturnType<typeof createClient>, limit = 50): Promise<any[]> {
+  const { data } = await sb
+    .from("sovereign_memory")
+    .select("memory_type,memory_key,payload,relevance_score,created_at,updated_at")
+    .order("relevance_score", { ascending: false })
+    .order("updated_at", { ascending: false })
+    .limit(limit);
+  return data || [];
+}
+
+async function writeSovereignMemory(sb: ReturnType<typeof createClient>, entry: {
+  memory_type: string;
+  memory_key: string;
+  payload: Record<string, unknown>;
+  relevance_score?: number;
+  expires_at?: string;
+}): Promise<boolean> {
+  // Upsert by memory_key — update if exists, insert if not
+  const { data: existing } = await sb
+    .from("sovereign_memory")
+    .select("id")
+    .eq("memory_key", entry.memory_key)
+    .limit(1);
+
+  if (existing && existing.length > 0) {
+    const { error } = await sb
+      .from("sovereign_memory")
+      .update({
+        payload: entry.payload,
+        relevance_score: entry.relevance_score ?? 1.0,
+        expires_at: entry.expires_at || null,
+        memory_type: entry.memory_type,
+      })
+      .eq("id", existing[0].id);
+    return !error;
+  } else {
+    const { error } = await sb
+      .from("sovereign_memory")
+      .insert({
+        memory_type: entry.memory_type,
+        memory_key: entry.memory_key,
+        payload: entry.payload,
+        relevance_score: entry.relevance_score ?? 1.0,
+        expires_at: entry.expires_at || null,
+        created_by: "sovereign-loop",
+      });
+    return !error;
+  }
+}
 
 // ─── Data Fetchers (mirrored from forex-ai-desk) ───
 
@@ -392,7 +467,70 @@ function extractActions(content: string): Record<string, unknown>[] {
 }
 
 // ─── Execute action via forex-ai-desk action endpoint ───
-async function executeAction(action: Record<string, unknown>): Promise<{ action: string; success: boolean; detail: string }> {
+// Extended with sovereign-native actions that bypass forex-ai-desk
+async function executeAction(action: Record<string, unknown>, sb?: ReturnType<typeof createClient>): Promise<{ action: string; success: boolean; detail: string }> {
+  const actionType = action.type as string;
+
+  // ─── SOVEREIGN-NATIVE: write_memory ───
+  if (actionType === "write_memory" && sb) {
+    try {
+      const ok = await writeSovereignMemory(sb, {
+        memory_type: (action.memory_type as string) || "strategic_note",
+        memory_key: (action.memory_key as string) || `auto:${Date.now()}`,
+        payload: (action.payload as Record<string, unknown>) || { note: action.reason || action.content || "" },
+        relevance_score: (action.relevance_score as number) ?? 1.0,
+        expires_at: action.expires_at as string | undefined,
+      });
+      return { action: actionType, success: ok, detail: `Memory written: ${action.memory_key}` };
+    } catch (err) {
+      return { action: actionType, success: false, detail: (err as Error).message };
+    }
+  }
+
+  // ─── SOVEREIGN-NATIVE: run_backtest ───
+  if (actionType === "run_backtest" && sb) {
+    try {
+      const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
+      const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
+      // Trigger backtest via compute-snapshot edge function with backtest scope
+      const agentId = (action.agent_id as string) || "all";
+      const days = (action.days as number) || 30;
+      const variantId = (action.variant_id as string) || "sovereign-test";
+
+      // Run the backtest as a compute-snapshot job
+      const res = await fetch(`${supabaseUrl}/functions/v1/compute-snapshot`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${supabaseAnonKey}`,
+          apikey: supabaseAnonKey,
+        },
+        body: JSON.stringify({
+          snapshot_type: "backtest",
+          scope_key: `sovereign:${agentId}:${variantId}`,
+          params: { agent_id: agentId, days, variant_id: variantId },
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        return { action: actionType, success: false, detail: `Backtest failed: ${data.error || res.status}` };
+      }
+
+      // Write backtest result to sovereign memory for future reference
+      await writeSovereignMemory(sb, {
+        memory_type: "backtest_result",
+        memory_key: `backtest:${agentId}:${variantId}:${Date.now()}`,
+        payload: { agent_id: agentId, days, variant_id: variantId, result: data, ran_at: new Date().toISOString() },
+        relevance_score: 1.5,
+      });
+
+      return { action: actionType, success: true, detail: `Backtest queued for ${agentId} (${days}d, variant=${variantId})` };
+    } catch (err) {
+      return { action: actionType, success: false, detail: (err as Error).message };
+    }
+  }
+
+  // ─── DEFAULT: Forward to forex-ai-desk ───
   const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
   const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
   try {
@@ -407,11 +545,11 @@ async function executeAction(action: Record<string, unknown>): Promise<{ action:
     });
     const data = await res.json();
     if (!res.ok || !data.success) {
-      return { action: action.type as string, success: false, detail: data.error || `Failed: ${res.status}` };
+      return { action: actionType, success: false, detail: data.error || `Failed: ${res.status}` };
     }
-    return { action: action.type as string, success: true, detail: data.results?.[0]?.detail || "Executed" };
+    return { action: actionType, success: true, detail: data.results?.[0]?.detail || "Executed" };
   } catch (err) {
-    return { action: action.type as string, success: false, detail: (err as Error).message };
+    return { action: actionType, success: false, detail: (err as Error).message };
   }
 }
 
@@ -523,13 +661,15 @@ Deno.serve(async (req) => {
     const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
     const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
 
-    const [openTrades, recentClosed, rollups, blocked, stats] = await Promise.all([
+    const [openTrades, recentClosed, rollups, blocked, stats, sovereignMemory] = await Promise.all([
       fetchOpenTrades(sb),
       fetchRecentClosedTrades(sb),
       fetchDailyRollups(sb),
       fetchBlockedTrades(sb),
       fetchTradeStats(sb),
+      fetchSovereignMemory(sb, 40),
     ]);
+    console.log(`[SOVEREIGN-LOOP] 🧠 Sovereign Memory: ${sovereignMemory.length} memories loaded`);
 
     // Fetch live OANDA state + ALL market intelligence in parallel
     let liveOandaState: Record<string, unknown> = {};
@@ -771,7 +911,7 @@ Deno.serve(async (req) => {
     });
 
     const systemState = buildSystemState(openTrades, recentClosed, rollups, blocked, stats);
-    const enrichedState = { ...systemState, liveOandaState, marketIntel, economicCalendar, crossAssetPulse, cotData, macroData, stocksIntel, cryptoIntel, treasuryData, sentimentData, optionsVolData, econCalendarData, bisImfData, cbCommsData, cryptoOnChainData, webSearchData };
+    const enrichedState = { ...systemState, liveOandaState, marketIntel, economicCalendar, crossAssetPulse, cotData, macroData, stocksIntel, cryptoIntel, treasuryData, sentimentData, optionsVolData, econCalendarData, bisImfData, cbCommsData, cryptoOnChainData, webSearchData, sovereignMemory };
 
     console.log(`[SOVEREIGN-LOOP] State: ${openTrades.length} open, ${recentClosed.length} recent, ${stats.length} stats`);
 
@@ -834,7 +974,7 @@ Deno.serve(async (req) => {
     const l1Results: { action: string; success: boolean; detail: string }[] = [];
     for (const action of l1Actions) {
       try {
-        const result = await executeAction(action);
+        const result = await executeAction(action, sb);
         l1Results.push(result);
         console.log(`[SOVEREIGN-LOOP] L1 ${result.success ? '✅' : '❌'} ${result.action}: ${result.detail}`);
       } catch (err) {
@@ -883,6 +1023,11 @@ Deno.serve(async (req) => {
       byAgent: (systemState as any).byAgent,
       blockedTradeAnalysis: (systemState as any).blockedTradeAnalysis,
       webHeadlines: ((webSearchData as any)?.results || []).slice(0, 3).map((r: any) => r.title),
+      sovereignMemory: sovereignMemory.slice(0, 20).map((m: any) => ({
+        type: m.memory_type, key: m.memory_key,
+        payload: m.payload, relevance: m.relevance_score,
+        updated: m.updated_at,
+      })),
     };
 
     // ─── TIER CLASSIFICATION: Determine if L4 Strategic Evolution is needed ───
@@ -985,7 +1130,7 @@ This is your STRATEGIC window — use it for architectural improvements, not jus
       console.log(`[SOVEREIGN-LOOP] Executing ${cappedActions.length} AI action(s) (${tierUsed})...`);
       for (const action of cappedActions) {
         try {
-          const result = await executeAction(action);
+          const result = await executeAction(action, sb);
           executionResults.push(result);
           console.log(`[SOVEREIGN-LOOP] ${result.success ? '✅' : '❌'} ${result.action}: ${result.detail}`);
         } catch (err) {
