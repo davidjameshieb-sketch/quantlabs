@@ -775,7 +775,13 @@ Deno.serve(async (req) => {
 
     console.log(`[SOVEREIGN-LOOP] State: ${openTrades.length} open, ${recentClosed.length} recent, ${stats.length} stats`);
 
-    // ─── 3. CALL AI (non-streaming for autonomous mode) ───
+    // ═══════════════════════════════════════════════════════════════
+    // TRI-TIER MODEL HEURISTIC — Protecting AI Credit NAV
+    // L1: Local heuristic scripts (zero AI tokens)
+    // L2-L3: gemini-3-flash-preview (compressed prompt, ~8-15K tokens)
+    // L4: gemini-2.5-pro (full context, strategic evolution only)
+    // ═══════════════════════════════════════════════════════════════
+
     const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
     if (!LOVABLE_API_KEY) {
       console.error("[SOVEREIGN-LOOP] LOVABLE_API_KEY not configured");
@@ -784,8 +790,157 @@ Deno.serve(async (req) => {
       });
     }
 
-    const stateContext = `\n\n<SYSTEM_STATE>\n${JSON.stringify(enrichedState)}\n</SYSTEM_STATE>`;
+    // ─── L1: LOCAL HEURISTIC ENGINE (zero AI cost) ───
+    // Deterministic computations that never need a language model
+    const l1Actions: Record<string, unknown>[] = [];
+    const l1Alerts: string[] = [];
 
+    // Auto-close trades with THS < 25 (deterministic rule)
+    for (const t of openTrades) {
+      if (t.trade_health_score !== null && t.trade_health_score < 25) {
+        l1Actions.push({ type: "close_trade", pair: t.currency_pair, reason: `L1-AUTO: THS=${t.trade_health_score} < 25 critical threshold` });
+        l1Alerts.push(`⚠️ L1 AUTO-CLOSE: ${t.currency_pair} THS=${t.trade_health_score}`);
+      }
+    }
+
+    // Consecutive loss detection → auto circuit breaker
+    const recentTwoHours = recentClosed.filter(t => {
+      const closedAt = t.closed_at ? new Date(t.closed_at).getTime() : 0;
+      return closedAt > Date.now() - 2 * 60 * 60 * 1000;
+    });
+    let consecLosses = 0;
+    for (const t of recentTwoHours) {
+      if (t.r_pips !== null && t.r_pips <= 0) consecLosses++;
+      else break;
+    }
+    if (consecLosses >= 3) {
+      l1Actions.push({ type: "activate_circuit_breaker", threshold: 3, reason: `L1-AUTO: ${consecLosses} consecutive losses in 2h` });
+      l1Alerts.push(`🚨 L1 CIRCUIT BREAKER: ${consecLosses} consecutive losses`);
+    }
+
+    // Smart G8 — extreme shock risk auto-defense (deterministic from calendar directive)
+    const smartG8 = (economicCalendar as any)?.smartG8Directive || "";
+    if (smartG8.includes("EXTREME SHOCK RISK")) {
+      for (const t of openTrades) {
+        const affectedPairs = (economicCalendar as any)?.affectedPairs || [];
+        if (affectedPairs.includes(t.currency_pair)) {
+          l1Actions.push({ type: "close_trade", pair: t.currency_pair, reason: `L1-AUTO: EXTREME SHOCK RISK — ${smartG8.slice(0, 80)}` });
+          l1Alerts.push(`🔴 L1 SHOCK CLOSE: ${t.currency_pair}`);
+        }
+      }
+    }
+
+    // Execute L1 actions immediately (no AI needed)
+    const l1Results: { action: string; success: boolean; detail: string }[] = [];
+    for (const action of l1Actions) {
+      try {
+        const result = await executeAction(action);
+        l1Results.push(result);
+        console.log(`[SOVEREIGN-LOOP] L1 ${result.success ? '✅' : '❌'} ${result.action}: ${result.detail}`);
+      } catch (err) {
+        l1Results.push({ action: (action.type as string) || "unknown", success: false, detail: (err as Error).message });
+      }
+    }
+    if (l1Actions.length > 0) {
+      console.log(`[SOVEREIGN-LOOP] L1 LOCAL: Executed ${l1Actions.length} deterministic actions`);
+    }
+
+    // ─── BUILD L1 SUMMARY (compact digest for L2-L3, replaces raw data) ───
+    const l1Summary = {
+      timestamp: new Date().toISOString(),
+      openPositions: (systemState as any).openPositions,
+      performance: (systemState as any).performanceSummary,
+      l1Alerts,
+      l1ActionsExecuted: l1Results.length,
+      // Compact directives only — NOT full payloads
+      directives: {
+        smartG8: smartG8.slice(0, 200),
+        riskSentiment: (crossAssetPulse as any)?.riskSentiment || "UNKNOWN",
+        cotMaster: ((cotData as any)?.masterDirective || "").slice(0, 200),
+        macro: ((macroData as any)?.macroDirective || "").slice(0, 200),
+        sentiment: ((sentimentData as any)?.sentimentDirective || "").slice(0, 200),
+        options: ((optionsVolData as any)?.optionsDirective || "").slice(0, 200),
+        treasury: ((treasuryData as any)?.bondsDirective || "").slice(0, 200),
+        cbComms: ((cbCommsData as any)?.cbDirective || "").slice(0, 200),
+        stocks: ((stocksIntel as any)?.stocksDirective || "").slice(0, 200),
+        crypto: ((cryptoIntel as any)?.cryptoDirective || "").slice(0, 200),
+        onChain: ((cryptoOnChainData as any)?.onChainDirective || "").slice(0, 200),
+        bisImf: ((bisImfData as any)?.intermarketDirective || "").slice(0, 200),
+        econCal: ((econCalendarData as any)?.calendarDirective || "").slice(0, 200),
+      },
+      // Compact OANDA state
+      oanda: {
+        nav: (liveOandaState as any)?.accountNAV,
+        balance: (liveOandaState as any)?.accountBalance,
+        unrealizedPL: (liveOandaState as any)?.unrealizedPL,
+        openTradeCount: (liveOandaState as any)?.openTradeCount,
+      },
+      // Only top signals — not raw data
+      cotGodSignals: ((cotData as any)?.godSignals || []).slice(0, 5),
+      cotStrongestPairs: ((cotData as any)?.strongestPairSignals || []).slice(0, 5),
+      recentClosed: (systemState as any).recentClosed?.slice(0, 8),
+      byPair: (systemState as any).byPair,
+      byAgent: (systemState as any).byAgent,
+      blockedTradeAnalysis: (systemState as any).blockedTradeAnalysis,
+      webHeadlines: ((webSearchData as any)?.results || []).slice(0, 3).map((r: any) => r.title),
+    };
+
+    // ─── TIER CLASSIFICATION: Determine if L4 Strategic Evolution is needed ───
+    // L4 triggers: session boundary, performance degradation, 50+ new trades since last L4
+    const { data: lastL4 } = await sb.from("gate_bypasses")
+      .select("created_at")
+      .like("gate_id", "AI_MODEL_LOG:%")
+      .like("reason", "%purpose=L4_strategic_evolution%")
+      .order("created_at", { ascending: false })
+      .limit(1);
+
+    const lastL4Time = lastL4?.[0]?.created_at ? new Date(lastL4[0].created_at).getTime() : 0;
+    const hoursSinceL4 = (Date.now() - lastL4Time) / (60 * 60 * 1000);
+    const perfSummary = (systemState as any).performanceSummary || {};
+    const winRate = perfSummary.winRate || 50;
+    const maxConsecLosses = perfSummary.maxConsecutiveLosses || 0;
+
+    const needsL4 =
+      hoursSinceL4 >= 8 ||                          // At least every 8 hours
+      (winRate < 40 && stats.length >= 20) ||        // Performance degradation
+      maxConsecLosses >= 5 ||                        // Severe losing streak
+      (hoursSinceL4 >= 4 && stats.length >= 50);     // 4h+ and enough data
+
+    let tierUsed: "L1-only" | "L2-L3" | "L4" = "L2-L3";
+    let aiModel = "google/gemini-3-flash-preview";
+    let aiPromptContent: string;
+    let aiSystemPrompt: string;
+    let aiMaxTokens = 2000;
+
+    if (needsL4) {
+      // ─── L4: STRATEGIC EVOLUTION (full context, rare) ───
+      tierUsed = "L4";
+      aiModel = "google/gemini-2.5-pro";
+      aiMaxTokens = 4000;
+      aiSystemPrompt = SOVEREIGN_AUTONOMOUS_PROMPT + `\n\n## L4 STRATEGIC EVOLUTION MODE
+You have been promoted to L4 for this cycle because: ${hoursSinceL4 >= 8 ? 'scheduled review' : winRate < 40 ? 'performance degradation' : maxConsecLosses >= 5 ? 'severe losing streak' : 'data accumulation review'}.
+In addition to normal governance, you SHOULD:
+- Review agent DNA and propose mutations (AGENT_DNA_MUTATION actions)
+- Synthesize new governance gates if patterns warrant (G13+ create_gate actions)
+- Adjust indicator weights based on lead/lag performance (adjust_indicator_weight actions)
+- Evaluate shadow agent promotion candidates
+- Perform deep regime analysis and rebalance evolution parameters
+This is your STRATEGIC window — use it for architectural improvements, not just routine monitoring.`;
+      const fullState = JSON.stringify(enrichedState);
+      aiPromptContent = `L4 STRATEGIC EVOLUTION CYCLE — ${new Date().toISOString()}\nHours since last L4: ${hoursSinceL4.toFixed(1)}\nL1 alerts: ${l1Alerts.join('; ') || 'none'}\nL1 actions already executed: ${l1Results.length}\n\n<SYSTEM_STATE>\n${fullState}\n</SYSTEM_STATE>`;
+      console.log(`[SOVEREIGN-LOOP] 🧬 TIER L4: Strategic Evolution (${aiModel}) — reason: ${hoursSinceL4 >= 8 ? 'scheduled' : 'triggered'}`);
+    } else {
+      // ─── L2-L3: GOVERNANCE (compressed prompt) ───
+      tierUsed = "L2-L3";
+      aiModel = "google/gemini-3-flash-preview";
+      aiMaxTokens = 2000;
+      aiSystemPrompt = SOVEREIGN_AUTONOMOUS_PROMPT;
+      const compactState = JSON.stringify(l1Summary);
+      aiPromptContent = `L2-L3 GOVERNANCE CYCLE — ${new Date().toISOString()}\nL1 alerts: ${l1Alerts.join('; ') || 'none'}\nL1 actions already executed: ${l1Results.length}\n\n<SYSTEM_STATE_COMPACT>\n${compactState}\n</SYSTEM_STATE_COMPACT>`;
+      console.log(`[SOVEREIGN-LOOP] ⚡ TIER L2-L3: Governance (${aiModel}) — compressed prompt`);
+    }
+
+    // ─── CALL AI ───
     const aiResponse = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -793,14 +948,14 @@ Deno.serve(async (req) => {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "google/gemini-2.5-flash",
+        model: aiModel,
         messages: [
-          { role: "system", content: SOVEREIGN_AUTONOMOUS_PROMPT },
-          { role: "user", content: `AUTONOMOUS CYCLE — ${new Date().toISOString()}\n\nAnalyze the current state and take any necessary actions.${stateContext}` },
+          { role: "system", content: aiSystemPrompt },
+          { role: "user", content: aiPromptContent },
         ],
         stream: false,
-        temperature: 0.2,
-        max_tokens: 3000,
+        temperature: tierUsed === "L4" ? 0.3 : 0.15,
+        max_tokens: aiMaxTokens,
       }),
     });
 
@@ -808,7 +963,7 @@ Deno.serve(async (req) => {
       const errText = await aiResponse.text();
       console.error(`[SOVEREIGN-LOOP] AI error ${aiResponse.status}: ${errText.slice(0, 200)}`);
       await logCycleResult(sb, {
-        actionsExecuted: 0, actionDetails: [], assessment: "AI_ERROR",
+        actionsExecuted: l1Results.filter(r => r.success).length, actionDetails: l1Results.map(r => `L1 ${r.success ? '✅' : '❌'} ${r.action}: ${r.detail}`), assessment: "AI_ERROR",
         sovereigntyScore: 0, durationMs: Date.now() - startTime, error: `AI ${aiResponse.status}`,
       });
       return new Response(JSON.stringify({ status: "error", reason: `AI error ${aiResponse.status}` }), {
@@ -818,21 +973,16 @@ Deno.serve(async (req) => {
 
     const aiData = await aiResponse.json();
     const aiContent = aiData.choices?.[0]?.message?.content || "";
-    console.log(`[SOVEREIGN-LOOP] AI response: ${aiContent.length} chars`);
+    console.log(`[SOVEREIGN-LOOP] AI response (${tierUsed}): ${aiContent.length} chars`);
 
-    // ─── 4. PARSE ACTIONS ───
+    // ─── 4. PARSE & EXECUTE AI ACTIONS ───
     const actions = extractActions(aiContent);
-    const cappedActions = actions.slice(0, MAX_ACTIONS_PER_CYCLE);
+    const cappedActions = actions.slice(0, MAX_ACTIONS_PER_CYCLE - l1Results.length);
 
-    if (cappedActions.length > MAX_ACTIONS_PER_CYCLE) {
-      console.warn(`[SOVEREIGN-LOOP] AI emitted ${actions.length} actions, capping to ${MAX_ACTIONS_PER_CYCLE}`);
-    }
-
-    // ─── 5. EXECUTE ACTIONS ───
-    const executionResults: { action: string; success: boolean; detail: string }[] = [];
+    const executionResults: { action: string; success: boolean; detail: string }[] = [...l1Results];
 
     if (cappedActions.length > 0) {
-      console.log(`[SOVEREIGN-LOOP] Executing ${cappedActions.length} action(s)...`);
+      console.log(`[SOVEREIGN-LOOP] Executing ${cappedActions.length} AI action(s) (${tierUsed})...`);
       for (const action of cappedActions) {
         try {
           const result = await executeAction(action);
@@ -843,7 +993,7 @@ Deno.serve(async (req) => {
           console.error(`[SOVEREIGN-LOOP] Action error:`, err);
         }
       }
-    } else {
+    } else if (l1Results.length === 0) {
       console.log(`[SOVEREIGN-LOOP] NO_ACTION — system nominal`);
     }
 
@@ -853,18 +1003,19 @@ Deno.serve(async (req) => {
     const assessment = assessmentMatch?.[1]?.trim() || "Cycle complete";
     const sovereigntyScore = scoreMatch ? parseInt(scoreMatch[1]) : 0;
 
-    // ─── 6.5 LOG AI MODEL USAGE (Lovable AI credits) ───
-    const aiModel = "google/gemini-2.5-flash";
+    // ─── 6.5 LOG AI MODEL USAGE (with tier tag) ───
     const aiTokensUsed = aiData.usage?.total_tokens || 0;
     const aiPromptTokens = aiData.usage?.prompt_tokens || 0;
     const aiCompletionTokens = aiData.usage?.completion_tokens || 0;
-    // Build action summary for visibility
     const actionSummary = cappedActions.length > 0
       ? cappedActions.map((a: any) => a.type || "unknown").join(",")
       : "NO_ACTION";
+    const l1ActionSummary = l1Actions.length > 0
+      ? l1Actions.map((a: any) => a.type || "unknown").join(",")
+      : "none";
     await sb.from("gate_bypasses").insert({
       gate_id: `AI_MODEL_LOG:${Date.now()}`,
-      reason: `model=${aiModel} | prompt_tokens=${aiPromptTokens} | completion_tokens=${aiCompletionTokens} | total=${aiTokensUsed} | actions=${cappedActions.length} | score=${sovereigntyScore} | latency=${Date.now() - startTime}ms | purpose=autonomous_cycle | assessment=${assessment.slice(0, 100)} | acted=${actionSummary.slice(0, 100)}`,
+      reason: `tier=${tierUsed} | model=${aiModel} | prompt_tokens=${aiPromptTokens} | completion_tokens=${aiCompletionTokens} | total=${aiTokensUsed} | l1_actions=${l1Results.length}(${l1ActionSummary}) | ai_actions=${cappedActions.length} | score=${sovereigntyScore} | latency=${Date.now() - startTime}ms | purpose=${tierUsed === 'L4' ? 'L4_strategic_evolution' : 'L2L3_governance'} | assessment=${assessment.slice(0, 80)} | acted=${actionSummary.slice(0, 80)}`,
       expires_at: new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString(),
       created_by: "sovereign-loop",
     });
@@ -886,8 +1037,13 @@ Deno.serve(async (req) => {
       cycle: {
         timestamp: new Date().toISOString(),
         durationMs: totalDuration,
+        tier: tierUsed,
+        model: aiModel,
+        promptTokens: aiPromptTokens,
         actionsExecuted: executionResults.filter(r => r.success).length,
         actionsFailed: executionResults.filter(r => !r.success).length,
+        l1Actions: l1Results.length,
+        aiActions: cappedActions.length,
         results: executionResults,
         assessment,
         sovereigntyScore,
