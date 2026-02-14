@@ -151,6 +151,20 @@ You'll receive a JSON block tagged <SYSTEM_STATE> containing:
   THE GOD SIGNAL: When Institutions are 80%+ Long and Retail is 80%+ Short (or vice versa), that is MAXIMUM CONVICTION. The difference between catching a 20-pip ripple and riding a 200-pip wave.
   CROSS-REFERENCE: Combine CFTC retail (cotData.byCurrency.nonRptPctLong) with OANDA retail (positionBook.netRetailBias) — when BOTH agree against institutions, that's the ULTIMATE confirmation.
   USE FOR: Directional bias (weekly), NOT timing. Size up when God Signal confirms your trade direction.
+- **macroData**: FRED (Fed Funds Rate, CPI, GDP, unemployment, yield curves, M2, DXY) + ECB rates + BOJ data
+  - **macroDirective**: Pre-computed MACRO RISK-ON / NEUTRAL / MACRO RISK-OFF with yield curve + unemployment + fed policy signals
+  - USE: Yield curve inversion = recession risk. Fed hiking = USD bullish. Rate differentials = carry trade edge.
+- **stocksIntel**: Yahoo Finance (24 stocks/ETFs with SMA50/200) + CBOE (VIX term structure, put/call) + SEC EDGAR (13F filings from top hedge funds)
+  - **stocksDirective**: Market breadth + VIX structure + sector rotation
+  - **marketBreadth**: % above SMA50/200 — BROAD RISK-ON/OFF. **secEdgar**: Recent 13F filings from Bridgewater, Renaissance, Citadel, DE Shaw, Two Sigma
+  - USE: VIX backwardation = fear. Put/Call > 1.2 = contrarian bullish. Market breadth < 30% = broad risk-off.
+- **cryptoIntel**: CoinGecko (top 20 coins, BTC dominance, Fear & Greed) + Binance (order book depth, ETH/BTC ratio)
+  - **cryptoDirective**: F&G + BTC dominance + order book imbalance
+  - USE: Crypto F&G ≤ 20 = extreme fear. BTC dominance rising = risk-off. ETH/BTC rising = alt season = risk-on.
+- **treasuryData**: US Treasury daily yield curve (1M-30Y) + EIA energy (crude oil inventory, nat gas storage)
+  - **bondsDirective**: Yield curve + crude oil signal. 2s10s inverted = recession. Oil draw = bullish CAD.
+- **sentimentData**: CNN Fear & Greed (0-100) + Reddit (r/wallstreetbets, r/forex, r/stocks sentiment)
+  - **sentimentDirective**: CNN F&G + Reddit bull/bear ratio. F&G ≤ 25 = contrarian BUY. WSB overwhelmingly bullish = contrarian caution.
 - **performanceSummary, byPair, byAgent, byRegime, bySession**: Aggregated trade statistics
 - **blockedTradeAnalysis**: Governance-blocked trades with counterfactual analysis
 - **dailyRollups**: Daily P&L summaries
@@ -1173,16 +1187,21 @@ serve(async (req) => {
       fetchTradeStats(supabaseAdmin),
     ]);
 
-    // Also fetch live OANDA state + market intel + economic calendar for real-time awareness
+    // Also fetch live OANDA state + ALL market intelligence for real-time awareness
     let liveOandaState: Record<string, unknown> = {};
     let marketIntel: Record<string, unknown> = {};
     let economicCalendar: Record<string, unknown> = {};
     let crossAssetPulse: Record<string, unknown> = {};
     let cotData: Record<string, unknown> = {};
+    let macroData: Record<string, unknown> = {};
+    let stocksIntel: Record<string, unknown> = {};
+    let cryptoIntel: Record<string, unknown> = {};
+    let treasuryData: Record<string, unknown> = {};
+    let sentimentData: Record<string, unknown> = {};
     try {
       const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
       const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
-      const [accountSummary, oandaOpenTrades, intelRes, calendarRes, batchPricesRes, cotRes] = await Promise.all([
+      const [accountSummary, oandaOpenTrades, intelRes, calendarRes, batchPricesRes, cotRes, macroRes, stocksRes, cryptoRes, treasuryRes, sentimentRes] = await Promise.all([
         oandaRequest("/v3/accounts/{accountId}/summary", "GET", undefined, "live"),
         oandaRequest("/v3/accounts/{accountId}/openTrades", "GET", undefined, "live"),
         fetch(`${supabaseUrl}/functions/v1/oanda-market-intel?sections=all`, {
@@ -1195,6 +1214,21 @@ serve(async (req) => {
           headers: { Authorization: `Bearer ${supabaseAnonKey}`, apikey: supabaseAnonKey },
         }).then(r => r.ok ? r.json() : null).catch(() => null),
         fetch(`${supabaseUrl}/functions/v1/forex-cot-data`, {
+          headers: { Authorization: `Bearer ${supabaseAnonKey}`, apikey: supabaseAnonKey },
+        }).then(r => r.ok ? r.json() : null).catch(() => null),
+        fetch(`${supabaseUrl}/functions/v1/forex-macro-data`, {
+          headers: { Authorization: `Bearer ${supabaseAnonKey}`, apikey: supabaseAnonKey },
+        }).then(r => r.ok ? r.json() : null).catch(() => null),
+        fetch(`${supabaseUrl}/functions/v1/stocks-intel`, {
+          headers: { Authorization: `Bearer ${supabaseAnonKey}`, apikey: supabaseAnonKey },
+        }).then(r => r.ok ? r.json() : null).catch(() => null),
+        fetch(`${supabaseUrl}/functions/v1/crypto-intel`, {
+          headers: { Authorization: `Bearer ${supabaseAnonKey}`, apikey: supabaseAnonKey },
+        }).then(r => r.ok ? r.json() : null).catch(() => null),
+        fetch(`${supabaseUrl}/functions/v1/treasury-commodities`, {
+          headers: { Authorization: `Bearer ${supabaseAnonKey}`, apikey: supabaseAnonKey },
+        }).then(r => r.ok ? r.json() : null).catch(() => null),
+        fetch(`${supabaseUrl}/functions/v1/market-sentiment`, {
           headers: { Authorization: `Bearer ${supabaseAnonKey}`, apikey: supabaseAnonKey },
         }).then(r => r.ok ? r.json() : null).catch(() => null),
       ]);
@@ -1258,6 +1292,26 @@ serve(async (req) => {
         cotData = cotRes;
         console.log(`[AI-DESK] COT data loaded: ${(cotRes.godSignals || []).length} god signals, ${Object.keys(cotRes.pairSignals || {}).length} pair signals. Directive: ${(cotRes.masterDirective || "").slice(0, 80)}`);
       }
+      if (macroRes) {
+        macroData = macroRes;
+        console.log(`[AI-DESK] 📊 Macro loaded: ${(macroRes.macroDirective || "").slice(0, 80)}`);
+      }
+      if (stocksRes) {
+        stocksIntel = stocksRes;
+        console.log(`[AI-DESK] 📈 Stocks loaded: ${(stocksRes.stocksDirective || "").slice(0, 80)}`);
+      }
+      if (cryptoRes) {
+        cryptoIntel = cryptoRes;
+        console.log(`[AI-DESK] ₿ Crypto loaded: ${(cryptoRes.cryptoDirective || "").slice(0, 80)}`);
+      }
+      if (treasuryRes) {
+        treasuryData = treasuryRes;
+        console.log(`[AI-DESK] 🏦 Treasury loaded: ${(treasuryRes.bondsDirective || "").slice(0, 80)}`);
+      }
+      if (sentimentRes) {
+        sentimentData = sentimentRes;
+        console.log(`[AI-DESK] 🧠 Sentiment loaded: ${(sentimentRes.sentimentDirective || "").slice(0, 80)}`);
+      }
     } catch (oandaErr) {
       console.warn("[AI-DESK] OANDA live state fetch failed:", (oandaErr as Error).message);
       liveOandaState = { error: "Could not fetch live OANDA state" };
@@ -1266,7 +1320,7 @@ serve(async (req) => {
     console.log(`[FOREX-AI-DESK] State: ${openTrades.length} open, ${recentClosed.length} recent, ${rollups.length} rollups, ${blocked.length} blocked, ${stats.length} stats`);
 
     const systemState = buildSystemState(openTrades, recentClosed, rollups, blocked, stats);
-    const enrichedState = { ...systemState, liveOandaState, marketIntel, economicCalendar, crossAssetPulse, cotData };
+    const enrichedState = { ...systemState, liveOandaState, marketIntel, economicCalendar, crossAssetPulse, cotData, macroData, stocksIntel, cryptoIntel, treasuryData, sentimentData };
     const stateContext = `\n\n<SYSTEM_STATE>\n${JSON.stringify(enrichedState)}\n</SYSTEM_STATE>`;
 
     const actionInstructions = `\n\n## SOVEREIGN AUTONOMOUS ACTIONS

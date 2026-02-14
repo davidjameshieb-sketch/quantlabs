@@ -140,6 +140,43 @@ THE GOD SIGNAL RULES:
 6. ALWAYS cross-reference COT bias with positionBook (OANDA retail) — when BOTH CFTC retail AND OANDA retail are on the same side against institutions, that's the ULTIMATE confirmation.
 7. COT updates weekly (Fridays 3:30pm ET, data as of Tuesday) — use for DIRECTIONAL BIAS, not timing.
 
+## MACRO INTELLIGENCE (FRED + ECB + BOJ)
+Your SYSTEM_STATE now includes a \`macroData\` object with central bank and economic data:
+- **macroDirective**: Pre-computed macro regime — MACRO RISK-ON / NEUTRAL / MACRO RISK-OFF
+- **fred**: Fed Funds Rate, CPI, GDP, Unemployment, 2Y/10Y/30Y yields, M2 money supply, DXY, yield curve spreads
+- **ecb**: ECB main refinancing rate, deposit facility rate
+- USE: Yield curve inversion = recession risk = favor JPY/CHF. Fed hiking = USD bullish. Rate differentials drive carry trades.
+
+## STOCKS INTELLIGENCE (Yahoo + CBOE + SEC EDGAR)
+Your SYSTEM_STATE now includes a \`stocksIntel\` object:
+- **stocksDirective**: Market breadth + VIX structure + sector rotation summary
+- **yahooQuotes**: 24 major stocks/ETFs with price, SMA50/200, volume — use for cross-asset confirmation
+- **cboe**: VIX spot, VIX3M, VIX9D, term structure (contango/backwardation), put/call ratio
+- **secEdgar**: Recent 13F filings from Bridgewater, Renaissance, Citadel, DE Shaw, Two Sigma, Millennium, Soros
+- **marketBreadth**: % above SMA50/200 — BROAD RISK-ON/OFF signal
+- USE: VIX backwardation = FEAR (reduce FX sizing). Put/Call > 1.2 = contrarian bullish. Sector rotation shows money flow.
+
+## CRYPTO INTELLIGENCE (CoinGecko + Binance)
+Your SYSTEM_STATE now includes a \`cryptoIntel\` object:
+- **cryptoDirective**: Fear & Greed + BTC dominance + order book imbalance summary
+- **coinGecko**: Top 20 coins (price, 1h/24h/7d changes, market cap), global data (BTC dominance, total MCap), Fear & Greed Index
+- **binance**: BTC/ETH order book depth (bid/ask imbalance), ETH/BTC ratio (alt season signal), ticker stats
+- USE: Crypto Fear & Greed ≤ 20 = extreme fear (contrarian buy). BTC dominance rising = risk-off within crypto. ETH/BTC rising = alt season = risk-on.
+
+## TREASURY & COMMODITIES (US Treasury + EIA)
+Your SYSTEM_STATE now includes a \`treasuryData\` object:
+- **bondsDirective**: Yield curve status + crude oil inventory signal
+- **treasury**: Full daily yield curve (1M to 30Y), 2s10s spread, 3m10y spread with inversion signals
+- **energy**: Crude oil weekly inventory (build/draw), natural gas storage (injection/withdrawal)
+- USE: 2s10s inverted = recession warning = risk-off. Oil inventory draw = bullish oil = bullish CAD. Yield curve steepening = growth optimism = risk-on.
+
+## MARKET SENTIMENT (CNN Fear & Greed + Reddit)
+Your SYSTEM_STATE now includes a \`sentimentData\` object:
+- **sentimentDirective**: CNN F&G + Reddit WSB/forex sentiment summary
+- **cnnFearGreed**: Current score (0-100), historical (previous, 1w, 1m, 1y), contrarian signal
+- **reddit**: r/wallstreetbets, r/forex, r/stocks — top posts + bull/bear sentiment ratio
+- USE: CNN F&G ≤ 25 = contrarian BUY signal. WSB overwhelmingly bullish = contrarian caution. Cross-reference with VIX and put/call.
+
 Format each action as:
 \`\`\`action
 {"type": "...", ...}
@@ -461,14 +498,19 @@ Deno.serve(async (req) => {
       fetchTradeStats(sb),
     ]);
 
-    // Fetch live OANDA state + market intel + economic calendar + cross-asset pulse + COT data in parallel
+    // Fetch live OANDA state + ALL market intelligence in parallel
     let liveOandaState: Record<string, unknown> = {};
     let marketIntel: Record<string, unknown> = {};
     let economicCalendar: Record<string, unknown> = {};
     let crossAssetPulse: Record<string, unknown> = {};
     let cotData: Record<string, unknown> = {};
+    let macroData: Record<string, unknown> = {};
+    let stocksIntel: Record<string, unknown> = {};
+    let cryptoIntel: Record<string, unknown> = {};
+    let treasuryData: Record<string, unknown> = {};
+    let sentimentData: Record<string, unknown> = {};
     try {
-      const [accountSummary, oandaOpenTrades, intelRes, calendarRes, batchPricesRes, cotRes] = await Promise.all([
+      const [accountSummary, oandaOpenTrades, intelRes, calendarRes, batchPricesRes, cotRes, macroRes, stocksRes, cryptoRes, treasuryRes, sentimentRes] = await Promise.all([
         oandaRequest("/v3/accounts/{accountId}/summary", "GET"),
         oandaRequest("/v3/accounts/{accountId}/openTrades", "GET"),
         fetch(`${supabaseUrl}/functions/v1/oanda-market-intel?sections=pricing,transactions`, {
@@ -481,6 +523,21 @@ Deno.serve(async (req) => {
           headers: { Authorization: `Bearer ${supabaseAnonKey}`, apikey: supabaseAnonKey },
         }).then(r => r.ok ? r.json() : null).catch(() => null),
         fetch(`${supabaseUrl}/functions/v1/forex-cot-data`, {
+          headers: { Authorization: `Bearer ${supabaseAnonKey}`, apikey: supabaseAnonKey },
+        }).then(r => r.ok ? r.json() : null).catch(() => null),
+        fetch(`${supabaseUrl}/functions/v1/forex-macro-data`, {
+          headers: { Authorization: `Bearer ${supabaseAnonKey}`, apikey: supabaseAnonKey },
+        }).then(r => r.ok ? r.json() : null).catch(() => null),
+        fetch(`${supabaseUrl}/functions/v1/stocks-intel`, {
+          headers: { Authorization: `Bearer ${supabaseAnonKey}`, apikey: supabaseAnonKey },
+        }).then(r => r.ok ? r.json() : null).catch(() => null),
+        fetch(`${supabaseUrl}/functions/v1/crypto-intel`, {
+          headers: { Authorization: `Bearer ${supabaseAnonKey}`, apikey: supabaseAnonKey },
+        }).then(r => r.ok ? r.json() : null).catch(() => null),
+        fetch(`${supabaseUrl}/functions/v1/treasury-commodities`, {
+          headers: { Authorization: `Bearer ${supabaseAnonKey}`, apikey: supabaseAnonKey },
+        }).then(r => r.ok ? r.json() : null).catch(() => null),
+        fetch(`${supabaseUrl}/functions/v1/market-sentiment`, {
           headers: { Authorization: `Bearer ${supabaseAnonKey}`, apikey: supabaseAnonKey },
         }).then(r => r.ok ? r.json() : null).catch(() => null),
       ]);
@@ -525,7 +582,6 @@ Deno.serve(async (req) => {
           else if (["GLD", "USO", "UNG"].includes(sym)) commodities[sym] = row;
           else if (sym.startsWith("XL")) sectors[sym] = row;
         }
-        // Derive risk sentiment
         const spyPct = indices.SPY?.pctChange || 0;
         const vixPrice = indices.VIX?.price || 0;
         const btcPct = crypto.BTCUSD?.pctChange || 0;
@@ -543,13 +599,33 @@ Deno.serve(async (req) => {
           console.log(`[SOVEREIGN-LOOP] 🔱 COT GOD SIGNAL: ${directive.slice(0, 150)}`);
         }
       }
+      if (macroRes) {
+        macroData = macroRes;
+        console.log(`[SOVEREIGN-LOOP] 📊 Macro: ${(macroRes.macroDirective || "").slice(0, 100)}`);
+      }
+      if (stocksRes) {
+        stocksIntel = stocksRes;
+        console.log(`[SOVEREIGN-LOOP] 📈 Stocks: ${(stocksRes.stocksDirective || "").slice(0, 100)}`);
+      }
+      if (cryptoRes) {
+        cryptoIntel = cryptoRes;
+        console.log(`[SOVEREIGN-LOOP] ₿ Crypto: ${(cryptoRes.cryptoDirective || "").slice(0, 100)}`);
+      }
+      if (treasuryRes) {
+        treasuryData = treasuryRes;
+        console.log(`[SOVEREIGN-LOOP] 🏦 Treasury: ${(treasuryRes.bondsDirective || "").slice(0, 100)}`);
+      }
+      if (sentimentRes) {
+        sentimentData = sentimentRes;
+        console.log(`[SOVEREIGN-LOOP] 🧠 Sentiment: ${(sentimentRes.sentimentDirective || "").slice(0, 100)}`);
+      }
     } catch (err) {
       console.warn("[SOVEREIGN-LOOP] OANDA fetch failed:", (err as Error).message);
       liveOandaState = { error: (err as Error).message };
     }
 
     const systemState = buildSystemState(openTrades, recentClosed, rollups, blocked, stats);
-    const enrichedState = { ...systemState, liveOandaState, marketIntel, economicCalendar, crossAssetPulse, cotData };
+    const enrichedState = { ...systemState, liveOandaState, marketIntel, economicCalendar, crossAssetPulse, cotData, macroData, stocksIntel, cryptoIntel, treasuryData, sentimentData };
 
     console.log(`[SOVEREIGN-LOOP] State: ${openTrades.length} open, ${recentClosed.length} recent, ${stats.length} stats`);
 
