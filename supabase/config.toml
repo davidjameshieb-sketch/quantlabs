@@ -62,3 +62,18 @@ verify_jwt = false
 
 [functions.forex-cot-data]
 verify_jwt = false
+
+[functions.forex-macro-data]
+verify_jwt = false
+
+[functions.stocks-intel]
+verify_jwt = false
+
+[functions.crypto-intel]
+verify_jwt = false
+
+[functions.treasury-commodities]
+verify_jwt = false
+
+[functions.market-sentiment]
+verify_jwt = false
