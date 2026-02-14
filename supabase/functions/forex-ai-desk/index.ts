@@ -869,8 +869,8 @@ async function executeAction(
     }
 
   // ── Activate Equity Circuit Breaker ──
-  } else if (action.type === "activate_circuit_breaker" && (action as any).maxDrawdownPct != null) {
-    const maxDD = Math.min(20, Math.max(1, (action as any).maxDrawdownPct as number));
+  } else if (action.type === "activate_circuit_breaker") {
+    const maxDD = Math.min(20, Math.max(1, (action as any).maxDrawdownPct ?? 5));
     const reason = (action as any).reason || "Floor Manager equity kill-switch";
     const ttlMinutes = Math.min(1440, Math.max(1, (action as any).ttlMinutes || 480));
 
