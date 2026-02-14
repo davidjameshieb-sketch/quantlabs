@@ -6,7 +6,7 @@ import { useState, useMemo, useEffect } from 'react';
 import { LongOnlyFilterProvider } from '@/contexts/LongOnlyFilterContext';
 import { motion } from 'framer-motion';
 import {
-  Globe, TrendingUp, BookOpen, Archive, Brain, HeartPulse, Mic, Eye, Atom,
+  Globe, TrendingUp, BookOpen, Archive, Brain, HeartPulse, Mic, Eye, Atom, Map,
 } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { DashboardLayout } from '@/components/dashboard/DashboardLayout';
@@ -22,6 +22,7 @@ import { GovernanceStateBanner } from '@/components/forex/GovernanceStateBanner'
 import { VoiceChatInterface } from '@/components/chat/VoiceChatInterface';
 import { FloorManagerView } from '@/components/forex/floor-manager/FloorManagerView';
 import { SingularityDashboard } from '@/components/forex/singularity/SingularityDashboard';
+import { SovereignWarMap } from '@/components/forex/singularity/warmap/SovereignWarMap';
 
 // Archive (lazy-loaded legacy dashboards)
 import { ForexArchiveDashboards } from '@/components/forex/ForexArchiveDashboards';
@@ -220,6 +221,9 @@ const ForexDashboard = () => {
               <TabsTrigger value="singularity" className="text-xs gap-1.5 data-[state=active]:bg-[hsl(var(--neural-cyan))] data-[state=active]:text-primary-foreground">
                 <Atom className="w-3.5 h-3.5" />Singularity
               </TabsTrigger>
+              <TabsTrigger value="war-map" className="text-xs gap-1.5 data-[state=active]:bg-[hsl(var(--neural-magenta))] data-[state=active]:text-primary-foreground">
+                <Map className="w-3.5 h-3.5" />War Map
+              </TabsTrigger>
               <TabsTrigger value="archive" className="text-xs gap-1.5 text-muted-foreground">
                 <Archive className="w-3.5 h-3.5" />Archive
               </TabsTrigger>
@@ -278,7 +282,14 @@ const ForexDashboard = () => {
               </LazyTabContent>
             </TabsContent>
 
-            {/* ─── TAB 7: Archive (all legacy dashboards) ─── */}
+            {/* ─── TAB 7: Sovereign War Map ─── */}
+            <TabsContent value="war-map" className="space-y-4">
+              <LazyTabContent label="War Map">
+                <SovereignWarMap />
+              </LazyTabContent>
+            </TabsContent>
+
+            {/* ─── TAB 8: Archive (all legacy dashboards) ─── */}
             <TabsContent value="archive" className="space-y-4">
               <LazyTabContent label="Archive">
                 <ForexArchiveDashboards
