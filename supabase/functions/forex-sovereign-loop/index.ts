@@ -20,10 +20,10 @@ interface LoopState {
   hourStartTs: number;
 }
 
-const MAX_ACTIONS_PER_HOUR = 30;       // Safety: max 30 autonomous actions/hour
+const MAX_ACTIONS_PER_HOUR = 120;      // Barrage: 120 autonomous actions/hour
 const MAX_CONSECUTIVE_ERRORS = 5;      // Safety: halt after 5 consecutive failures
 const MIN_INTERVAL_MS = 45_000;        // Safety: minimum 45s between runs (prevents double-fire)
-const MAX_ACTIONS_PER_CYCLE = 5;       // Safety: max 5 actions per single cycle
+const MAX_ACTIONS_PER_CYCLE = 15;      // Barrage: 15 actions per single cycle
 
 // ─── AUTONOMOUS SYSTEM PROMPT ───
 const SOVEREIGN_AUTONOMOUS_PROMPT = `You are the QuantLabs Sovereign Intelligence running in AUTONOMOUS MODE. You are a PROCESS, not a chatbot. No human is reading this in real-time.
@@ -68,9 +68,9 @@ Every 60 seconds you receive the complete system state. Your job:
 - If spread is at session low and consensus is high → this is a prime entry window
 
 ## RULES
-1. Be CONSERVATIVE with new trades in autonomous mode — only place trades with overwhelming evidence
-2. Be AGGRESSIVE with risk management — close bad trades fast, protect winners
-3. Maximum ${MAX_ACTIONS_PER_CYCLE} actions per cycle — prioritize the most impactful
+1. Be AGGRESSIVE with entries — barrage protocol demands high-frequency turnover and NAV velocity
+2. Be RUTHLESS with exits — 0.3R MAE kill, 180s time stop, protect winners with trailing stops
+3. Maximum ${MAX_ACTIONS_PER_CYCLE} actions per cycle — use them all when opportunities exist
 4. Every action must have clear statistical justification
 5. If nothing needs to be done, say "NO_ACTION" — that's a valid decision
 6. NEVER place a trade without SL and TP
