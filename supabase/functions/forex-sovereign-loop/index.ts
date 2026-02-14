@@ -89,7 +89,7 @@ Same as interactive mode: place_trade, close_trade, update_sl_tp, bypass_gate, r
 suspend_agent, reinstate_agent, adjust_position_sizing, adjust_gate_threshold,
 add_blacklist, remove_blacklist, activate_circuit_breaker, deactivate_circuit_breaker,
 adjust_evolution_param, create_gate, remove_gate, lead_lag_scan, liquidity_heatmap,
-get_account_summary, get_open_trades
+get_account_summary, get_open_trades, execute_liquidity_vacuum, arm_correlation_trigger, disarm_correlation_trigger
 
 ## SOVEREIGN-NATIVE ACTIONS (Unsandboxed — full architectural freedom)
 
@@ -1762,6 +1762,77 @@ Deno.serve(async (req) => {
         console.log(`[SOVEREIGN-LOOP] ⚡ L0 HARDWIRED ENGINE: ${firedCount}/${l0RuleResults.length} rules fired`);
       } else {
         console.log(`[SOVEREIGN-LOOP] ⚡ L0 HARDWIRED ENGINE: ${l0RuleResults.length} rules evaluated, 0 fired`);
+      }
+    }
+
+    // ─── L0: CORRELATION TRIGGER ENGINE (Ripple Strikes — armed via arm_correlation_trigger) ───
+    const { data: correlationTriggers } = await sb.from("gate_bypasses")
+      .select("gate_id, pair, reason")
+      .like("gate_id", "CORRELATION_TRIGGER:%")
+      .eq("revoked", false)
+      .gt("expires_at", new Date().toISOString());
+
+    if (correlationTriggers && correlationTriggers.length > 0) {
+      console.log(`[SOVEREIGN-LOOP] 🌊 ${correlationTriggers.length} correlation triggers armed`);
+
+      for (const trigger of correlationTriggers) {
+        try {
+          const config = JSON.parse(trigger.reason);
+          if (config.fired) continue; // Already fired, skip
+
+          const { triggerId, loudPair, quietPair, direction, thresholdPips, units, slPips, tpPips, loudBaseline } = config;
+          if (!loudPair || !quietPair || !loudBaseline) continue;
+
+          // Check if loud pair has moved beyond threshold from baseline
+          const pipMult = loudPair.includes("JPY") ? 0.01 : 0.0001;
+          const quietPipMult = quietPair.includes("JPY") ? 0.01 : 0.0001;
+
+          // Get current prices from marketIntel if available
+          let loudCurrent: number | null = null;
+          let quietCurrent: number | null = null;
+
+          if (marketIntel && (marketIntel as any).livePricing) {
+            const lp = (marketIntel as any).livePricing[loudPair];
+            const qp = (marketIntel as any).livePricing[quietPair];
+            if (lp) loudCurrent = (parseFloat(lp.bid || lp.closeoutBid || "0") + parseFloat(lp.ask || lp.closeoutAsk || "0")) / 2;
+            if (qp) quietCurrent = (parseFloat(qp.bid || qp.closeoutBid || "0") + parseFloat(qp.ask || qp.closeoutAsk || "0")) / 2;
+          }
+
+          if (!loudCurrent || !quietCurrent) continue;
+
+          const loudMovePips = Math.abs(loudCurrent - loudBaseline) / pipMult;
+
+          if (loudMovePips >= thresholdPips) {
+            // TRIGGER FIRED! Place trade on quiet pair
+            console.log(`[SOVEREIGN-LOOP] 🌊 RIPPLE STRIKE FIRED: ${triggerId} — ${loudPair} moved ${loudMovePips.toFixed(1)} pips (threshold=${thresholdPips})`);
+
+            const entryPrice = quietCurrent;
+            const sl = direction === "long" ? entryPrice - slPips * quietPipMult : entryPrice + slPips * quietPipMult;
+            const tp = direction === "long" ? entryPrice + tpPips * quietPipMult : entryPrice - tpPips * quietPipMult;
+
+            l1Actions.push({
+              type: "place_trade",
+              pair: quietPair,
+              direction,
+              units: units || 500,
+              stopLossPrice: parseFloat(sl.toFixed(5)),
+              takeProfitPrice: parseFloat(tp.toFixed(5)),
+              reason: `RIPPLE-STRIKE: ${triggerId} — ${loudPair} moved ${loudMovePips.toFixed(1)}pips`,
+            });
+            l1Alerts.push(`🌊 RIPPLE STRIKE: ${triggerId} — ${loudPair} +${loudMovePips.toFixed(1)}pip → firing ${direction} ${quietPair}`);
+
+            // Mark trigger as fired
+            config.fired = true;
+            config.firedAt = new Date().toISOString();
+            config.loudMoveAtFire = loudMovePips;
+            await sb.from("gate_bypasses")
+              .update({ reason: JSON.stringify(config) })
+              .eq("gate_id", trigger.gate_id)
+              .eq("revoked", false);
+          }
+        } catch (trigErr) {
+          console.warn(`[SOVEREIGN-LOOP] Correlation trigger eval error: ${(trigErr as Error).message}`);
+        }
       }
     }
 

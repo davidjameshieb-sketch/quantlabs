@@ -253,6 +253,9 @@ oanda-market-intel, forex-economic-calendar, batch-prices, forex-cot-data, forex
 - **create_synthetic_barrage**: Executes multiple pairs as a single atomic correlated unit ("Correlation Chain"). Required: barrageId (e.g., "usd-weakness-barrage"), pairs (array of 2-6 pairs), direction ("long"/"short"). Optional: unitsPerLeg (default 500), sharedStopPips (default 15), sharedTpPips (default 30), theme (e.g., "USD Weakness", "JPY Carry Unwind"), reason, ttlMinutes (default 480). All legs execute simultaneously with shared risk parameters. Trade a macro theme as one unit.
 - **adjust_session_sl_tp**: Dynamically widens or tightens SL/TP parameters for a specific session ("Volatility Dampener"). Required: session (one of: "asian", "london", "ny-open", "ny-overlap", "late-ny", "rollover", "all"). At least one of: trailingStopPips (3-50), takeProfitMultiplier (0.5-5.0x), stopLossMultiplier (0.5-3.0x). Optional: reason, ttlMinutes (default 240). Use before high-impact data releases to widen the "lungs" so trades survive the initial noise.
 - **blacklist_regime_for_pair**: Blocks a specific pair+regime combination without suspending the entire agent ("Kill-Switch Evolution"). Required: pair, regime (e.g., "breakdown", "compression", "trending", "transition"). Optional: direction ("long"/"short" to block only one side), reason, ttlMinutes (default 1440/24h, max 2880/48h). Use when a regime consistently fails on a specific pair due to underlying fundamentals (e.g., breakdown shorts on USD_CAD failing because of oil flows).
+- **execute_liquidity_vacuum**: The "Ghost Order" — reads the OANDA order book for a pair, identifies the densest retail stop cluster, and places a LIMIT order inside it to capture the stop-hunt wick. Required: pair, direction ("long"/"short"). Optional: clusterSide ("above"/"below" — which side of current price to target, auto-detected from direction if omitted), offsetPips (how many pips inside the cluster to place the limit, default 2), units (default 500), expirySeconds (how long the limit order stays active, default 300/5min), stopLossPips (default 10), takeProfitPips (default 20), reason. This transforms us from being swept BY stop-hunts to profiting FROM them.
+- **arm_correlation_trigger**: Arms a standing "Ripple Strike" trigger that the sovereign loop evaluates every cycle. When the "loud" pair moves beyond the threshold and the "quiet" pair hasn't caught up, the loop fires a trade on the quiet pair automatically. Required: triggerId (e.g., "eur-usd-to-eur-gbp"), loudPair, quietPair, direction ("long"/"short" — direction to trade the quiet pair), thresholdPips (minimum move on loud pair to trigger, default 8). Optional: units (default 500), maxLagMinutes (if the loud pair moved more than this many minutes ago, don't fire — default 5), correlationGroup (e.g., "USD-BLOC"), stopLossPips (default 12), takeProfitPips (default 25), reason, ttlMinutes (default 480/8h). NOTE: Execution is NOT sub-second — it fires on the next sovereign loop cycle (60-600s depending on interval). For institutional-speed arb you'd need a dedicated streaming connection, which is outside our current architecture.
+- **disarm_correlation_trigger**: Removes an armed correlation trigger. Required: triggerId.
 
 ### Valid Gate IDs for bypass_gate:
 G1_FRICTION, G2_NO_HTF_WEAK_MTF, G3_EDGE_DECAY, G4_SPREAD_INSTABILITY, G5_COMPRESSION_LOW_SESSION, G6_OVERTRADING, G7_LOSS_CLUSTER_WEAK_MTF, G8_HIGH_SHOCK, G9_PRICE_DATA_UNAVAILABLE, G10_ANALYSIS_UNAVAILABLE, G11_EXTENSION_EXHAUSTION, G12_AGENT_DECORRELATION, + any dynamic G13+ gates
@@ -1539,6 +1542,199 @@ async function executeAction(
       results.push({ action: "blacklist_regime_for_pair", success: true, detail: `${pair} BLACKLISTED in "${regime}" regime${direction ? ` (${direction} only)` : ""}. Active for ${Math.round(ttlMinutes / 60)}h. Auto-trade pipeline blocks matching intents in real-time. Remove with revoke_bypass on ${key}.` });
     }
 
+  // ── Execute Liquidity Vacuum (Ghost Order — Limit into Stop Cluster) ──
+  } else if (action.type === "execute_liquidity_vacuum" && (action as any).pair && (action as any).direction) {
+    const pair = ((action as any).pair as string).replace("/", "_");
+    const direction = (action as any).direction as string;
+    const offsetPips = Math.max(0, Math.min(10, (action as any).offsetPips ?? 2));
+    const units = Math.max(100, Math.min(10000, (action as any).units ?? 500));
+    const expirySeconds = Math.max(30, Math.min(3600, (action as any).expirySeconds ?? 300));
+    const slPips = Math.max(3, Math.min(30, (action as any).stopLossPips ?? 10));
+    const tpPips = Math.max(5, Math.min(50, (action as any).takeProfitPips ?? 20));
+    const reason = (action as any).reason || "Liquidity Vacuum — ghost order into retail cluster";
+
+    if (!["long", "short"].includes(direction)) {
+      results.push({ action: "execute_liquidity_vacuum", success: false, detail: `Invalid direction: ${direction}` });
+    } else {
+      try {
+        // 1. Fetch order book to find retail stop clusters
+        let orderBookData: any = null;
+        try {
+          orderBookData = await oandaRequest(`/v3/instruments/${pair}/orderBook`, "GET", undefined, environment);
+        } catch (obErr) {
+          console.warn(`[VACUUM] Order book fetch failed for ${pair}: ${(obErr as Error).message}`);
+        }
+
+        // 2. Fetch current pricing
+        const pricing = await oandaRequest(`/v3/accounts/{accountId}/pricing?instruments=${pair}`, "GET", undefined, environment);
+        const priceInfo = pricing.prices?.[0];
+        const bid = parseFloat(priceInfo?.bids?.[0]?.price || "0");
+        const ask = parseFloat(priceInfo?.asks?.[0]?.price || "0");
+        const mid = (bid + ask) / 2;
+        const pipMult = pair.includes("JPY") ? 0.01 : 0.0001;
+
+        // 3. Find the densest cluster from order book or use round-number heuristic
+        let targetPrice: number;
+        let clusterInfo = "round-number heuristic";
+
+        if (orderBookData?.orderBook?.buckets) {
+          const buckets = orderBookData.orderBook.buckets as { price: string; longCountPercent: string; shortCountPercent: string }[];
+          // For a LONG vacuum, we want to buy at a dip caused by retail stop-losses BELOW current price
+          // For a SHORT vacuum, we want to sell at a spike caused by retail stop-losses ABOVE current price
+          const relevantBuckets = buckets
+            .map(b => ({
+              price: parseFloat(b.price),
+              density: direction === "long" ? parseFloat(b.longCountPercent) : parseFloat(b.shortCountPercent),
+            }))
+            .filter(b => direction === "long" ? b.price < mid : b.price > mid)
+            .filter(b => Math.abs(b.price - mid) / pipMult <= 25) // Within 25 pips
+            .sort((a, b) => b.density - a.density);
+
+          if (relevantBuckets.length > 0) {
+            const cluster = relevantBuckets[0];
+            // Place limit INSIDE the cluster (offset pips deeper)
+            targetPrice = direction === "long"
+              ? cluster.price - offsetPips * pipMult
+              : cluster.price + offsetPips * pipMult;
+            clusterInfo = `orderBook cluster @ ${cluster.price.toFixed(5)} (density=${cluster.density}%, offset=${offsetPips}pips inside)`;
+          } else {
+            // Fallback: nearest round number
+            const roundLevel = direction === "long"
+              ? Math.floor(mid / (50 * pipMult)) * (50 * pipMult) - offsetPips * pipMult
+              : Math.ceil(mid / (50 * pipMult)) * (50 * pipMult) + offsetPips * pipMult;
+            targetPrice = roundLevel;
+            clusterInfo = `round-number fallback @ ${roundLevel.toFixed(5)}`;
+          }
+        } else {
+          // No order book available — use round-number heuristic
+          const roundLevel = direction === "long"
+            ? Math.floor(mid / (50 * pipMult)) * (50 * pipMult) - offsetPips * pipMult
+            : Math.ceil(mid / (50 * pipMult)) * (50 * pipMult) + offsetPips * pipMult;
+          targetPrice = roundLevel;
+          clusterInfo = `round-number heuristic @ ${roundLevel.toFixed(5)} (no orderBook data)`;
+        }
+
+        // 4. Calculate SL/TP from the limit price
+        const sl = direction === "long" ? targetPrice - slPips * pipMult : targetPrice + slPips * pipMult;
+        const tp = direction === "long" ? targetPrice + tpPips * pipMult : targetPrice - tpPips * pipMult;
+
+        // 5. Place LIMIT order via OANDA
+        const signedUnits = direction === "short" ? -units : units;
+        const gtdTime = new Date(Date.now() + expirySeconds * 1000).toISOString();
+        const orderPayload: any = {
+          order: {
+            type: "LIMIT",
+            instrument: pair,
+            units: signedUnits.toString(),
+            price: targetPrice.toFixed(5),
+            timeInForce: "GTD",
+            gtdTime,
+            positionFill: "DEFAULT",
+            stopLossOnFill: { price: sl.toFixed(5), timeInForce: "GTC" },
+            takeProfitOnFill: { price: tp.toFixed(5), timeInForce: "GTC" },
+          },
+        };
+
+        const result = await oandaRequest("/v3/accounts/{accountId}/orders", "POST", orderPayload, environment);
+        const orderId = result.orderCreateTransaction?.id || result.orderFillTransaction?.id;
+
+        // Log to DB
+        await sb.from("oanda_orders").insert({
+          user_id: "00000000-0000-0000-0000-000000000000",
+          signal_id: `vacuum-${Date.now()}`,
+          currency_pair: pair,
+          direction,
+          units,
+          status: "pending",
+          environment,
+          agent_id: "floor-manager-vacuum",
+          oanda_order_id: orderId,
+          requested_price: targetPrice,
+        });
+
+        console.log(`[VACUUM] Ghost LIMIT order placed: ${direction} ${units} ${pair} @ ${targetPrice.toFixed(5)} — cluster: ${clusterInfo} — expires in ${expirySeconds}s`);
+        results.push({
+          action: "execute_liquidity_vacuum",
+          success: true,
+          detail: `Ghost LIMIT ${direction} ${units} ${pair} @ ${targetPrice.toFixed(5)} — ${clusterInfo}. SL=${sl.toFixed(5)} TP=${tp.toFixed(5)}. Expires in ${Math.round(expirySeconds / 60)}m. Order ID: ${orderId}`,
+          data: { orderId, targetPrice, clusterInfo, sl, tp, expirySeconds, mid },
+        });
+      } catch (vacErr) {
+        results.push({ action: "execute_liquidity_vacuum", success: false, detail: `Vacuum failed: ${(vacErr as Error).message}` });
+      }
+    }
+
+  // ── Arm Correlation Trigger (Ripple Strike) ──
+  } else if (action.type === "arm_correlation_trigger" && (action as any).triggerId && (action as any).loudPair && (action as any).quietPair && (action as any).direction) {
+    const triggerId = (action as any).triggerId as string;
+    const loudPair = ((action as any).loudPair as string).replace("/", "_");
+    const quietPair = ((action as any).quietPair as string).replace("/", "_");
+    const direction = (action as any).direction as string;
+    const thresholdPips = Math.max(3, Math.min(30, (action as any).thresholdPips ?? 8));
+    const units = Math.max(100, Math.min(10000, (action as any).units ?? 500));
+    const maxLagMinutes = Math.max(1, Math.min(30, (action as any).maxLagMinutes ?? 5));
+    const correlationGroup = (action as any).correlationGroup || null;
+    const slPips = Math.max(3, Math.min(30, (action as any).stopLossPips ?? 12));
+    const tpPips = Math.max(5, Math.min(50, (action as any).takeProfitPips ?? 25));
+    const reason = (action as any).reason || "Ripple Strike — correlation trigger armed";
+    const ttlMinutes = Math.min(1440, Math.max(30, (action as any).ttlMinutes || 480));
+
+    if (!["long", "short"].includes(direction)) {
+      results.push({ action: "arm_correlation_trigger", success: false, detail: `Invalid direction: ${direction}` });
+    } else {
+      const key = `CORRELATION_TRIGGER:${triggerId}`;
+      await sb.from("gate_bypasses").update({ revoked: true }).eq("gate_id", key).eq("revoked", false);
+
+      // Capture baseline prices for both pairs at arming time
+      let loudBaseline: number | null = null;
+      let quietBaseline: number | null = null;
+      try {
+        const pricingRes = await oandaRequest(`/v3/accounts/{accountId}/pricing?instruments=${loudPair},${quietPair}`, "GET", undefined, environment);
+        for (const p of (pricingRes.prices || []) as any[]) {
+          const mid = (parseFloat(p.bids?.[0]?.price || "0") + parseFloat(p.asks?.[0]?.price || "0")) / 2;
+          if (p.instrument === loudPair) loudBaseline = mid;
+          if (p.instrument === quietPair) quietBaseline = mid;
+        }
+      } catch (priceErr) {
+        console.warn(`[RIPPLE] Baseline price fetch failed: ${(priceErr as Error).message}`);
+      }
+
+      const payload = {
+        triggerId, loudPair, quietPair, direction, thresholdPips,
+        units, maxLagMinutes, correlationGroup, slPips, tpPips, reason,
+        loudBaseline, quietBaseline,
+        armedAt: new Date().toISOString(),
+        fired: false,
+      };
+
+      const { error: insertErr } = await sb.from("gate_bypasses").insert({
+        gate_id: key,
+        pair: quietPair,
+        reason: JSON.stringify(payload),
+        expires_at: new Date(Date.now() + ttlMinutes * 60 * 1000).toISOString(),
+        created_by: "sovereign-intelligence",
+      });
+      if (insertErr) {
+        results.push({ action: "arm_correlation_trigger", success: false, detail: insertErr.message });
+      } else {
+        console.log(`[RIPPLE] Correlation trigger ARMED: ${triggerId} — ${loudPair}→${quietPair} ${direction} @ ≥${thresholdPips}pip move — TTL ${ttlMinutes}m`);
+        results.push({
+          action: "arm_correlation_trigger",
+          success: true,
+          detail: `Ripple trigger "${triggerId}" ARMED: When ${loudPair} moves ≥${thresholdPips} pips, fire ${direction} ${units} ${quietPair} (SL=${slPips}pip, TP=${tpPips}pip). Active for ${Math.round(ttlMinutes / 60)}h. Baselines: ${loudPair}=${loudBaseline?.toFixed(5) || 'N/A'}, ${quietPair}=${quietBaseline?.toFixed(5) || 'N/A'}. NOTE: Fires on next sovereign loop cycle (not sub-second).`,
+          data: payload,
+        });
+      }
+    }
+
+  // ── Disarm Correlation Trigger ──
+  } else if (action.type === "disarm_correlation_trigger" && (action as any).triggerId) {
+    const triggerId = (action as any).triggerId as string;
+    const key = `CORRELATION_TRIGGER:${triggerId}`;
+    await sb.from("gate_bypasses").update({ revoked: true }).eq("gate_id", key).eq("revoked", false);
+    console.log(`[RIPPLE] Correlation trigger "${triggerId}" DISARMED`);
+    results.push({ action: "disarm_correlation_trigger", success: true, detail: `Correlation trigger "${triggerId}" disarmed` });
+
   } else {
     results.push({ action: action.type, success: false, detail: `Unknown action: ${action.type}` });
   }
@@ -1823,7 +2019,10 @@ IMPORTANT:
 - Use lead_lag_scan proactively to find cross-pair opportunities
 - Use liquidity_heatmap on every open trade to protect against stop hunts
 - Use create_gate when you detect failure patterns not covered by G1-G12
-- Be PREDATORY with sizing — 2.0x when edge aligns, 0.1x when muddy`;
+- Be PREDATORY with sizing — 2.0x when edge aligns, 0.1x when muddy
+- **execute_liquidity_vacuum**: Ghost LIMIT order into a retail stop cluster. Reads orderBook, finds densest cluster, places limit order INSIDE it. Requires pair, direction. The wick IS our entry.
+- **arm_correlation_trigger**: Arms a standing "Ripple Strike" — sovereign loop monitors loud pair and fires on quiet pair when threshold is breached. Requires triggerId, loudPair, quietPair, direction, thresholdPips. NOT sub-second — fires on next loop cycle.
+- **disarm_correlation_trigger**: Removes an armed trigger. Requires triggerId.`;
 
     const voiceAddendum = isVoice ? `\n\n## VOICE MODE ACTIVE
 You are speaking aloud to the operator. Adjust your style:
