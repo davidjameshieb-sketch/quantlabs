@@ -1,9 +1,10 @@
 // Forex War Room — Sovereign Barrage Protocol Command Center
-// Single-view predatory dashboard tracking the path to $500
+// Two tabs: War Room + AI Floor Manager
 
 import { useState, useEffect } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { Globe, TrendingUp, MessageSquare, X } from 'lucide-react';
+import { motion } from 'framer-motion';
+import { Globe, TrendingUp, Mic, Swords } from 'lucide-react';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { DashboardLayout } from '@/components/dashboard/DashboardLayout';
 import { IntelligenceModeBadge } from '@/components/dashboard/IntelligenceModeBadge';
 import { WarRoomDashboard } from '@/components/forex/warroom/WarRoomDashboard';
@@ -22,7 +23,6 @@ import { useTradeAnalytics } from '@/hooks/useTradeAnalytics';
 import { useRealtimeOrders } from '@/hooks/useRealtimeOrders';
 
 const ForexDashboard = () => {
-  const [chatOpen, setChatOpen] = useState(false);
   const [livePricesReady, setLivePricesReady] = useState(hasLivePrices());
 
   const { connected, account, openTrades, fetchAccountSummary } = useOandaExecution();
@@ -44,7 +44,6 @@ const ForexDashboard = () => {
     fetchAccountSummary('live');
   }, [fetchAccountSummary]);
 
-  // Rebuild learning memory from post-revamp real trades
   useEffect(() => {
     if (!executionMetrics?.recentOrders) return;
     const CUTOFF = new Date('2026-02-13T00:00:00Z').getTime();
@@ -107,41 +106,32 @@ const ForexDashboard = () => {
           </div>
         </motion.div>
 
-        {/* War Room — 6 panels */}
-        <WarRoomDashboard
-          account={account}
-          executionMetrics={executionMetrics}
-          tradeAnalytics={tradeAnalytics}
-          connected={connected}
-        />
+        {/* Tabs: War Room + AI Floor Manager */}
+        <Tabs defaultValue="war-room" className="space-y-4">
+          <TabsList className="bg-card/50 border border-border/30 h-auto gap-1 p-1">
+            <TabsTrigger value="war-room" className="text-xs gap-1.5 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
+              <Swords className="w-3.5 h-3.5" />War Room
+            </TabsTrigger>
+            <TabsTrigger value="ai-desk" className="text-xs gap-1.5 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
+              <Mic className="w-3.5 h-3.5" />AI Floor Manager
+            </TabsTrigger>
+          </TabsList>
 
-        {/* Floating AI Desk */}
-        <AnimatePresence>
-          {chatOpen && (
-            <motion.div
-              initial={{ opacity: 0, y: 40, scale: 0.95 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: 40, scale: 0.95 }}
-              className="fixed bottom-20 right-6 z-50 w-[420px] h-[560px] rounded-xl border border-border/50 bg-card/95 backdrop-blur-lg shadow-2xl overflow-hidden"
-            >
-              <div className="flex items-center justify-between px-4 py-2 border-b border-border/30 bg-muted/40">
-                <span className="text-xs font-bold uppercase tracking-wider text-foreground">AI Floor Manager</span>
-                <button onClick={() => setChatOpen(false)} className="text-muted-foreground hover:text-foreground">
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-              <VoiceChatInterface className="h-[calc(100%-40px)]" />
-            </motion.div>
-          )}
-        </AnimatePresence>
+          <TabsContent value="war-room" className="space-y-4">
+            <WarRoomDashboard
+              account={account}
+              executionMetrics={executionMetrics}
+              tradeAnalytics={tradeAnalytics}
+              connected={connected}
+            />
+          </TabsContent>
 
-        {/* FAB */}
-        <button
-          onClick={() => setChatOpen(prev => !prev)}
-          className="fixed bottom-6 right-6 z-50 w-14 h-14 rounded-full bg-primary text-primary-foreground shadow-lg flex items-center justify-center hover:scale-105 transition-transform"
-        >
-          {chatOpen ? <X className="w-6 h-6" /> : <MessageSquare className="w-6 h-6" />}
-        </button>
+          <TabsContent value="ai-desk" className="space-y-4">
+            <div className="h-[calc(100vh-280px)] min-h-[500px]">
+              <VoiceChatInterface className="h-full" />
+            </div>
+          </TabsContent>
+        </Tabs>
       </div>
     </DashboardLayout>
   );
