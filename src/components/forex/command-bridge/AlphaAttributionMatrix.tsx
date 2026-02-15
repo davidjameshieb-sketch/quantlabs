@@ -17,8 +17,8 @@ export function AlphaAttributionMatrix() {
 
     for (const e of attributionEntries) {
       const p = e.payload;
-      const agent = (p.agentId as string) || (p.agent_id as string) || (p.agent as string) || '';
-      const directive = (p.name as string) || (p.directiveId as string) || e.memory_key;
+      const agent = String((p.agentId as string) || (p.agent_id as string) || (p.agent as string) || '');
+      const directive = String((p.name as string) || (p.directiveId as string) || e.memory_key || '');
       const pnl = (p.pnl as number) || (p.net_pips as number) || 0;
       const trades = (p.trades as number) || (p.totalTrades as number) || 0;
       const wr = (p.winRate as number) || (p.win_rate as number) || 0;
@@ -78,7 +78,7 @@ export function AlphaAttributionMatrix() {
                     <TrendingDown className="w-3 h-3 text-red-400 flex-shrink-0" />
                   )}
                   <span className="font-mono font-bold text-foreground truncate flex-1">
-                    {a.agent.replace('directive:', '').slice(0, 30)}
+                    {String(a.agent).replace('directive:', '').slice(0, 30)}
                   </span>
                   <span className={`font-mono text-[10px] ${a.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
                     {a.pnl >= 0 ? '+' : ''}{a.pnl.toFixed(1)}p
