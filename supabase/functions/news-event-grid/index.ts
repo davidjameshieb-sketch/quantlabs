@@ -90,24 +90,33 @@ Deno.serve(async (req) => {
           const data = await res.json();
           const md = data.data?.markdown || data.markdown || "";
 
-          // Use Gemini to extract events
+          // Use Gemini flash-lite for simple event extraction
           const geminiRes = await fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${Deno.env.get("LOVABLE_API_KEY")}`,
+            "https://ai.gateway.lovable.dev/v1/chat/completions",
             {
               method: "POST",
-              headers: { "Content-Type": "application/json" },
+              headers: {
+                Authorization: `Bearer ${Deno.env.get("LOVABLE_API_KEY")}`,
+                "Content-Type": "application/json",
+              },
               body: JSON.stringify({
-                contents: [{ parts: [{ text: `Extract high-impact USD economic events from this calendar. Current time: ${new Date().toISOString()}. Return JSON array of events happening in the next ${windowMinutes} minutes:\n[{"title":"...", "time":"ISO8601", "currency":"USD", "impact":"high"}]\nIf none upcoming, return [].\n\nCalendar:\n${md.slice(0, 5000)}` }] }],
-                generationConfig: { temperature: 0.1, maxOutputTokens: 500, responseMimeType: "application/json" },
+                model: "google/gemini-2.5-flash-lite",
+                messages: [
+                  { role: "system", content: "Extract economic events. Return valid JSON array only." },
+                  { role: "user", content: `Extract high-impact USD economic events from this calendar. Current time: ${new Date().toISOString()}. Return JSON array of events happening in the next ${windowMinutes} minutes:\n[{"title":"...", "time":"ISO8601", "currency":"USD", "impact":"high"}]\nIf none upcoming, return [].\n\nCalendar:\n${md.slice(0, 5000)}` }
+                ],
+                temperature: 0.1,
+                max_tokens: 500,
               }),
             }
           );
 
           if (geminiRes.ok) {
             const geminiData = await geminiRes.json();
-            const text = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || "[]";
+            const raw = geminiData.choices?.[0]?.message?.content || "[]";
+            const jsonMatch = raw.match(/\[[\s\S]*\]/);
             try {
-              upcomingEvents = JSON.parse(text);
+              upcomingEvents = JSON.parse(jsonMatch?.[0] || "[]");
             } catch { /* skip */ }
           }
         }

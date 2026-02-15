@@ -84,12 +84,18 @@ Deno.serve(async (req) => {
       if (combinedText.length > 100 && lovableKey) {
         try {
           const geminiRes = await fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${lovableKey}`,
+            "https://ai.gateway.lovable.dev/v1/chat/completions",
             {
               method: "POST",
-              headers: { "Content-Type": "application/json" },
+              headers: {
+                Authorization: `Bearer ${lovableKey}`,
+                "Content-Type": "application/json",
+              },
               body: JSON.stringify({
-                contents: [{ parts: [{ text: `You are a central bank policy analyst. Analyze these ${bank.name} communications and score the hawkish/dovish tone.
+                model: "google/gemini-2.5-flash-lite",
+                messages: [
+                  { role: "system", content: "You are a central bank policy analyst. Score hawkish/dovish tone. Respond in valid JSON only." },
+                  { role: "user", content: `Analyze these ${bank.name} communications and score the hawkish/dovish tone.
 
 Previous hawkish score: ${previousScore}/100
 
@@ -108,16 +114,23 @@ Respond in JSON:
   "keyPhrases": ["phrase1", "phrase2"],
   "fxImpact": "strengthening|neutral|weakening for ${bank.currency}",
   "reasoning": "one paragraph"
-}` }] }],
-                generationConfig: { temperature: 0.2, maxOutputTokens: 500, responseMimeType: "application/json" },
+}` }
+                ],
+                temperature: 0.2,
+                max_tokens: 500,
               }),
             }
           );
 
           if (geminiRes.ok) {
             const data = await geminiRes.json();
-            const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
-            try { analysis = JSON.parse(text); } catch { analysis.reasoning = text.slice(0, 300); }
+            const raw = data.choices?.[0]?.message?.content || "";
+            const jsonMatch = raw.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+              try { analysis = JSON.parse(jsonMatch[0]); } catch { analysis.reasoning = raw.slice(0, 300); }
+            } else {
+              analysis.reasoning = raw.slice(0, 300);
+            }
           }
         } catch (e) {
           console.error(`${bank.name} Gemini error:`, e);
