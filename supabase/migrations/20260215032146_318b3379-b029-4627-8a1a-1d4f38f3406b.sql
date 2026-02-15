@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX IF NOT EXISTS uq_gate_bypasses_gate_id ON public.gate_bypasses (gate_id);
