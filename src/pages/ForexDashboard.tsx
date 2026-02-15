@@ -3,7 +3,7 @@
 
 import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Globe, TrendingUp, Mic, Swords, Brain, Terminal, Radar, Cpu } from 'lucide-react';
+import { Globe, TrendingUp, Mic, Swords, Brain, Terminal, Radar, Cpu, Orbit } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { DashboardLayout } from '@/components/dashboard/DashboardLayout';
 import { IntelligenceModeBadge } from '@/components/dashboard/IntelligenceModeBadge';
@@ -13,6 +13,7 @@ import { SovereignIntelligencePanel } from '@/components/forex/warroom/Sovereign
 import { SovereignTerminal } from '@/components/forex/warroom/SovereignTerminal';
 import { StrategyWorldDashboard } from '@/components/forex/intelligence/StrategyWorldDashboard';
 import { MicrostructureControlRoom } from '@/components/forex/microstructure/MicrostructureControlRoom';
+import { CommandBridge } from '@/components/forex/command-bridge/CommandBridge';
 
 import { fetchOandaLivePrices, hasLivePrices } from '@/lib/forex';
 import {
@@ -131,6 +132,9 @@ const ForexDashboard = () => {
             <TabsTrigger value="microstructure" className="text-xs gap-1.5 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
               <Cpu className="w-3.5 h-3.5" />Microstructure
             </TabsTrigger>
+            <TabsTrigger value="command-bridge" className="text-xs gap-1.5 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
+              <Orbit className="w-3.5 h-3.5" />Command Bridge
+            </TabsTrigger>
           </TabsList>
 
           <TabsContent value="war-room" className="space-y-4">
@@ -162,6 +166,10 @@ const ForexDashboard = () => {
 
           <TabsContent value="microstructure" className="space-y-4">
             <MicrostructureControlRoom />
+          </TabsContent>
+
+          <TabsContent value="command-bridge" className="space-y-4">
+            <CommandBridge />
           </TabsContent>
         </Tabs>
       </div>
