@@ -60,6 +60,9 @@ export interface IntelligenceState {
   slippage: { profiles: SlippageProfile[]; generatedAt: string } | null;
   hawkometer: Record<string, unknown> | null;
   godSignal: Record<string, unknown> | null;
+  fixingVolatility: Record<string, unknown> | null;
+  crossVenueDom: Record<string, unknown> | null;
+  flashCrash: Record<string, unknown> | null;
   loading: boolean;
   lastUpdated: Date | null;
 }
@@ -71,6 +74,9 @@ const MEMORY_KEYS = [
   { type: 'adversarial_slippage', key: 'fill_quality_audit' },
   { type: 'hawkometer_analysis', key: null },
   { type: 'god_signal', key: null },
+  { type: 'fixing_volatility', key: 'london_4pm_fix' },
+  { type: 'cross_venue_dom', key: 'aggregated_depth' },
+  { type: 'flash_crash_monitor', key: 'killswitch_status' },
 ];
 
 export function useIntelligenceState(pollMs = 30_000): IntelligenceState {
@@ -81,6 +87,9 @@ export function useIntelligenceState(pollMs = 30_000): IntelligenceState {
     slippage: null,
     hawkometer: null,
     godSignal: null,
+    fixingVolatility: null,
+    crossVenueDom: null,
+    flashCrash: null,
     loading: true,
     lastUpdated: null,
   });
@@ -108,6 +117,9 @@ export function useIntelligenceState(pollMs = 30_000): IntelligenceState {
         slippage: byType.adversarial_slippage || null,
         hawkometer: byType.hawkometer_analysis || null,
         godSignal: byType.god_signal || null,
+        fixingVolatility: byType.fixing_volatility || null,
+        crossVenueDom: byType.cross_venue_dom || null,
+        flashCrash: byType.flash_crash_monitor || null,
         loading: false,
         lastUpdated: new Date(),
       });
