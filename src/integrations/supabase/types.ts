@@ -14,6 +14,33 @@ export type Database = {
   }
   public: {
     Tables: {
+      agent_configs: {
+        Row: {
+          agent_id: string
+          config: Json
+          created_at: string | null
+          id: string
+          is_active: boolean | null
+          updated_at: string | null
+        }
+        Insert: {
+          agent_id: string
+          config?: Json
+          created_at?: string | null
+          id?: string
+          is_active?: boolean | null
+          updated_at?: string | null
+        }
+        Update: {
+          agent_id?: string
+          config?: Json
+          created_at?: string | null
+          id?: string
+          is_active?: boolean | null
+          updated_at?: string | null
+        }
+        Relationships: []
+      }
       analytics_snapshot_runs: {
         Row: {
           created_at: string
@@ -210,6 +237,8 @@ export type Database = {
           session_label: string | null
           signal_id: string
           slippage_pips: number | null
+          sovereign_override_status: string | null
+          sovereign_override_tag: string | null
           spread_at_entry: number | null
           status: string
           time_to_mfe_bars: number | null
@@ -271,6 +300,8 @@ export type Database = {
           session_label?: string | null
           signal_id: string
           slippage_pips?: number | null
+          sovereign_override_status?: string | null
+          sovereign_override_tag?: string | null
           spread_at_entry?: number | null
           status?: string
           time_to_mfe_bars?: number | null
@@ -332,6 +363,8 @@ export type Database = {
           session_label?: string | null
           signal_id?: string
           slippage_pips?: number | null
+          sovereign_override_status?: string | null
+          sovereign_override_tag?: string | null
           spread_at_entry?: number | null
           status?: string
           time_to_mfe_bars?: number | null
