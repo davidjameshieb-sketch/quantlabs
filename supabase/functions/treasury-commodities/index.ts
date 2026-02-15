@@ -150,28 +150,130 @@ async function fetchEIA(apiKey: string | undefined): Promise<Record<string, unkn
   return results;
 }
 
+// ── Copper/Gold Ratio (Risk-On/Risk-Off Proxy) ──
+async function fetchCopperGoldRatio(avKey: string | undefined): Promise<Record<string, unknown>> {
+  if (!avKey) return { error: "ALPHA_VANTAGE_API_KEY not configured for Copper/Gold ratio" };
+
+  try {
+    // Fetch Copper (HG) and Gold (GC) daily prices via Alpha Vantage commodities
+    const [copperRes, goldRes] = await Promise.all([
+      fetch(`https://www.alphavantage.co/query?function=COPPER&interval=monthly&apikey=${avKey}`),
+      fetch(`https://www.alphavantage.co/query?function=GOLD&interval=monthly&apikey=${avKey}`),
+    ]);
+
+    if (!copperRes.ok || !goldRes.ok) {
+      return { error: `Alpha Vantage returned ${copperRes.status}/${goldRes.status}` };
+    }
+
+    const copperData = await copperRes.json();
+    const goldData = await goldRes.json();
+
+    const copperSeries = copperData?.data || [];
+    const goldSeries = goldData?.data || [];
+
+    if (copperSeries.length === 0 || goldSeries.length === 0) {
+      return { error: "No copper/gold data available" };
+    }
+
+    const latestCopper = parseFloat(copperSeries[0]?.value || "0");
+    const latestGold = parseFloat(goldSeries[0]?.value || "0");
+    const prevCopper = copperSeries.length > 1 ? parseFloat(copperSeries[1]?.value || "0") : null;
+    const prevGold = goldSeries.length > 1 ? parseFloat(goldSeries[1]?.value || "0") : null;
+
+    const ratio = latestGold > 0 ? +(latestCopper / latestGold * 1000).toFixed(4) : 0;
+    const prevRatio = prevCopper && prevGold && prevGold > 0 ? +(prevCopper / prevGold * 1000).toFixed(4) : null;
+    const ratioChange = prevRatio ? +(ratio - prevRatio).toFixed(4) : null;
+
+    return {
+      copper: latestCopper,
+      gold: latestGold,
+      ratio,
+      prevRatio,
+      ratioChange,
+      signal: ratioChange !== null
+        ? (ratioChange < -0.5 ? "RISK-OFF — Prioritize JPY/CHF longs" : ratioChange > 0.5 ? "RISK-ON — Growth favored" : "NEUTRAL")
+        : "LOADING",
+      date: copperSeries[0]?.date,
+    };
+  } catch (e) {
+    console.warn("[TREASURY] Copper/Gold fetch failed:", e);
+    return { error: String(e) };
+  }
+}
+
+// ── VIX Term Structure (Contango/Backwardation) ──
+async function fetchVIXTermStructure(avKey: string | undefined): Promise<Record<string, unknown>> {
+  if (!avKey) return { error: "ALPHA_VANTAGE_API_KEY not configured for VIX term structure" };
+
+  try {
+    const res = await fetch(`https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol=VIX&outputsize=compact&apikey=${avKey}`);
+    if (!res.ok) {
+      await res.text();
+      return { error: `Alpha Vantage VIX returned ${res.status}` };
+    }
+
+    const data = await res.json();
+    const ts = data?.["Time Series (Daily)"] || {};
+    const dates = Object.keys(ts).sort().reverse();
+
+    if (dates.length < 5) return { error: "Insufficient VIX data" };
+
+    const spotVIX = parseFloat(ts[dates[0]]?.["4. close"] || "0");
+    const vix5dAgo = parseFloat(ts[dates[4]]?.["4. close"] || "0");
+
+    // Proxy term structure: if spot < 5d-ago → contango (normal); if spot > 5d-ago → backwardation (panic)
+    const termStructure = spotVIX > vix5dAgo * 1.05 ? "BACKWARDATION" : spotVIX < vix5dAgo * 0.95 ? "CONTANGO" : "FLAT";
+    const isBackwardation = termStructure === "BACKWARDATION";
+
+    return {
+      spotVIX,
+      vix5dAgo,
+      termStructure,
+      sizingDirective: isBackwardation ? "REDUCE_SIZING_0.2x — VIX backwardation detected, market expects immediate chaos" : "NORMAL",
+      signal: isBackwardation
+        ? "BACKWARDATION — Market broken, defensive posture required"
+        : termStructure === "CONTANGO"
+        ? "CONTANGO — Normal term structure, proceed"
+        : "FLAT — Neutral VIX structure",
+      date: dates[0],
+    };
+  } catch (e) {
+    console.warn("[TREASURY] VIX term structure fetch failed:", e);
+    return { error: String(e) };
+  }
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
 
   try {
     const EIA_API_KEY = Deno.env.get("EIA_API_KEY");
+    const AV_KEY = Deno.env.get("ALPHA_VANTAGE_API_KEY");
 
-    const [treasury, eia] = await Promise.all([
+    const [treasury, eia, copperGold, vixTerm] = await Promise.all([
       fetchTreasuryYields(),
       fetchEIA(EIA_API_KEY),
+      fetchCopperGoldRatio(AV_KEY),
+      fetchVIXTermStructure(AV_KEY),
     ]);
 
     // Bonds/Commodities directive
     const spread = treasury.spread2s10s as any;
     const oil = eia.crudeOilInventory as any;
+    const cgRatio = copperGold as any;
+    const vix = vixTerm as any;
     const signals: string[] = [];
     if (spread?.signal) signals.push(`2s10s: ${spread.value}% (${spread.signal})`);
     if (oil?.signal) signals.push(`Crude: ${oil.signal} (${oil.change > 0 ? "+" : ""}${oil.change}k bbl)`);
+    if (cgRatio?.signal && cgRatio.signal !== "LOADING") signals.push(`Cu/Au: ${cgRatio.signal}`);
+    if (vix?.signal) signals.push(`VIX: ${vix.signal}`);
 
     return json({
       bondsDirective: signals.join(" | ") || "Data loading...",
       treasury,
       energy: eia,
+      copperGold,
+      vixTermStructure: vixTerm,
       timestamp: new Date().toISOString(),
     });
   } catch (err) {
