@@ -46,7 +46,13 @@ export function ShadowAutoPromoter() {
         .limit(30);
 
       if (!error && data) {
-        setResults(data as unknown as BacktestResult[]);
+        const typed: BacktestResult[] = data.map(row => ({
+          id: row.id,
+          memory_key: row.memory_key,
+          payload: (row.payload ?? {}) as BacktestResult['payload'],
+          created_at: row.created_at,
+        }));
+        setResults(typed);
       }
     } catch {
       /* ignore */

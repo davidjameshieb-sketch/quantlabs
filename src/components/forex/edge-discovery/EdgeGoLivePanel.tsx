@@ -236,9 +236,9 @@ export function EdgeGoLivePanel() {
           </CardTitle>
         </CardHeader>
         <CardContent className="px-4 pb-3 space-y-2">
-          <CoverageRow label="Session Coverage" coverage={result.metrics.sessionCoverage as unknown as Record<string, number>} />
-          <CoverageRow label="Regime Coverage" coverage={result.metrics.regimeCoverage as unknown as Record<string, number>} />
-          <CoverageRow label="Direction Parity" coverage={result.metrics.directionParity as unknown as Record<string, number>} />
+          <CoverageRow label="Session Coverage" coverage={{ ...result.metrics.sessionCoverage }} />
+          <CoverageRow label="Regime Coverage" coverage={{ ...result.metrics.regimeCoverage }} />
+          <CoverageRow label="Direction Parity" coverage={{ ...result.metrics.directionParity }} />
         </CardContent>
       </Card>
 
