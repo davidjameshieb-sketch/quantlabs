@@ -19,6 +19,7 @@ import { OrderFlowDeltaPanel } from './OrderFlowDeltaPanel';
 import { ShadowSplitterPanel } from './ShadowSplitterPanel';
 import { DnaMutationPanel } from './DnaMutationPanel';
 import { CmeFuturesPanel } from './CmeFuturesPanel';
+import { DirectiveImpactLeaderboard } from './DirectiveImpactLeaderboard';
 
 interface StrategySection {
   title: string;
@@ -249,6 +250,15 @@ export function StrategyWorldDashboard() {
           <FixingVolatilityPanel data={state.fixingVolatility as any} />
         </SectionWrapper>
       </div>
+
+      {/* Directive Impact Leaderboard */}
+      <SectionWrapper
+        title="Directive Impact Leaderboard"
+        description="Ranks all ~400 sovereign directives by measurable P&L contribution, gate block counts, and win rate. Dead-weight directives with zero activity are flagged for pruning to keep the system lean."
+        role="Meta-Optimizer — ensures every directive earns its place in the fleet"
+      >
+        <DirectiveImpactLeaderboard />
+      </SectionWrapper>
     </motion.div>
   );
 }
