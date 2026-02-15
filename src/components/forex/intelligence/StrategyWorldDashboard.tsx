@@ -9,6 +9,7 @@ import { GodSignalPanel } from './GodSignalPanel';
 import { SentimentDivergencePanel } from './SentimentDivergencePanel';
 import { DarkPoolPanel } from './DarkPoolPanel';
 import { CorrelationMatrixPanel } from './CorrelationMatrixPanel';
+import { G19RippleTriggerPanel } from './G19RippleTriggerPanel';
 import { AdversarialSlippagePanel } from './AdversarialSlippagePanel';
 import { FixingVolatilityPanel } from './FixingVolatilityPanel';
 import { CrossVenueDOMPanel } from './CrossVenueDOMPanel';
@@ -49,7 +50,7 @@ export function StrategyWorldDashboard() {
     state.slippage, state.hawkometer, state.godSignal,
     state.fixingVolatility, state.crossVenueDom, state.flashCrash,
     state.orderflowDelta, state.shadowExecution, state.dnaMutation,
-    state.cmeFuturesDepth,
+    state.cmeFuturesDepth, state.currencyStrength,
   ].filter(Boolean).length;
 
   return (
@@ -64,7 +65,7 @@ export function StrategyWorldDashboard() {
           <Brain className="w-5 h-5 text-primary" />
           <h2 className="font-display text-lg font-bold">Sovereign Strategy World</h2>
           <Badge variant="outline" className="text-[8px] border-primary/40 text-primary">
-            {feedCount}/13 FEEDS ACTIVE
+            {feedCount}/14 FEEDS ACTIVE
           </Badge>
         </div>
         <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
@@ -122,15 +123,6 @@ export function StrategyWorldDashboard() {
         </SectionWrapper>
       </div>
 
-      {/* CME Institutional Depth — "God Order Book" */}
-      <SectionWrapper
-        title="Stage 2C — CME Futures Depth Proxy"
-        description="Fetches CME FX futures volume and price data via Polygon to identify institutional flow direction. Three sub-gates: (1) Divergence Gate compares retail positioning against CME commercial net-positioning for auto-sizing, (2) Iceberg Detection finds massive hidden buy/sell walls via volume-surge analysis, (3) Delta-Correlation triggers lead-lag scans when CME volume delta spikes before OANDA price moves."
-        role="Institutional Truth Signal — validates retail traps against CME 'hard ceiling' data"
-      >
-        <CmeFuturesPanel data={state.cmeFuturesDepth as any} />
-      </SectionWrapper>
-
       {/* Stage 3: Precision Strike */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <SectionWrapper
@@ -145,11 +137,29 @@ export function StrategyWorldDashboard() {
         </SectionWrapper>
 
         <SectionWrapper
-          title="Stage 3B — Cross-Venue DOM"
+          title="Stage 3B — G19 Ripple Trigger"
+          description="Aggregates live price moves across all 28 pairs into an 8-currency strength index. Detects 'Anchors' (currencies dominating 6+/7 counterparts) and 'Laggards' (quiet pairs in a loud move). The Divergence Kill-Switch vetoes trades against the dominant session flow."
+          role="Flow Trader — front-runs laggard pairs and vetoes weak-currency longs"
+        >
+          <G19RippleTriggerPanel data={state.currencyStrength as any} />
+        </SectionWrapper>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <SectionWrapper
+          title="Stage 3C — Cross-Venue DOM"
           description="Aggregates OANDA order book + position book to simulate institutional depth-of-market. Shows where large resting orders cluster (buy/sell walls), net retail positioning imbalance, and the 'Wall of Pain' — the price level that would cause maximum retail losses."
           role="Depth Proxy — reveals hidden order flow and institutional price targets"
         >
           <CrossVenueDOMPanel data={state.crossVenueDom as any} />
+        </SectionWrapper>
+
+        <SectionWrapper
+          title="Stage 3D — CME Futures Depth Proxy"
+          description="Fetches CME FX futures volume and price data via Polygon to identify institutional flow direction. Three sub-gates: Divergence Gate, Iceberg Detection, Delta-Correlation triggers."
+          role="Institutional Truth Signal — validates retail traps against CME 'hard ceiling' data"
+        >
+          <CmeFuturesPanel data={state.cmeFuturesDepth as any} />
         </SectionWrapper>
       </div>
 
