@@ -119,3 +119,15 @@ verify_jwt = false
 
 [functions.news-event-grid]
 verify_jwt = false
+
+[functions.asymmetric-risk-engine]
+verify_jwt = false
+
+[functions.cross-asset-latency]
+verify_jwt = false
+
+[functions.ghost-loop-backtester]
+verify_jwt = false
+
+[functions.hawkometer]
+verify_jwt = false
