@@ -92,3 +92,9 @@ verify_jwt = false
 
 [functions.crypto-onchain]
 verify_jwt = false
+
+[functions.check-execution-viability]
+verify_jwt = false
+
+[functions.wall-of-pain-injector]
+verify_jwt = false

@@ -14,6 +14,7 @@ import { useSovereignMemory, type SovereignMemoryEntry } from '@/hooks/useSovere
 import { useShadowOrders, type ShadowAgentStats } from '@/hooks/useShadowOrders';
 import { OrderBookHeatmap } from './OrderBookHeatmap';
 import { SyntheticPairsPanel } from './SyntheticPairsPanel';
+import { ShadowAutoPromoter } from './ShadowAutoPromoter';
 
 // ─── Shared Panel Wrapper ───
 const TPanel = ({ title, icon: Icon, count, children }: {
@@ -359,6 +360,9 @@ export function SovereignTerminal() {
           <TabsTrigger value="synthetic" className="text-xs gap-1.5 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
             <Layers className="w-3.5 h-3.5" />Synthetic Baskets
           </TabsTrigger>
+          <TabsTrigger value="auto-promote" className="text-xs gap-1.5 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
+            <Zap className="w-3.5 h-3.5" />Auto-Promoter
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="logic-tree">
@@ -375,6 +379,9 @@ export function SovereignTerminal() {
         </TabsContent>
         <TabsContent value="synthetic">
           <SyntheticPairsPanel />
+        </TabsContent>
+        <TabsContent value="auto-promote">
+          <ShadowAutoPromoter />
         </TabsContent>
       </Tabs>
     </div>
