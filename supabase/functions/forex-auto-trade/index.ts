@@ -1855,6 +1855,47 @@ function getG17LiquidityGapAlert(pair: string, currentPrice: number): { gapDetec
   return null;
 }
 
+// ─── G19 RIPPLE TRIGGER HELPERS ───
+
+// G19-C: Divergence Kill-Switch — blocks trades that fight the currency strength flow
+function isG19DivergenceKillActive(pair: string, direction: string): { reason: string } | null {
+  const now = new Date().toISOString();
+  for (const bp of _serverBypasses) {
+    if (bp.expires_at < now) continue;
+    if (!bp.gate_id.startsWith("G19_DIVERGENCE_KILL:")) continue;
+    // Gate format: G19_DIVERGENCE_KILL:{pair}_block_long or G19_DIVERGENCE_KILL:{pair}_block_short
+    const suffix = bp.gate_id.replace("G19_DIVERGENCE_KILL:", "");
+    const blockLong = suffix === `${pair}_block_long` && direction === "long";
+    const blockShort = suffix === `${pair}_block_short` && direction === "short";
+    if (blockLong || blockShort) {
+      try {
+        const meta = JSON.parse(bp.reason);
+        return { reason: meta.signal || `G19 Divergence Kill: ${pair} ${direction} blocked by currency strength` };
+      } catch {
+        return { reason: `G19 Divergence Kill active for ${pair} ${direction}` };
+      }
+    }
+  }
+  return null;
+}
+
+// G19-B: Laggard Sniper — returns sizing multiplier when a laggard opportunity exists
+function getG19LaggardMultiplier(pair: string, direction: string): { multiplier: number; reason: string } {
+  const now = new Date().toISOString();
+  for (const bp of _serverBypasses) {
+    if (bp.expires_at < now) continue;
+    if (!bp.gate_id.startsWith("G19_LAGGARD:")) continue;
+    if (bp.pair !== pair) continue;
+    try {
+      const meta = JSON.parse(bp.reason);
+      if (meta.direction === direction) {
+        return { multiplier: meta.sizingMultiplier || 1.5, reason: meta.signal || `G19 Laggard: ${pair} ${direction} 1.5x` };
+      }
+    } catch { continue; }
+  }
+  return { multiplier: 1.0, reason: "No G19 laggard signal" };
+}
+
 // ─── Dynamic Gate Check (Sovereign-created G13+ gates) ───
 function isDynamicGateBlocking(pair: string): { blocked: boolean; gateId: string; reason: string } | null {
   const now = new Date().toISOString();
@@ -2057,6 +2098,16 @@ function canPlaceLiveOrder(
     if (g17Gravity?.blocked) {
       console.log(`[G17_GRAVITY_GATE] pair=${tradeIntent.pair} direction=${tradeIntent.direction} — HARD BLOCKED: ${g17Gravity.reason}`);
       return { allowed: false, reason_code: "G17_GRAVITY_GATE", metadata: { pair: tradeIntent.pair, direction: tradeIntent.direction, reason: g17Gravity.reason } };
+    }
+  }
+
+  // ─── G19 DIVERGENCE KILL-SWITCH — HARD BLOCK ───
+  // Blocks trades that fight the dominant currency strength flow
+  {
+    const g19Kill = isG19DivergenceKillActive(tradeIntent.pair, tradeIntent.direction);
+    if (g19Kill) {
+      console.log(`[G19_DIVERGENCE_KILL] pair=${tradeIntent.pair} direction=${tradeIntent.direction} — HARD BLOCKED: ${g19Kill.reason}`);
+      return { allowed: false, reason_code: "G19_DIVERGENCE_KILL", metadata: { pair: tradeIntent.pair, direction: tradeIntent.direction, reason: g19Kill.reason } };
     }
   }
 
@@ -4429,6 +4480,13 @@ Deno.serve(async (req) => {
       if (g17Contrarian.multiplier !== 1.0) {
         deploymentMultiplier *= g17Contrarian.multiplier;
         console.log(`[G17_CONTRARIAN] ${pair} ${direction}: ${g17Contrarian.reason} → deployment=${deploymentMultiplier.toFixed(2)}`);
+      }
+
+      // ─── G19-B: LAGGARD SNIPER SIZING ───
+      const g19Laggard = getG19LaggardMultiplier(pair, direction);
+      if (g19Laggard.multiplier !== 1.0) {
+        deploymentMultiplier *= g19Laggard.multiplier;
+        console.log(`[G19_LAGGARD] ${pair} ${direction}: ${g19Laggard.reason} → deployment=${deploymentMultiplier.toFixed(2)}`);
       }
 
       // ─── SHORT CAPITAL: Equal allocation to longs ───
