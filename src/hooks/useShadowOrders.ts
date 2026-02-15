@@ -44,7 +44,22 @@ export function useShadowOrders(pollMs = 15_000) {
         .limit(100);
 
       if (!error && data) {
-        const typed = data as unknown as ShadowOrder[];
+        const typed: ShadowOrder[] = data.map(row => ({
+          id: row.id,
+          agent_id: row.agent_id ?? '',
+          currency_pair: row.currency_pair,
+          direction: row.direction,
+          status: row.status,
+          entry_price: row.entry_price ? Number(row.entry_price) : null,
+          exit_price: row.exit_price ? Number(row.exit_price) : null,
+          created_at: row.created_at,
+          closed_at: row.closed_at,
+          environment: row.environment,
+          r_pips: row.r_pips ? Number(row.r_pips) : null,
+          confidence_score: row.confidence_score ? Number(row.confidence_score) : null,
+          regime_label: row.regime_label,
+          session_label: row.session_label,
+        }));
         setOrders(typed);
 
         // Compute per-agent stats

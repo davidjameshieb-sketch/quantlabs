@@ -47,7 +47,18 @@ export function RegimeMismatchPanel() {
       .order('created_at', { ascending: false })
       .limit(20);
 
-    if (data) setOrders(data as unknown as OpenOrder[]);
+    if (data) {
+      const typed: OpenOrder[] = data.map(row => ({
+        id: row.id,
+        currency_pair: row.currency_pair,
+        direction: row.direction,
+        regime_label: row.regime_label,
+        mae_r: row.mae_r ? Number(row.mae_r) : null,
+        trade_health_score: row.trade_health_score,
+        governance_payload: (row.governance_payload ?? null) as Record<string, unknown> | null,
+      }));
+      setOrders(typed);
+    }
   }, []);
 
   useEffect(() => {

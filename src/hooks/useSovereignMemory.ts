@@ -28,7 +28,18 @@ export function useSovereignMemory(types: string[], pollMs = 15_000, limit = 50)
         .limit(limit);
 
       if (!error && data) {
-        setEntries(data as unknown as SovereignMemoryEntry[]);
+        const typed: SovereignMemoryEntry[] = data.map(row => ({
+          id: row.id,
+          memory_type: row.memory_type,
+          memory_key: row.memory_key,
+          payload: (row.payload ?? {}) as Record<string, unknown>,
+          relevance_score: row.relevance_score,
+          created_at: row.created_at,
+          updated_at: row.updated_at,
+          created_by: row.created_by,
+          expires_at: row.expires_at,
+        }));
+        setEntries(typed);
       }
     } catch {
       /* ignore */
