@@ -3,7 +3,7 @@
 
 import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Globe, TrendingUp, Mic, Swords, Brain, Terminal } from 'lucide-react';
+import { Globe, TrendingUp, Mic, Swords, Brain, Terminal, Radar } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { DashboardLayout } from '@/components/dashboard/DashboardLayout';
 import { IntelligenceModeBadge } from '@/components/dashboard/IntelligenceModeBadge';
@@ -11,6 +11,7 @@ import { WarRoomDashboard } from '@/components/forex/warroom/WarRoomDashboard';
 import { VoiceChatInterface } from '@/components/chat/VoiceChatInterface';
 import { SovereignIntelligencePanel } from '@/components/forex/warroom/SovereignIntelligencePanel';
 import { SovereignTerminal } from '@/components/forex/warroom/SovereignTerminal';
+import { StrategyWorldDashboard } from '@/components/forex/intelligence/StrategyWorldDashboard';
 
 import { fetchOandaLivePrices, hasLivePrices } from '@/lib/forex';
 import {
@@ -123,6 +124,9 @@ const ForexDashboard = () => {
             <TabsTrigger value="terminal" className="text-xs gap-1.5 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
               <Terminal className="w-3.5 h-3.5" />Sovereign Terminal
             </TabsTrigger>
+            <TabsTrigger value="strategy-world" className="text-xs gap-1.5 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
+              <Radar className="w-3.5 h-3.5" />Strategy World
+            </TabsTrigger>
           </TabsList>
 
           <TabsContent value="war-room" className="space-y-4">
@@ -146,6 +150,10 @@ const ForexDashboard = () => {
 
           <TabsContent value="terminal" className="space-y-4">
             <SovereignTerminal />
+          </TabsContent>
+
+          <TabsContent value="strategy-world" className="space-y-4">
+            <StrategyWorldDashboard />
           </TabsContent>
         </Tabs>
       </div>

@@ -131,3 +131,15 @@ verify_jwt = false
 
 [functions.hawkometer]
 verify_jwt = false
+
+[functions.dark-pool-proxy]
+verify_jwt = false
+
+[functions.correlation-matrix]
+verify_jwt = false
+
+[functions.sentiment-divergence]
+verify_jwt = false
+
+[functions.adversarial-slippage]
+verify_jwt = false
