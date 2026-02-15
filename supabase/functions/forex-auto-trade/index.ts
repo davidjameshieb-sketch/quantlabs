@@ -1220,11 +1220,15 @@ function detectSession(): SessionWindow {
 }
 
 function isWeekend(): boolean {
-  const day = new Date().getUTCDay();
-  if (day === 0) return true;
+  const now = new Date();
+  const day = now.getUTCDay();
+  const hour = now.getUTCHours();
+  // Saturday — always closed
   if (day === 6) return true;
+  // Sunday — closed until 22:00 UTC (5pm EST market open)
+  if (day === 0 && hour < 22) return true;
   // FRIDAY FLUSH: No new entries after 18:00 UTC Friday — trade monitor closes all at 20:00 UTC
-  if (day === 5 && new Date().getUTCHours() >= 18) return true;
+  if (day === 5 && hour >= 18) return true;
   return false;
 }
 
