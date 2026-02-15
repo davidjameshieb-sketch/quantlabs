@@ -1,10 +1,10 @@
-// Sovereign Terminal — Live Logic Tree, DNA Mutation Log, Shadow Barrage Monitor
+// Sovereign Terminal — Live Logic Tree, DNA Mutation Log, Shadow Barrage Monitor, OrderBook Heatmap, Synthetic Baskets
 import { useMemo } from 'react';
 import { motion } from 'framer-motion';
 import {
   TreePine, Dna, Ghost, Shield, Zap, Clock,
   ChevronRight, TrendingUp, TrendingDown, AlertTriangle,
-  CheckCircle, XCircle, FlaskConical, Target,
+  CheckCircle, XCircle, FlaskConical, Target, Flame, Layers,
 } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -12,6 +12,8 @@ import { Badge } from '@/components/ui/badge';
 import { useFloorManagerState, type GateBypasses } from '@/hooks/useFloorManagerState';
 import { useSovereignMemory, type SovereignMemoryEntry } from '@/hooks/useSovereignMemory';
 import { useShadowOrders, type ShadowAgentStats } from '@/hooks/useShadowOrders';
+import { OrderBookHeatmap } from './OrderBookHeatmap';
+import { SyntheticPairsPanel } from './SyntheticPairsPanel';
 
 // ─── Shared Panel Wrapper ───
 const TPanel = ({ title, icon: Icon, count, children }: {
@@ -341,7 +343,7 @@ export function SovereignTerminal() {
   return (
     <div className="space-y-4">
       <Tabs defaultValue="logic-tree" className="space-y-4">
-        <TabsList className="bg-card/50 border border-border/30 h-auto gap-1 p-1">
+        <TabsList className="bg-card/50 border border-border/30 h-auto gap-1 p-1 flex-wrap">
           <TabsTrigger value="logic-tree" className="text-xs gap-1.5 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
             <TreePine className="w-3.5 h-3.5" />Live Logic Tree
           </TabsTrigger>
@@ -350,6 +352,12 @@ export function SovereignTerminal() {
           </TabsTrigger>
           <TabsTrigger value="shadow" className="text-xs gap-1.5 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
             <Ghost className="w-3.5 h-3.5" />Shadow Barrage
+          </TabsTrigger>
+          <TabsTrigger value="orderbook" className="text-xs gap-1.5 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
+            <Flame className="w-3.5 h-3.5" />OrderBook Heatmap
+          </TabsTrigger>
+          <TabsTrigger value="synthetic" className="text-xs gap-1.5 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
+            <Layers className="w-3.5 h-3.5" />Synthetic Baskets
           </TabsTrigger>
         </TabsList>
 
@@ -361,6 +369,12 @@ export function SovereignTerminal() {
         </TabsContent>
         <TabsContent value="shadow">
           <ShadowBarrageMonitor />
+        </TabsContent>
+        <TabsContent value="orderbook">
+          <OrderBookHeatmap />
+        </TabsContent>
+        <TabsContent value="synthetic">
+          <SyntheticPairsPanel />
         </TabsContent>
       </Tabs>
     </div>
