@@ -110,3 +110,12 @@ verify_jwt = false
 
 [functions.promote-shadow-agent]
 verify_jwt = false
+
+[functions.synthetic-dark-pool]
+verify_jwt = false
+
+[functions.slippage-fingerprint]
+verify_jwt = false
+
+[functions.news-event-grid]
+verify_jwt = false
