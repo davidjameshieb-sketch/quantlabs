@@ -7,6 +7,7 @@ import {
   TrendingUp, TrendingDown, Activity, Skull, Crown,
 } from 'lucide-react';
 import { Progress } from '@/components/ui/progress';
+import { DirectiveSaturationHeatmap } from './DirectiveSaturationHeatmap';
 import type { OandaAccountSummary } from '@/hooks/useOandaExecution';
 import type { RealExecutionMetrics } from '@/hooks/useOandaPerformance';
 import type { TradeAnalyticsResult } from '@/hooks/useTradeAnalytics';
@@ -260,6 +261,9 @@ export function WarRoomDashboard({ account, executionMetrics, tradeAnalytics, co
           </div>
         </Panel>
       </div>
+
+      {/* Row 4: Directive Saturation Heatmap */}
+      <DirectiveSaturationHeatmap />
     </div>
   );
 }

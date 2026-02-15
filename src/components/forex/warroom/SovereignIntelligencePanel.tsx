@@ -7,6 +7,7 @@ import {
   Globe, ExternalLink, Database, Activity, Server,
 } from 'lucide-react';
 import { useFloorManagerState, type GateBypasses } from '@/hooks/useFloorManagerState';
+import { EvolutionTimeline } from '@/components/forex/singularity/EvolutionTimeline';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Badge } from '@/components/ui/badge';
 
@@ -545,6 +546,9 @@ export function SovereignIntelligencePanel() {
           )}
         </div>
       )}
+
+      {/* Evolution Timeline */}
+      <EvolutionTimeline />
     </div>
   );
 }
