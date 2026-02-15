@@ -13,13 +13,23 @@ const corsHeaders = {
 };
 
 // CME FX futures → OANDA pair mapping
+// Contract months: H=Mar, M=Jun, U=Sep, Z=Dec — auto-resolve current front month
+function getCMEContractMonth(): string {
+  const month = new Date().getMonth(); // 0-11
+  if (month < 2) return "H"; // Jan-Feb → March contract
+  if (month < 5) return "M"; // Mar-May → June contract
+  if (month < 8) return "U"; // Jun-Aug → September contract
+  return "Z"; // Sep-Dec → December contract
+}
+function getCMEYear(): string { return String(new Date().getFullYear()); }
+
 const CME_MAP: Record<string, { ticker: string; oandaPair: string; name: string; invertPrice: boolean }> = {
-  "6E": { ticker: "C:6EH2025", oandaPair: "EUR_USD", name: "Euro FX", invertPrice: false },
-  "6B": { ticker: "C:6BH2025", oandaPair: "GBP_USD", name: "British Pound", invertPrice: false },
-  "6J": { ticker: "C:6JH2025", oandaPair: "USD_JPY", name: "Japanese Yen", invertPrice: true },
-  "6A": { ticker: "C:6AH2025", oandaPair: "AUD_USD", name: "Australian Dollar", invertPrice: false },
-  "6C": { ticker: "C:6CH2025", oandaPair: "USD_CAD", name: "Canadian Dollar", invertPrice: true },
-  "6N": { ticker: "C:6NH2025", oandaPair: "NZD_USD", name: "New Zealand Dollar", invertPrice: false },
+  "6E": { ticker: `C:6E${getCMEContractMonth()}${getCMEYear()}`, oandaPair: "EUR_USD", name: "Euro FX", invertPrice: false },
+  "6B": { ticker: `C:6B${getCMEContractMonth()}${getCMEYear()}`, oandaPair: "GBP_USD", name: "British Pound", invertPrice: false },
+  "6J": { ticker: `C:6J${getCMEContractMonth()}${getCMEYear()}`, oandaPair: "USD_JPY", name: "Japanese Yen", invertPrice: true },
+  "6A": { ticker: `C:6A${getCMEContractMonth()}${getCMEYear()}`, oandaPair: "AUD_USD", name: "Australian Dollar", invertPrice: false },
+  "6C": { ticker: `C:6C${getCMEContractMonth()}${getCMEYear()}`, oandaPair: "USD_CAD", name: "Canadian Dollar", invertPrice: true },
+  "6N": { ticker: `C:6N${getCMEContractMonth()}${getCMEYear()}`, oandaPair: "NZD_USD", name: "New Zealand Dollar", invertPrice: false },
 };
 
 // Alternative: use Polygon forex aggregates + snapshot for volume proxy
