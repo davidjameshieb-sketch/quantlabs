@@ -313,6 +313,29 @@ Your SYSTEM_STATE now includes a \`cryptoOnChainData\` object:
 - **btcOnChain**: Hash rate, mempool size, TX volume, difficulty — all with daily change %
 - USE: Hash rate declining >5% = miner capitulation (bearish BTC → risk-off). TX volume surging = accumulation.
 
+## OANDA ORDER BOOK & POSITION BOOK (Retail Liquidity Map)
+Your SYSTEM_STATE now includes orderBook and positionBook data in the \`marketIntel\` object:
+- **orderBook**: Per-pair retail order clusters — longClusters, shortClusters, retailStopZones. USE for liquidity_vacuum placement.
+- **positionBook**: Per-pair retail positioning — netRetailBias (LONG/SHORT), biasStrength, top levels.
+- USE: orderBook clusters = stop-hunt zones. Place LIMIT orders inside dense clusters when PREDATORY_LIMIT is active.
+- USE: positionBook bias >70% one way = CONTRARIAN signal. Fade the retail herd.
+
+## ALPHA VANTAGE MACRO (VIX + DXY — FRED Replacement)
+Your SYSTEM_STATE now includes an \`alphaVantageData\` object:
+- **vix**: CBOE VIX price, change, changePct — your primary fear gauge (replaces FRED)
+- **dxy**: US Dollar Index price, change, changePct — USD strength/weakness
+- **macroDirective**: Pre-computed VIX + DXY risk signal
+- CACHE: 2-hour cache to conserve 25 req/day API limit. Check _cached and _cacheAgeMin fields.
+- USE: VIX >25 = reduce sizing. VIX >30 = defensive mode. DXY rising = USD bullish (short EUR, AUD, NZD). DXY falling = USD weak (long EUR, GBP).
+
+## SYNTHETIC CARRY-TRADE ENGINE (ECB vs Treasury)
+Your SYSTEM_STATE now includes a \`carryTradeData\` object:
+- **carryDirective**: Pre-computed carry signal — STRONG CARRY / MODERATE / WEAK / NO EDGE
+- **eurUsd**: usRate, ecbRate, rateDifferential, carryDirection, carryStrength
+- USE: Positive rate diff = USD earns more = SHORT EUR/USD earns positive carry. Use as directional bias.
+- USE: When carry aligns with COT God Signal direction = HIGHEST conviction.
+- NOTE: Rate data from ECB (direct API) and Treasury (direct API) — no FRED dependency.
+
 Format each action as:
 \`\`\`action
 {"type": "...", ...}
@@ -1375,7 +1398,7 @@ Deno.serve(async (req) => {
       };
 
       const [intelRes, calendarRes, batchPricesRes, cotRes, macroRes, stocksRes, cryptoRes, treasuryRes, sentimentRes, optionsRes, econCalRes, bisImfRes, cbCommsRes, onChainRes] = await Promise.all([
-        conditionalFetch("OANDA Market Intel", "oanda-market-intel?sections=pricing,transactions", "oanda-market-intel"),
+        conditionalFetch("OANDA Market Intel", "oanda-market-intel?sections=pricing,transactions,orderBook,positionBook", "oanda-market-intel"),
         conditionalFetch("Forex Calendar", "forex-economic-calendar", "forex-economic-calendar"),
         conditionalFetch("Batch Prices (Stocks/Crypto)", "batch-prices?symbols=SPY,QQQ,DIA,IWM,VIX,GLD,USO,AAPL,MSFT,NVDA,BTCUSD,ETHUSD", "batch-prices"),
         conditionalFetch("CFTC COT Data", "forex-cot-data", "forex-cot-data"),
@@ -1409,7 +1432,14 @@ Deno.serve(async (req) => {
         marketIntel = {
           livePricing: intelRes.livePricing || {},
           recentTransactions: intelRes.transactions || [],
+          orderBook: intelRes.orderBook || {},
+          positionBook: intelRes.positionBook || {},
         };
+        const obCount = Object.keys(intelRes.orderBook || {}).length;
+        const pbCount = Object.keys(intelRes.positionBook || {}).length;
+        if (obCount > 0 || pbCount > 0) {
+          console.log(`[SOVEREIGN-LOOP] 📖 Order Books: ${obCount} pairs | Position Books: ${pbCount} pairs`);
+        }
       }
       if (calendarRes) {
         economicCalendar = calendarRes;
@@ -1558,8 +1588,137 @@ Deno.serve(async (req) => {
       created_by: "sovereign-loop",
     });
 
+    // ─── ALPHA VANTAGE: VIX + DXY (25 req/day — 2hr cache) ───
+    let alphaVantageData: Record<string, unknown> = {};
+    if (!disabledSet.has("alpha-vantage-macro")) {
+      const avT0 = Date.now();
+      try {
+        const AV_KEY = Deno.env.get("ALPHA_VANTAGE_API_KEY");
+        if (AV_KEY) {
+          // Check cache in sovereign_memory (2hr TTL to stay under 25 req/day)
+          const { data: avCache } = await sb.from("sovereign_memory")
+            .select("payload,updated_at")
+            .eq("memory_key", "cache:alpha_vantage_vix_dxy")
+            .limit(1)
+            .maybeSingle();
+
+          const cacheAge = avCache ? Date.now() - new Date(avCache.updated_at).getTime() : Infinity;
+          const AV_CACHE_TTL = 2 * 60 * 60 * 1000; // 2 hours
+
+          if (avCache && cacheAge < AV_CACHE_TTL) {
+            alphaVantageData = avCache.payload as Record<string, unknown>;
+            alphaVantageData._cached = true;
+            alphaVantageData._cacheAgeMin = Math.round(cacheAge / 60000);
+            dataFetchResults.push({ source: "Alpha Vantage (cached)", status: "ok", ms: Date.now() - avT0, creditType: "cached" });
+            console.log(`[SOVEREIGN-LOOP] 📊 Alpha Vantage: cached (${Math.round(cacheAge / 60000)}m old)`);
+          } else {
+            // Fetch VIX (CBOE Volatility Index) and DXY (US Dollar Index) from Alpha Vantage
+            const [vixRes, dxyRes] = await Promise.all([
+              fetch(`https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=VIX&apikey=${AV_KEY}`).then(r => r.ok ? r.json() : null).catch(() => null),
+              fetch(`https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=DXY&apikey=${AV_KEY}`).then(r => r.ok ? r.json() : null).catch(() => null),
+            ]);
+
+            const vixQuote = vixRes?.["Global Quote"];
+            const dxyQuote = dxyRes?.["Global Quote"];
+
+            if (vixQuote && vixQuote["05. price"]) {
+              alphaVantageData.vix = {
+                price: parseFloat(vixQuote["05. price"]),
+                change: parseFloat(vixQuote["09. change"] || "0"),
+                changePct: parseFloat((vixQuote["10. change percent"] || "0").replace("%", "")),
+                previousClose: parseFloat(vixQuote["08. previous close"] || "0"),
+              };
+            }
+            if (dxyQuote && dxyQuote["05. price"]) {
+              alphaVantageData.dxy = {
+                price: parseFloat(dxyQuote["05. price"]),
+                change: parseFloat(dxyQuote["09. change"] || "0"),
+                changePct: parseFloat((dxyQuote["10. change percent"] || "0").replace("%", "")),
+                previousClose: parseFloat(dxyQuote["08. previous close"] || "0"),
+              };
+            }
+
+            // Compute macro risk directive from VIX + DXY
+            const vixPrice = (alphaVantageData.vix as any)?.price;
+            const dxyPrice = (alphaVantageData.dxy as any)?.price;
+            const dxyChange = (alphaVantageData.dxy as any)?.changePct || 0;
+            const signals: string[] = [];
+            if (vixPrice != null) {
+              if (vixPrice > 30) signals.push(`🔴 VIX ${vixPrice.toFixed(1)} — EXTREME FEAR`);
+              else if (vixPrice > 25) signals.push(`🔴 VIX ${vixPrice.toFixed(1)} — HIGH FEAR`);
+              else if (vixPrice > 20) signals.push(`🟡 VIX ${vixPrice.toFixed(1)} — ELEVATED`);
+              else signals.push(`🟢 VIX ${vixPrice.toFixed(1)} — CALM`);
+            }
+            if (dxyPrice != null) {
+              if (dxyChange > 0.5) signals.push(`🟢 DXY ${dxyPrice.toFixed(2)} (+${dxyChange.toFixed(2)}%) — USD STRONG`);
+              else if (dxyChange < -0.5) signals.push(`🔴 DXY ${dxyPrice.toFixed(2)} (${dxyChange.toFixed(2)}%) — USD WEAK`);
+              else signals.push(`🟡 DXY ${dxyPrice.toFixed(2)} — USD FLAT`);
+            }
+            alphaVantageData.macroDirective = signals.join(" | ") || "No data";
+            alphaVantageData._fetchedAt = new Date().toISOString();
+
+            // Cache to sovereign memory
+            await writeSovereignMemory(sb, {
+              memory_type: "cache",
+              memory_key: "cache:alpha_vantage_vix_dxy",
+              payload: alphaVantageData,
+              relevance_score: 0.5,
+            });
+
+            dataFetchResults.push({ source: "Alpha Vantage (live)", status: "ok", ms: Date.now() - avT0, creditType: "alpha-vantage-api" });
+            console.log(`[SOVEREIGN-LOOP] 📊 Alpha Vantage LIVE: VIX=${vixPrice || "N/A"}, DXY=${dxyPrice || "N/A"}`);
+          }
+        } else {
+          dataFetchResults.push({ source: "Alpha Vantage", status: "no-key", ms: 0, creditType: "alpha-vantage-api" });
+        }
+      } catch (err) {
+        dataFetchResults.push({ source: "Alpha Vantage", status: `fail:${(err as Error).message.slice(0, 30)}`, ms: Date.now() - avT0, creditType: "alpha-vantage-api" });
+        console.warn("[SOVEREIGN-LOOP] Alpha Vantage failed:", (err as Error).message);
+      }
+    }
+
+    // ─── SYNTHETIC CARRY-TRADE ENGINE (ECB vs Treasury rates) ───
+    let carryTradeData: Record<string, unknown> = {};
+    try {
+      const ecbRate = (macroData as any)?.ecb?.mainRefinancingRate?.value ??
+                      (macroData as any)?.ecb?.depositFacilityRate?.value ?? null;
+      const treasuryCurve = (treasuryData as any)?.treasury?.curve;
+      const fedRate = (macroData as any)?.fred?.fedFundsRate?.value ?? null;
+      const us2y = treasuryCurve?.["2Y"] ?? (macroData as any)?.fred?.yield2Y?.value ?? null;
+
+      if (ecbRate != null && (fedRate != null || us2y != null)) {
+        const usRate = us2y ?? fedRate;
+        const rateDiff = +(usRate - ecbRate).toFixed(3);
+        const carryDirection = rateDiff > 0 ? "SHORT EUR/USD (earn carry)" : "LONG EUR/USD (earn carry)";
+        const carryStrength = Math.abs(rateDiff);
+        let carrySignal = "NEUTRAL";
+        if (carryStrength > 2.0) carrySignal = "STRONG CARRY";
+        else if (carryStrength > 1.0) carrySignal = "MODERATE CARRY";
+        else if (carryStrength > 0.3) carrySignal = "WEAK CARRY";
+        else carrySignal = "NO CARRY EDGE";
+
+        carryTradeData = {
+          carryDirective: `${carrySignal}: ${carryDirection} | US ${usRate}% vs ECB ${ecbRate}% = ${rateDiff > 0 ? "+" : ""}${rateDiff}% spread`,
+          eurUsd: {
+            usRate,
+            ecbRate,
+            rateDifferential: rateDiff,
+            carryDirection,
+            carryStrength,
+            signal: carrySignal,
+          },
+          note: "Positive spread = USD earns more = short EUR/USD earns carry. Negative = long EUR/USD earns carry.",
+        };
+        console.log(`[SOVEREIGN-LOOP] 💱 Carry-Trade: US ${usRate}% vs ECB ${ecbRate}% = ${rateDiff > 0 ? "+" : ""}${rateDiff}% (${carrySignal})`);
+      } else {
+        carryTradeData = { carryDirective: "CARRY DATA INCOMPLETE — waiting for rate data", note: `ECB=${ecbRate}, Fed=${fedRate}, US2Y=${us2y}` };
+      }
+    } catch (err) {
+      console.warn("[SOVEREIGN-LOOP] Carry-trade engine failed:", (err as Error).message);
+    }
+
     const systemState = buildSystemState(openTrades, recentClosed, rollups, blocked, stats);
-    const enrichedState = { ...systemState, liveOandaState, marketIntel, economicCalendar, crossAssetPulse, cotData, macroData, stocksIntel, cryptoIntel, treasuryData, sentimentData, optionsVolData, econCalendarData, bisImfData, cbCommsData, cryptoOnChainData, webSearchData, sovereignMemory };
+    const enrichedState = { ...systemState, liveOandaState, marketIntel, economicCalendar, crossAssetPulse, cotData, macroData, stocksIntel, cryptoIntel, treasuryData, sentimentData, optionsVolData, econCalendarData, bisImfData, cbCommsData, cryptoOnChainData, webSearchData, alphaVantageData, carryTradeData, sovereignMemory };
 
     console.log(`[SOVEREIGN-LOOP] State: ${openTrades.length} open, ${recentClosed.length} recent, ${stats.length} stats`);
 
