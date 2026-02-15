@@ -11,6 +11,7 @@ import { DarkPoolPanel } from './DarkPoolPanel';
 import { CorrelationMatrixPanel } from './CorrelationMatrixPanel';
 import { G19RippleTriggerPanel } from './G19RippleTriggerPanel';
 import { AdversarialSlippagePanel } from './AdversarialSlippagePanel';
+import { COTGodSignalPanel } from './COTGodSignalPanel';
 import { FixingVolatilityPanel } from './FixingVolatilityPanel';
 import { CrossVenueDOMPanel } from './CrossVenueDOMPanel';
 import { FlashCrashPanel } from './FlashCrashPanel';
@@ -50,7 +51,7 @@ export function StrategyWorldDashboard() {
     state.slippage, state.hawkometer, state.godSignal,
     state.fixingVolatility, state.crossVenueDom, state.flashCrash,
     state.orderflowDelta, state.shadowExecution, state.dnaMutation,
-    state.cmeFuturesDepth, state.currencyStrength,
+    state.cmeFuturesDepth, state.currencyStrength, state.cotPositioning,
   ].filter(Boolean).length;
 
   return (
@@ -65,7 +66,7 @@ export function StrategyWorldDashboard() {
           <Brain className="w-5 h-5 text-primary" />
           <h2 className="font-display text-lg font-bold">Sovereign Strategy World</h2>
           <Badge variant="outline" className="text-[8px] border-primary/40 text-primary">
-            {feedCount}/14 FEEDS ACTIVE
+            {feedCount}/15 FEEDS ACTIVE
           </Badge>
         </div>
         <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
@@ -96,13 +97,23 @@ export function StrategyWorldDashboard() {
       </SectionWrapper>
 
       {/* Stage 1: Institutional Direction */}
-      <SectionWrapper
-        title="Stage 1 — Institutional Direction"
-        description="God Signal aggregates CFTC COT smart-money positioning with institutional FX desk research (JPM, GS, Citi). Hawkometer scrapes central bank communications and scores hawkish/dovish tone deltas. Together they establish the 'North Star' — which direction big money is flowing."
-        role="Filter — only trade in the direction institutions are positioned"
-      >
-        <GodSignalPanel godSignal={state.godSignal} hawkometer={state.hawkometer} />
-      </SectionWrapper>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <SectionWrapper
+          title="Stage 1A — God Signal & Hawkometer"
+          description="God Signal aggregates CFTC COT smart-money positioning with institutional FX desk research (JPM, GS, Citi). Hawkometer scrapes central bank communications and scores hawkish/dovish tone deltas. Together they establish the 'North Star'."
+          role="Filter — only trade in the direction institutions are positioned"
+        >
+          <GodSignalPanel godSignal={state.godSignal} hawkometer={state.hawkometer} />
+        </SectionWrapper>
+
+        <SectionWrapper
+          title="Stage 1B — G21 COT God Signal"
+          description="CFTC Commitments of Traders: shows Speculator (Hedge Fund) vs Retail positioning per currency. When Specs are 80%+ Long and Retail is 80%+ Short, that's the GOD SIGNAL — maximum conviction for 200-pip waves. G21 gates auto-inject Institutional Shield (blocks opposing trades) and Predatory Sizing (2.0x when God Signal aligns)."
+          role="Weekly Anchor — sets permanent directional bias and blocks counter-institutional trades"
+        >
+          <COTGodSignalPanel data={state.cotPositioning as any} />
+        </SectionWrapper>
+      </div>
 
       {/* Stage 2: Retail Trap Detection */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
