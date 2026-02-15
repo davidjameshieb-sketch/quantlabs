@@ -13,6 +13,9 @@ import { AdversarialSlippagePanel } from './AdversarialSlippagePanel';
 import { FixingVolatilityPanel } from './FixingVolatilityPanel';
 import { CrossVenueDOMPanel } from './CrossVenueDOMPanel';
 import { FlashCrashPanel } from './FlashCrashPanel';
+import { OrderFlowDeltaPanel } from './OrderFlowDeltaPanel';
+import { ShadowSplitterPanel } from './ShadowSplitterPanel';
+import { DnaMutationPanel } from './DnaMutationPanel';
 
 interface StrategySection {
   title: string;
@@ -44,6 +47,7 @@ export function StrategyWorldDashboard() {
     state.darkPool, state.correlation, state.sentiment,
     state.slippage, state.hawkometer, state.godSignal,
     state.fixingVolatility, state.crossVenueDom, state.flashCrash,
+    state.orderflowDelta, state.shadowExecution, state.dnaMutation,
   ].filter(Boolean).length;
 
   return (
@@ -58,7 +62,7 @@ export function StrategyWorldDashboard() {
           <Brain className="w-5 h-5 text-primary" />
           <h2 className="font-display text-lg font-bold">Sovereign Strategy World</h2>
           <Badge variant="outline" className="text-[8px] border-primary/40 text-primary">
-            {feedCount}/9 FEEDS ACTIVE
+            {feedCount}/12 FEEDS ACTIVE
           </Badge>
         </div>
         <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
@@ -145,6 +149,44 @@ export function StrategyWorldDashboard() {
         role="Quality Assurance — protects P&L from execution decay"
       >
         <AdversarialSlippagePanel profiles={state.slippage?.profiles || []} />
+      </SectionWrapper>
+
+      {/* L0 Deterministic Layer */}
+      <div className="rounded-xl border border-primary/20 bg-primary/5 p-3">
+        <h3 className="text-[10px] font-bold text-primary uppercase tracking-wider mb-2">
+          🎯 L0 Deterministic Execution Layer
+        </h3>
+        <p className="text-[9px] text-muted-foreground mb-3 leading-relaxed">
+          Three autonomous execution capabilities that operate below the AI layer — pure deterministic logic 
+          that reacts to order-flow deltas, splits predatory entries across correlated pairs, and rewrites 
+          agent DNA in real-time based on intelligence feed triggers.
+        </p>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <SectionWrapper
+          title="L0A — Order-Flow Delta Tracker"
+          description="Computes the RATE OF CHANGE in OANDA order book stop clusters between snapshots. When stop buildup velocity exceeds threshold at round numbers, auto-arms 'Liquidity Vacuum' triggers for predatory LIMIT placement inside retail stop clusters."
+          role="Stop-Hunt Detector — identifies where stops are LOADING, not just sitting"
+        >
+          <OrderFlowDeltaPanel data={state.orderflowDelta as any} />
+        </SectionWrapper>
+
+        <SectionWrapper
+          title="L0B — Shadow Order Splitter"
+          description="Splits predatory entries into micro-bursts across correlated pairs (200ms stagger) to hide footprint. Shorting EUR/USD? Simultaneously legs into EUR/GBP, EUR/JPY, and a GBP/USD hedge — making the position invisible to counterparty flow detection."
+          role="Footprint Cloaker — prevents triggering the stop-hunts being exploited"
+        >
+          <ShadowSplitterPanel data={state.shadowExecution as any} />
+        </SectionWrapper>
+      </div>
+
+      <SectionWrapper
+        title="L0C — Recursive DNA Mutation Engine"
+        description="Rewrites agent core entry logic in real-time based on flash-crash, hawkometer, and order-flow triggers. When flash-crash fires, instantly flips all agents into 'Predatory Mean Reversion' DNA. 5 DNA templates, 5 trigger rules, priority-based with cooldown protection."
+        role="Agent Genome Rewriter — transforms the entire fleet's behavior in milliseconds"
+      >
+        <DnaMutationPanel data={state.dnaMutation as any} activeDna={state.activeDna as any} />
       </SectionWrapper>
 
       {/* Safety Layer */}

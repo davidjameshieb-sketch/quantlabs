@@ -63,6 +63,10 @@ export interface IntelligenceState {
   fixingVolatility: Record<string, unknown> | null;
   crossVenueDom: Record<string, unknown> | null;
   flashCrash: Record<string, unknown> | null;
+  orderflowDelta: Record<string, unknown> | null;
+  shadowExecution: Record<string, unknown> | null;
+  dnaMutation: Record<string, unknown> | null;
+  activeDna: Record<string, unknown> | null;
   loading: boolean;
   lastUpdated: Date | null;
 }
@@ -77,6 +81,10 @@ const MEMORY_KEYS = [
   { type: 'fixing_volatility', key: 'london_4pm_fix' },
   { type: 'cross_venue_dom', key: 'aggregated_depth' },
   { type: 'flash_crash_monitor', key: 'killswitch_status' },
+  { type: 'orderflow_delta', key: 'latest_analysis' },
+  { type: 'shadow_execution', key: null },
+  { type: 'dna_mutation_engine', key: 'latest_scan' },
+  { type: 'AGENT_DNA_MUTATION', key: 'GLOBAL_OVERRIDE' },
 ];
 
 export function useIntelligenceState(pollMs = 30_000): IntelligenceState {
@@ -90,6 +98,10 @@ export function useIntelligenceState(pollMs = 30_000): IntelligenceState {
     fixingVolatility: null,
     crossVenueDom: null,
     flashCrash: null,
+    orderflowDelta: null,
+    shadowExecution: null,
+    dnaMutation: null,
+    activeDna: null,
     loading: true,
     lastUpdated: null,
   });
@@ -120,6 +132,10 @@ export function useIntelligenceState(pollMs = 30_000): IntelligenceState {
         fixingVolatility: byType.fixing_volatility || null,
         crossVenueDom: byType.cross_venue_dom || null,
         flashCrash: byType.flash_crash_monitor || null,
+        orderflowDelta: byType.orderflow_delta || null,
+        shadowExecution: byType.shadow_execution || null,
+        dnaMutation: byType.dna_mutation_engine || null,
+        activeDna: byType.AGENT_DNA_MUTATION || null,
         loading: false,
         lastUpdated: new Date(),
       });
