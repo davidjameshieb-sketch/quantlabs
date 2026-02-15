@@ -381,7 +381,7 @@ Format each action as:
 
 
 // ─── Sovereign Memory: Persistent Long-Term Brain ───
-async function fetchSovereignMemory(sb: ReturnType<typeof createClient>, limit = 50): Promise<any[]> {
+async function fetchSovereignMemory(sb: ReturnType<typeof createClient>, limit = 400): Promise<any[]> {
   const { data } = await sb
     .from("sovereign_memory")
     .select("memory_type,memory_key,payload,relevance_score,created_at,updated_at")
@@ -1315,7 +1315,7 @@ Deno.serve(async (req) => {
       fetchDailyRollups(sb),
       fetchBlockedTrades(sb),
       fetchTradeStats(sb),
-      fetchSovereignMemory(sb, 40),
+      fetchSovereignMemory(sb, 400),
     ]);
     console.log(`[SOVEREIGN-LOOP] 🧠 Sovereign Memory: ${sovereignMemory.length} memories loaded`);
 
