@@ -35,9 +35,8 @@ Deno.serve(async (req) => {
     const OANDA_ACCOUNT = Deno.env.get('OANDA_LIVE_ACCOUNT_ID') || Deno.env.get('OANDA_ACCOUNT_ID');
     if (!OANDA_TOKEN || !OANDA_ACCOUNT) throw new Error('OANDA credentials missing');
 
-    const { instruments } = await req.json().catch(() => ({
-      instruments: ['EUR_USD', 'GBP_USD', 'USD_JPY', 'AUD_USD', 'EUR_JPY', 'GBP_JPY']
-    }));
+    const body = await req.json().catch(() => ({}));
+    const instruments = body?.instruments || ['EUR_USD', 'GBP_USD', 'USD_JPY', 'AUD_USD', 'EUR_JPY', 'GBP_JPY'];
 
     const BASE = 'https://api-fxtrade.oanda.com';
     const headers = { Authorization: `Bearer ${OANDA_TOKEN}` };

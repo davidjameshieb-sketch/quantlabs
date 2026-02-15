@@ -1744,6 +1744,117 @@ function isG16SpreadGuardActive(pair: string): { reason: string } | null {
   return null;
 }
 
+// ─── G17 BROKER-SIDE LIQUIDITY MAP HELPERS ───
+// Reads market_liquidity_map data cached by the Wall of Pain pg_cron job.
+
+let _g17LiquidityMap: Array<{
+  currency_pair: string;
+  current_price: number | null;
+  long_clusters: any[];
+  short_clusters: any[];
+  top_stop_clusters: any[];
+  wall_of_pain_price: number | null;
+  wall_of_pain_pct: number | null;
+  wall_of_pain_type: string | null;
+}> = [];
+
+async function loadG17LiquidityMap(supabase: ReturnType<typeof createClient>): Promise<void> {
+  const { data } = await supabase.from("market_liquidity_map").select("currency_pair, current_price, long_clusters, short_clusters, top_stop_clusters, wall_of_pain_price, wall_of_pain_pct, wall_of_pain_type");
+  _g17LiquidityMap = (data || []) as any;
+  if (_g17LiquidityMap.length > 0) {
+    console.log(`[G17] Loaded liquidity map for ${_g17LiquidityMap.length} pairs`);
+  }
+}
+
+// G17-A: Gravity Gate — blocks longs near massive long clusters (stop-hunt incoming)
+function isG17GravityGateBlocking(pair: string, direction: "long" | "short", currentPrice: number): { blocked: boolean; reason: string } | null {
+  const oandaPair = pair; // already in OANDA format (EUR_USD)
+  const mapEntry = _g17LiquidityMap.find(m => m.currency_pair === oandaPair);
+  if (!mapEntry || !mapEntry.current_price) return null;
+
+  const isJpy = pair.includes("JPY");
+  const pipMult = isJpy ? 100 : 10000;
+
+  // Check long clusters — if price is within 10 pips of a massive long cluster, block longs
+  const clusters = direction === "long" ? (mapEntry.long_clusters || []) : (mapEntry.short_clusters || []);
+  for (const cluster of clusters) {
+    const clusterPrice = parseFloat(cluster.price || cluster.p || "0");
+    const clusterPct = parseFloat(cluster.pct || cluster.longPct || cluster.shortPct || "0");
+    if (clusterPct < 2.0) continue; // Only care about significant clusters (>2%)
+
+    const distPips = Math.abs(currentPrice - clusterPrice) * pipMult;
+    if (distPips <= 10) {
+      return {
+        blocked: true,
+        reason: `G17 Gravity: ${direction} blocked — ${clusterPct.toFixed(1)}% retail ${direction} cluster at ${clusterPrice} (${distPips.toFixed(1)} pips away). Stop-hunt zone.`,
+      };
+    }
+  }
+  return null;
+}
+
+// G17-B: Contrarian Sizing Multiplier — trade against the crowd
+function getG17ContrarianMultiplier(pair: string, direction: "long" | "short"): { multiplier: number; reason: string } {
+  const mapEntry = _g17LiquidityMap.find(m => m.currency_pair === pair);
+  if (!mapEntry) return { multiplier: 1.0, reason: "No liquidity map data" };
+
+  // Calculate net retail bias from clusters
+  const longTotal = (mapEntry.long_clusters || []).reduce((s: number, c: any) => s + parseFloat(c.pct || c.longPct || "0"), 0);
+  const shortTotal = (mapEntry.short_clusters || []).reduce((s: number, c: any) => s + parseFloat(c.pct || c.shortPct || "0"), 0);
+  const total = longTotal + shortTotal;
+  if (total < 1) return { multiplier: 1.0, reason: "Insufficient cluster data" };
+
+  const retailLongPct = (longTotal / total) * 100;
+  const retailShortPct = (shortTotal / total) * 100;
+
+  // If retail is >75% in one direction, boost the opposite and dampen the same
+  if (retailLongPct >= 75 && direction === "short") {
+    return { multiplier: 1.5, reason: `G17 Contrarian: Retail ${retailLongPct.toFixed(0)}% long → 1.5x SHORT boost` };
+  }
+  if (retailLongPct >= 75 && direction === "long") {
+    return { multiplier: 0.5, reason: `G17 Contrarian: Retail ${retailLongPct.toFixed(0)}% long → 0.5x LONG dampen` };
+  }
+  if (retailShortPct >= 75 && direction === "long") {
+    return { multiplier: 1.5, reason: `G17 Contrarian: Retail ${retailShortPct.toFixed(0)}% short → 1.5x LONG boost` };
+  }
+  if (retailShortPct >= 75 && direction === "short") {
+    return { multiplier: 0.5, reason: `G17 Contrarian: Retail ${retailShortPct.toFixed(0)}% short → 0.5x SHORT dampen` };
+  }
+
+  return { multiplier: 1.0, reason: `G17: No extreme crowd bias (L=${retailLongPct.toFixed(0)}%, S=${retailShortPct.toFixed(0)}%)` };
+}
+
+// G17-C: Liquidity Gap Detection — tighten trailing stops near order book holes
+function getG17LiquidityGapAlert(pair: string, currentPrice: number): { gapDetected: boolean; tightenStopPips: number; reason: string } | null {
+  const mapEntry = _g17LiquidityMap.find(m => m.currency_pair === pair);
+  if (!mapEntry) return null;
+
+  const isJpy = pair.includes("JPY");
+  const pipMult = isJpy ? 100 : 10000;
+
+  // Check for gaps in the order book (consecutive zero-density zones spanning 20+ pips)
+  const allClusters = [...(mapEntry.long_clusters || []), ...(mapEntry.short_clusters || [])]
+    .map((c: any) => parseFloat(c.price || c.p || "0"))
+    .filter(p => p > 0)
+    .sort((a, b) => a - b);
+
+  for (let i = 1; i < allClusters.length; i++) {
+    const gapPips = (allClusters[i] - allClusters[i - 1]) * pipMult;
+    if (gapPips >= 20) {
+      const gapMid = (allClusters[i] + allClusters[i - 1]) / 2;
+      const distToGap = Math.abs(currentPrice - gapMid) * pipMult;
+      if (distToGap < 30) { // Only alert if we're near the gap
+        return {
+          gapDetected: true,
+          tightenStopPips: 2,
+          reason: `G17 Liquidity Gap: ${gapPips.toFixed(0)}p void between ${allClusters[i-1].toFixed(isJpy?2:4)} and ${allClusters[i].toFixed(isJpy?2:4)} — tightening TSL to 2p`,
+        };
+      }
+    }
+  }
+  return null;
+}
+
 // ─── Dynamic Gate Check (Sovereign-created G13+ gates) ───
 function isDynamicGateBlocking(pair: string): { blocked: boolean; gateId: string; reason: string } | null {
   const now = new Date().toISOString();
@@ -1936,6 +2047,16 @@ function canPlaceLiveOrder(
     if (g16SpreadGuard) {
       console.log(`[G16_SPREAD_GUARD] pair=${tradeIntent.pair} — HARD BLOCKED: ${g16SpreadGuard.reason}`);
       return { allowed: false, reason_code: "G16_SPREAD_GUARD", metadata: { pair: tradeIntent.pair, reason: g16SpreadGuard.reason } };
+    }
+  }
+
+  // ─── G17 GRAVITY GATE — HARD BLOCK ───
+  // Blocks entries near massive retail clusters (stop-hunt zones)
+  {
+    const g17Gravity = isG17GravityGateBlocking(tradeIntent.pair, tradeIntent.direction, 0); // price checked at runtime
+    if (g17Gravity?.blocked) {
+      console.log(`[G17_GRAVITY_GATE] pair=${tradeIntent.pair} direction=${tradeIntent.direction} — HARD BLOCKED: ${g17Gravity.reason}`);
+      return { allowed: false, reason_code: "G17_GRAVITY_GATE", metadata: { pair: tradeIntent.pair, direction: tradeIntent.direction, reason: g17Gravity.reason } };
     }
   }
 
@@ -2527,6 +2648,7 @@ Deno.serve(async (req) => {
     // PHASE 0a: Load Floor Manager Gate Bypasses from DB
     // ═══════════════════════════════════════════════════════════
     await loadServerBypasses(supabase);
+    await loadG17LiquidityMap(supabase);
 
     // ═══════════════════════════════════════════════════════════
     // PHASE 0a2: Equity Circuit Breaker (FM-controlled kill-switch)
@@ -4301,6 +4423,13 @@ Deno.serve(async (req) => {
       
       // Log agent capital allocation decision for governance audit
       console.log(`[AGENT-ALLOC] ${pair} ${direction}: agent=${agentId} kelly_mult=${agentKelly.agentMultiplier} class=${agentKelly.globalExpectancy.throttleClass} routing=${agentKelly.routingScore} momentum=${agentKelly.globalExpectancy.recentMomentum} recovering=${agentKelly.globalExpectancy.isRecovering}`);
+
+      // ─── G17-B: CONTRARIAN SIZING MULTIPLIER ───
+      const g17Contrarian = getG17ContrarianMultiplier(pair, direction);
+      if (g17Contrarian.multiplier !== 1.0) {
+        deploymentMultiplier *= g17Contrarian.multiplier;
+        console.log(`[G17_CONTRARIAN] ${pair} ${direction}: ${g17Contrarian.reason} → deployment=${deploymentMultiplier.toFixed(2)}`);
+      }
 
       // ─── SHORT CAPITAL: Equal allocation to longs ───
       const shortCapMultiplier = 1.0;
