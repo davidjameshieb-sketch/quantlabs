@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX IF NOT EXISTS uq_sovereign_memory_type_key ON public.sovereign_memory (memory_type, memory_key);

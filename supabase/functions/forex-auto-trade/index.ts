@@ -1896,6 +1896,56 @@ function getG19LaggardMultiplier(pair: string, direction: string): { multiplier:
   return { multiplier: 1.0, reason: "No G19 laggard signal" };
 }
 
+// ═══ G21: COT-OANDA Convergence — The Sovereign Sweep ═══
+
+// G21-A: Institutional Shield — blocks trades opposing COT institutional positioning
+function isG21InstitutionalShieldActive(pair: string, direction: string): { reason: string; strength: number } | null {
+  const now = new Date().toISOString();
+  for (const bp of _serverBypasses) {
+    if (bp.expires_at < now) continue;
+    if (!bp.gate_id.startsWith("G21_INSTITUTIONAL_SHIELD:")) continue;
+    const suffix = bp.gate_id.replace("G21_INSTITUTIONAL_SHIELD:", "");
+    if (suffix === `${pair}_block_${direction}`) {
+      try {
+        const meta = JSON.parse(bp.reason);
+        return { reason: meta.signal || `G21 Institutional Shield: ${pair} ${direction} blocked by COT`, strength: meta.strength || 60 };
+      } catch {
+        return { reason: `G21 Institutional Shield active for ${pair} ${direction}`, strength: 60 };
+      }
+    }
+  }
+  return null;
+}
+
+// G21-B: God Signal Sizing — returns 2.0x when God Signal active for a currency in the pair
+function getG21GodSignalMultiplier(pair: string, direction: string): { multiplier: number; reason: string } {
+  const now = new Date().toISOString();
+  const [base, quote] = pair.split("_");
+  for (const bp of _serverBypasses) {
+    if (bp.expires_at < now) continue;
+    if (!bp.gate_id.startsWith("G21_GOD_SIGNAL:")) continue;
+    try {
+      const meta = JSON.parse(bp.reason);
+      const currency = bp.gate_id.replace("G21_GOD_SIGNAL:", "");
+      // Check if this God Signal aligns with the trade direction
+      const isBaseCurrency = currency === base;
+      const isQuoteCurrency = currency === quote;
+      if (!isBaseCurrency && !isQuoteCurrency) continue;
+      // Base LONG bias => pair LONG; Quote LONG bias => pair SHORT
+      const pairBias = isBaseCurrency
+        ? (meta.bias === "LONG" ? "long" : "short")
+        : (meta.bias === "LONG" ? "short" : "long");
+      if (pairBias === direction) {
+        return {
+          multiplier: meta.sizingMultiplier || 1.5,
+          reason: `G21 God Signal: ${currency} ${meta.bias} (Spec ${meta.specPctLong}%L, Retail ${meta.retailPctLong}%L) — ${meta.sizingMultiplier}x sizing`,
+        };
+      }
+    } catch { continue; }
+  }
+  return { multiplier: 1.0, reason: "No G21 God Signal" };
+}
+
 // ─── Dynamic Gate Check (Sovereign-created G13+ gates) ───
 function isDynamicGateBlocking(pair: string): { blocked: boolean; gateId: string; reason: string } | null {
   const now = new Date().toISOString();
@@ -2108,6 +2158,16 @@ function canPlaceLiveOrder(
     if (g19Kill) {
       console.log(`[G19_DIVERGENCE_KILL] pair=${tradeIntent.pair} direction=${tradeIntent.direction} — HARD BLOCKED: ${g19Kill.reason}`);
       return { allowed: false, reason_code: "G19_DIVERGENCE_KILL", metadata: { pair: tradeIntent.pair, direction: tradeIntent.direction, reason: g19Kill.reason } };
+    }
+  }
+
+  // ─── G21 INSTITUTIONAL SHIELD — HARD BLOCK ───
+  // Blocks trades opposing COT institutional positioning (never stand in front of a Tier-1 freight train)
+  {
+    const g21Shield = isG21InstitutionalShieldActive(tradeIntent.pair, tradeIntent.direction);
+    if (g21Shield) {
+      console.log(`[G21_INSTITUTIONAL_SHIELD] pair=${tradeIntent.pair} direction=${tradeIntent.direction} — HARD BLOCKED: ${g21Shield.reason}`);
+      return { allowed: false, reason_code: "G21_INSTITUTIONAL_SHIELD", metadata: { pair: tradeIntent.pair, direction: tradeIntent.direction, reason: g21Shield.reason, strength: g21Shield.strength } };
     }
   }
 

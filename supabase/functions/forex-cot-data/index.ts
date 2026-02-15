@@ -258,6 +258,93 @@ Deno.serve(async (req) => {
     cacheTimestamp = now;
     console.log(`[COT] Loaded ${Object.keys(cotRecords).length} currencies, ${godSignals.length} god signals, ${Object.keys(pairSignals).length} pair signals`);
 
+    // ═══ PERSIST TO SOVEREIGN MEMORY for dashboard & gate injection ═══
+    try {
+      const { createClient } = await import("https://esm.sh/@supabase/supabase-js@2");
+      const sb = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
+
+      // Persist COT positioning for dashboard
+      await sb.from("sovereign_memory").upsert({
+        memory_type: "cot_positioning",
+        memory_key: "weekly_cot_report",
+        payload: response,
+        relevance_score: 1.0,
+        created_by: "forex-cot-data",
+      }, { onConflict: "memory_type,memory_key" });
+
+      // ═══ G21 GATE INJECTION — The Sovereign Sweep ═══
+      const gatePromises: Promise<any>[] = [];
+      const expiry = new Date(Date.now() + 7 * 24 * 3600_000).toISOString(); // 1 week (COT is weekly)
+
+      // G21-A: God Signal Filter — set weekly directional bias per currency
+      for (const [currency, rec] of Object.entries(cotRecords)) {
+        if (rec.godSignalStrength >= 50) {
+          gatePromises.push(sb.from("gate_bypasses").upsert({
+            gate_id: `G21_GOD_SIGNAL:${currency}`,
+            reason: JSON.stringify({
+              currency,
+              bias: rec.smartMoneyBias,
+              specPctLong: rec.specPctLong,
+              retailPctLong: rec.retailPctLong,
+              godSignalStrength: rec.godSignalStrength,
+              signal: rec.godSignal,
+              sizingMultiplier: rec.godSignalStrength >= 80 ? 2.0 : 1.5,
+            }),
+            expires_at: expiry,
+            pair: null,
+            created_by: "forex-cot-data",
+          }, { onConflict: "gate_id" }));
+        }
+      }
+
+      // G21-B: Institutional Shield — per-pair directional locks
+      for (const [pair, ps] of Object.entries(pairSignals)) {
+        if (ps.strength >= 60) {
+          const isLong = ps.signal.includes("LONG");
+          const blockDir = isLong ? "short" : "long";
+          gatePromises.push(sb.from("gate_bypasses").upsert({
+            gate_id: `G21_INSTITUTIONAL_SHIELD:${pair}_block_${blockDir}`,
+            reason: JSON.stringify({
+              pair,
+              signal: ps.signal,
+              strength: ps.strength,
+              baseCOT: ps.baseCOT,
+              quoteCOT: ps.quoteCOT,
+              blockedDirection: blockDir,
+            }),
+            expires_at: expiry,
+            pair,
+            created_by: "forex-cot-data",
+          }, { onConflict: "gate_id" }));
+        }
+      }
+
+      // G21-C: Weekly Anchor — set permanent directional bias for currencies with God Signals
+      for (const rec of sortedByStrength) {
+        if (rec.godSignalStrength >= 80) {
+          gatePromises.push(sb.from("gate_bypasses").upsert({
+            gate_id: `G21_WEEKLY_ANCHOR:${rec.currency}`,
+            reason: JSON.stringify({
+              currency: rec.currency,
+              weeklyBias: rec.smartMoneyBias,
+              godSignalStrength: rec.godSignalStrength,
+              specPctLong: rec.specPctLong,
+              retailPctLong: rec.retailPctLong,
+              signal: `WEEKLY ANCHOR: Only allow ${rec.currency} ${rec.smartMoneyBias === "LONG" ? "longs" : "shorts"} this week. Smart Money conviction ${rec.godSignalStrength}%.`,
+            }),
+            expires_at: expiry,
+            pair: null,
+            created_by: "forex-cot-data",
+          }, { onConflict: "gate_id" }));
+        }
+      }
+
+      await Promise.allSettled(gatePromises);
+      console.log(`[COT] Persisted to sovereign_memory + ${gatePromises.length} G21 gates injected`);
+    } catch (persistErr) {
+      console.warn("[COT] Persist error (non-fatal):", (persistErr as Error).message);
+    }
+
     return new Response(JSON.stringify(response), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });

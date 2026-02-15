@@ -69,6 +69,7 @@ export interface IntelligenceState {
   activeDna: Record<string, unknown> | null;
   cmeFuturesDepth: Record<string, unknown> | null;
   currencyStrength: Record<string, unknown> | null;
+  cotPositioning: Record<string, unknown> | null;
   loading: boolean;
   lastUpdated: Date | null;
 }
@@ -89,6 +90,7 @@ const MEMORY_KEYS = [
   { type: 'AGENT_DNA_MUTATION', key: 'GLOBAL_OVERRIDE' },
   { type: 'cme_futures_depth', key: 'institutional_depth_proxy' },
   { type: 'currency_strength', key: 'live_strength_index' },
+  { type: 'cot_positioning', key: 'weekly_cot_report' },
 ];
 
 export function useIntelligenceState(pollMs = 30_000): IntelligenceState {
@@ -108,6 +110,7 @@ export function useIntelligenceState(pollMs = 30_000): IntelligenceState {
     activeDna: null,
     cmeFuturesDepth: null,
     currencyStrength: null,
+    cotPositioning: null,
     loading: true,
     lastUpdated: null,
   });
@@ -119,7 +122,7 @@ export function useIntelligenceState(pollMs = 30_000): IntelligenceState {
         .select('memory_type, memory_key, payload, updated_at')
         .in('memory_type', MEMORY_KEYS.map(k => k.type))
         .order('updated_at', { ascending: false })
-        .limit(20);
+        .limit(25);
 
       if (!data) return;
 
@@ -144,6 +147,7 @@ export function useIntelligenceState(pollMs = 30_000): IntelligenceState {
         activeDna: byType.AGENT_DNA_MUTATION || null,
         cmeFuturesDepth: byType.cme_futures_depth || null,
         currencyStrength: byType.currency_strength || null,
+        cotPositioning: byType.cot_positioning || null,
         loading: false,
         lastUpdated: new Date(),
       });
