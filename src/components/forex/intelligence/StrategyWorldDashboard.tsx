@@ -16,6 +16,7 @@ import { FlashCrashPanel } from './FlashCrashPanel';
 import { OrderFlowDeltaPanel } from './OrderFlowDeltaPanel';
 import { ShadowSplitterPanel } from './ShadowSplitterPanel';
 import { DnaMutationPanel } from './DnaMutationPanel';
+import { CmeFuturesPanel } from './CmeFuturesPanel';
 
 interface StrategySection {
   title: string;
@@ -48,6 +49,7 @@ export function StrategyWorldDashboard() {
     state.slippage, state.hawkometer, state.godSignal,
     state.fixingVolatility, state.crossVenueDom, state.flashCrash,
     state.orderflowDelta, state.shadowExecution, state.dnaMutation,
+    state.cmeFuturesDepth,
   ].filter(Boolean).length;
 
   return (
@@ -62,7 +64,7 @@ export function StrategyWorldDashboard() {
           <Brain className="w-5 h-5 text-primary" />
           <h2 className="font-display text-lg font-bold">Sovereign Strategy World</h2>
           <Badge variant="outline" className="text-[8px] border-primary/40 text-primary">
-            {feedCount}/12 FEEDS ACTIVE
+            {feedCount}/13 FEEDS ACTIVE
           </Badge>
         </div>
         <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
@@ -119,6 +121,15 @@ export function StrategyWorldDashboard() {
           <DarkPoolPanel profiles={state.darkPool?.profiles || []} />
         </SectionWrapper>
       </div>
+
+      {/* CME Institutional Depth — "God Order Book" */}
+      <SectionWrapper
+        title="Stage 2C — CME Futures Depth Proxy"
+        description="Fetches CME FX futures volume and price data via Polygon to identify institutional flow direction. Three sub-gates: (1) Divergence Gate compares retail positioning against CME commercial net-positioning for auto-sizing, (2) Iceberg Detection finds massive hidden buy/sell walls via volume-surge analysis, (3) Delta-Correlation triggers lead-lag scans when CME volume delta spikes before OANDA price moves."
+        role="Institutional Truth Signal — validates retail traps against CME 'hard ceiling' data"
+      >
+        <CmeFuturesPanel data={state.cmeFuturesDepth as any} />
+      </SectionWrapper>
 
       {/* Stage 3: Precision Strike */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">

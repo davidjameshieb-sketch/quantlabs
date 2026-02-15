@@ -161,6 +161,39 @@ Deno.serve(async (req) => {
       { onConflict: "memory_type,memory_key" }
     );
 
+    // L-ZERO-PRIME: DMA Interrupt — if flash crash detected, fire DNA mutation
+    // engine INLINE (sub-second) instead of waiting for 2min pg_cron cycle
+    if (isCascade || hasExtreme) {
+      try {
+        const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+        const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+        console.log(`[L0-PRIME] DMA INTERRUPT: Flash crash detected (cascade=${isCascade}, extreme=${hasExtreme}). Firing DNA mutator inline...`);
+        
+        const dmaRes = await fetch(`${supabaseUrl}/functions/v1/recursive-dna-mutator`, {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${serviceKey}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            triggerOverride: {
+              source: "L0-PRIME-DMA",
+              flashCrashPayload: payload,
+              timestamp: now.toISOString(),
+            },
+          }),
+        });
+        const dmaResult = await dmaRes.json();
+        console.log(`[L0-PRIME] DNA mutation result:`, JSON.stringify(dmaResult));
+        payload.dmaMutationFired = true;
+        payload.dmaMutationResult = dmaResult;
+      } catch (dmaErr) {
+        console.error(`[L0-PRIME] DMA interrupt failed:`, dmaErr);
+        payload.dmaMutationFired = false;
+        payload.dmaMutationError = String(dmaErr);
+      }
+    }
+
     return new Response(JSON.stringify(payload), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });

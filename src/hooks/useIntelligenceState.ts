@@ -67,6 +67,7 @@ export interface IntelligenceState {
   shadowExecution: Record<string, unknown> | null;
   dnaMutation: Record<string, unknown> | null;
   activeDna: Record<string, unknown> | null;
+  cmeFuturesDepth: Record<string, unknown> | null;
   loading: boolean;
   lastUpdated: Date | null;
 }
@@ -85,6 +86,7 @@ const MEMORY_KEYS = [
   { type: 'shadow_execution', key: null },
   { type: 'dna_mutation_engine', key: 'latest_scan' },
   { type: 'AGENT_DNA_MUTATION', key: 'GLOBAL_OVERRIDE' },
+  { type: 'cme_futures_depth', key: 'institutional_depth_proxy' },
 ];
 
 export function useIntelligenceState(pollMs = 30_000): IntelligenceState {
@@ -102,6 +104,7 @@ export function useIntelligenceState(pollMs = 30_000): IntelligenceState {
     shadowExecution: null,
     dnaMutation: null,
     activeDna: null,
+    cmeFuturesDepth: null,
     loading: true,
     lastUpdated: null,
   });
@@ -136,6 +139,7 @@ export function useIntelligenceState(pollMs = 30_000): IntelligenceState {
         shadowExecution: byType.shadow_execution || null,
         dnaMutation: byType.dna_mutation_engine || null,
         activeDna: byType.AGENT_DNA_MUTATION || null,
+        cmeFuturesDepth: byType.cme_futures_depth || null,
         loading: false,
         lastUpdated: new Date(),
       });
