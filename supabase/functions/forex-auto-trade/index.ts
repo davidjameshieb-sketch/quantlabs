@@ -1689,6 +1689,61 @@ async function loadServerBypasses(supabase: ReturnType<typeof createClient>): Pr
   }
 }
 
+// ─── G16 NEWS KILL-SWITCH HELPERS ───
+
+function isG16DeadZoneActive(pair: string): { reason: string } | null {
+  const now = new Date().toISOString();
+  for (const bp of _serverBypasses) {
+    if (bp.expires_at < now) continue;
+    if (!bp.gate_id.startsWith("G16_NEWS_DEADZONE:")) continue;
+    if (bp.pair && bp.pair !== pair) continue;
+    try {
+      const meta = JSON.parse(bp.reason);
+      return { reason: `News dead-zone: ${(meta.events || []).join(', ')} — FLATLINE active` };
+    } catch {
+      return { reason: `News dead-zone active for ${pair}` };
+    }
+  }
+  return null;
+}
+
+function isG16BiasLocked(pair: string, direction: string): { reason: string } | null {
+  const now = new Date().toISOString();
+  for (const bp of _serverBypasses) {
+    if (bp.expires_at < now) continue;
+    if (!bp.gate_id.startsWith("G16_BIAS_LOCK:")) continue;
+    if (bp.pair && bp.pair !== pair) continue;
+    try {
+      const meta = JSON.parse(bp.reason);
+      // G16_BIAS_LOCK:{pair}:block_short or G16_BIAS_LOCK:{pair}:block_long
+      const lockDir = bp.gate_id.split(":").pop(); // 'block_short' or 'block_long'
+      if (lockDir === "block_short" && direction === "short") {
+        return { reason: `Bias lock: ${meta.event} surprise ${meta.deviationPct}% — ${meta.currency} bullish, shorts blocked 4h` };
+      }
+      if (lockDir === "block_long" && direction === "long") {
+        return { reason: `Bias lock: ${meta.event} surprise ${meta.deviationPct}% — ${meta.currency} bearish, longs blocked 4h` };
+      }
+    } catch { continue; }
+  }
+  return null;
+}
+
+function isG16SpreadGuardActive(pair: string): { reason: string } | null {
+  const now = new Date().toISOString();
+  for (const bp of _serverBypasses) {
+    if (bp.expires_at < now) continue;
+    if (!bp.gate_id.startsWith("G16_SPREAD_GUARD:")) continue;
+    if (bp.pair && bp.pair !== pair) continue;
+    try {
+      const meta = JSON.parse(bp.reason);
+      return { reason: `Spread guard: current spread ${meta.spreadRatio}x of 24h median — all entries blocked` };
+    } catch {
+      return { reason: `Spread guard active for ${pair}` };
+    }
+  }
+  return null;
+}
+
 // ─── Dynamic Gate Check (Sovereign-created G13+ gates) ───
 function isDynamicGateBlocking(pair: string): { blocked: boolean; gateId: string; reason: string } | null {
   const now = new Date().toISOString();
@@ -1854,6 +1909,34 @@ function canPlaceLiveOrder(
     const mode = SUSPENDED_AGENTS[tradeIntent.agentId] || "fm-suspended";
     console.log(`[GOV_BLOCK_AGENT] agent_id=${tradeIntent.agentId} mode=${mode} — suspended from live execution`);
     return { allowed: false, reason_code: "GOV_BLOCK_AGENT", metadata: { agent_id: tradeIntent.agentId, mode } };
+  }
+
+  // ─── G16 NEWS KILL-SWITCH — HARD BLOCK ───
+  // Dead-Zone Timer: blocks all entries on pairs with imminent high-impact news
+  {
+    const g16DeadZone = isG16DeadZoneActive(tradeIntent.pair);
+    if (g16DeadZone) {
+      console.log(`[G16_NEWS_DEADZONE] pair=${tradeIntent.pair} — HARD BLOCKED: ${g16DeadZone.reason}`);
+      return { allowed: false, reason_code: "G16_NEWS_DEADZONE", metadata: { pair: tradeIntent.pair, reason: g16DeadZone.reason } };
+    }
+  }
+
+  // Surprise Delta Bias-Lock: blocks specific direction after extreme data surprise
+  {
+    const g16BiasLock = isG16BiasLocked(tradeIntent.pair, tradeIntent.direction);
+    if (g16BiasLock) {
+      console.log(`[G16_BIAS_LOCK] pair=${tradeIntent.pair} direction=${tradeIntent.direction} — HARD BLOCKED: ${g16BiasLock.reason}`);
+      return { allowed: false, reason_code: "G16_BIAS_LOCK", metadata: { pair: tradeIntent.pair, direction: tradeIntent.direction, reason: g16BiasLock.reason } };
+    }
+  }
+
+  // Spread Guard: blocks if current spread > 300% of 24h median (read from gate_bypasses)
+  {
+    const g16SpreadGuard = isG16SpreadGuardActive(tradeIntent.pair);
+    if (g16SpreadGuard) {
+      console.log(`[G16_SPREAD_GUARD] pair=${tradeIntent.pair} — HARD BLOCKED: ${g16SpreadGuard.reason}`);
+      return { allowed: false, reason_code: "G16_SPREAD_GUARD", metadata: { pair: tradeIntent.pair, reason: g16SpreadGuard.reason } };
+    }
   }
 
   // ─── SHADOW CHECK 4: REGIME-DIRECTION BLOCK (shadow-log during bootstrap) ───

@@ -1,8 +1,15 @@
 // ═══════════════════════════════════════════════════════════════
-// ECONOMIC CALENDAR — "Shock Sensor" for Smart G8
+// ECONOMIC CALENDAR — "Shock Sensor" for Smart G8 + G16 News Kill-Switch
 // Fetches high-impact economic events so the Sovereign Intelligence
 // can distinguish scheduled news from random liquidity gaps.
+//
+// G16 NEWS KILL-SWITCH:
+// 1. Dead-Zone Timer: FLATLINE 5min before → 15min after any Red Folder event
+// 2. Surprise Delta: If actual deviates >2σ from forecast → bias-lock affected currency
+// 3. Spread Guard: Delegated to auto-trade (reads live spread vs 24h median)
 // ═══════════════════════════════════════════════════════════════
+
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -37,17 +44,22 @@ const CURRENCY_PAIRS: Record<string, string[]> = {
   CNY: ["USD_CNH"],
 };
 
-// Impact classification based on Finnhub's numeric impact (1-3)
+// USD-bullish events: if actual > forecast, USD strengthens
+const USD_BULLISH_EVENTS = [
+  "nonfarm payrolls", "non-farm", "nfp", "cpi", "core cpi", "ppi",
+  "retail sales", "gdp", "ism manufacturing", "ism services",
+  "jolts", "consumer confidence", "durable goods",
+];
+
 function classifyImpact(impact: number): "high" | "medium" | "low" {
   if (impact >= 3) return "high";
   if (impact >= 2) return "medium";
   return "low";
 }
 
-// In-memory cache (survives within a single edge function invocation batch)
 let cachedEvents: EconomicEvent[] = [];
 let cacheTimestamp = 0;
-const CACHE_TTL_MS = 15 * 60 * 1000; // 15 min cache
+const CACHE_TTL_MS = 15 * 60 * 1000;
 
 async function fetchFromFinnhub(apiKey: string): Promise<EconomicEvent[]> {
   const now = Date.now();
@@ -55,7 +67,6 @@ async function fetchFromFinnhub(apiKey: string): Promise<EconomicEvent[]> {
     return cachedEvents;
   }
 
-  // Fetch today + next 2 days
   const today = new Date();
   const from = today.toISOString().slice(0, 10);
   const to = new Date(today.getTime() + 2 * 86400000).toISOString().slice(0, 10);
@@ -71,7 +82,7 @@ async function fetchFromFinnhub(apiKey: string): Promise<EconomicEvent[]> {
   const nowMs = Date.now();
 
   const events: EconomicEvent[] = rawEvents
-    .filter((e: any) => e.impact >= 2) // medium + high only
+    .filter((e: any) => e.impact >= 2)
     .map((e: any) => {
       const eventTime = new Date(`${e.time || e.date}Z`).getTime();
       const minutesUntil = Math.round((eventTime - nowMs) / 60000);
@@ -111,17 +122,165 @@ async function fetchFromFinnhub(apiKey: string): Promise<EconomicEvent[]> {
   return events;
 }
 
-function buildSmartG8Context(events: EconomicEvent[]) {
-  const now = Date.now();
+// ═══════════════════════════════════════════════════════════════
+// G16 NEWS KILL-SWITCH ENGINE
+// ═══════════════════════════════════════════════════════════════
 
-  // Events in the next 60 minutes (danger zone)
+interface G16Result {
+  deadZoneActive: boolean;
+  deadZoneEvents: string[];
+  deadZonePairs: string[];
+  biasLocks: Array<{ currency: string; direction: 'block_short' | 'block_long'; event: string; surprisePct: number; expiresAt: string }>;
+  gatesWritten: number;
+}
+
+async function enforceG16(
+  events: EconomicEvent[],
+  sb: ReturnType<typeof createClient>
+): Promise<G16Result> {
+  const result: G16Result = {
+    deadZoneActive: false,
+    deadZoneEvents: [],
+    deadZonePairs: [],
+    biasLocks: [],
+    gatesWritten: 0,
+  };
+
+  // ─── 1. DEAD-ZONE TIMER ───
+  // Flatline 5min before → 15min after any HIGH IMPACT event
+  const deadZoneEvents = events.filter(e =>
+    e.impact === "high" && e.minutesUntil <= 5 && e.minutesUntil >= -15
+  );
+
+  if (deadZoneEvents.length > 0) {
+    result.deadZoneActive = true;
+    const affectedPairs = new Set<string>();
+
+    for (const ev of deadZoneEvents) {
+      result.deadZoneEvents.push(`${ev.currency}: ${ev.event} (${ev.minutesUntil > 0 ? `in ${ev.minutesUntil}m` : `${Math.abs(ev.minutesUntil)}m ago`})`);
+      const pairs = CURRENCY_PAIRS[ev.currency] || [];
+      pairs.forEach(p => affectedPairs.add(p));
+    }
+
+    result.deadZonePairs = [...affectedPairs];
+
+    // Write G16 dead-zone gate for each affected pair
+    for (const pair of affectedPairs) {
+      const gateId = `G16_NEWS_DEADZONE:${pair}`;
+      // Check if already active to avoid duplicate writes
+      const { data: existing } = await sb.from('gate_bypasses')
+        .select('gate_id')
+        .eq('gate_id', gateId)
+        .eq('revoked', false)
+        .gt('expires_at', new Date().toISOString())
+        .limit(1);
+
+      if (!existing || existing.length === 0) {
+        // Expires 20 minutes from now (covers the full dead zone window)
+        await sb.from('gate_bypasses').insert({
+          gate_id: gateId,
+          reason: JSON.stringify({
+            action: 'FLATLINE',
+            events: deadZoneEvents.filter(e => (CURRENCY_PAIRS[e.currency] || []).includes(pair)).map(e => e.event),
+            trigger: 'G16_DEAD_ZONE_TIMER',
+          }),
+          expires_at: new Date(Date.now() + 20 * 60_000).toISOString(),
+          pair,
+          created_by: 'g16-news-killswitch',
+        });
+        result.gatesWritten++;
+        console.log(`[G16] 🔴 DEAD ZONE: ${pair} — FLATLINE until ${deadZoneEvents.map(e => e.event).join(', ')} clears`);
+      }
+    }
+  }
+
+  // ─── 2. SURPRISE DELTA — Bias Lock ───
+  // If actual deviates from forecast by >2σ equivalent (using >15% relative deviation as proxy)
+  // Lock the affected currency's direction for 4 hours
+  const surpriseEvents = events.filter(e =>
+    e.status === "released" &&
+    e.impact === "high" &&
+    e.actual !== null &&
+    e.estimate !== null &&
+    e.estimate !== 0 &&
+    e.minutesUntil >= -30 // Released in last 30min
+  );
+
+  for (const ev of surpriseEvents) {
+    const deviation = ev.actual! - ev.estimate!;
+    const deviationPct = Math.abs(deviation / ev.estimate!) * 100;
+
+    // >15% relative deviation ≈ >2σ for most macro data
+    if (deviationPct < 15) continue;
+
+    const eventNameLower = ev.event.toLowerCase();
+    const isUsdEvent = ev.currency === 'USD';
+
+    // Determine if this is bullish or bearish for the currency
+    const isPositiveSurprise = deviation > 0;
+    // For most events, higher actual = stronger currency
+    // Exception: unemployment claims (higher = weaker)
+    const isUnemployment = eventNameLower.includes('unemployment') || eventNameLower.includes('jobless');
+    const isCurrencyBullish = isUnemployment ? !isPositiveSurprise : isPositiveSurprise;
+
+    // If currency is bullish, block shorts on that currency; if bearish, block longs
+    const blockDirection: 'block_short' | 'block_long' = isCurrencyBullish ? 'block_short' : 'block_long';
+
+    const affectedPairs = CURRENCY_PAIRS[ev.currency] || [];
+    const expiresAt = new Date(Date.now() + 4 * 3600_000).toISOString();
+
+    for (const pair of affectedPairs) {
+      const gateId = `G16_BIAS_LOCK:${pair}:${blockDirection}`;
+
+      const { data: existing } = await sb.from('gate_bypasses')
+        .select('gate_id')
+        .eq('gate_id', gateId)
+        .eq('revoked', false)
+        .gt('expires_at', new Date().toISOString())
+        .limit(1);
+
+      if (!existing || existing.length === 0) {
+        await sb.from('gate_bypasses').insert({
+          gate_id: gateId,
+          reason: JSON.stringify({
+            action: blockDirection,
+            event: ev.event,
+            currency: ev.currency,
+            actual: ev.actual,
+            estimate: ev.estimate,
+            deviationPct: Math.round(deviationPct * 10) / 10,
+            trigger: 'G16_SURPRISE_DELTA',
+          }),
+          expires_at: expiresAt,
+          pair,
+          created_by: 'g16-news-killswitch',
+        });
+        result.gatesWritten++;
+        console.log(`[G16] ⚡ BIAS LOCK: ${pair} ${blockDirection} for 4h — ${ev.event} surprise ${deviationPct.toFixed(1)}%`);
+      }
+    }
+
+    result.biasLocks.push({
+      currency: ev.currency,
+      direction: blockDirection,
+      event: ev.event,
+      surprisePct: Math.round(deviationPct * 10) / 10,
+      expiresAt,
+    });
+  }
+
+  return result;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Smart G8 Context Builder (existing, preserved)
+// ═══════════════════════════════════════════════════════════════
+
+function buildSmartG8Context(events: EconomicEvent[]) {
   const imminent = events.filter(e => e.minutesUntil > -5 && e.minutesUntil <= 60);
   const highImpactImminent = imminent.filter(e => e.impact === "high");
-
-  // Events that just released (last 30 min) with actual values
   const justReleased = events.filter(e => e.status === "released" && e.minutesUntil >= -30);
 
-  // Compute "shock risk" per currency
   const shockRisk: Record<string, { level: "extreme" | "high" | "elevated" | "normal"; events: string[]; minutesUntil: number }> = {};
 
   for (const e of [...highImpactImminent, ...justReleased]) {
@@ -133,7 +292,7 @@ function buildSmartG8Context(events: EconomicEvent[]) {
     shockRisk[curr].minutesUntil = Math.min(shockRisk[curr].minutesUntil, e.minutesUntil);
 
     if (e.impact === "high" && e.minutesUntil <= 5 && e.minutesUntil > -2) {
-      shockRisk[curr].level = "extreme"; // Event hitting RIGHT NOW
+      shockRisk[curr].level = "extreme";
     } else if (e.impact === "high" && e.minutesUntil <= 15) {
       shockRisk[curr].level = shockRisk[curr].level === "extreme" ? "extreme" : "high";
     } else if (e.impact === "high" && e.minutesUntil <= 60) {
@@ -143,7 +302,6 @@ function buildSmartG8Context(events: EconomicEvent[]) {
     }
   }
 
-  // Affected pairs in danger
   const affectedPairs: string[] = [];
   for (const [curr, risk] of Object.entries(shockRisk)) {
     if (risk.level !== "normal") {
@@ -151,7 +309,6 @@ function buildSmartG8Context(events: EconomicEvent[]) {
     }
   }
 
-  // Surprise detection (actual vs estimate)
   const surprises = justReleased
     .filter(e => e.actual !== null && e.estimate !== null && e.estimate !== 0)
     .map(e => ({
@@ -162,24 +319,17 @@ function buildSmartG8Context(events: EconomicEvent[]) {
       direction: e.actual! > e.estimate! ? "beat" : "miss",
       minutesAgo: Math.abs(e.minutesUntil),
     }))
-    .filter(s => Math.abs(s.surprisePct) > 5); // Only meaningful surprises
+    .filter(s => Math.abs(s.surprisePct) > 5);
 
   return {
     timestamp: new Date().toISOString(),
     upcomingHighImpact: highImpactImminent.map(e => ({
-      event: e.event,
-      currency: e.currency,
-      minutesUntil: e.minutesUntil,
-      estimate: e.estimate,
-      prev: e.prev,
+      event: e.event, currency: e.currency, minutesUntil: e.minutesUntil,
+      estimate: e.estimate, prev: e.prev,
     })),
     justReleased: justReleased.map(e => ({
-      event: e.event,
-      currency: e.currency,
-      actual: e.actual,
-      estimate: e.estimate,
-      prev: e.prev,
-      minutesAgo: Math.abs(e.minutesUntil),
+      event: e.event, currency: e.currency, actual: e.actual,
+      estimate: e.estimate, prev: e.prev, minutesAgo: Math.abs(e.minutesUntil),
     })),
     shockRisk,
     affectedPairs: [...new Set(affectedPairs)],
@@ -214,6 +364,10 @@ function buildDirective(
   return "🟢 CLEAR TAPE: No imminent high-impact data. Normal operations. G8 in standard mode.";
 }
 
+// ═══════════════════════════════════════════════════════════════
+// MAIN HANDLER
+// ═══════════════════════════════════════════════════════════════
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -228,12 +382,23 @@ Deno.serve(async (req) => {
       );
     }
 
+    const sb = createClient(
+      Deno.env.get('SUPABASE_URL')!,
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+    );
+
     const events = await fetchFromFinnhub(apiKey);
     const context = buildSmartG8Context(events);
 
-    console.log(`[ECON-CALENDAR] ${events.length} events loaded, ${context.upcomingHighImpact.length} high-impact imminent, directive: ${context.smartG8Directive.slice(0, 80)}`);
+    // ═══ G16 NEWS KILL-SWITCH ═══
+    const g16 = await enforceG16(events, sb);
 
-    return new Response(JSON.stringify(context), {
+    console.log(`[ECON-CALENDAR] ${events.length} events | ${context.upcomingHighImpact.length} high-impact imminent | G16: deadZone=${g16.deadZoneActive} biasLocks=${g16.biasLocks.length} gates=${g16.gatesWritten} | ${context.smartG8Directive.slice(0, 80)}`);
+
+    return new Response(JSON.stringify({
+      ...context,
+      g16: g16,
+    }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (err) {

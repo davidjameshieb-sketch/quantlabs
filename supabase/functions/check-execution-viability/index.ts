@@ -1,6 +1,8 @@
-// Slippage Sentinel — Pre-Trade Execution Guard
+// Slippage Sentinel — Pre-Trade Execution Guard + G16 Spread Guard
 // Evaluates fill quality before trade placement by walking OANDA depth,
 // comparing spread vs 24h average, and checking recent halfSpreadCost trends.
+// G16 Spread Guard: If spread > 300% of 24h median, auto-injects gate bypass to block all entries.
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -181,6 +183,40 @@ Deno.serve(async (req) => {
     if (spreadRatio > 3) {
       viabilityScore -= 40;
       issues.push(`Spread ${currentSpreadPips}p is ${spreadRatio.toFixed(1)}x the 24h avg (${avgSpread24h.toFixed(1)}p)`);
+
+      // ═══ G16 SPREAD GUARD: Auto-inject gate bypass when >300% ═══
+      try {
+        const sb = createClient(
+          Deno.env.get('SUPABASE_URL')!,
+          Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+        );
+        const gateId = `G16_SPREAD_GUARD:${pair}`;
+        const { data: existing } = await sb.from('gate_bypasses')
+          .select('gate_id')
+          .eq('gate_id', gateId)
+          .eq('revoked', false)
+          .gt('expires_at', new Date().toISOString())
+          .limit(1);
+
+        if (!existing || existing.length === 0) {
+          await sb.from('gate_bypasses').insert({
+            gate_id: gateId,
+            reason: JSON.stringify({
+              action: 'BLOCK_ALL_ENTRIES',
+              spreadRatio: Math.round(spreadRatio * 10) / 10,
+              currentSpread: Math.round(currentSpreadPips * 100) / 100,
+              medianSpread: Math.round(avgSpread24h * 100) / 100,
+              trigger: 'G16_SPREAD_GUARD_300PCT',
+            }),
+            expires_at: new Date(Date.now() + 10 * 60_000).toISOString(), // 10min TTL — re-evaluated next cycle
+            pair,
+            created_by: 'g16-spread-guard',
+          });
+          console.log(`[G16-SPREAD-GUARD] 🔴 ${pair}: Spread ${spreadRatio.toFixed(1)}x of 24h median → ALL ENTRIES BLOCKED for 10min`);
+        }
+      } catch (gateErr) {
+        console.warn(`[G16-SPREAD-GUARD] Failed to write gate: ${(gateErr as Error).message}`);
+      }
     } else if (spreadRatio > 2) {
       viabilityScore -= 25;
       issues.push(`Spread ${currentSpreadPips}p is ${spreadRatio.toFixed(1)}x the 24h avg`);
