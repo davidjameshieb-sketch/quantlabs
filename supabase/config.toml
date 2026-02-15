@@ -107,3 +107,6 @@ verify_jwt = false
 
 [functions.god-signal-gateway]
 verify_jwt = false
+
+[functions.promote-shadow-agent]
+verify_jwt = false
