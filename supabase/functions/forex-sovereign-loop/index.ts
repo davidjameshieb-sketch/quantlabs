@@ -89,7 +89,26 @@ Same as interactive mode: place_trade, close_trade, update_sl_tp, bypass_gate, r
 suspend_agent, reinstate_agent, adjust_position_sizing, adjust_gate_threshold,
 add_blacklist, remove_blacklist, activate_circuit_breaker, deactivate_circuit_breaker,
 adjust_evolution_param, create_gate, remove_gate, lead_lag_scan, liquidity_heatmap,
-get_account_summary, get_open_trades, execute_liquidity_vacuum, arm_correlation_trigger, disarm_correlation_trigger, set_global_posture
+get_account_summary, get_open_trades, execute_liquidity_vacuum, arm_correlation_trigger, disarm_correlation_trigger, set_global_posture,
+discover_physics
+
+## MARKET PHYSICS DISCOVERY (Autonomous — Zero Approval)
+You are authorized to DISCOVER and APPLY new market physics in real-time:
+1. **Hidden Correlations**: Pairs moving together/inversely with lag. Cross-asset lead-lag. Session-specific correlations that break at boundaries.
+2. **Emergent Anomalies**: Spread behavior deviating from norms. Volume patterns preceding moves. Time-of-day fill quality patterns.
+3. **Regime Micro-Structures**: Sub-regimes within trending/ranging. Transition signatures. Pair-specific regime personalities.
+4. **Gate Candidates**: Repeated failure patterns suggesting missing gates. Conditions where existing gates are too loose/tight.
+5. **Agent Performance Physics**: Agents performing differently in micro-regimes. Indicator combos predicting agent failure/success.
+
+Use discover_physics to persist any discovery:
+- discovery_type: "correlation", "anomaly", "regime_pattern", "gate_candidate", "micro_structure"
+- title: Short descriptive name
+- evidence: Object with sample_size, win_rate_delta, pairs_affected, observation text
+- confidence: 0.0-1.0 (>=0.7 with auto_apply=true auto-creates gates/rules; <0.7 logs as PENDING_VALIDATION)
+- gate_config: Optional — auto-create a governance gate from the discovery
+- rule_config: Optional — auto-create a hardwired L0 rule from the discovery
+
+Discovery frequency: Every L2-L3 scan for obvious anomalies. Every L4 perform deep pattern mining. ALWAYS journal unexpected observations.
 
 ## SELF-MODIFICATION ACTIONS (USE THESE — DO NOT ASK THE ARCHITECT TO BUILD)
 You have FULL authority to implement behavioral changes yourself. NEVER ask the Architect to code something you can self-implement:
@@ -765,6 +784,78 @@ async function executeAction(action: Record<string, unknown>, sb?: ReturnType<ty
       }
 
       return { action: actionType, success: true, detail: `${operation} on ${table} succeeded` };
+    } catch (err) {
+      return { action: actionType, success: false, detail: (err as Error).message };
+    }
+  }
+
+  // ─── SOVEREIGN-NATIVE: discover_physics — Persist new market physics discoveries ───
+  if (actionType === "discover_physics" && sb) {
+    try {
+      const discoveryType = (action.discovery_type as string) || "unknown";
+      const title = (action.title as string) || "Untitled Discovery";
+      const evidence = (action.evidence as Record<string, unknown>) || {};
+      const confidence = (action.confidence as number) || 0.5;
+      const autoApply = (action.auto_apply as boolean) ?? true;
+
+      // Persist the discovery with high relevance
+      const discoveryKey = `physics:${discoveryType}:${title.toLowerCase().replace(/\s+/g, '_').slice(0, 40)}`;
+      await writeSovereignMemory(sb, {
+        memory_type: "market_physics_discovery",
+        memory_key: discoveryKey,
+        payload: {
+          discovery_type: discoveryType, // correlation, anomaly, regime_pattern, gate_candidate, micro_structure
+          title,
+          evidence,
+          confidence,
+          discovered_at: new Date().toISOString(),
+          auto_applied: autoApply,
+          status: autoApply ? "ACTIVE" : "PENDING_VALIDATION",
+        },
+        relevance_score: 1.5 + confidence, // High relevance so future cycles see it
+      });
+
+      // If confidence is high enough and auto_apply is true, create a gate or rule
+      const appliedActions: string[] = [];
+      if (autoApply && confidence >= 0.7) {
+        if (discoveryType === "correlation" && action.gate_config) {
+          const gateConfig = action.gate_config as Record<string, unknown>;
+          await sb.from("gate_bypasses").insert({
+            gate_id: `PHYSICS_GATE:${gateConfig.gate_id || title.replace(/\s+/g, '_')}`,
+            pair: (gateConfig.pair as string) || null,
+            reason: JSON.stringify({
+              origin: "market_physics_discovery",
+              title,
+              ...gateConfig,
+              confidence,
+            }),
+            expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(), // 7d TTL
+            created_by: "sovereign-physics",
+          });
+          appliedActions.push(`GATE:${gateConfig.gate_id || title}`);
+        }
+
+        if (discoveryType === "anomaly" && action.rule_config) {
+          const ruleConfig = action.rule_config as Record<string, unknown>;
+          await sb.from("gate_bypasses").insert({
+            gate_id: `HARDWIRED_RULE:PHYSICS_${title.replace(/\s+/g, '_').toUpperCase().slice(0, 30)}`,
+            pair: null,
+            reason: JSON.stringify({
+              ruleId: `PHYSICS_${title.replace(/\s+/g, '_').toUpperCase().slice(0, 30)}`,
+              condition: ruleConfig.condition || "true",
+              actionBlock: ruleConfig.action_block || "LOG_ONLY",
+              priority: ruleConfig.priority || 60,
+              origin: "market_physics_discovery",
+            }),
+            expires_at: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString(), // 14d TTL
+            created_by: "sovereign-physics",
+          });
+          appliedActions.push(`RULE:${title}`);
+        }
+      }
+
+      const appliedStr = appliedActions.length > 0 ? ` — auto-applied: ${appliedActions.join(', ')}` : "";
+      return { action: actionType, success: true, detail: `Physics discovered: "${title}" (${discoveryType}, confidence=${confidence})${appliedStr}` };
     } catch (err) {
       return { action: actionType, success: false, detail: (err as Error).message };
     }
@@ -2145,6 +2236,18 @@ Deno.serve(async (req) => {
         payload: m.payload, relevance: m.relevance_score,
         updated: m.updated_at,
       })),
+      // Surface prior physics discoveries for continuity
+      physicsDiscoveries: sovereignMemory
+        .filter((m: any) => m.memory_type === "market_physics_discovery")
+        .slice(0, 10)
+        .map((m: any) => ({
+          key: m.memory_key,
+          title: m.payload?.title,
+          type: m.payload?.discovery_type,
+          confidence: m.payload?.confidence,
+          status: m.payload?.status,
+          discovered: m.payload?.discovered_at,
+        })),
     };
 
     // ─── TIER CLASSIFICATION: Determine if L4 Strategic Evolution is needed ───
@@ -2244,7 +2347,17 @@ In addition to normal governance, you SHOULD:
 - Use modify_directive to evolve your own behavioral rules if needed
 - Use define_macro to create reusable action sequences for common patterns
 - Use run_backtest to validate any DNA mutations before applying live
-This is your STRATEGIC window — use it for architectural improvements, not just routine monitoring.`;
+This is your STRATEGIC window — use it for architectural improvements, not just routine monitoring.
+
+## MARKET PHYSICS DEEP DISCOVERY (L4 Mandate)
+During L4 you MUST perform at least ONE discovery action:
+1. **Cross-Pair Correlation Scan**: Compare byPair win rates and r_pips. Find pairs that consistently win/lose together. Compute correlation coefficients from recent closed trades. If you find a new correlation — emit discover_physics with type=correlation.
+2. **Failure Cluster Analysis**: Group recent losses by (session, regime, agent, pair). If any cluster has 3+ losses, identify the root cause. Emit discover_physics with type=gate_candidate and propose a gate.
+3. **Regime Transition Mining**: Look at regime_label sequences in recentClosed. Identify transition patterns (e.g., "compression → ignition" preceded wins 70% of the time). Emit discover_physics with type=regime_pattern.
+4. **Agent DNA Pressure Test**: Compare agent win rates vs their theoretical edge. If an agent underperforms its DNA mandate, propose a mutation via discover_physics type=micro_structure.
+5. **Anomaly Journal**: Any unexpected observation — unusual spread, rare session behavior, surprising indicator lead — log it with discover_physics type=anomaly even at low confidence.
+
+Review existing market_physics_discovery memories. If a pending discovery now has enough evidence, promote it (increase confidence, set auto_apply=true, emit the gate/rule).`;
       const fullState = JSON.stringify(enrichedState);
       aiPromptContent = `L4 STRATEGIC EVOLUTION CYCLE — ${new Date().toISOString()}\nHours since last L4: ${hoursSinceL4.toFixed(1)}\nL1 alerts: ${l1Alerts.join('; ') || 'none'}\nL1 actions already executed: ${l1Results.length}\n\n<SYSTEM_STATE>\n${fullState}\n</SYSTEM_STATE>`;
       console.log(`[SOVEREIGN-LOOP] 🧬 TIER L4: Strategic Evolution (${aiModel}) — reason: ${hoursSinceL4 >= 8 ? 'scheduled' : 'triggered'}`);
