@@ -79,8 +79,13 @@ export function LiquidityDisplacementHeatmap() {
 
   // Fetch prices every 3s
   const fetchPrices = useCallback(async () => {
-    const p = await fetchOandaLivePrices();
-    if (Object.keys(p).length === 0) return;
+    const raw = await fetchOandaLivePrices();
+    if (Object.keys(raw).length === 0) return;
+    // Normalize keys: OANDA returns "EUR/USD", we need "EUR_USD"
+    const p: Record<string, OandaPrice> = {};
+    for (const [k, v] of Object.entries(raw)) {
+      p[k.replace('/', '_')] = v;
+    }
     setPrices(p);
     setLastUpdate(new Date());
 
