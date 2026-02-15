@@ -98,3 +98,12 @@ verify_jwt = false
 
 [functions.wall-of-pain-injector]
 verify_jwt = false
+
+[functions.ghost-pipeline]
+verify_jwt = false
+
+[functions.friction-lab]
+verify_jwt = false
+
+[functions.god-signal-gateway]
+verify_jwt = false
