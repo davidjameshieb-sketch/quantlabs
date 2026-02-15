@@ -143,3 +143,12 @@ verify_jwt = false
 
 [functions.adversarial-slippage]
 verify_jwt = false
+
+[functions.fixing-volatility-alert]
+verify_jwt = false
+
+[functions.cross-venue-dom]
+verify_jwt = false
+
+[functions.flash-crash-killswitch]
+verify_jwt = false
