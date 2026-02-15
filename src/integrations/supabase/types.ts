@@ -113,6 +113,51 @@ export type Database = {
         }
         Relationships: []
       }
+      market_liquidity_map: {
+        Row: {
+          bucket_width: string | null
+          created_at: string
+          currency_pair: string
+          current_price: number | null
+          id: string
+          long_clusters: Json
+          short_clusters: Json
+          top_stop_clusters: Json
+          updated_at: string
+          wall_of_pain_pct: number | null
+          wall_of_pain_price: number | null
+          wall_of_pain_type: string | null
+        }
+        Insert: {
+          bucket_width?: string | null
+          created_at?: string
+          currency_pair: string
+          current_price?: number | null
+          id?: string
+          long_clusters?: Json
+          short_clusters?: Json
+          top_stop_clusters?: Json
+          updated_at?: string
+          wall_of_pain_pct?: number | null
+          wall_of_pain_price?: number | null
+          wall_of_pain_type?: string | null
+        }
+        Update: {
+          bucket_width?: string | null
+          created_at?: string
+          currency_pair?: string
+          current_price?: number | null
+          id?: string
+          long_clusters?: Json
+          short_clusters?: Json
+          top_stop_clusters?: Json
+          updated_at?: string
+          wall_of_pain_pct?: number | null
+          wall_of_pain_price?: number | null
+          wall_of_pain_type?: string | null
+        }
+        Relationships: []
+      }
       oanda_orders: {
         Row: {
           agent_id: string | null
