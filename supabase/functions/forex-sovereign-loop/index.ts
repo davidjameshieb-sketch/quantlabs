@@ -85,12 +85,14 @@ async function writeSovereignMemory(
   metadata?: any
 ): Promise<void> {
   try {
-    const { error } = await supabase.from("sovereign_memory").insert({
-      key,
-      value,
-      metadata: metadata || {},
-      created_at: new Date().toISOString(),
-    });
+    const memoryType = key.includes(":") ? key.split(":")[0].toLowerCase() : "strategic_note";
+    const { error } = await supabase.from("sovereign_memory").upsert({
+      memory_type: memoryType,
+      memory_key: key,
+      payload: typeof value === "object" ? value : { value, ...(metadata || {}) },
+      relevance_score: 0.8,
+      created_by: "sovereign-loop",
+    }, { onConflict: "memory_type,memory_key" });
     if (error) throw error;
     console.log(`✅ Sovereign memory written: ${key}`);
   } catch (err) {
@@ -101,7 +103,7 @@ async function writeSovereignMemory(
 // ─── Fetch smartG8 Directive ───
 async function fetchSmartG8Directive(supabase: any): Promise<any> {
   try {
-    const { data, error } = await supabase.functions.invoke("smartg8-directive");
+    const { data, error } = await supabase.functions.invoke("god-signal-gateway");
     if (error) throw error;
     return data;
   } catch (err) {
@@ -113,7 +115,7 @@ async function fetchSmartG8Directive(supabase: any): Promise<any> {
 // ─── Fetch Cross-Asset Pulse ───
 async function fetchCrossAssetPulse(supabase: any): Promise<any> {
   try {
-    const { data, error } = await supabase.functions.invoke("cross-asset-pulse");
+    const { data, error } = await supabase.functions.invoke("cross-asset-latency");
     if (error) throw error;
     return data;
   } catch (err) {
@@ -125,7 +127,7 @@ async function fetchCrossAssetPulse(supabase: any): Promise<any> {
 // ─── Fetch COT Data ───
 async function fetchCOTData(supabase: any): Promise<any> {
   try {
-    const { data, error } = await supabase.functions.invoke("cot-data");
+    const { data, error } = await supabase.functions.invoke("forex-cot-data");
     if (error) throw error;
     return data;
   } catch (err) {
@@ -137,7 +139,7 @@ async function fetchCOTData(supabase: any): Promise<any> {
 // ─── Fetch Macro Data ───
 async function fetchMacroData(supabase: any): Promise<any> {
   try {
-    const { data, error } = await supabase.functions.invoke("macro-data");
+    const { data, error } = await supabase.functions.invoke("forex-macro-data");
     if (error) throw error;
     return data;
   } catch (err) {
@@ -173,7 +175,7 @@ async function fetchCryptoIntel(supabase: any): Promise<any> {
 // ─── Fetch Treasury Data ───
 async function fetchTreasuryData(supabase: any): Promise<any> {
   try {
-    const { data, error } = await supabase.functions.invoke("treasury-data");
+    const { data, error } = await supabase.functions.invoke("treasury-commodities");
     if (error) throw error;
     return data;
   } catch (err) {
@@ -185,7 +187,7 @@ async function fetchTreasuryData(supabase: any): Promise<any> {
 // ─── Fetch Sentiment Data ───
 async function fetchSentimentData(supabase: any): Promise<any> {
   try {
-    const { data, error } = await supabase.functions.invoke("sentiment-data");
+    const { data, error } = await supabase.functions.invoke("market-sentiment");
     if (error) throw error;
     return data;
   } catch (err) {
@@ -197,7 +199,7 @@ async function fetchSentimentData(supabase: any): Promise<any> {
 // ─── Fetch Options Vol Data ───
 async function fetchOptionsVolData(supabase: any): Promise<any> {
   try {
-    const { data, error } = await supabase.functions.invoke("options-vol-data");
+    const { data, error } = await supabase.functions.invoke("options-volatility-intel");
     if (error) throw error;
     return data;
   } catch (err) {
@@ -209,7 +211,7 @@ async function fetchOptionsVolData(supabase: any): Promise<any> {
 // ─── Fetch Econ Calendar Data ───
 async function fetchEconCalendarData(supabase: any): Promise<any> {
   try {
-    const { data, error } = await supabase.functions.invoke("econ-calendar-data");
+    const { data, error } = await supabase.functions.invoke("economic-calendar-intel");
     if (error) throw error;
     return data;
   } catch (err) {
@@ -233,7 +235,7 @@ async function fetchBISIMFData(supabase: any): Promise<any> {
 // ─── Fetch CB Comms Data ───
 async function fetchCBCommsData(supabase: any): Promise<any> {
   try {
-    const { data, error } = await supabase.functions.invoke("cb-comms-data");
+    const { data, error } = await supabase.functions.invoke("central-bank-comms");
     if (error) throw error;
     return data;
   } catch (err) {
@@ -245,7 +247,7 @@ async function fetchCBCommsData(supabase: any): Promise<any> {
 // ─── Fetch Crypto On-Chain Data ───
 async function fetchCryptoOnChainData(supabase: any): Promise<any> {
   try {
-    const { data, error } = await supabase.functions.invoke("crypto-onchain-data");
+    const { data, error } = await supabase.functions.invoke("crypto-onchain");
     if (error) throw error;
     return data;
   } catch (err) {
@@ -257,7 +259,7 @@ async function fetchCryptoOnChainData(supabase: any): Promise<any> {
 // ─── Fetch Order Book / Position Book ───
 async function fetchOrderBook(supabase: any): Promise<any> {
   try {
-    const { data, error } = await supabase.functions.invoke("order-book");
+    const { data, error } = await supabase.functions.invoke("oanda-market-intel");
     if (error) throw error;
     return data;
   } catch (err) {
@@ -269,7 +271,7 @@ async function fetchOrderBook(supabase: any): Promise<any> {
 // ─── Fetch Alpha Vantage Data ───
 async function fetchAlphaVantageData(supabase: any): Promise<any> {
   try {
-    const { data, error } = await supabase.functions.invoke("alpha-vantage-data");
+    const { data, error } = await supabase.functions.invoke("market-data");
     if (error) throw error;
     return data;
   } catch (err) {
@@ -281,7 +283,7 @@ async function fetchAlphaVantageData(supabase: any): Promise<any> {
 // ─── Fetch Carry Trade Data ───
 async function fetchCarryTradeData(supabase: any): Promise<any> {
   try {
-    const { data, error } = await supabase.functions.invoke("carry-trade-data");
+    const { data, error } = await supabase.functions.invoke("treasury-commodities");
     if (error) throw error;
     return data;
   } catch (err) {
@@ -730,13 +732,16 @@ async function commitRule(supabase: any, action: any): Promise<void> {
 // ─── Check Circuit Breaker ───
 async function checkCircuitBreaker(supabase: any): Promise<boolean> {
   try {
+    // Check gate_bypasses for active circuit breakers
     const { data, error } = await supabase
-      .from("circuit_breaker_state")
-      .select("*")
-      .eq("id", "global")
-      .single();
+      .from("gate_bypasses")
+      .select("gate_id, reason, expires_at")
+      .like("gate_id", "CIRCUIT_BREAKER:%")
+      .eq("revoked", false)
+      .gte("expires_at", new Date().toISOString())
+      .limit(1);
     if (error) throw error;
-    return data?.active || false;
+    return (data && data.length > 0) || false;
   } catch (err) {
     console.error("❌ checkCircuitBreaker error:", err);
     return false;
@@ -749,14 +754,20 @@ async function logCycleResult(
   cycleData: any
 ): Promise<void> {
   try {
-    const { error } = await supabase.from("sovereign_loop_cycles").insert({
-      timestamp: new Date().toISOString(),
-      actions_taken: cycleData.actionsTaken,
-      cycle_assessment: cycleData.cycleAssessment,
-      sovereignty_score: cycleData.sovereigntyScore,
-      llm_response: cycleData.llmResponse,
-      errors: cycleData.errors || [],
-    });
+    // Log cycle result to sovereign_memory instead of missing table
+    const { error } = await supabase.from("sovereign_memory").upsert({
+      memory_type: "cycle_log",
+      memory_key: "latest_cycle",
+      payload: {
+        timestamp: new Date().toISOString(),
+        actions_taken: cycleData.actionsTaken,
+        cycle_assessment: cycleData.cycleAssessment,
+        sovereignty_score: cycleData.sovereigntyScore,
+        errors: cycleData.errors || [],
+      },
+      relevance_score: 0.3,
+      created_by: "sovereign-loop",
+    }, { onConflict: "memory_type,memory_key" });
     if (error) throw error;
     console.log("✅ Cycle result logged");
   } catch (err) {
@@ -837,11 +848,11 @@ Deno.serve(async (req) => {
 
     if (loopState.consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
       console.log("🛑 Max consecutive errors reached. Halting.");
-      await supabase.from("circuit_breaker_state").upsert({
-        id: "global",
-        active: true,
-        reason: "max_consecutive_errors",
-        activated_at: new Date().toISOString(),
+      await supabase.from("gate_bypasses").insert({
+        gate_id: "CIRCUIT_BREAKER:max_consecutive_errors",
+        reason: `Sovereign loop: ${MAX_CONSECUTIVE_ERRORS} consecutive errors`,
+        expires_at: new Date(Date.now() + 4 * 60 * 60 * 1000).toISOString(),
+        created_by: "sovereign-loop",
       });
       return new Response(
         JSON.stringify({ status: "halted", reason: "max_consecutive_errors" }),
