@@ -475,7 +475,8 @@ interface CoalitionRequirement {
 
 /**
  * Compute dynamic coalition requirement based on aggregate survivorship metrics.
- * MINIMUM 2 agents always required — solo execution is DISABLED.
+ * LEARNING PHASE (<500 trades): minimum 1 agent — solo execution ALLOWED to prevent deadlock.
+ * MATURE PHASE (≥500 trades): minimum 2 agents — DUO or TRIO based on survivorship.
  * Degraded metrics require 3 agents for additional confirmation.
  */
 function computeCoalitionRequirement(agents: AgentSnapshot[]): CoalitionRequirement {
@@ -484,22 +485,22 @@ function computeCoalitionRequirement(agents: AgentSnapshot[]): CoalitionRequirem
 
   if (eligible.length === 0) {
     return {
-      tier: "duo", minAgents: 2, survivorshipScore: 0, rollingPF: 0,
+      tier: "duo", minAgents: 1, survivorshipScore: 0, rollingPF: 0,
       expectancySlope: 0, stabilityTrend: "flat",
-      reasons: ["No eligible agents — bootstrap DUO"],
+      reasons: ["No eligible agents — bootstrap SOLO (learning phase)"],
     };
   }
 
   // Aggregate survivorship score from eligible agents' metrics
   const totalTrades = eligible.reduce((s, a) => s + a.metrics.totalTrades, 0);
 
-  // ─── LEARNING PHASE: < 500 trades = force DUO ───
-  // During learning, TRIO escalation would deadlock the system with only 2 support agents.
-  // Once we have 500+ trades, survivorship metrics become meaningful for TRIO gating.
+  // ─── LEARNING PHASE: < 500 trades = SOLO allowed (min 1 agent) ───
+  // During learning, requiring 2 agents deadlocks the system when only 1 support agent is active.
+  // Once we have 500+ trades, survivorship metrics become meaningful for DUO/TRIO gating.
   if (totalTrades < 500) {
-    reasons.push(`Learning phase: ${totalTrades} trades < 500 — forcing DUO (no TRIO escalation)`);
+    reasons.push(`Learning phase: ${totalTrades} trades < 500 — SOLO allowed (min 1 agent, no TRIO escalation)`);
     return {
-      tier: "duo", minAgents: 2, survivorshipScore: 0, rollingPF: 0,
+      tier: "duo", minAgents: 1, survivorshipScore: 0, rollingPF: 0,
       expectancySlope: 0, stabilityTrend: "flat",
       reasons,
     };
