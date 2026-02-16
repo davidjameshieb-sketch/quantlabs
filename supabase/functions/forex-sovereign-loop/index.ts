@@ -37,7 +37,8 @@ P4:lead_lag corr>5pip.Retail>70%→contra.LowSpread+consensus→entry.
 RULES:Max ${MAX_ACTIONS_PER_CYCLE} acts.SL+TP always.500-2000u.0.3R MAE,180s stop.
 OUT:ACTIONS_TAKEN:[n]|CYCLE_ASSESSMENT:[txt]|SOVEREIGNTY_SCORE:[0-100]
 ACT:place_trade,close_trade,update_sl_tp,bypass_gate,revoke_bypass,suspend_agent,reinstate_agent,adjust_position_sizing,adjust_gate_threshold,add_blacklist,remove_blacklist,activate_circuit_breaker,deactivate_circuit_breaker,adjust_evolution_param,create_gate,remove_gate,lead_lag_scan,liquidity_heatmap,get_account_summary,get_open_trades,execute_liquidity_vacuum,arm_correlation_trigger,disarm_correlation_trigger,set_global_posture,discover_physics
-SELF:commit_rule,write_memory,modify_directive,define_macro,execute_macro,mutate_agent_dna,db_write,db_query,execute_sql,deploy_function,http_request,eval_indicator,call_edge_function,manage_storage,manage_auth,discover_physics(>=0.7 auto)
+SELF:commit_rule,write_memory,modify_directive,define_macro,execute_macro,db_write,db_query,execute_sql,deploy_function,http_request,eval_indicator,call_edge_function,manage_storage,manage_auth,discover_physics(>=0.7 auto)
+NOTE:mutate_agent_dna is TIER-4 EXCLUSIVE. Do NOT emit mutate_agent_dna actions. If DNA mutation needed, flag via write_memory key="TIER4_DNA_REQUEST".
 Format:\`\`\`action\n{"type":"...",...}\n\`\`\``;
 
 // ─── 2-CYCLE INTEL CACHE for slow-moving data sources ───
@@ -280,17 +281,29 @@ async function fetchCarryTradeData(supabase: any): Promise<any> {
 }
 
 // ─── Tier 4: Strategic Evolution Prompt (gemini-2.5-pro) ───
-const TIER4_STRATEGIC_PROMPT = `SOVEREIGN TIER-4 STRATEGIC EVOLUTION. You are the architect.
-REVIEW full trade history, DNA performance, gate effectiveness. Your mandate:
-1. MUTATE agent DNA: rewrite entry logic, add/remove indicator checks, adjust weights
-2. SYNTHESIZE new gates (G13+) if edge decay detected
-3. CREATE/PROMOTE shadow agents for underserved sessions
-4. ADJUST evolution params: mae_demotion(0.3-0.8R), consec_loss_thresh(3-7), wr_floor, expectancy_floor
-5. BLACKLIST toxic pair/session combos with <35% WR over 20+ trades
-6. REWRITE indicator neural weights (0.0-2.0x) per pair based on lead/lag
-ACTIONS: mutate_agent_dna, create_gate, remove_gate, adjust_evolution_param, add_blacklist, remove_blacklist, suspend_agent, reinstate_agent, write_memory, modify_directive, adjust_gate_threshold, adjust_position_sizing
+const TIER4_STRATEGIC_PROMPT = `SOVEREIGN TIER-4 STRATEGIC PRO. You are the architect. ONLY YOU have mutate_agent_dna authority.
+
+MANDATE 1 — REGIME AUDIT:
+Compare last20Trades against macroDirective + cotData. If trades are "Scalping" into a God Signal reversal (institutional COT opposing trade direction), you MUST Hard-Blacklist that pair for 4 hours:
+\`\`\`action
+{"type":"add_blacklist","pair":"XXX_YYY","duration_hours":4,"reason":"God Signal reversal conflict — scalping against institutional flow"}
+\`\`\`
+
+MANDATE 2 — DNA MUTATION (EXCLUSIVE):
+You are the ONLY tier authorized to use mutate_agent_dna. Analyze WHY an agent's logic is failing by reviewing its config, recent trade outcomes, and confirmation checks. Rewrite mandatory confirmation checks as needed:
+\`\`\`action
+{"type":"mutate_agent_dna","agent_id":"...","mutations":{"confirmation_checks":[...],"entry_logic":"...","reason":"..."}}
+\`\`\`
+
+MANDATE 3 — KELLY-SIZING CALIBRATION:
+Calculate Edge-to-Variance ratio from last48hTrades: Edge = avg(r_pips), Variance = stddev(r_pips). Kelly% = Edge/Variance. Set adjust_position_sizing cap for next window (floor 0.2x, ceiling 2.0x):
+\`\`\`action
+{"type":"adjust_position_sizing","kelly_fraction":0.XX,"sizing_cap":X.Xx,"edge":X.X,"variance":X.X,"window":"next_2h"}
+\`\`\`
+
+ADDITIONAL POWERS: create_gate, remove_gate, adjust_evolution_param, add_blacklist, remove_blacklist, suspend_agent, reinstate_agent, write_memory, modify_directive, adjust_gate_threshold
 Format:\`\`\`action\n{"type":"...",...}\n\`\`\`
-Output: EVOLUTION_SUMMARY:[text]|MUTATIONS:[n]|GATES_SYNTHESIZED:[n]`;
+Output: REGIME_AUDIT:[findings]|DNA_MUTATIONS:[n]|KELLY_SIZING:[fraction]|EVOLUTION_SUMMARY:[text]`;
 
 // ─── Check Tier 4 Trigger Conditions ───
 async function checkTier4Trigger(supabase: any): Promise<{ shouldRun: boolean; reason: string }> {
@@ -352,13 +365,33 @@ async function checkTier4Trigger(supabase: any): Promise<{ shouldRun: boolean; r
 async function executeTier4(supabase: any, lovableApiKey: string, dataPayload: any): Promise<any> {
   console.log("🧬 TIER 4: Invoking Strategic Evolution (gemini-2.5-pro)...");
 
-  const [agentConfigs, gateBypasses, rollups] = await Promise.all([
+  const fortyEightHoursAgo = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+
+  const [agentConfigs, gateBypasses, rollups, last20Trades, last48hTrades] = await Promise.all([
     supabase.from("agent_configs").select("*").eq("is_active", true).then((r: any) => r.data || []),
     supabase.from("gate_bypasses").select("*").eq("revoked", false).order("created_at", { ascending: false }).limit(20).then((r: any) => r.data || []),
     supabase.from("oanda_orders_daily_rollup").select("*").order("rollup_date", { ascending: false }).limit(14).then((r: any) => r.data || []),
+    supabase.from("oanda_orders").select("currency_pair, direction, r_pips, entry_price, exit_price, agent_id, regime_label, session_label, direction_engine, quantlabs_bias, sovereign_override_tag, closed_at, status").not("closed_at", "is", null).order("closed_at", { ascending: false }).limit(20).then((r: any) => r.data || []),
+    supabase.from("oanda_orders").select("r_pips, currency_pair, direction, closed_at").not("closed_at", "is", null).gte("closed_at", fortyEightHoursAgo).order("closed_at", { ascending: false }).then((r: any) => r.data || []),
   ]);
 
-  const tier4Payload = { ...dataPayload, agentConfigs, activeGateBypasses: gateBypasses, last14DaysRollup: rollups };
+  // Pre-compute Kelly stats for the prompt
+  let kellyStats: any = { edge: 0, variance: 0, kelly: 0, trades: 0 };
+  if (last48hTrades.length >= 5) {
+    const pips = last48hTrades.map((t: any) => t.r_pips || 0);
+    const mean = pips.reduce((a: number, b: number) => a + b, 0) / pips.length;
+    const variance = pips.reduce((a: number, b: number) => a + (b - mean) ** 2, 0) / pips.length;
+    kellyStats = { edge: +mean.toFixed(2), variance: +variance.toFixed(2), kelly: variance > 0 ? +(mean / variance).toFixed(4) : 0, trades: pips.length };
+  }
+
+  const tier4Payload = {
+    ...dataPayload,
+    agentConfigs,
+    activeGateBypasses: gateBypasses,
+    last14DaysRollup: rollups,
+    last20Trades,
+    last48hTrades_kellyStats: kellyStats,
+  };
 
   const aiResponse = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
     method: "POST",
