@@ -1,6 +1,7 @@
 // OANDA Market Intelligence Edge Function
-// Fetches order book, position book, transaction history, and instrument details
-// from the OANDA v20 REST API for the Sovereign Intelligence system state.
+// Fetches live pricing, transaction history, instrument details,
+// and secondary price references from the OANDA v20 REST API.
+// Order book/position book endpoints removed — OANDA restricts access on both live and practice tokens.
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -19,16 +20,12 @@ let instrumentListTimestamp = 0;
 const INSTRUMENT_LIST_TTL = 60 * 60_000; // 1 hour
 
 // ── In-memory caches ──
-let cachedOrderBooks: Record<string, unknown> = {};
-let cachedPositionBooks: Record<string, unknown> = {};
 let cachedInstruments: Record<string, unknown> = {};
 let cachedTransactions: unknown[] = [];
 let cachedPricing: Record<string, unknown> = {};
-let cacheTimestamps = { orderBook: 0, positionBook: 0, instruments: 0, transactions: 0, pricing: 0 };
+let cacheTimestamps = { instruments: 0, transactions: 0, pricing: 0 };
 
 const CACHE_TTL = {
-  orderBook: 15 * 60_000,
-  positionBook: 15 * 60_000,
   instruments: 60 * 60_000,
   transactions: 60_000,
   pricing: 5_000,
@@ -60,12 +57,6 @@ function getOandaCreds(env: string) {
   return { apiToken, accountId, host };
 }
 
-// Use live credentials for order/position books (practice token was returning 401)
-function getOandaCredsForBooks() {
-  const env = Deno.env.get("OANDA_ENV") || "live";
-  return getOandaCreds(env);
-}
-
 async function oandaGet(url: string, apiToken: string): Promise<any> {
   const res = await fetch(url, {
     headers: { Authorization: `Bearer ${apiToken}`, Accept: "application/json" },
@@ -76,100 +67,6 @@ async function oandaGet(url: string, apiToken: string): Promise<any> {
     return null;
   }
   return res.json();
-}
-
-// ── Order Book ──
-async function fetchOrderBooks(host: string, accountId: string, apiToken: string, bookHost?: string, bookToken?: string): Promise<Record<string, unknown>> {
-  const now = Date.now();
-  if (now - cacheTimestamps.orderBook < CACHE_TTL.orderBook && Object.keys(cachedOrderBooks).length > 0) {
-    return cachedOrderBooks;
-  }
-
-  const instruments = await getForexInstruments(host, accountId, apiToken);
-  const effectiveHost = bookHost || host;
-  const effectiveToken = bookToken || apiToken;
-  const books: Record<string, unknown> = {};
-  const results = await Promise.allSettled(
-    instruments.map(async (inst) => {
-      const data = await oandaGet(`${effectiveHost}/v3/instruments/${inst}/orderBook`, effectiveToken);
-      if (data?.orderBook) {
-        const ob = data.orderBook;
-        // Extract just the key buckets around current price
-        const buckets = (ob.buckets || []).map((b: any) => ({
-          price: b.price,
-          longPct: parseFloat(b.longCountPercent),
-          shortPct: parseFloat(b.shortCountPercent),
-        }));
-        // Find clusters — buckets with significantly more orders
-        const avgLong = buckets.reduce((s: number, b: any) => s + b.longPct, 0) / (buckets.length || 1);
-        const avgShort = buckets.reduce((s: number, b: any) => s + b.shortPct, 0) / (buckets.length || 1);
-        const longClusters = buckets.filter((b: any) => b.longPct > avgLong * 2).slice(0, 5);
-        const shortClusters = buckets.filter((b: any) => b.shortPct > avgShort * 2).slice(0, 5);
-
-        books[inst.replace("_", "/")] = {
-          time: ob.time,
-          price: ob.price,
-          bucketWidth: ob.bucketWidth,
-          totalBuckets: buckets.length,
-          longClusters,
-          shortClusters,
-          retailStopZones: [
-            ...longClusters.map((b: any) => ({ price: b.price, type: "long_cluster", pct: b.longPct })),
-            ...shortClusters.map((b: any) => ({ price: b.price, type: "short_cluster", pct: b.shortPct })),
-          ].sort((a: any, b: any) => parseFloat(b.pct) - parseFloat(a.pct)).slice(0, 5),
-        };
-      }
-    })
-  );
-
-  if (Object.keys(books).length > 0) {
-    cachedOrderBooks = books;
-    cacheTimestamps.orderBook = now;
-  }
-  console.log(`[MARKET-INTEL] Order books: ${Object.keys(books).length} pairs`);
-  return cachedOrderBooks;
-}
-
-// ── Position Book ──
-async function fetchPositionBooks(host: string, accountId: string, apiToken: string, bookHost?: string, bookToken?: string): Promise<Record<string, unknown>> {
-  const now = Date.now();
-  if (now - cacheTimestamps.positionBook < CACHE_TTL.positionBook && Object.keys(cachedPositionBooks).length > 0) {
-    return cachedPositionBooks;
-  }
-
-  const instruments = await getForexInstruments(host, accountId, apiToken);
-  const effectiveHost = bookHost || host;
-  const effectiveToken = bookToken || apiToken;
-  const books: Record<string, unknown> = {};
-  await Promise.allSettled(
-    instruments.map(async (inst) => {
-      const data = await oandaGet(`${effectiveHost}/v3/instruments/${inst}/positionBook`, effectiveToken);
-      if (data?.positionBook) {
-        const pb = data.positionBook;
-        const buckets = (pb.buckets || []).map((b: any) => ({
-          price: b.price,
-          longPct: parseFloat(b.longCountPercent),
-          shortPct: parseFloat(b.shortCountPercent),
-        }));
-        const netBias = buckets.reduce((s: number, b: any) => s + (b.longPct - b.shortPct), 0);
-        books[inst.replace("_", "/")] = {
-          time: pb.time,
-          price: pb.price,
-          netRetailBias: netBias > 0 ? "LONG" : "SHORT",
-          netBiasStrength: Math.abs(netBias).toFixed(2),
-          topLongLevels: buckets.sort((a: any, b: any) => b.longPct - a.longPct).slice(0, 3),
-          topShortLevels: [...buckets].sort((a: any, b: any) => b.shortPct - a.shortPct).slice(0, 3),
-        };
-      }
-    })
-  );
-
-  if (Object.keys(books).length > 0) {
-    cachedPositionBooks = books;
-    cacheTimestamps.positionBook = now;
-  }
-  console.log(`[MARKET-INTEL] Position books: ${Object.keys(books).length} pairs`);
-  return cachedPositionBooks;
 }
 
 // ── Instrument Details ──
@@ -218,13 +115,11 @@ async function fetchRecentTransactions(host: string, accountId: string, apiToken
     return cachedTransactions;
   }
 
-  // Get last 100 transactions (covers fills, SL/TP triggers, financing, etc.)
   const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
   const url = `${host}/v3/accounts/${accountId}/transactions?from=${encodeURIComponent(since)}&type=ORDER_FILL,STOP_LOSS_ORDER,TAKE_PROFIT_ORDER,TRAILING_STOP_LOSS_ORDER,ORDER_CANCEL&pageSize=100`;
   const data = await oandaGet(url, apiToken);
 
   if (data?.pages && data.pages.length > 0) {
-    // Fetch first page of transaction details
     const pageUrl = data.pages[0];
     const pageData = await oandaGet(pageUrl, apiToken);
     if (pageData?.transactions) {
@@ -247,7 +142,6 @@ async function fetchRecentTransactions(host: string, accountId: string, apiToken
       console.log(`[MARKET-INTEL] Transactions: ${cachedTransactions.length} recent`);
     }
   } else {
-    // Fallback: try sinceid approach
     const sinceUrl = `${host}/v3/accounts/${accountId}/transactions?from=${encodeURIComponent(since)}&pageSize=50`;
     const fallback = await oandaGet(sinceUrl, apiToken);
     if (fallback?.count !== undefined) {
@@ -286,7 +180,7 @@ async function fetchLivePricing(host: string, accountId: string, apiToken: strin
           spreadPips: +(spread * pipMultiplier).toFixed(1),
           tradeable: p.tradeable,
           time: p.time,
-          liquidity: p.bids.length + p.asks.length, // depth indicator
+          liquidity: p.bids.length + p.asks.length,
           bidDepth: p.bids.map((b: any) => ({ price: b.price, liquidity: b.liquidity })),
           askDepth: p.asks.map((a: any) => ({ price: a.price, liquidity: a.liquidity })),
         };
@@ -299,55 +193,14 @@ async function fetchLivePricing(host: string, accountId: string, apiToken: strin
   return cachedPricing;
 }
 
-// ── #3: Order-Book Imbalance Detection ──
-// Detects >30% shift in order book depth in <1 minute → regime shift catalyst
-let previousOrderBookSnapshots: Record<string, { longPct: number; shortPct: number; ts: number }> = {};
-
-function detectOrderBookImbalance(
-  currentBooks: Record<string, unknown>,
-): Array<{ pair: string; shift: number; direction: string; severity: string }> {
-  const imbalances: Array<{ pair: string; shift: number; direction: string; severity: string }> = [];
-  const now = Date.now();
-
-  for (const [pair, bookData] of Object.entries(currentBooks)) {
-    const book = bookData as any;
-    if (!book?.longClusters?.length && !book?.shortClusters?.length) continue;
-
-    const totalLong = (book.longClusters || []).reduce((s: number, c: any) => s + (c.longPct || 0), 0);
-    const totalShort = (book.shortClusters || []).reduce((s: number, c: any) => s + (c.shortPct || 0), 0);
-
-    const prev = previousOrderBookSnapshots[pair];
-    if (prev && (now - prev.ts) < 120_000) { // within 2 min window
-      const longShift = totalLong > 0 ? Math.abs(totalLong - prev.longPct) / Math.max(prev.longPct, 0.1) * 100 : 0;
-      const shortShift = totalShort > 0 ? Math.abs(totalShort - prev.shortPct) / Math.max(prev.shortPct, 0.1) * 100 : 0;
-      const maxShift = Math.max(longShift, shortShift);
-
-      if (maxShift >= 30) {
-        imbalances.push({
-          pair,
-          shift: Math.round(maxShift),
-          direction: longShift > shortShift ? "LONG_IMBALANCE" : "SHORT_IMBALANCE",
-          severity: maxShift >= 60 ? "EXTREME" : "HIGH",
-        });
-      }
-    }
-
-    previousOrderBookSnapshots[pair] = { longPct: totalLong, shortPct: totalShort, ts: now };
-  }
-
-  return imbalances;
-}
-
-// ── #5: Secondary Price Reference (Multi-Broker Arbitrage) ──
+// ── Secondary Price Reference (Multi-Broker Arbitrage) ──
 async function fetchSecondaryPrices(): Promise<Record<string, { mid: number; source: string }>> {
   const prices: Record<string, { mid: number; source: string }> = {};
   try {
-    // Use exchangerate.host as free secondary reference
     const res = await fetch("https://api.exchangerate.host/latest?base=USD&symbols=EUR,GBP,JPY,AUD,CAD,NZD,CHF");
     if (res.ok) {
       const data = await res.json();
       if (data?.rates) {
-        // Convert from USD base to pair format
         const r = data.rates;
         if (r.EUR) prices["EUR/USD"] = { mid: 1 / r.EUR, source: "exchangerate.host" };
         if (r.GBP) prices["GBP/USD"] = { mid: 1 / r.GBP, source: "exchangerate.host" };
@@ -398,8 +251,6 @@ Deno.serve(async (req) => {
   try {
     const env = Deno.env.get("OANDA_ENV") || "live";
     const { apiToken, accountId, host } = getOandaCreds(env);
-    // Practice credentials for order/position books (OANDA restricts these on live tokens)
-    const bookCreds = getOandaCredsForBooks();
 
     if (!apiToken || !accountId) {
       return new Response(
@@ -408,29 +259,17 @@ Deno.serve(async (req) => {
       );
     }
 
-    // Parse optional query params for selective fetching
     const url = new URL(req.url);
     const sections = (url.searchParams.get("sections") || "all").split(",");
     const fetchAll = sections.includes("all");
 
     const results: Record<string, unknown> = { timestamp: new Date().toISOString() };
 
-    // Parallel fetch all sections
     const fetches: Promise<void>[] = [];
 
     if (fetchAll || sections.includes("pricing")) {
       fetches.push(
         fetchLivePricing(host, accountId, apiToken).then(d => { results.livePricing = d; })
-      );
-    }
-    if (fetchAll || sections.includes("orderBook")) {
-      fetches.push(
-        fetchOrderBooks(host, accountId, apiToken, bookCreds.host, bookCreds.apiToken).then(d => { results.orderBook = d; })
-      );
-    }
-    if (fetchAll || sections.includes("positionBook")) {
-      fetches.push(
-        fetchPositionBooks(host, accountId, apiToken, bookCreds.host, bookCreds.apiToken).then(d => { results.positionBook = d; })
       );
     }
     if (fetchAll || sections.includes("instruments")) {
@@ -444,7 +283,7 @@ Deno.serve(async (req) => {
       );
     }
 
-    // Always fetch secondary prices for arbitrage detection
+    // Secondary prices for arbitrage detection
     if (fetchAll || sections.includes("pricing") || sections.includes("arbitrage")) {
       fetches.push(
         fetchSecondaryPrices().then(d => { results.secondaryPrices = d; })
@@ -453,15 +292,7 @@ Deno.serve(async (req) => {
 
     await Promise.allSettled(fetches);
 
-    // Post-processing: detect imbalances and deviations
-    if (results.orderBook) {
-      const imbalances = detectOrderBookImbalance(results.orderBook as Record<string, unknown>);
-      if (imbalances.length > 0) {
-        results.orderBookImbalances = imbalances;
-        console.log(`[MARKET-INTEL] 🔴 ORDER BOOK IMBALANCE: ${imbalances.map(i => `${i.pair} ${i.direction} ${i.shift}%`).join(", ")}`);
-      }
-    }
-
+    // Post-processing: detect price deviations
     if (results.livePricing && results.secondaryPrices) {
       const deviations = detectPriceDeviation(
         results.livePricing as Record<string, unknown>,
@@ -471,6 +302,25 @@ Deno.serve(async (req) => {
         results.priceDeviations = deviations;
         console.log(`[MARKET-INTEL] ⚠️ PRICE DEVIATION: ${deviations.map(d => `${d.pair} ${d.deviationPips}p`).join(", ")}`);
       }
+    }
+
+    // Derive spread-based liquidity zones from pricing depth as stop-cluster proxy
+    if (results.livePricing) {
+      const liquidityZones: Record<string, unknown> = {};
+      for (const [pair, priceData] of Object.entries(results.livePricing as Record<string, any>)) {
+        if (!priceData?.bidDepth?.length || !priceData?.askDepth?.length) continue;
+        const totalBidLiq = priceData.bidDepth.reduce((s: number, b: any) => s + parseInt(b.liquidity || "0"), 0);
+        const totalAskLiq = priceData.askDepth.reduce((s: number, a: any) => s + parseInt(a.liquidity || "0"), 0);
+        const imbalance = totalBidLiq > 0 ? (totalAskLiq - totalBidLiq) / (totalBidLiq + totalAskLiq) : 0;
+        liquidityZones[pair] = {
+          bidLiquidity: totalBidLiq,
+          askLiquidity: totalAskLiq,
+          imbalanceRatio: +imbalance.toFixed(3),
+          bias: imbalance > 0.15 ? "ASK_HEAVY" : imbalance < -0.15 ? "BID_HEAVY" : "BALANCED",
+          spreadPips: priceData.spreadPips,
+        };
+      }
+      results.liquidityZones = liquidityZones;
     }
 
     return new Response(JSON.stringify(results), {
