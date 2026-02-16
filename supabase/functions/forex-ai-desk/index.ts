@@ -265,6 +265,7 @@ When you want to execute a trade action, you MUST emit a fenced code block tagge
 oanda-market-intel, forex-economic-calendar, batch-prices, forex-cot-data, forex-macro-data, stocks-intel, crypto-intel, treasury-commodities, market-sentiment, options-volatility-intel, economic-calendar-intel, bis-imf-data, central-bank-comms, crypto-onchain
 
 - **set_order_type**: Switches the execution pipeline from MARKET orders to LIMIT or IOC (Immediate-or-Cancel). Required: orderType (one of: "MARKET", "LIMIT", "IOC"). Optional: limitOffsetPips (how many pips inside the retail cluster to place the limit order, default 0), pair (apply to specific pair only, or omit for global), reason, ttlMinutes (default 120). Use this for "Liquidity Vacuum" — when you detect a stop-hunt via the order book, switch to LIMIT and place orders inside the retail cluster to capture the wick. We stop being the liquidity; we start consuming it.
+- **place_limit_order**: Places a LIMIT order directly into a retail stop cluster ("Ghost Order Execution Hook"). You become the liquidity the hunt hits. Required: pair, direction ("long"/"short"). Optional: limit_offset_pips (pips inside the cluster center, default 3), clusterPrice (explicit cluster center price — if omitted, auto-detects from order book), units (default 500), stopLossPips (default 8), takeProfitPips (default 30), ttlSeconds (default 1800), reason. Use when you identify a retail stop cluster via orderBook/positionBook and want to place a limit order inside it to capture the stop-hunt wick.
 - **create_synthetic_barrage**: Executes multiple pairs as a single atomic correlated unit ("Correlation Chain"). Required: barrageId (e.g., "usd-weakness-barrage"), pairs (array of 2-6 pairs), direction ("long"/"short"). Optional: unitsPerLeg (default 500), sharedStopPips (default 15), sharedTpPips (default 30), theme (e.g., "USD Weakness", "JPY Carry Unwind"), reason, ttlMinutes (default 480). All legs execute simultaneously with shared risk parameters. Trade a macro theme as one unit.
 - **adjust_session_sl_tp**: Dynamically widens or tightens SL/TP parameters for a specific session ("Volatility Dampener"). Required: session (one of: "asian", "london", "ny-open", "ny-overlap", "late-ny", "rollover", "all"). At least one of: trailingStopPips (3-50), takeProfitMultiplier (0.5-5.0x), stopLossMultiplier (0.5-3.0x). Optional: reason, ttlMinutes (default 240). Use before high-impact data releases to widen the "lungs" so trades survive the initial noise.
 - **blacklist_regime_for_pair**: Blocks a specific pair+regime combination without suspending the entire agent ("Kill-Switch Evolution"). Required: pair, regime (e.g., "breakdown", "compression", "trending", "transition"). Optional: direction ("long"/"short" to block only one side), reason, ttlMinutes (default 1440/24h, max 2880/48h). Use when a regime consistently fails on a specific pair due to underlying fundamentals (e.g., breakdown shorts on USD_CAD failing because of oil flows).
@@ -1575,6 +1576,150 @@ async function executeAction(
     } else {
       console.log(`[SOVEREIGN] Regime blacklist: ${pair} in ${regime}${direction ? ` (${direction} only)` : ""} — TTL ${ttlMinutes}m`);
       results.push({ action: "blacklist_regime_for_pair", success: true, detail: `${pair} BLACKLISTED in "${regime}" regime${direction ? ` (${direction} only)` : ""}. Active for ${Math.round(ttlMinutes / 60)}h. Auto-trade pipeline blocks matching intents in real-time. Remove with revoke_bypass on ${key}.` });
+    }
+
+  // ── Place Limit Order Into Stop Cluster (Ghost Order Execution Hook) ──
+  } else if (action.type === "place_limit_order" && (action as any).pair && (action as any).direction) {
+    const pair = ((action as any).pair as string).replace("/", "_");
+    const direction = (action as any).direction as string;
+    const limitOffsetPips = Math.max(0, Math.min(15, (action as any).limit_offset_pips ?? (action as any).limitOffsetPips ?? 3));
+    const units = Math.max(100, Math.min(10000, (action as any).units ?? 500));
+    const slPips = Math.max(3, Math.min(30, (action as any).stopLossPips ?? 8));
+    const tpPips = Math.max(5, Math.min(60, (action as any).takeProfitPips ?? 30));
+    const ttlSeconds = Math.max(60, Math.min(7200, (action as any).ttlSeconds ?? 1800));
+    const clusterPrice = (action as any).clusterPrice as number | undefined;
+    const reason = (action as any).reason || "Limit order into stop cluster";
+
+    if (!["long", "short"].includes(direction)) {
+      results.push({ action: "place_limit_order", success: false, detail: `Invalid direction: ${direction}` });
+    } else {
+      try {
+        // 1. Fetch current pricing
+        const pricing = await oandaRequest(`/v3/accounts/{accountId}/pricing?instruments=${pair}`, "GET", undefined, environment);
+        const priceInfo = pricing.prices?.[0];
+        const bid = parseFloat(priceInfo?.bids?.[0]?.price || "0");
+        const ask = parseFloat(priceInfo?.asks?.[0]?.price || "0");
+        const mid = (bid + ask) / 2;
+        const isJPY = pair.includes("JPY");
+        const pipMult = isJPY ? 0.01 : 0.0001;
+        const pipMultiplier = isJPY ? 100 : 10000;
+        const spreadPips = (ask - bid) * pipMultiplier;
+
+        // 2. Determine target price — either from explicit clusterPrice or order book
+        let targetPrice: number;
+        let clusterInfo: string;
+
+        if (clusterPrice != null && clusterPrice > 0) {
+          // FM specified exact cluster center
+          targetPrice = direction === "long"
+            ? clusterPrice - limitOffsetPips * pipMult
+            : clusterPrice + limitOffsetPips * pipMult;
+          clusterInfo = `FM-specified cluster @ ${clusterPrice.toFixed(isJPY ? 3 : 5)}, offset ${limitOffsetPips}p`;
+        } else {
+          // Auto-detect from order book
+          let orderBookData: any = null;
+          try {
+            orderBookData = await oandaRequest(`/v3/instruments/${pair}/orderBook`, "GET", undefined, environment);
+          } catch { /* silent */ }
+
+          const buckets = orderBookData?.orderBook?.buckets;
+          if (buckets?.length) {
+            const relevantBuckets = (buckets as any[])
+              .map(b => ({
+                price: parseFloat(b.price),
+                density: direction === "long"
+                  ? parseFloat(b.longCountPercent || "0")
+                  : parseFloat(b.shortCountPercent || "0"),
+              }))
+              .filter(b => direction === "long" ? b.price < mid : b.price > mid)
+              .filter(b => Math.abs(b.price - mid) * pipMultiplier <= 40) // within 40 pips
+              .sort((a, b) => b.density - a.density);
+
+            if (relevantBuckets.length > 0) {
+              const cluster = relevantBuckets[0];
+              targetPrice = direction === "long"
+                ? cluster.price - limitOffsetPips * pipMult
+                : cluster.price + limitOffsetPips * pipMult;
+              clusterInfo = `auto-detected cluster @ ${cluster.price.toFixed(isJPY ? 3 : 5)} (density=${cluster.density}%), offset ${limitOffsetPips}p`;
+            } else {
+              // Fallback: offset from mid
+              targetPrice = direction === "long"
+                ? mid - limitOffsetPips * pipMult
+                : mid + limitOffsetPips * pipMult;
+              clusterInfo = `no clusters found, offset ${limitOffsetPips}p from mid`;
+            }
+          } else {
+            targetPrice = direction === "long"
+              ? mid - limitOffsetPips * pipMult
+              : mid + limitOffsetPips * pipMult;
+            clusterInfo = `no order book, offset ${limitOffsetPips}p from mid`;
+          }
+        }
+
+        // 3. Validate
+        if (spreadPips > 4.0) {
+          results.push({ action: "place_limit_order", success: false, detail: `Spread gate: ${spreadPips.toFixed(1)}p > 4.0p hard max` });
+        } else {
+          // 4. Calculate SL/TP from limit price
+          const sl = direction === "long" ? targetPrice - slPips * pipMult : targetPrice + slPips * pipMult;
+          const tp = direction === "long" ? targetPrice + tpPips * pipMult : targetPrice - tpPips * pipMult;
+          const decPlaces = isJPY ? 3 : 5;
+
+          // 5. Place GTC limit order
+          const signedUnits = direction === "short" ? -units : units;
+          const gtdTime = new Date(Date.now() + ttlSeconds * 1000).toISOString();
+          const orderPayload: any = {
+            order: {
+              type: "LIMIT",
+              instrument: pair,
+              units: signedUnits.toString(),
+              price: targetPrice.toFixed(decPlaces),
+              timeInForce: "GTD",
+              gtdTime,
+              positionFill: "DEFAULT",
+              stopLossOnFill: { price: sl.toFixed(decPlaces), timeInForce: "GTC" },
+              takeProfitOnFill: { price: tp.toFixed(decPlaces), timeInForce: "GTC" },
+            },
+          };
+
+          const result = await oandaRequest("/v3/accounts/{accountId}/orders", "POST", orderPayload, environment);
+          const orderId = result.orderCreateTransaction?.id || result.orderFillTransaction?.id;
+
+          // 6. Record
+          await sb.from("oanda_orders").insert({
+            user_id: "00000000-0000-0000-0000-000000000000",
+            signal_id: `limit-cluster-${Date.now()}`,
+            currency_pair: pair,
+            direction,
+            units,
+            status: "pending",
+            environment,
+            agent_id: "floor-manager-limit",
+            oanda_order_id: orderId,
+            requested_price: targetPrice,
+            direction_engine: "limit-into-cluster-v1",
+            governance_payload: {
+              version: "limit-cluster-v1",
+              limitOffsetPips,
+              clusterInfo,
+              spreadPips: +spreadPips.toFixed(1),
+              ttlSeconds,
+              reason,
+              rrRatio: +(tpPips / slPips).toFixed(1),
+            },
+          });
+
+          console.log(`[LIMIT-CLUSTER] ${direction} ${units}u ${pair} @ ${targetPrice.toFixed(decPlaces)} | ${clusterInfo} | SL=${slPips}p TP=${tpPips}p (${(tpPips/slPips).toFixed(1)}:1) | TTL=${Math.round(ttlSeconds/60)}m`);
+          results.push({
+            action: "place_limit_order",
+            success: true,
+            detail: `LIMIT ${direction} ${units}u ${pair} @ ${targetPrice.toFixed(decPlaces)} | ${clusterInfo} | SL=${slPips}p TP=${tpPips}p | TTL=${Math.round(ttlSeconds/60)}m`,
+            data: { orderId, targetPrice, sl, tp, clusterInfo, limitOffsetPips },
+          });
+        }
+      } catch (limErr) {
+        results.push({ action: "place_limit_order", success: false, detail: `Limit order failed: ${(limErr as Error).message}` });
+      }
     }
 
   // ── Execute Liquidity Vacuum v3 (Ghost Order — Price Action Microstructure) ──

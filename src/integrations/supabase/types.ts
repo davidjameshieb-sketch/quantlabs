@@ -41,6 +41,78 @@ export type Database = {
         }
         Relationships: []
       }
+      agent_promotion_ledger: {
+        Row: {
+          agent_id: string
+          avg_r_ratio: number
+          created_at: string
+          demoted_at: string | null
+          demotion_reason: string | null
+          expectancy_r: number
+          gross_loss_pips: number
+          gross_profit_pips: number
+          id: string
+          losses: number
+          net_pips: number
+          promoted_at: string | null
+          promotion_reason: string | null
+          sizing_multiplier: number
+          strategy: string | null
+          target_session: string | null
+          tier: string
+          total_trades: number
+          updated_at: string
+          win_rate: number
+          wins: number
+        }
+        Insert: {
+          agent_id: string
+          avg_r_ratio?: number
+          created_at?: string
+          demoted_at?: string | null
+          demotion_reason?: string | null
+          expectancy_r?: number
+          gross_loss_pips?: number
+          gross_profit_pips?: number
+          id?: string
+          losses?: number
+          net_pips?: number
+          promoted_at?: string | null
+          promotion_reason?: string | null
+          sizing_multiplier?: number
+          strategy?: string | null
+          target_session?: string | null
+          tier?: string
+          total_trades?: number
+          updated_at?: string
+          win_rate?: number
+          wins?: number
+        }
+        Update: {
+          agent_id?: string
+          avg_r_ratio?: number
+          created_at?: string
+          demoted_at?: string | null
+          demotion_reason?: string | null
+          expectancy_r?: number
+          gross_loss_pips?: number
+          gross_profit_pips?: number
+          id?: string
+          losses?: number
+          net_pips?: number
+          promoted_at?: string | null
+          promotion_reason?: string | null
+          sizing_multiplier?: number
+          strategy?: string | null
+          target_session?: string | null
+          tier?: string
+          total_trades?: number
+          updated_at?: string
+          win_rate?: number
+          wins?: number
+        }
+        Relationships: []
+      }
       analytics_snapshot_runs: {
         Row: {
           created_at: string
@@ -101,6 +173,45 @@ export type Database = {
           snapshot_type?: string
           status?: string
           updated_at?: string
+        }
+        Relationships: []
+      }
+      canary_alerts: {
+        Row: {
+          acknowledged: boolean
+          alert_type: string
+          created_at: string
+          current_value: number | null
+          expires_at: string
+          id: string
+          message: string
+          severity: string
+          source: string
+          threshold: number | null
+        }
+        Insert: {
+          acknowledged?: boolean
+          alert_type: string
+          created_at?: string
+          current_value?: number | null
+          expires_at?: string
+          id?: string
+          message: string
+          severity?: string
+          source: string
+          threshold?: number | null
+        }
+        Update: {
+          acknowledged?: boolean
+          alert_type?: string
+          created_at?: string
+          current_value?: number | null
+          expires_at?: string
+          id?: string
+          message?: string
+          severity?: string
+          source?: string
+          threshold?: number | null
         }
         Relationships: []
       }
