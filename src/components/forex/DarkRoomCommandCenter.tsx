@@ -390,6 +390,14 @@ function TradeExecutionPanel({ account, metrics, analytics }: {
       .slice(0, 15);
   }, [metrics]);
 
+  const rejectedTrades = useMemo(() => {
+    if (!metrics?.recentOrders) return [];
+    return metrics.recentOrders
+      .filter(o => o.status === 'rejected' && o.error_message)
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+      .slice(0, 10);
+  }, [metrics]);
+
   const totalTrades = (metrics?.winCount ?? 0) + (metrics?.lossCount ?? 0);
   const winRate = totalTrades > 0 ? (metrics?.winCount ?? 0) / totalTrades * 100 : 0;
   const pnl = analytics.totalPnlPips;
@@ -457,6 +465,35 @@ function TradeExecutionPanel({ account, metrics, analytics }: {
                 </div>
               );
             })}
+          </div>
+        )}
+
+        {/* Rejected / Blocked trades */}
+        {rejectedTrades.length > 0 && (
+          <div className="space-y-1">
+            <span className="text-[9px] text-red-400 uppercase tracking-wider font-bold flex items-center gap-1">
+              <AlertTriangle className="w-3 h-3" />
+              Blocked ({rejectedTrades.length})
+            </span>
+            <ScrollArea className="h-[120px]">
+              <div className="space-y-1">
+                {rejectedTrades.map((o) => {
+                  const time = new Date(o.created_at).toLocaleString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+                  const reason = o.error_message?.replace('EDGE LOCK: ', '').replace('GATE BLOCK: ', '') || 'Unknown';
+                  return (
+                    <div key={o.id} className="flex items-center gap-2 rounded px-2 py-1.5 text-[10px] bg-red-500/5 border border-red-500/10">
+                      <XCircle className="w-3 h-3 text-red-400 flex-shrink-0" />
+                      <span className="font-mono font-bold text-foreground w-14">{o.currency_pair.replace('_','/')}</span>
+                      <Badge variant="outline" className={cn("text-[8px] h-3.5 px-1", o.direction === 'long' ? "text-emerald-400 border-emerald-500/30" : "text-red-400 border-red-500/30")}>
+                        {o.direction[0].toUpperCase()}
+                      </Badge>
+                      <span className="text-muted-foreground">{time}</span>
+                      <span className="text-[9px] text-red-400/80 ml-auto truncate max-w-[180px]" title={reason}>{reason}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </ScrollArea>
           </div>
         )}
 
@@ -548,8 +585,8 @@ export function DarkRoomCommandCenter({ account, executionMetrics, tradeAnalytic
 
         {/* Connection */}
         <div className="flex items-center gap-1.5">
-          {connected ? <Wifi className="w-3.5 h-3.5 text-emerald-400" /> : <WifiOff className="w-3.5 h-3.5 text-red-400" />}
-          <span className="text-[10px] text-muted-foreground">{connected ? 'OANDA Live' : 'Disconnected'}</span>
+          {connected === true ? <Wifi className="w-3.5 h-3.5 text-emerald-400" /> : connected === false ? <WifiOff className="w-3.5 h-3.5 text-red-400" /> : <Clock className="w-3.5 h-3.5 text-amber-400 animate-pulse" />}
+          <span className="text-[10px] text-muted-foreground">{connected === true ? 'OANDA Live' : connected === false ? 'Disconnected' : 'Connecting…'}</span>
         </div>
         <div className="w-px h-5 bg-border/40" />
 
