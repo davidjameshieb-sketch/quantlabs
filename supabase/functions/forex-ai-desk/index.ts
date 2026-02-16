@@ -268,7 +268,7 @@ oanda-market-intel, forex-economic-calendar, batch-prices, forex-cot-data, forex
 - **create_synthetic_barrage**: Executes multiple pairs as a single atomic correlated unit ("Correlation Chain"). Required: barrageId (e.g., "usd-weakness-barrage"), pairs (array of 2-6 pairs), direction ("long"/"short"). Optional: unitsPerLeg (default 500), sharedStopPips (default 15), sharedTpPips (default 30), theme (e.g., "USD Weakness", "JPY Carry Unwind"), reason, ttlMinutes (default 480). All legs execute simultaneously with shared risk parameters. Trade a macro theme as one unit.
 - **adjust_session_sl_tp**: Dynamically widens or tightens SL/TP parameters for a specific session ("Volatility Dampener"). Required: session (one of: "asian", "london", "ny-open", "ny-overlap", "late-ny", "rollover", "all"). At least one of: trailingStopPips (3-50), takeProfitMultiplier (0.5-5.0x), stopLossMultiplier (0.5-3.0x). Optional: reason, ttlMinutes (default 240). Use before high-impact data releases to widen the "lungs" so trades survive the initial noise.
 - **blacklist_regime_for_pair**: Blocks a specific pair+regime combination without suspending the entire agent ("Kill-Switch Evolution"). Required: pair, regime (e.g., "breakdown", "compression", "trending", "transition"). Optional: direction ("long"/"short" to block only one side), reason, ttlMinutes (default 1440/24h, max 2880/48h). Use when a regime consistently fails on a specific pair due to underlying fundamentals (e.g., breakdown shorts on USD_CAD failing because of oil flows).
-- **execute_liquidity_vacuum**: The "Ghost Order" — reads the OANDA order book for a pair, identifies the densest retail stop cluster, and places a LIMIT order inside it to capture the stop-hunt wick. Required: pair, direction ("long"/"short"). Optional: clusterSide ("above"/"below" — which side of current price to target, auto-detected from direction if omitted), offsetPips (how many pips inside the cluster to place the limit, default 2), units (default 500), expirySeconds (how long the limit order stays active, default 300/5min), stopLossPips (default 10), takeProfitPips (default 20), reason. This transforms us from being swept BY stop-hunts to profiting FROM them.
+- **execute_liquidity_vacuum**: The "Ghost Order v2" — ATR-adaptive LIMIT orders into retail stop clusters. Reads OANDA order/position book for cluster intel, calculates M15 ATR for adaptive offset, and places asymmetric R:R ghost orders. Required: pair, direction ("long"/"short"). Optional: offsetPips (auto-calculated from ATR: 0.5x ATR in low-vol, 0.3x normal, 0.2x high-vol), units (default 500), expirySeconds (default 1800/30min — was 5min), stopLossPips (default 8), takeProfitPips (default 30 — 3.75:1 R:R). Includes: target validation (min 2x spread, max 50 pips from mid), position book fallback, ATR+round-number hybrid targeting.
 - **configure_zscore_engine**: Updates the Z-Score Strike Engine v3 configuration via sovereign_memory. Required: configKey (one of: "zscore_strike_config", "correlation_groups_config", "velocity_gating_config", "snapback_sniper_config"), payload (the config object). For zscore_strike_config: {units, slPips, tpPips, zScoreThreshold (default 2.0), blockedPairs (string[])}. For correlation_groups_config: {groups: [{name, pairA, pairB}]}. This is how you control the battlefield — the soldiers fire autonomously based on your orders.
 - **NOTE**: arm_correlation_trigger and disarm_correlation_trigger are OBSOLETE. The Z-Score Strike Engine runs continuously without arming. Use configure_zscore_engine to adjust parameters instead.
 - **set_global_posture**: Toggles entire execution to PREDATORY_LIMIT mode (all trades become limit orders into retail clusters) or back to MARKET (default). Required: posture ("PREDATORY_LIMIT" or "MARKET"). Optional: reason, ttlMinutes (default 480). When PREDATORY_LIMIT is active, every trade uses LIMIT orders offset into the nearest retail stop cluster. We become liquidity MAKERS, not takers.
@@ -1577,22 +1577,67 @@ async function executeAction(
       results.push({ action: "blacklist_regime_for_pair", success: true, detail: `${pair} BLACKLISTED in "${regime}" regime${direction ? ` (${direction} only)` : ""}. Active for ${Math.round(ttlMinutes / 60)}h. Auto-trade pipeline blocks matching intents in real-time. Remove with revoke_bypass on ${key}.` });
     }
 
-  // ── Execute Liquidity Vacuum (Ghost Order — Limit into Stop Cluster) ──
+  // ── Execute Liquidity Vacuum v2 (Ghost Order — ATR-Adaptive Limit into Stop Cluster) ──
   } else if (action.type === "execute_liquidity_vacuum" && (action as any).pair && (action as any).direction) {
     const pair = ((action as any).pair as string).replace("/", "_");
     const direction = (action as any).direction as string;
-    const offsetPips = Math.max(0, Math.min(10, (action as any).offsetPips ?? 2));
     const units = Math.max(100, Math.min(10000, (action as any).units ?? 500));
-    const expirySeconds = Math.max(30, Math.min(3600, (action as any).expirySeconds ?? 300));
-    const slPips = Math.max(3, Math.min(30, (action as any).stopLossPips ?? 10));
-    const tpPips = Math.max(5, Math.min(50, (action as any).takeProfitPips ?? 20));
-    const reason = (action as any).reason || "Liquidity Vacuum — ghost order into retail cluster";
+    const expirySeconds = Math.max(60, Math.min(3600, (action as any).expirySeconds ?? 1800)); // Default 30min (was 5min)
+    const slPips = Math.max(3, Math.min(30, (action as any).stopLossPips ?? 8));
+    const tpPips = Math.max(5, Math.min(60, (action as any).takeProfitPips ?? 30)); // 3.75:1 R:R (was 2:1)
+    const reason = (action as any).reason || "Liquidity Vacuum v2 — ATR-adaptive ghost order";
 
     if (!["long", "short"].includes(direction)) {
       results.push({ action: "execute_liquidity_vacuum", success: false, detail: `Invalid direction: ${direction}` });
     } else {
       try {
-        // 1. Fetch order book to find retail stop clusters
+        // 1. Fetch current pricing
+        const pricing = await oandaRequest(`/v3/accounts/{accountId}/pricing?instruments=${pair}`, "GET", undefined, environment);
+        const priceInfo = pricing.prices?.[0];
+        const bid = parseFloat(priceInfo?.bids?.[0]?.price || "0");
+        const ask = parseFloat(priceInfo?.asks?.[0]?.price || "0");
+        const mid = (bid + ask) / 2;
+        const isJPY = pair.includes("JPY");
+        const pipMult = isJPY ? 0.01 : 0.0001;
+        const pipMultiplier = isJPY ? 100 : 10000;
+        const spreadPips = (ask - bid) * pipMultiplier;
+
+        // 2. Calculate ATR from recent candles for adaptive offset
+        let atrPips = 8; // fallback
+        try {
+          const candleRes = await oandaRequest(
+            `/v3/instruments/${pair}/candles?granularity=M15&count=20&price=MBA`,
+            "GET", undefined, environment
+          );
+          if (candleRes?.candles?.length >= 10) {
+            const ranges = candleRes.candles
+              .filter((c: any) => c.complete)
+              .slice(-14)
+              .map((c: any) => {
+                const h = parseFloat(c.mid?.h || c.ask?.h || "0");
+                const l = parseFloat(c.mid?.l || c.ask?.l || "0");
+                return (h - l) * pipMultiplier;
+              });
+            atrPips = ranges.reduce((a: number, b: number) => a + b, 0) / ranges.length;
+          }
+        } catch (atrErr) {
+          console.warn(`[VACUUM] ATR fetch failed for ${pair}, using fallback ${atrPips} pips`);
+        }
+
+        // Adaptive offset: 0.5x ATR in low-vol (ATR<6), 0.3x in normal, 0.2x in high-vol (ATR>15)
+        const userOffset = (action as any).offsetPips;
+        let offsetPips: number;
+        if (userOffset != null) {
+          offsetPips = Math.max(0, Math.min(15, userOffset));
+        } else if (atrPips < 6) {
+          offsetPips = Math.round(atrPips * 0.5 * 10) / 10; // Tighter in calm markets — price IS reachable
+        } else if (atrPips > 15) {
+          offsetPips = Math.round(atrPips * 0.2 * 10) / 10; // Wider vol — don't chase
+        } else {
+          offsetPips = Math.round(atrPips * 0.3 * 10) / 10;
+        }
+
+        // 3. Fetch order book for cluster data (use account-level auth which works on live)
         let orderBookData: any = null;
         try {
           orderBookData = await oandaRequest(`/v3/instruments/${pair}/orderBook`, "GET", undefined, environment);
@@ -1600,92 +1645,111 @@ async function executeAction(
           console.warn(`[VACUUM] Order book fetch failed for ${pair}: ${(obErr as Error).message}`);
         }
 
-        // 2. Fetch current pricing
-        const pricing = await oandaRequest(`/v3/accounts/{accountId}/pricing?instruments=${pair}`, "GET", undefined, environment);
-        const priceInfo = pricing.prices?.[0];
-        const bid = parseFloat(priceInfo?.bids?.[0]?.price || "0");
-        const ask = parseFloat(priceInfo?.asks?.[0]?.price || "0");
-        const mid = (bid + ask) / 2;
-        const pipMult = pair.includes("JPY") ? 0.01 : 0.0001;
+        // Also try position book as fallback for cluster intel
+        let positionBookData: any = null;
+        if (!orderBookData?.orderBook?.buckets) {
+          try {
+            positionBookData = await oandaRequest(`/v3/instruments/${pair}/positionBook`, "GET", undefined, environment);
+          } catch { /* silent */ }
+        }
 
-        // 3. Find the densest cluster from order book or use round-number heuristic
+        // 4. Find the densest cluster — expanded range to 40 pips (was 25)
         let targetPrice: number;
         let clusterInfo = "round-number heuristic";
+        const clusterRange = Math.max(40, atrPips * 3); // At least 40 pips or 3x ATR
 
-        if (orderBookData?.orderBook?.buckets) {
-          const buckets = orderBookData.orderBook.buckets as { price: string; longCountPercent: string; shortCountPercent: string }[];
-          // For a LONG vacuum, we want to buy at a dip caused by retail stop-losses BELOW current price
-          // For a SHORT vacuum, we want to sell at a spike caused by retail stop-losses ABOVE current price
-          const relevantBuckets = buckets
+        const buckets = orderBookData?.orderBook?.buckets || positionBookData?.positionBook?.buckets;
+        if (buckets?.length) {
+          const relevantBuckets = (buckets as any[])
             .map(b => ({
               price: parseFloat(b.price),
-              density: direction === "long" ? parseFloat(b.longCountPercent) : parseFloat(b.shortCountPercent),
+              density: direction === "long"
+                ? parseFloat(b.longCountPercent || b.longCountPercent || "0")
+                : parseFloat(b.shortCountPercent || b.shortCountPercent || "0"),
             }))
             .filter(b => direction === "long" ? b.price < mid : b.price > mid)
-            .filter(b => Math.abs(b.price - mid) / pipMult <= 25) // Within 25 pips
+            .filter(b => Math.abs(b.price - mid) / pipMult <= clusterRange)
             .sort((a, b) => b.density - a.density);
 
           if (relevantBuckets.length > 0) {
             const cluster = relevantBuckets[0];
-            // Place limit INSIDE the cluster (offset pips deeper)
+            // Place limit INSIDE the cluster (adaptive offset deeper)
             targetPrice = direction === "long"
               ? cluster.price - offsetPips * pipMult
               : cluster.price + offsetPips * pipMult;
-            clusterInfo = `orderBook cluster @ ${cluster.price.toFixed(5)} (density=${cluster.density}%, offset=${offsetPips}pips inside)`;
+            clusterInfo = `orderBook cluster @ ${cluster.price.toFixed(isJPY ? 3 : 5)} (density=${cluster.density}%, offset=${offsetPips}pips, ATR=${atrPips.toFixed(1)})`;
           } else {
-            // Fallback: nearest round number
-            const roundLevel = direction === "long"
-              ? Math.floor(mid / (50 * pipMult)) * (50 * pipMult) - offsetPips * pipMult
-              : Math.ceil(mid / (50 * pipMult)) * (50 * pipMult) + offsetPips * pipMult;
-            targetPrice = roundLevel;
-            clusterInfo = `round-number fallback @ ${roundLevel.toFixed(5)}`;
+            // No clusters in range — use ATR-based level
+            targetPrice = direction === "long"
+              ? mid - atrPips * 1.2 * pipMult
+              : mid + atrPips * 1.2 * pipMult;
+            clusterInfo = `ATR-projected @ 1.2x ATR (${atrPips.toFixed(1)}p), no clusters in ${clusterRange}p range`;
           }
         } else {
-          // No order book available — use round-number heuristic
+          // No order book — use ATR-projected level + round-number magnet
           const roundLevel = direction === "long"
-            ? Math.floor(mid / (50 * pipMult)) * (50 * pipMult) - offsetPips * pipMult
-            : Math.ceil(mid / (50 * pipMult)) * (50 * pipMult) + offsetPips * pipMult;
-          targetPrice = roundLevel;
-          clusterInfo = `round-number heuristic @ ${roundLevel.toFixed(5)} (no orderBook data)`;
+            ? Math.floor(mid / (50 * pipMult)) * (50 * pipMult)
+            : Math.ceil(mid / (50 * pipMult)) * (50 * pipMult);
+          const atrLevel = direction === "long"
+            ? mid - atrPips * 1.0 * pipMult
+            : mid + atrPips * 1.0 * pipMult;
+          // Use whichever is closer to current price (more likely to fill)
+          targetPrice = direction === "long"
+            ? Math.max(roundLevel, atrLevel) - offsetPips * pipMult
+            : Math.min(roundLevel, atrLevel) + offsetPips * pipMult;
+          clusterInfo = `ATR+round hybrid (ATR=${atrPips.toFixed(1)}p, round=${roundLevel.toFixed(isJPY ? 3 : 5)}, no orderBook)`;
         }
 
-        // 4. Calculate SL/TP from the limit price
+        // 5. Validate target price isn't too far or too close
+        const distFromMid = Math.abs(targetPrice - mid) * pipMultiplier;
+        if (distFromMid < spreadPips * 2) {
+          // Too close — widen to at least 2x spread
+          targetPrice = direction === "long"
+            ? mid - spreadPips * 3 * pipMult
+            : mid + spreadPips * 3 * pipMult;
+          clusterInfo += ` [widened: was only ${distFromMid.toFixed(1)}p from mid]`;
+        }
+        if (distFromMid > 50) {
+          // Too far — cap at 50 pips
+          targetPrice = direction === "long"
+            ? mid - 50 * pipMult
+            : mid + 50 * pipMult;
+          clusterInfo += ` [capped: was ${distFromMid.toFixed(1)}p from mid]`;
+        }
+
+        // 6. Calculate SL/TP from the limit price — asymmetric R:R (3.75:1)
         const sl = direction === "long" ? targetPrice - slPips * pipMult : targetPrice + slPips * pipMult;
         const tp = direction === "long" ? targetPrice + tpPips * pipMult : targetPrice - tpPips * pipMult;
 
-        // 5. Place LIMIT order via OANDA
-        const signedUnits = direction === "short" ? -units : units;
-        const gtdTime = new Date(Date.now() + expirySeconds * 1000).toISOString();
-        const orderPayload: any = {
-          order: {
-            type: "LIMIT",
-            instrument: pair,
-            units: signedUnits.toString(),
-            price: targetPrice.toFixed(5),
-            timeInForce: "GTD",
-            gtdTime,
-            positionFill: "DEFAULT",
-            stopLossOnFill: { price: sl.toFixed(5), timeInForce: "GTC" },
-            takeProfitOnFill: { price: tp.toFixed(5), timeInForce: "GTC" },
-          },
-        };
+        // 7. Validate SL/TP won't cause OANDA rejection
+        if (direction === "long" && tp <= targetPrice) {
+          results.push({ action: "execute_liquidity_vacuum", success: false, detail: "TP below entry for long — invalid" });
+        } else if (direction === "short" && tp >= targetPrice) {
+          results.push({ action: "execute_liquidity_vacuum", success: false, detail: "TP above entry for short — invalid" });
+        } else {
+          // 8. Place LIMIT order via OANDA — GTD 30min default
+          const signedUnits = direction === "short" ? -units : units;
+          const gtdTime = new Date(Date.now() + expirySeconds * 1000).toISOString();
+          const decPlaces = isJPY ? 3 : 5;
+          const orderPayload: any = {
+            order: {
+              type: "LIMIT",
+              instrument: pair,
+              units: signedUnits.toString(),
+              price: targetPrice.toFixed(decPlaces),
+              timeInForce: "GTD",
+              gtdTime,
+              positionFill: "DEFAULT",
+              stopLossOnFill: { price: sl.toFixed(decPlaces), timeInForce: "GTC" },
+              takeProfitOnFill: { price: tp.toFixed(decPlaces), timeInForce: "GTC" },
+            },
+          };
 
-        const result = await oandaRequest("/v3/accounts/{accountId}/orders", "POST", orderPayload, environment);
-        const orderId = result.orderCreateTransaction?.id || result.orderFillTransaction?.id;
+          const result = await oandaRequest("/v3/accounts/{accountId}/orders", "POST", orderPayload, environment);
+          const orderId = result.orderCreateTransaction?.id || result.orderFillTransaction?.id;
 
-        // Log to DB with session context
-        await sb.from("oanda_orders").insert({
-          user_id: "00000000-0000-0000-0000-000000000000",
-          signal_id: `vacuum-${Date.now()}`,
-          currency_pair: pair,
-          direction,
-          units,
-          status: "pending",
-          environment,
-          agent_id: "floor-manager-vacuum",
-          oanda_order_id: orderId,
-          requested_price: targetPrice,
-          session_label: (() => {
+          // Log to DB
+          const sessionLabel = (() => {
             const h = new Date().getUTCHours();
             if (h >= 0 && h < 7) return "asian";
             if (h >= 7 && h < 10) return "london-open";
@@ -1693,16 +1757,39 @@ async function executeAction(
             if (h >= 13 && h < 17) return "ny-overlap";
             if (h >= 17 && h < 21) return "ny";
             return "late-ny";
-          })(),
-        });
+          })();
 
-        console.log(`[VACUUM] Ghost LIMIT order placed: ${direction} ${units} ${pair} @ ${targetPrice.toFixed(5)} — cluster: ${clusterInfo} — expires in ${expirySeconds}s`);
-        results.push({
-          action: "execute_liquidity_vacuum",
-          success: true,
-          detail: `Ghost LIMIT ${direction} ${units} ${pair} @ ${targetPrice.toFixed(5)} — ${clusterInfo}. SL=${sl.toFixed(5)} TP=${tp.toFixed(5)}. Expires in ${Math.round(expirySeconds / 60)}m. Order ID: ${orderId}`,
-          data: { orderId, targetPrice, clusterInfo, sl, tp, expirySeconds, mid },
-        });
+          await sb.from("oanda_orders").insert({
+            user_id: "00000000-0000-0000-0000-000000000000",
+            signal_id: `vacuum-${Date.now()}`,
+            currency_pair: pair,
+            direction,
+            units,
+            status: "pending",
+            environment,
+            agent_id: "floor-manager-vacuum",
+            oanda_order_id: orderId,
+            requested_price: targetPrice,
+            direction_engine: "liquidity-vacuum-v2",
+            session_label: sessionLabel,
+            governance_payload: {
+              atrPips: +atrPips.toFixed(1),
+              offsetPips,
+              clusterInfo,
+              spreadPips: +spreadPips.toFixed(1),
+              expiryMinutes: Math.round(expirySeconds / 60),
+              rr_ratio: +(tpPips / slPips).toFixed(1),
+            },
+          });
+
+          console.log(`[VACUUM-v2] Ghost LIMIT: ${direction} ${units} ${pair} @ ${targetPrice.toFixed(decPlaces)} | ATR=${atrPips.toFixed(1)}p offset=${offsetPips}p | SL=${slPips}p TP=${tpPips}p (${(tpPips/slPips).toFixed(1)}:1) | Expires ${Math.round(expirySeconds/60)}min | ${clusterInfo}`);
+          results.push({
+            action: "execute_liquidity_vacuum",
+            success: true,
+            detail: `Ghost LIMIT ${direction} ${units} ${pair} @ ${targetPrice.toFixed(decPlaces)} | ATR=${atrPips.toFixed(1)}p, offset=${offsetPips}p | SL=${slPips}p TP=${tpPips}p (${(tpPips/slPips).toFixed(1)}:1 R:R) | Expires ${Math.round(expirySeconds/60)}min | ${clusterInfo}`,
+            data: { orderId, targetPrice, clusterInfo, sl, tp, expirySeconds, mid, atrPips, offsetPips, spreadPips, rrRatio: +(tpPips/slPips).toFixed(1) },
+          });
+        }
       } catch (vacErr) {
         results.push({ action: "execute_liquidity_vacuum", success: false, detail: `Vacuum failed: ${(vacErr as Error).message}` });
       }
