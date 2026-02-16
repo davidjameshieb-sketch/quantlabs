@@ -14,70 +14,115 @@ const json = (body: unknown, status = 200) =>
 // ── US Treasury Yield Curve ──
 async function fetchTreasuryYields(): Promise<Record<string, unknown>> {
   const results: Record<string, unknown> = {};
+  // Try Fiscal Data API (official, stable JSON endpoint)
   try {
-    // Treasury provides XML/JSON for daily yield curve rates
-    const year = new Date().getFullYear();
-    const month = String(new Date().getMonth() + 1).padStart(2, "0");
-    const url = `https://home.treasury.gov/resource-center/data-chart-center/interest-rates/daily-treasury-rates.csv/${year}/${month}?type=daily_treasury_yield_curve&field_tdr_date_value_month=${year}${month}&page&_format=json`;
+    const today = new Date();
+    const lookback = new Date(today.getTime() - 90 * 24 * 60 * 60 * 1000);
+    const filterDate = `${lookback.getFullYear()}-${String(lookback.getMonth() + 1).padStart(2, "0")}-01`;
+    const fiscalUrl = `https://api.fiscaldata.treasury.gov/services/api/fiscal_service/v2/accounting/od/avg_interest_rates?sort=-record_date&page[size]=30&filter=record_date:gte:${filterDate}`;
 
-    const res = await fetch(url, { headers: { "User-Agent": "QuantLabs/1.0" } });
+    const res = await fetch(fiscalUrl, {
+      headers: { Accept: "application/json", "User-Agent": "QuantLabs/1.0" },
+    });
     if (res.ok) {
       const data = await res.json();
-      // Treasury JSON format varies; try to parse
-      if (Array.isArray(data) && data.length > 0) {
-        const latest = data[data.length - 1]; // Most recent date
+      const rows = data?.data || [];
+      if (rows.length > 0) {
         const maturities: Record<string, number | null> = {};
-        const fieldMap: Record<string, string> = {
-          "d1_month": "1M", "d2_month": "2M", "d3_month": "3M", "d6_month": "6M",
-          "d1_year": "1Y", "d2_year": "2Y", "d3_year": "3Y", "d5_year": "5Y",
-          "d7_year": "7Y", "d10_year": "10Y", "d20_year": "20Y", "d30_year": "30Y",
-        };
-        for (const [field, label] of Object.entries(fieldMap)) {
-          if (latest[field] != null) maturities[label] = parseFloat(latest[field]);
+        // Group by record_date, take latest
+        const latestDate = rows[0]?.record_date;
+        const latestRows = rows.filter((r: any) => r.record_date === latestDate);
+
+        for (const row of latestRows) {
+          const desc = (row.security_desc || "").toLowerCase();
+          const rate = parseFloat(row.avg_interest_rate_amt);
+          if (isNaN(rate)) continue;
+          if (desc.includes("bills")) maturities["Bills"] = rate;
+          else if (desc.includes("notes")) maturities["Notes"] = rate;
+          else if (desc.includes("bonds")) maturities["Bonds"] = rate;
         }
 
-        // Previous day for change
-        const prev = data.length > 1 ? data[data.length - 2] : null;
-        const prevMaturities: Record<string, number | null> = {};
-        if (prev) {
-          for (const [field, label] of Object.entries(fieldMap)) {
-            if (prev[field] != null) prevMaturities[label] = parseFloat(prev[field]);
-          }
+        if (Object.keys(maturities).length > 0) {
+          results.curve = maturities;
+          results.date = latestDate;
+          results.source = "fiscal_data_api";
+          console.log(`[TREASURY] Fiscal Data API loaded: ${Object.keys(maturities).length} categories`);
         }
-
-        results.curve = maturities;
-        results.date = latest.d_date || latest.record_date;
-        results.changes = {};
-        for (const [mat, val] of Object.entries(maturities)) {
-          if (val != null && prevMaturities[mat] != null) {
-            (results.changes as any)[mat] = +(val - prevMaturities[mat]!).toFixed(3);
-          }
-        }
-
-        // Key spreads
-        if (maturities["2Y"] != null && maturities["10Y"] != null) {
-          const spread2s10s = +(maturities["10Y"]! - maturities["2Y"]!).toFixed(3);
-          results.spread2s10s = {
-            value: spread2s10s,
-            signal: spread2s10s < 0 ? "INVERTED — Recession Warning" : spread2s10s < 0.2 ? "FLAT — Caution" : "NORMAL",
-          };
-        }
-        if (maturities["3M"] != null && maturities["10Y"] != null) {
-          const spread3m10y = +(maturities["10Y"]! - maturities["3M"]!).toFixed(3);
-          results.spread3m10y = {
-            value: spread3m10y,
-            signal: spread3m10y < 0 ? "DEEPLY INVERTED — Strong Recession Signal" : "NORMAL",
-          };
-        }
-
-        console.log(`[TREASURY] Yield curve loaded: ${Object.keys(maturities).length} maturities`);
       }
     } else {
       await res.text();
-      console.warn("[TREASURY] Treasury API returned:", res.status);
+      console.warn("[TREASURY] Fiscal Data API returned:", res.status);
     }
   } catch (e) {
-    console.warn("[TREASURY] Yield curve fetch failed:", e);
+    console.warn("[TREASURY] Fiscal Data API failed:", e);
+  }
+
+  // Fallback: try legacy Treasury.gov Drupal JSON
+  if (!results.curve) {
+    try {
+      const year = new Date().getFullYear();
+      const month = String(new Date().getMonth() + 1).padStart(2, "0");
+      const url = `https://home.treasury.gov/resource-center/data-chart-center/interest-rates/daily-treasury-rates.csv/${year}/${month}?type=daily_treasury_yield_curve&field_tdr_date_value_month=${year}${month}&page&_format=json`;
+
+      const res = await fetch(url, {
+        headers: { "User-Agent": "QuantLabs/1.0", Accept: "application/json" },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data) && data.length > 0) {
+          const latest = data[data.length - 1];
+          const maturities: Record<string, number | null> = {};
+          const fieldMap: Record<string, string> = {
+            "d1_month": "1M", "d2_month": "2M", "d3_month": "3M", "d6_month": "6M",
+            "d1_year": "1Y", "d2_year": "2Y", "d3_year": "3Y", "d5_year": "5Y",
+            "d7_year": "7Y", "d10_year": "10Y", "d20_year": "20Y", "d30_year": "30Y",
+          };
+          for (const [field, label] of Object.entries(fieldMap)) {
+            if (latest[field] != null) maturities[label] = parseFloat(latest[field]);
+          }
+
+          const prev = data.length > 1 ? data[data.length - 2] : null;
+          const prevMaturities: Record<string, number | null> = {};
+          if (prev) {
+            for (const [field, label] of Object.entries(fieldMap)) {
+              if (prev[field] != null) prevMaturities[label] = parseFloat(prev[field]);
+            }
+          }
+
+          results.curve = maturities;
+          results.date = latest.d_date || latest.record_date;
+          results.source = "treasury_gov_legacy";
+          results.changes = {};
+          for (const [mat, val] of Object.entries(maturities)) {
+            if (val != null && prevMaturities[mat] != null) {
+              (results.changes as any)[mat] = +(val - prevMaturities[mat]!).toFixed(3);
+            }
+          }
+
+          if (maturities["2Y"] != null && maturities["10Y"] != null) {
+            const spread2s10s = +(maturities["10Y"]! - maturities["2Y"]!).toFixed(3);
+            results.spread2s10s = {
+              value: spread2s10s,
+              signal: spread2s10s < 0 ? "INVERTED — Recession Warning" : spread2s10s < 0.2 ? "FLAT — Caution" : "NORMAL",
+            };
+          }
+          if (maturities["3M"] != null && maturities["10Y"] != null) {
+            const spread3m10y = +(maturities["10Y"]! - maturities["3M"]!).toFixed(3);
+            results.spread3m10y = {
+              value: spread3m10y,
+              signal: spread3m10y < 0 ? "DEEPLY INVERTED — Strong Recession Signal" : "NORMAL",
+            };
+          }
+
+          console.log(`[TREASURY] Legacy API loaded: ${Object.keys(maturities).length} maturities`);
+        }
+      } else {
+        await res.text();
+        // Silently fail — Fiscal Data API is primary now
+      }
+    } catch (e) {
+      console.warn("[TREASURY] Legacy Treasury API failed:", e);
+    }
   }
 
   // Fallback: try FRED if Treasury API failed
