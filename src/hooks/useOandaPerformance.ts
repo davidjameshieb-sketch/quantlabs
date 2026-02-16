@@ -66,6 +66,7 @@ export interface RealOrder {
   health_governance_action: string | null;
   direction_engine: string | null;
   sovereign_override_tag: string | null;
+  oanda_trade_id: string | null;
   created_at: string;
   closed_at: string | null;
 }
