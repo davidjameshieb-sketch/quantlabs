@@ -1,7 +1,18 @@
-// Hook: fetches OANDA order book data for heatmap visualization
+// Hook: fetches OANDA liquidity zone data (spread-based depth analysis)
+// Replaces order book dependency with pricing depth liquidity zones
 import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 
+export interface LiquidityZone {
+  pair: string;
+  bidLiquidity: number;
+  askLiquidity: number;
+  imbalanceRatio: number;
+  bias: string;
+  spreadPips: number;
+}
+
+// Keep legacy interface for backward compatibility
 export interface OrderBookCluster {
   price: string;
   longPct: number;
@@ -20,6 +31,7 @@ export interface PairOrderBook {
 
 export function useOrderBookData(pollMs = 30_000) {
   const [books, setBooks] = useState<PairOrderBook[]>([]);
+  const [liquidityZones, setLiquidityZones] = useState<LiquidityZone[]>([]);
   const [loading, setLoading] = useState(true);
 
   const fetchData = useCallback(async () => {
@@ -35,27 +47,25 @@ export function useOrderBookData(pollMs = 30_000) {
         return;
       }
 
-      // The edge function returns { orderBook: { "EUR/USD": {...}, ... } }
-      const orderBook = data?.orderBook || {};
-      const parsed: PairOrderBook[] = [];
-
-      for (const [pair, book] of Object.entries(orderBook)) {
-        const b = book as any;
-        if (!b) continue;
-        parsed.push({
+      // Parse liquidity zones (replacement for order books)
+      const zones = data?.liquidityZones || {};
+      const parsedZones: LiquidityZone[] = [];
+      for (const [pair, zone] of Object.entries(zones)) {
+        const z = zone as any;
+        parsedZones.push({
           pair,
-          currentPrice: b.price || '0',
-          bucketWidth: b.bucketWidth || '0',
-          longClusters: b.longClusters || [],
-          shortClusters: b.shortClusters || [],
-          retailStopZones: b.retailStopZones || [],
-          time: b.time || '',
+          bidLiquidity: z.bidLiquidity || 0,
+          askLiquidity: z.askLiquidity || 0,
+          imbalanceRatio: z.imbalanceRatio || 0,
+          bias: z.bias || 'BALANCED',
+          spreadPips: z.spreadPips || 0,
         });
       }
+      parsedZones.sort((a, b) => Math.abs(b.imbalanceRatio) - Math.abs(a.imbalanceRatio));
+      setLiquidityZones(parsedZones);
 
-      // Sort by number of stop zones (most interesting first)
-      parsed.sort((a, b) => b.retailStopZones.length - a.retailStopZones.length);
-      setBooks(parsed);
+      // Legacy: empty books since order book API is unavailable
+      setBooks([]);
     } catch (err) {
       console.warn('[OrderBook] Fetch error:', err);
     } finally {
@@ -69,5 +79,5 @@ export function useOrderBookData(pollMs = 30_000) {
     return () => clearInterval(id);
   }, [fetchData, pollMs]);
 
-  return { books, loading, refetch: fetchData };
+  return { books, liquidityZones, loading, refetch: fetchData };
 }
