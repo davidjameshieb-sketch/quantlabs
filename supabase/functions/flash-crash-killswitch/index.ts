@@ -1,7 +1,14 @@
-// flash-crash-killswitch: Raw Tick Velocity Circuit Breaker
-// Monitors S5 candle velocity across all pairs simultaneously
-// Triggers BEFORE headlines hit — pure price-action detection
-// Auto-injects CIRCUIT_BREAKER if velocity exceeds flash-crash thresholds
+// ═══════════════════════════════════════════════════════════════
+// FLASH-CRASH KILL-SWITCH v2 — Systemic Cascade Detection
+// 
+// IMPROVEMENT #4: Enhanced with millisecond-level cascade detection.
+// Monitors S5 candle velocity across ALL 11 pairs simultaneously.
+// Triggers BEFORE headlines hit — pure price-action detection.
+// Auto-injects CIRCUIT_BREAKER + AGENT_SUSPEND on cascade.
+//
+// New: Velocity acceleration detection, cross-pair correlation
+// spike analysis, and graduated response (ALERT → HALT → FLATTEN).
+// ═══════════════════════════════════════════════════════════════
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
@@ -21,8 +28,15 @@ const FLASH_THRESHOLDS: Record<string, number> = {
   "GBP_JPY": 18, "AUD_JPY": 10, "USD_CHF": 8,
 };
 
-// Cascade threshold: if N pairs spike simultaneously, it's systemic
+// Cascade threshold: N pairs spiking simultaneously = systemic
 const CASCADE_THRESHOLD = 3;
+
+// NEW v2: Acceleration thresholds — velocity INCREASING bar-over-bar
+const ACCELERATION_MULTIPLIER = 2.0; // If bar[n] > 2x bar[n-1], it's accelerating
+
+// NEW v2: Correlation spike — if USD pairs all move same direction, it's a USD event
+const USD_PAIRS_LONG = ["EUR_USD", "GBP_USD", "AUD_USD", "NZD_USD"]; // USD is quote
+const USD_PAIRS_SHORT = ["USD_JPY", "USD_CAD", "USD_CHF"];            // USD is base
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
@@ -51,6 +65,9 @@ Deno.serve(async (req) => {
       })
     );
 
+    // NEW v2: Track directional moves for correlation analysis
+    const directionalMoves: Record<string, number> = {};
+
     for (const result of results) {
       if (!result || result.candles.length < 6) continue;
       const { pair, candles } = result;
@@ -75,7 +92,7 @@ Deno.serve(async (req) => {
         ? baseline.reduce((a: number, b: number) => a + b, 0) / baseline.length
         : 1;
 
-      // Velocity ratio: how much faster is current vs baseline
+      // Velocity ratio
       const velocityRatio = avgBaseline > 0 ? avgRecent / avgBaseline : 1;
 
       // Direction of the move
@@ -83,10 +100,18 @@ Deno.serve(async (req) => {
       const refClose = parseFloat(candles[candles.length - 4]?.mid.c || candles[0].mid.c);
       const movePips = (lastClose - refClose) * mult;
 
-      const isFlashAlert = maxRecent >= threshold;
-      const isVelocitySpike = velocityRatio >= 5; // 5x normal speed
+      // NEW v2: Acceleration detection (velocity increasing bar-over-bar)
+      const isAccelerating = recent3.length >= 2 &&
+        recent3[recent3.length - 1] > recent3[recent3.length - 2] * ACCELERATION_MULTIPLIER;
 
-      if (isFlashAlert || isVelocitySpike) {
+      // Track directional moves for correlation
+      directionalMoves[pair] = movePips;
+
+      const isFlashAlert = maxRecent >= threshold;
+      const isVelocitySpike = velocityRatio >= 5;
+      const isAccelAlert = isAccelerating && maxRecent >= threshold * 0.7;
+
+      if (isFlashAlert || isVelocitySpike || isAccelAlert) {
         pairAlerts.push({
           pair,
           maxVelocity: Math.round(maxRecent * 10) / 10,
@@ -95,18 +120,48 @@ Deno.serve(async (req) => {
           velocityRatio: Math.round(velocityRatio * 10) / 10,
           movePips: Math.round(movePips * 10) / 10,
           direction: movePips > 0 ? "UP" : "DOWN",
-          severity: maxRecent >= threshold * 2 ? "EXTREME" : "HIGH",
-          trigger: isFlashAlert ? "THRESHOLD_BREACH" : "VELOCITY_SPIKE",
+          severity: maxRecent >= threshold * 2 ? "EXTREME" : isAccelerating ? "ACCELERATING" : "HIGH",
+          trigger: isFlashAlert ? "THRESHOLD_BREACH" : isAccelAlert ? "ACCELERATION" : "VELOCITY_SPIKE",
+          isAccelerating,
         });
       }
     }
 
-    // Determine if cascade (systemic flash crash)
+    // ─── NEW v2: Correlation Spike Detection ───
+    // If 3+ USD-quote pairs move in same direction simultaneously = USD event
+    let correlationSpike = false;
+    let correlationDirection = "NONE";
+
+    const usdLongMoves = USD_PAIRS_LONG.filter(p => (directionalMoves[p] || 0) > 2); // USD weakening (pairs go up)
+    const usdLongDown = USD_PAIRS_LONG.filter(p => (directionalMoves[p] || 0) < -2); // USD strengthening
+    const usdShortMoves = USD_PAIRS_SHORT.filter(p => (directionalMoves[p] || 0) > 2); // USD strengthening (USD base goes up)
+    const usdShortDown = USD_PAIRS_SHORT.filter(p => (directionalMoves[p] || 0) < -2); // USD weakening
+
+    // USD weakening: EUR_USD up + GBP_USD up + USD_JPY down + USD_CAD down
+    const usdWeakCount = usdLongMoves.length + usdShortDown.length;
+    const usdStrongCount = usdLongDown.length + usdShortMoves.length;
+
+    if (usdWeakCount >= 5) {
+      correlationSpike = true;
+      correlationDirection = "USD_WEAK";
+    } else if (usdStrongCount >= 5) {
+      correlationSpike = true;
+      correlationDirection = "USD_STRONG";
+    }
+
+    // Determine severity
     const isCascade = pairAlerts.length >= CASCADE_THRESHOLD;
     const hasExtreme = pairAlerts.some(a => a.severity === "EXTREME");
+    const hasAccelerating = pairAlerts.some(a => a.isAccelerating);
 
-    // Auto-inject circuit breaker for flash crash
-    if (isCascade || hasExtreme) {
+    // ─── NEW v2: Graduated Response ───
+    // ALERT: 1-2 pairs spiking → log only
+    // HALT: 3+ pairs OR extreme OR correlation spike → halt trading
+    // FLATTEN: 5+ pairs OR extreme + accelerating → halt + flatten all positions
+    const shouldHalt = isCascade || hasExtreme || (correlationSpike && pairAlerts.length >= 2);
+    const shouldFlatten = pairAlerts.length >= 5 || (hasExtreme && hasAccelerating);
+
+    if (shouldHalt) {
       const { data: existing } = await supabase
         .from("gate_bypasses")
         .select("id")
@@ -116,38 +171,100 @@ Deno.serve(async (req) => {
         .limit(1);
 
       if (!existing?.length) {
-        const severity = hasExtreme ? "EXTREME" : "CASCADE";
+        const severity = shouldFlatten ? "NUCLEAR" : hasExtreme ? "EXTREME" : correlationSpike ? "CORRELATION_CASCADE" : "CASCADE";
         const affectedPairs = pairAlerts.map(a => a.pair).join(", ");
-        const cooldownMin = hasExtreme ? 30 : 15;
+        const cooldownMin = shouldFlatten ? 60 : hasExtreme ? 30 : 15;
 
         await supabase.from("gate_bypasses").insert({
           gate_id: "CIRCUIT_BREAKER:flash_crash_killswitch",
-          reason: `FLASH CRASH [${severity}]: ${pairAlerts.length} pairs spiking simultaneously (${affectedPairs}). Max velocity ${Math.max(...pairAlerts.map(a => a.maxVelocity))} pips/5s. All trading halted ${cooldownMin}min.`,
+          reason: `FLASH CRASH [${severity}]: ${pairAlerts.length} pairs spiking (${affectedPairs}). Max velocity ${Math.max(...pairAlerts.map(a => a.maxVelocity))} pips/5s.${correlationSpike ? ` CORRELATION: ${correlationDirection}.` : ''}${hasAccelerating ? ' ACCELERATING.' : ''} All trading halted ${cooldownMin}min.`,
           expires_at: new Date(now.getTime() + cooldownMin * 60_000).toISOString(),
           pair: null,
-          created_by: "flash-crash-killswitch",
+          created_by: "flash-crash-killswitch-v2",
         });
 
-        // Also suspend all agents during flash crash
         await supabase.from("gate_bypasses").insert({
           gate_id: "AGENT_SUSPEND:flash_crash_all",
-          reason: `FLASH CRASH auto-suspend: ${severity} event detected across ${pairAlerts.length} pairs.`,
+          reason: `FLASH CRASH auto-suspend: ${severity} event across ${pairAlerts.length} pairs.${correlationSpike ? ` ${correlationDirection} detected.` : ''}`,
           expires_at: new Date(now.getTime() + cooldownMin * 60_000).toISOString(),
           pair: null,
-          created_by: "flash-crash-killswitch",
+          created_by: "flash-crash-killswitch-v2",
         });
+
+        // NEW v2: FLATTEN response — close all open positions
+        if (shouldFlatten) {
+          console.log(`[FLASH-CRASH] ☢️ NUCLEAR RESPONSE: Flattening all positions...`);
+          try {
+            const oandaAccount = Deno.env.get("OANDA_LIVE_ACCOUNT_ID");
+            if (oandaAccount && oandaToken) {
+              // Get all open trades
+              const tradesRes = await fetch(
+                `${baseUrl}/v3/accounts/${oandaAccount}/openTrades`,
+                { headers: { Authorization: `Bearer ${oandaToken}` } }
+              );
+              if (tradesRes.ok) {
+                const tradesData = await tradesRes.json();
+                const openTrades = tradesData.trades || [];
+
+                // Close each trade
+                const closePromises = openTrades.map(async (trade: any) => {
+                  try {
+                    const closeRes = await fetch(
+                      `${baseUrl}/v3/accounts/${oandaAccount}/trades/${trade.id}/close`,
+                      {
+                        method: "PUT",
+                        headers: { Authorization: `Bearer ${oandaToken}`, "Content-Type": "application/json" },
+                        body: JSON.stringify({ units: "ALL" }),
+                      }
+                    );
+                    const closeData = await closeRes.json();
+                    console.log(`[FLASH-CRASH] Flattened trade ${trade.id} (${trade.instrument}): ${closeRes.ok ? 'OK' : 'FAILED'}`);
+                    return { tradeId: trade.id, instrument: trade.instrument, success: closeRes.ok };
+                  } catch (err) {
+                    console.error(`[FLASH-CRASH] Failed to close ${trade.id}:`, err);
+                    return { tradeId: trade.id, success: false };
+                  }
+                });
+
+                const closeResults = await Promise.all(closePromises);
+                const closedCount = closeResults.filter(r => r.success).length;
+                console.log(`[FLASH-CRASH] ☢️ Flattened ${closedCount}/${openTrades.length} positions`);
+
+                // Mark flattened trades in DB
+                for (const r of closeResults.filter(cr => cr.success)) {
+                  await supabase.from("oanda_orders")
+                    .update({
+                      status: "closed",
+                      closed_at: now.toISOString(),
+                      sovereign_override_tag: `FLASH_CRASH_FLATTEN:${severity}`,
+                    })
+                    .eq("oanda_trade_id", r.tradeId)
+                    .eq("status", "filled");
+                }
+              }
+            }
+          } catch (flattenErr) {
+            console.error(`[FLASH-CRASH] Flatten error:`, flattenErr);
+          }
+        }
       }
     }
 
     // Persist scan results
-    const payload = {
+    const payload: any = {
       alertCount: pairAlerts.length,
       isCascade,
       hasExtreme,
+      hasAccelerating,
+      correlationSpike,
+      correlationDirection,
+      shouldFlatten,
+      responseLevel: shouldFlatten ? "FLATTEN" : shouldHalt ? "HALT" : pairAlerts.length > 0 ? "ALERT" : "CLEAR",
       alerts: pairAlerts,
       allClear: pairAlerts.length === 0,
       scannedPairs: ALL_PAIRS.length,
       scanTime: now.toISOString(),
+      version: "v2",
     };
 
     await supabase.from("sovereign_memory").upsert(
@@ -156,19 +273,18 @@ Deno.serve(async (req) => {
         memory_key: "killswitch_status",
         payload,
         relevance_score: pairAlerts.length > 0 ? 1.0 : 0.2,
-        created_by: "flash-crash-killswitch",
+        created_by: "flash-crash-killswitch-v2",
       },
       { onConflict: "memory_type,memory_key" }
     );
 
-    // L-ZERO-PRIME: DMA Interrupt — if flash crash detected, fire DNA mutation
-    // engine INLINE (sub-second) instead of waiting for 2min pg_cron cycle
+    // DMA Interrupt for DNA mutation on flash crash
     if (isCascade || hasExtreme) {
       try {
         const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
         const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-        console.log(`[L0-PRIME] DMA INTERRUPT: Flash crash detected (cascade=${isCascade}, extreme=${hasExtreme}). Firing DNA mutator inline...`);
-        
+        console.log(`[L0-PRIME] DMA INTERRUPT: Flash crash detected. Firing DNA mutator...`);
+
         const dmaRes = await fetch(`${supabaseUrl}/functions/v1/recursive-dna-mutator`, {
           method: "POST",
           headers: {

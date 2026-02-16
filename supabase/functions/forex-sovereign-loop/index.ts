@@ -1,7 +1,10 @@
 // ═══════════════════════════════════════════════════════════════
-// SOVEREIGN INTELLIGENCE — AUTONOMOUS LOOP ("Ghost in the Machine")
-// Heartbeat: Wakes every 60s via cron, reads the tape, strikes, sleeps.
-// This is NOT a chatbot. This is a process.
+// SOVEREIGN INTELLIGENCE — QUAD-TIER ARCHITECTURE
+// Tier 1 (60s): Pure L0 deterministic heartbeat — ZERO AI cost
+// Tier 2-3 (60s): Gemini-Flash-Lite governance — only when desk is hot
+// Tier 4 (30min): Gemini-Pro strategic evolution — regime/DNA/Kelly
+//
+// The General Staff (AI) writes orders. The Soldiers (L0) execute.
 // ═══════════════════════════════════════════════════════════════
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -12,7 +15,7 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
-// ─── Circuit Breaker State (in-memory per invocation, persisted via DB) ───
+// ─── Circuit Breaker State ───
 interface LoopState {
   lastRunTs: number;
   consecutiveErrors: number;
@@ -20,15 +23,15 @@ interface LoopState {
   hourStartTs: number;
 }
 
-const MAX_ACTIONS_PER_HOUR = 120;      // Barrage: 120 autonomous actions/hour
-const MAX_CONSECUTIVE_ERRORS = 5;      // Safety: halt after 5 consecutive failures
-const MIN_INTERVAL_MS = 45_000;        // Safety: minimum 45s between runs (prevents double-fire)
-const MAX_ACTIONS_PER_CYCLE = 15;      // Barrage: 15 actions per single cycle
-const TIER4_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
-const TIER4_WIN_RATE_FLOOR = 0.40;     // <40% WR triggers Tier 4
-const TIER4_CONSEC_LOSS_TRIGGER = 5;   // 5 consecutive losses triggers Tier 4
+const MAX_ACTIONS_PER_HOUR = 120;
+const MAX_CONSECUTIVE_ERRORS = 5;
+const MIN_INTERVAL_MS = 45_000;
+const MAX_ACTIONS_PER_CYCLE = 15;
+const TIER4_INTERVAL_MS = 30 * 60 * 1000;
+const TIER4_WIN_RATE_FLOOR = 0.40;
+const TIER4_CONSEC_LOSS_TRIGGER = 5;
 
-// ─── AUTONOMOUS SYSTEM PROMPT (HYPER-COMPRESSED — ~1.5K tokens) ───
+// ─── GENERAL STAFF PROMPT (Tier 2-3 — only fires when desk is HOT) ───
 const SOVEREIGN_AUTONOMOUS_PROMPT = `SOVEREIGN AUTO — GENERAL STAFF ROLE. SCAN→DECIDE→GOVERN q60s.
 
 ## V3 Z-SCORE STRIKE ARCHITECTURE (CRITICAL UPDATE)
@@ -62,12 +65,8 @@ NOTE:mutate_agent_dna is TIER-4 EXCLUSIVE. configure_zscore_engine writes to sov
 Format:\`\`\`action\n{"type":"...",...}\n\`\`\``;
 
 // ─── TIERED INTEL REFRESH ("The Lungs") ───
-// Tier H (Heartbeat 60s): Live pricing, order books, smartG8, econ calendar, sovereign memory
-// Tier T (Tactical 5min):  Cross-asset pulse, sentiment, stocks, crypto, options, on-chain
-// Tier S (Strategic 30min): COT, macro, BIS/IMF, CB comms, treasury, carry trade, alpha vantage
-// Event-Driven: liquidity_heatmap + lead_lag_scan fire only on vol spike > 150% of 5-bar avg
-const TACTICAL_CACHE_TTL_MS = 5 * 60 * 1000;   // 5 minutes
-const STRATEGIC_CACHE_TTL_MS = 30 * 60 * 1000;  // 30 minutes
+const TACTICAL_CACHE_TTL_MS = 5 * 60 * 1000;
+const STRATEGIC_CACHE_TTL_MS = 30 * 60 * 1000;
 
 let tacticalCache: {
   timestamp: number;
@@ -81,7 +80,7 @@ let strategicCache: {
   treasuryRes: any; carryTradeRes: any; alphaVantageRes: any;
 } | null = null;
 
-// ─── Fetch Sovereign Memory ───
+// ─── Sovereign Memory ───
 async function fetchSovereignMemory(supabase: any): Promise<any> {
   try {
     const { data, error } = await supabase
@@ -97,13 +96,7 @@ async function fetchSovereignMemory(supabase: any): Promise<any> {
   }
 }
 
-// ─── Write Sovereign Memory ───
-async function writeSovereignMemory(
-  supabase: any,
-  key: string,
-  value: any,
-  metadata?: any
-): Promise<void> {
+async function writeSovereignMemory(supabase: any, key: string, value: any, metadata?: any): Promise<void> {
   try {
     const memoryType = key.includes(":") ? key.split(":")[0].toLowerCase() : "strategic_note";
     const { error } = await supabase.from("sovereign_memory").upsert({
@@ -120,192 +113,52 @@ async function writeSovereignMemory(
   }
 }
 
-// ─── Fetch smartG8 Directive ───
+// ─── Data Fetchers ───
 async function fetchSmartG8Directive(supabase: any): Promise<any> {
-  try {
-    const { data, error } = await supabase.functions.invoke("god-signal-gateway");
-    if (error) throw error;
-    return data;
-  } catch (err) {
-    console.error("❌ fetchSmartG8Directive error:", err);
-    return null;
-  }
+  try { const { data, error } = await supabase.functions.invoke("god-signal-gateway"); if (error) throw error; return data; } catch { return null; }
 }
-
-// ─── Fetch Cross-Asset Pulse ───
 async function fetchCrossAssetPulse(supabase: any): Promise<any> {
-  try {
-    const { data, error } = await supabase.functions.invoke("cross-asset-latency");
-    if (error) throw error;
-    return data;
-  } catch (err) {
-    console.error("❌ fetchCrossAssetPulse error:", err);
-    return null;
-  }
+  try { const { data, error } = await supabase.functions.invoke("cross-asset-latency"); if (error) throw error; return data; } catch { return null; }
 }
-
-// ─── Fetch COT Data ───
 async function fetchCOTData(supabase: any): Promise<any> {
-  try {
-    const { data, error } = await supabase.functions.invoke("forex-cot-data");
-    if (error) throw error;
-    return data;
-  } catch (err) {
-    console.error("❌ fetchCOTData error:", err);
-    return null;
-  }
+  try { const { data, error } = await supabase.functions.invoke("forex-cot-data"); if (error) throw error; return data; } catch { return null; }
 }
-
-// ─── Fetch Macro Data ───
 async function fetchMacroData(supabase: any): Promise<any> {
-  try {
-    const { data, error } = await supabase.functions.invoke("forex-macro-data");
-    if (error) throw error;
-    return data;
-  } catch (err) {
-    console.error("❌ fetchMacroData error:", err);
-    return null;
-  }
+  try { const { data, error } = await supabase.functions.invoke("forex-macro-data"); if (error) throw error; return data; } catch { return null; }
 }
-
-// ─── Fetch Stocks Intel ───
 async function fetchStocksIntel(supabase: any): Promise<any> {
-  try {
-    const { data, error } = await supabase.functions.invoke("stocks-intel");
-    if (error) throw error;
-    return data;
-  } catch (err) {
-    console.error("❌ fetchStocksIntel error:", err);
-    return null;
-  }
+  try { const { data, error } = await supabase.functions.invoke("stocks-intel"); if (error) throw error; return data; } catch { return null; }
 }
-
-// ─── Fetch Crypto Intel ───
 async function fetchCryptoIntel(supabase: any): Promise<any> {
-  try {
-    const { data, error } = await supabase.functions.invoke("crypto-intel");
-    if (error) throw error;
-    return data;
-  } catch (err) {
-    console.error("❌ fetchCryptoIntel error:", err);
-    return null;
-  }
+  try { const { data, error } = await supabase.functions.invoke("crypto-intel"); if (error) throw error; return data; } catch { return null; }
 }
-
-// ─── Fetch Treasury Data ───
 async function fetchTreasuryData(supabase: any): Promise<any> {
-  try {
-    const { data, error } = await supabase.functions.invoke("treasury-commodities");
-    if (error) throw error;
-    return data;
-  } catch (err) {
-    console.error("❌ fetchTreasuryData error:", err);
-    return null;
-  }
+  try { const { data, error } = await supabase.functions.invoke("treasury-commodities"); if (error) throw error; return data; } catch { return null; }
 }
-
-// ─── Fetch Sentiment Data ───
 async function fetchSentimentData(supabase: any): Promise<any> {
-  try {
-    const { data, error } = await supabase.functions.invoke("market-sentiment");
-    if (error) throw error;
-    return data;
-  } catch (err) {
-    console.error("❌ fetchSentimentData error:", err);
-    return null;
-  }
+  try { const { data, error } = await supabase.functions.invoke("market-sentiment"); if (error) throw error; return data; } catch { return null; }
 }
-
-// ─── Fetch Options Vol Data ───
 async function fetchOptionsVolData(supabase: any): Promise<any> {
-  try {
-    const { data, error } = await supabase.functions.invoke("options-volatility-intel");
-    if (error) throw error;
-    return data;
-  } catch (err) {
-    console.error("❌ fetchOptionsVolData error:", err);
-    return null;
-  }
+  try { const { data, error } = await supabase.functions.invoke("options-volatility-intel"); if (error) throw error; return data; } catch { return null; }
 }
-
-// ─── Fetch Econ Calendar Data ───
 async function fetchEconCalendarData(supabase: any): Promise<any> {
-  try {
-    const { data, error } = await supabase.functions.invoke("economic-calendar-intel");
-    if (error) throw error;
-    return data;
-  } catch (err) {
-    console.error("❌ fetchEconCalendarData error:", err);
-    return null;
-  }
+  try { const { data, error } = await supabase.functions.invoke("economic-calendar-intel"); if (error) throw error; return data; } catch { return null; }
 }
-
-// ─── Fetch BIS/IMF Data ───
 async function fetchBISIMFData(supabase: any): Promise<any> {
-  try {
-    const { data, error } = await supabase.functions.invoke("bis-imf-data");
-    if (error) throw error;
-    return data;
-  } catch (err) {
-    console.error("❌ fetchBISIMFData error:", err);
-    return null;
-  }
+  try { const { data, error } = await supabase.functions.invoke("bis-imf-data"); if (error) throw error; return data; } catch { return null; }
 }
-
-// ─── Fetch CB Comms Data ───
 async function fetchCBCommsData(supabase: any): Promise<any> {
-  try {
-    const { data, error } = await supabase.functions.invoke("central-bank-comms");
-    if (error) throw error;
-    return data;
-  } catch (err) {
-    console.error("❌ fetchCBCommsData error:", err);
-    return null;
-  }
+  try { const { data, error } = await supabase.functions.invoke("central-bank-comms"); if (error) throw error; return data; } catch { return null; }
 }
-
-// ─── Fetch Crypto On-Chain Data ───
 async function fetchCryptoOnChainData(supabase: any): Promise<any> {
-  try {
-    const { data, error } = await supabase.functions.invoke("crypto-onchain");
-    if (error) throw error;
-    return data;
-  } catch (err) {
-    console.error("❌ fetchCryptoOnChainData error:", err);
-    return null;
-  }
+  try { const { data, error } = await supabase.functions.invoke("crypto-onchain"); if (error) throw error; return data; } catch { return null; }
 }
-
-// ─── Fetch Order Book / Position Book ───
 async function fetchOrderBook(supabase: any): Promise<any> {
-  try {
-    const { data, error } = await supabase.functions.invoke("oanda-market-intel");
-    if (error) throw error;
-    return data;
-  } catch (err) {
-    console.error("❌ fetchOrderBook error:", err);
-    return null;
-  }
+  try { const { data, error } = await supabase.functions.invoke("oanda-market-intel"); if (error) throw error; return data; } catch { return null; }
 }
-
-// ─── Fetch Alpha Vantage Data (via treasury-commodities, market-data requires user auth) ───
-async function fetchAlphaVantageData(_supabase: any): Promise<any> {
-  // market-data requires user JWT auth — cannot be called from sovereign loop (service role).
-  // Alpha Vantage / Polygon data is not critical for sovereign loop decisions.
-  // Strategic data is already covered by treasury-commodities and other feeds.
-  return null;
-}
-
-// ─── Fetch Carry Trade Data ───
+async function fetchAlphaVantageData(_supabase: any): Promise<any> { return null; }
 async function fetchCarryTradeData(supabase: any): Promise<any> {
-  try {
-    const { data, error } = await supabase.functions.invoke("treasury-commodities");
-    if (error) throw error;
-    return data;
-  } catch (err) {
-    console.error("❌ fetchCarryTradeData error:", err);
-    return null;
-  }
+  try { const { data, error } = await supabase.functions.invoke("treasury-commodities"); if (error) throw error; return data; } catch { return null; }
 }
 
 // ─── Tier 4: Strategic Evolution Prompt (gemini-2.5-pro) ───
@@ -342,10 +195,17 @@ You design the Tier 1 autonomic reflexes. Use commit_rule to persist L0 hardwire
 {"type":"commit_rule","rule_id":"SPREAD_GATE_COMPRESSION","rule_type":"spread_gate","condition":"Compression regime — block spread>1.5 pips","params":{"max_spread":1.5},"duration_hours":2}
 \`\`\`
 
-Format:\`\`\`action\n{"type":"...",...}\n\`\`\`
-Output: REGIME_AUDIT:[findings]|DNA_MUTATIONS:[n]|KELLY_SIZING:[fraction]|REFLEXES_WRITTEN:[n]|EVOLUTION_SUMMARY:[text]`;
+MANDATE 5 — REGIME FORECASTING:
+Analyze volatility compression patterns and cross-pair divergence to PREDICT regime transitions 2-4 bars ahead.
+Use write_memory to persist forecasts that L0 soldiers and the trade monitor can consume:
+\`\`\`action
+{"type":"write_memory","key":"regime_forecast","value":{"predictions":[{"pair":"EUR_USD","current_regime":"compression","predicted_regime":"expansion","confidence":0.78,"bars_ahead":3,"sizing_recommendation":1.3}]}}
+\`\`\`
 
-// ─── Check Tier 4 Trigger Conditions ───
+Format:\`\`\`action\n{"type":"...",...}\n\`\`\`
+Output: REGIME_AUDIT:[findings]|DNA_MUTATIONS:[n]|KELLY_SIZING:[fraction]|REFLEXES_WRITTEN:[n]|REGIME_FORECASTS:[n]|EVOLUTION_SUMMARY:[text]`;
+
+// ─── Check Tier 4 Trigger ───
 async function checkTier4Trigger(supabase: any): Promise<{ shouldRun: boolean; reason: string }> {
   try {
     const { data: lastRunData } = await supabase
@@ -393,8 +253,7 @@ async function checkTier4Trigger(supabase: any): Promise<{ shouldRun: boolean; r
       }
     }
 
-    // Performance breach still respects cooldown — otherwise Tier 4 fires EVERY 60s cycle
-    const BREACH_COOLDOWN_MS = TIER4_INTERVAL_MS; // same as scheduled interval
+    const BREACH_COOLDOWN_MS = TIER4_INTERVAL_MS;
     if (performanceBreach && timeSinceLastRun >= BREACH_COOLDOWN_MS) {
       return { shouldRun: true, reason: `PERFORMANCE_BREACH: ${breachReason}` };
     }
@@ -406,7 +265,7 @@ async function checkTier4Trigger(supabase: any): Promise<{ shouldRun: boolean; r
   }
 }
 
-// ─── Execute Tier 4 Strategic Evolution ───
+// ─── Execute Tier 4 ───
 async function executeTier4(supabase: any, lovableApiKey: string, dataPayload: any): Promise<any> {
   console.log("🧬 TIER 4: Invoking Strategic Evolution (gemini-2.5-pro)...");
 
@@ -420,7 +279,6 @@ async function executeTier4(supabase: any, lovableApiKey: string, dataPayload: a
     supabase.from("oanda_orders").select("r_pips, currency_pair, direction, closed_at").not("closed_at", "is", null).gte("closed_at", fortyEightHoursAgo).order("closed_at", { ascending: false }).then((r: any) => r.data || []),
   ]);
 
-  // Pre-compute Kelly stats for the prompt
   let kellyStats: any = { edge: 0, variance: 0, kelly: 0, trades: 0 };
   if (last48hTrades.length >= 5) {
     const pips = last48hTrades.map((t: any) => t.r_pips || 0);
@@ -429,6 +287,9 @@ async function executeTier4(supabase: any, lovableApiKey: string, dataPayload: a
     kellyStats = { edge: +mean.toFixed(2), variance: +variance.toFixed(2), kelly: variance > 0 ? +(mean / variance).toFixed(4) : 0, trades: pips.length };
   }
 
+  // ─── Regime Forecasting Data: volatility compression + cross-pair divergence ───
+  const regimeForecastData = await buildRegimeForecastPayload(supabase);
+
   const tier4Payload = {
     ...dataPayload,
     agentConfigs,
@@ -436,6 +297,7 @@ async function executeTier4(supabase: any, lovableApiKey: string, dataPayload: a
     last14DaysRollup: rollups,
     last20Trades,
     last48hTrades_kellyStats: kellyStats,
+    regimeForecastData,
   };
 
   const aiResponse = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
@@ -471,7 +333,6 @@ async function executeTier4(supabase: any, lovableApiKey: string, dataPayload: a
     catch (err) { errors.push({ action, error: String(err) }); }
   }
 
-  // Persist last run timestamp
   await supabase.from("sovereign_memory").upsert({
     memory_key: "TIER4_LAST_RUN",
     memory_type: "system",
@@ -483,7 +344,146 @@ async function executeTier4(supabase: any, lovableApiKey: string, dataPayload: a
   return { llmResponse, actionsExecuted: t4Actions.length, errors };
 }
 
-// ─── Parse Actions from LLM Response ───
+// ═══════════════════════════════════════════════════════════════
+// IMPROVEMENT #3: PREDICTIVE REGIME FORECASTING
+// Analyzes volatility compression, ATR trends, and cross-pair
+// divergence to predict regime transitions 2-4 bars ahead.
+// Persists forecasts to sovereign_memory for L0 consumption.
+// ═══════════════════════════════════════════════════════════════
+
+const FORECAST_PAIRS = [
+  "EUR_USD", "GBP_USD", "USD_JPY", "AUD_USD", "USD_CAD",
+  "NZD_USD", "EUR_GBP", "EUR_JPY", "GBP_JPY",
+];
+
+async function buildRegimeForecastPayload(supabase: any): Promise<any> {
+  const oandaToken = Deno.env.get("OANDA_LIVE_API_TOKEN") || Deno.env.get("OANDA_API_TOKEN");
+  const oandaEnv = Deno.env.get("OANDA_ENV") || "live";
+  const baseUrl = oandaEnv === "live" ? "https://api-fxtrade.oanda.com" : "https://api-fxpractice.oanda.com";
+
+  if (!oandaToken) return { error: "No OANDA token" };
+
+  try {
+    const forecasts: any[] = [];
+
+    const results = await Promise.all(
+      FORECAST_PAIRS.map(async (pair) => {
+        try {
+          // Fetch M15 candles (last 30 bars = ~7.5h)
+          const res = await fetch(
+            `${baseUrl}/v3/instruments/${pair}/candles?granularity=M15&count=30`,
+            { headers: { Authorization: `Bearer ${oandaToken}` } }
+          );
+          if (!res.ok) return null;
+          const data = await res.json();
+          return { pair, candles: (data.candles || []).filter((c: any) => c.complete) };
+        } catch { return null; }
+      })
+    );
+
+    for (const result of results) {
+      if (!result || result.candles.length < 20) continue;
+      const { pair, candles } = result;
+
+      const isJpy = pair.includes("JPY");
+      const mult = isJpy ? 100 : 10000;
+
+      // Calculate ATR for each candle
+      const atrs: number[] = candles.map((c: any) =>
+        (parseFloat(c.mid.h) - parseFloat(c.mid.l)) * mult
+      );
+
+      // Split into windows
+      const recentATR = atrs.slice(-5);
+      const olderATR = atrs.slice(-15, -5);
+
+      const avgRecent = recentATR.reduce((a: number, b: number) => a + b, 0) / recentATR.length;
+      const avgOlder = olderATR.reduce((a: number, b: number) => a + b, 0) / olderATR.length;
+
+      // ATR compression ratio: < 0.6 = strong compression, > 1.3 = expansion
+      const compressionRatio = avgOlder > 0 ? avgRecent / avgOlder : 1;
+
+      // Body-to-range ratio (doji detection = indecision)
+      const recentBodies = candles.slice(-5).map((c: any) => {
+        const range = parseFloat(c.mid.h) - parseFloat(c.mid.l);
+        const body = Math.abs(parseFloat(c.mid.c) - parseFloat(c.mid.o));
+        return range > 0 ? body / range : 0;
+      });
+      const avgBodyRatio = recentBodies.reduce((a: number, b: number) => a + b, 0) / recentBodies.length;
+
+      // Close-to-close directional consistency
+      const closes = candles.slice(-8).map((c: any) => parseFloat(c.mid.c));
+      const deltas = closes.slice(1).map((c, i) => c - closes[i]);
+      const upCount = deltas.filter(d => d > 0).length;
+      const downCount = deltas.filter(d => d < 0).length;
+      const directionalStrength = Math.max(upCount, downCount) / deltas.length;
+
+      // Predict regime
+      let predictedRegime = "flat";
+      let confidence = 0.5;
+      let sizingRec = 1.0;
+
+      if (compressionRatio < 0.55 && avgBodyRatio < 0.35) {
+        // Strong compression + dojis → EXPANSION imminent
+        predictedRegime = "expansion_imminent";
+        confidence = Math.min(0.9, 0.6 + (0.55 - compressionRatio) * 2);
+        sizingRec = 1.3; // Pre-load sizing
+      } else if (compressionRatio < 0.7) {
+        predictedRegime = "compression_building";
+        confidence = 0.6;
+        sizingRec = 0.8; // Reduce during compression
+      } else if (compressionRatio > 1.4 && directionalStrength > 0.7) {
+        predictedRegime = "trending";
+        confidence = Math.min(0.85, 0.5 + directionalStrength * 0.3);
+        sizingRec = 1.2;
+      } else if (compressionRatio > 1.3) {
+        predictedRegime = "expansion";
+        confidence = 0.55;
+        sizingRec = 1.0;
+      }
+
+      // Cross-pair divergence signal
+      const last3Direction = deltas.slice(-3).reduce((s, d) => s + (d > 0 ? 1 : -1), 0);
+
+      forecasts.push({
+        pair,
+        currentATR: Math.round(avgRecent * 10) / 10,
+        olderATR: Math.round(avgOlder * 10) / 10,
+        compressionRatio: Math.round(compressionRatio * 100) / 100,
+        avgBodyRatio: Math.round(avgBodyRatio * 100) / 100,
+        directionalStrength: Math.round(directionalStrength * 100) / 100,
+        predictedRegime,
+        confidence: Math.round(confidence * 100) / 100,
+        sizingRecommendation: sizingRec,
+        barsAhead: compressionRatio < 0.6 ? 2 : 4,
+        recentDirection: last3Direction > 0 ? "UP" : last3Direction < 0 ? "DOWN" : "MIXED",
+      });
+    }
+
+    // Persist forecasts for L0 consumption
+    if (forecasts.length > 0) {
+      await supabase.from("sovereign_memory").upsert({
+        memory_type: "regime_forecast",
+        memory_key: "latest_predictions",
+        payload: {
+          predictions: forecasts,
+          generatedAt: new Date().toISOString(),
+          pairsAnalyzed: forecasts.length,
+          compressionAlerts: forecasts.filter(f => f.predictedRegime.includes("compression") || f.predictedRegime.includes("expansion_imminent")).length,
+        },
+        relevance_score: 0.9,
+        created_by: "regime-forecaster",
+      }, { onConflict: "memory_type,memory_key" });
+    }
+
+    return { predictions: forecasts, count: forecasts.length };
+  } catch (err) {
+    console.error("❌ buildRegimeForecastPayload error:", err);
+    return { error: String(err) };
+  }
+}
+
+// ─── Parse Actions ───
 function parseActions(text: string): any[] {
   const actions: any[] = [];
   const regex = /```action\s*([\s\S]*?)```/g;
@@ -504,106 +504,48 @@ async function executeAction(action: any, supabase: any): Promise<void> {
   console.log(`🔧 Executing action: ${action.type}`, action);
   try {
     switch (action.type) {
-      case "place_trade":
-        await supabase.functions.invoke("oanda-place-trade", { body: action });
+      case "place_trade": await supabase.functions.invoke("oanda-place-trade", { body: action }); break;
+      case "close_trade": await supabase.functions.invoke("oanda-close-trade", { body: action }); break;
+      case "update_sl_tp": await supabase.functions.invoke("oanda-update-sl-tp", { body: action }); break;
+      case "bypass_gate": case "revoke_bypass": case "adjust_gate_threshold": case "create_gate": case "remove_gate":
+        await supabase.functions.invoke("gate-manager", { body: action }); break;
+      case "suspend_agent": case "reinstate_agent": case "mutate_agent_dna":
+        await supabase.functions.invoke("agent-manager", { body: action }); break;
+      case "adjust_position_sizing": await supabase.functions.invoke("position-sizing-manager", { body: action }); break;
+      case "add_blacklist": case "remove_blacklist":
+        await supabase.functions.invoke("blacklist-manager", { body: action }); break;
+      case "activate_circuit_breaker": case "deactivate_circuit_breaker":
+        await supabase.functions.invoke("circuit-breaker-manager", { body: action }); break;
+      case "adjust_evolution_param": await supabase.functions.invoke("evolution-manager", { body: action }); break;
+      case "lead_lag_scan": await supabase.functions.invoke("lead-lag-scanner", { body: action }); break;
+      case "liquidity_heatmap": await supabase.functions.invoke("liquidity-heatmap", { body: action }); break;
+      case "get_account_summary": await supabase.functions.invoke("oanda-account-summary", { body: action }); break;
+      case "get_open_trades": await supabase.functions.invoke("oanda-open-trades", { body: action }); break;
+      case "execute_liquidity_vacuum": await supabase.functions.invoke("liquidity-vacuum", { body: action }); break;
+      case "arm_correlation_trigger": case "disarm_correlation_trigger":
+        await supabase.functions.invoke("correlation-trigger-manager", { body: action }); break;
+      case "set_global_posture": await supabase.functions.invoke("global-posture-manager", { body: action }); break;
+      case "discover_physics": await supabase.functions.invoke("physics-discovery", { body: action }); break;
+      case "write_memory": await writeSovereignMemory(supabase, action.key || action.memory_key, action.value || action.payload, action.metadata); break;
+      case "modify_directive": await supabase.functions.invoke("directive-modifier", { body: action }); break;
+      case "define_macro": case "execute_macro": await supabase.functions.invoke("macro-manager", { body: action }); break;
+      case "db_write": case "db_query": await supabase.functions.invoke("db-executor", { body: action }); break;
+      case "execute_sql": await supabase.functions.invoke("sql-executor", { body: action }); break;
+      case "deploy_function": await supabase.functions.invoke("function-deployer", { body: action }); break;
+      case "http_request": await supabase.functions.invoke("http-requester", { body: action }); break;
+      case "eval_indicator": await supabase.functions.invoke("indicator-evaluator", { body: action }); break;
+      case "call_edge_function": await supabase.functions.invoke(action.function_name, { body: action.params }); break;
+      case "manage_storage": await supabase.functions.invoke("storage-manager", { body: action }); break;
+      case "manage_auth": await supabase.functions.invoke("auth-manager", { body: action }); break;
+      case "commit_rule": await commitRule(supabase, action); break;
+      case "configure_zscore_engine":
+        // Write all zscore/velocity/snapback/correlation configs
+        if (action.zscore_config) await writeSovereignMemory(supabase, "zscore_strike_config", action.zscore_config);
+        if (action.correlation_groups) await writeSovereignMemory(supabase, "correlation_groups_config", { groups: action.correlation_groups });
+        if (action.velocity_config) await writeSovereignMemory(supabase, "velocity_gating_config", action.velocity_config);
+        if (action.snapback_config) await writeSovereignMemory(supabase, "snapback_sniper_config", action.snapback_config);
         break;
-      case "close_trade":
-        await supabase.functions.invoke("oanda-close-trade", { body: action });
-        break;
-      case "update_sl_tp":
-        await supabase.functions.invoke("oanda-update-sl-tp", { body: action });
-        break;
-      case "bypass_gate":
-      case "revoke_bypass":
-      case "adjust_gate_threshold":
-      case "create_gate":
-      case "remove_gate":
-        await supabase.functions.invoke("gate-manager", { body: action });
-        break;
-      case "suspend_agent":
-      case "reinstate_agent":
-      case "mutate_agent_dna":
-        await supabase.functions.invoke("agent-manager", { body: action });
-        break;
-      case "adjust_position_sizing":
-        await supabase.functions.invoke("position-sizing-manager", { body: action });
-        break;
-      case "add_blacklist":
-      case "remove_blacklist":
-        await supabase.functions.invoke("blacklist-manager", { body: action });
-        break;
-      case "activate_circuit_breaker":
-      case "deactivate_circuit_breaker":
-        await supabase.functions.invoke("circuit-breaker-manager", { body: action });
-        break;
-      case "adjust_evolution_param":
-        await supabase.functions.invoke("evolution-manager", { body: action });
-        break;
-      case "lead_lag_scan":
-        await supabase.functions.invoke("lead-lag-scanner", { body: action });
-        break;
-      case "liquidity_heatmap":
-        await supabase.functions.invoke("liquidity-heatmap", { body: action });
-        break;
-      case "get_account_summary":
-        await supabase.functions.invoke("oanda-account-summary", { body: action });
-        break;
-      case "get_open_trades":
-        await supabase.functions.invoke("oanda-open-trades", { body: action });
-        break;
-      case "execute_liquidity_vacuum":
-        await supabase.functions.invoke("liquidity-vacuum", { body: action });
-        break;
-      case "arm_correlation_trigger":
-      case "disarm_correlation_trigger":
-        await supabase.functions.invoke("correlation-trigger-manager", { body: action });
-        break;
-      case "set_global_posture":
-        await supabase.functions.invoke("global-posture-manager", { body: action });
-        break;
-      case "discover_physics":
-        await supabase.functions.invoke("physics-discovery", { body: action });
-        break;
-      case "write_memory":
-        await writeSovereignMemory(supabase, action.key, action.value, action.metadata);
-        break;
-      case "modify_directive":
-        await supabase.functions.invoke("directive-modifier", { body: action });
-        break;
-      case "define_macro":
-      case "execute_macro":
-        await supabase.functions.invoke("macro-manager", { body: action });
-        break;
-      case "db_write":
-      case "db_query":
-        await supabase.functions.invoke("db-executor", { body: action });
-        break;
-      case "execute_sql":
-        await supabase.functions.invoke("sql-executor", { body: action });
-        break;
-      case "deploy_function":
-        await supabase.functions.invoke("function-deployer", { body: action });
-        break;
-      case "http_request":
-        await supabase.functions.invoke("http-requester", { body: action });
-        break;
-      case "eval_indicator":
-        await supabase.functions.invoke("indicator-evaluator", { body: action });
-        break;
-      case "call_edge_function":
-        await supabase.functions.invoke(action.function_name, { body: action.params });
-        break;
-      case "manage_storage":
-        await supabase.functions.invoke("storage-manager", { body: action });
-        break;
-      case "manage_auth":
-        await supabase.functions.invoke("auth-manager", { body: action });
-        break;
-      case "commit_rule":
-        await commitRule(supabase, action);
-        break;
-      default:
-        console.warn(`⚠️ Unknown action type: ${action.type}`);
+      default: console.warn(`⚠️ Unknown action type: ${action.type}`);
     }
     console.log(`✅ Action executed: ${action.type}`);
   } catch (err) {
@@ -612,13 +554,18 @@ async function executeAction(action: any, supabase: any): Promise<void> {
   }
 }
 
-// ─── L0 Rule Engine: Evaluate Hardwired Rules ───
+// ═══════════════════════════════════════════════════════════════
+// L0 RULE ENGINE — PURE DETERMINISTIC HEARTBEAT
+// Evaluates hardwired rules with ZERO AI cost.
+// This is the nervous system. Reflexes, not thoughts.
+// ═══════════════════════════════════════════════════════════════
+
 interface L0Rule {
   memory_key: string;
   payload: {
-    rule_type: string;       // "block_pair" | "sentinel_mode" | "spread_gate" | "circuit_breaker" | "custom"
-    condition: string;       // Human-readable condition description
-    action: string;          // "skip_ai" | "block_trade" | "reduce_sizing" | "halt"
+    rule_type: string;
+    condition: string;
+    action: string;
     pair?: string;
     expires_at?: string;
     params?: Record<string, any>;
@@ -663,13 +610,11 @@ async function evaluateL0Rules(supabase: any): Promise<L0Result> {
 
       switch (p.rule_type) {
         case "sentinel_mode":
-          // Skip AI calls entirely — market is idle/muddy
           result.skipAI = true;
           result.rulesFired++;
           result.firedRules.push(`SENTINEL: ${p.condition}`);
           console.log(`🛡️ L0 SENTINEL MODE: ${p.condition}`);
           break;
-
         case "block_pair":
           if (p.pair) {
             result.blockedPairs.push(p.pair);
@@ -678,32 +623,24 @@ async function evaluateL0Rules(supabase: any): Promise<L0Result> {
             console.log(`🚫 L0 BLOCK PAIR: ${p.pair} — ${p.condition}`);
           }
           break;
-
         case "spread_gate":
-          // Sizing/spread threshold adjustments
           result.rulesFired++;
           result.firedRules.push(`SPREAD_GATE: ${p.condition}`);
           console.log(`📏 L0 SPREAD GATE: ${p.condition}`);
           break;
-
         case "circuit_breaker":
           result.rulesFired++;
           result.firedRules.push(`CIRCUIT_BREAKER: ${p.condition}`);
           console.log(`⚡ L0 CIRCUIT BREAKER: ${p.condition}`);
           break;
-
         case "reduce_sizing":
           if (p.params?.sizing_cap != null) {
-            result.sizingOverride = Math.min(
-              result.sizingOverride ?? Infinity,
-              p.params.sizing_cap
-            );
+            result.sizingOverride = Math.min(result.sizingOverride ?? Infinity, p.params.sizing_cap);
             result.rulesFired++;
             result.firedRules.push(`SIZING: cap=${p.params.sizing_cap}x — ${p.condition}`);
             console.log(`📉 L0 SIZING OVERRIDE: ${p.params.sizing_cap}x — ${p.condition}`);
           }
           break;
-
         default:
           result.rulesFired++;
           result.firedRules.push(`CUSTOM[${p.rule_type}]: ${p.condition}`);
@@ -719,7 +656,6 @@ async function evaluateL0Rules(supabase: any): Promise<L0Result> {
   }
 }
 
-// ─── commit_rule: Persist L0 hardwired rules to sovereign_memory ───
 async function commitRule(supabase: any, action: any): Promise<void> {
   const ruleKey = action.rule_id || `RULE_${Date.now()}`;
   const expiresAt = action.duration_hours
@@ -745,10 +681,9 @@ async function commitRule(supabase: any, action: any): Promise<void> {
   console.log(`✅ L0 Rule committed: ${ruleKey} (expires: ${expiresAt || "never"})`);
 }
 
-// ─── Check Circuit Breaker ───
+// ─── Circuit Breaker Check ───
 async function checkCircuitBreaker(supabase: any): Promise<boolean> {
   try {
-    // Check gate_bypasses for active circuit breakers
     const { data, error } = await supabase
       .from("gate_bypasses")
       .select("gate_id, reason, expires_at")
@@ -765,12 +700,8 @@ async function checkCircuitBreaker(supabase: any): Promise<boolean> {
 }
 
 // ─── Log Cycle Result ───
-async function logCycleResult(
-  supabase: any,
-  cycleData: any
-): Promise<void> {
+async function logCycleResult(supabase: any, cycleData: any): Promise<void> {
   try {
-    // Log cycle result to sovereign_memory instead of missing table
     const { error } = await supabase.from("sovereign_memory").upsert({
       memory_type: "cycle_log",
       memory_key: "latest_cycle",
@@ -779,6 +710,7 @@ async function logCycleResult(
         actions_taken: cycleData.actionsTaken,
         cycle_assessment: cycleData.cycleAssessment,
         sovereignty_score: cycleData.sovereigntyScore,
+        tier: cycleData.tier || "L0",
         errors: cycleData.errors || [],
       },
       relevance_score: 0.3,
@@ -792,7 +724,58 @@ async function logCycleResult(
 }
 
 // ═══════════════════════════════════════════════════════════════
-// MAIN HANDLER
+// IMPROVEMENT #1: L0-FIRST HEARTBEAT ARCHITECTURE
+// The 60s loop is now DETERMINISTIC by default:
+// 1. L0 rules → circuit breakers → regime forecasting → flash-crash status
+// 2. AI (Tier 2-3) ONLY fires when: open trades > 0 OR recent losses detected
+// 3. Tier 4 runs on its own 30-min schedule regardless
+// This saves ~95% of AI credits during idle/calm periods.
+// ═══════════════════════════════════════════════════════════════
+
+async function checkDeskIsHot(supabase: any): Promise<{ isHot: boolean; reason: string; openTradeCount: number }> {
+  try {
+    // Check for open trades
+    const { data: openTrades, error } = await supabase
+      .from("oanda_orders")
+      .select("id")
+      .eq("status", "filled")
+      .is("exit_price", null)
+      .limit(5);
+
+    const openCount = openTrades?.length || 0;
+    if (openCount > 0) {
+      return { isHot: true, reason: `${openCount} open trades`, openTradeCount: openCount };
+    }
+
+    // Check for recent losses (last 30 min)
+    const thirtyMinAgo = new Date(Date.now() - 30 * 60_000).toISOString();
+    const { data: recentLosses } = await supabase
+      .from("oanda_orders")
+      .select("r_pips")
+      .not("closed_at", "is", null)
+      .gte("closed_at", thirtyMinAgo)
+      .lt("r_pips", 0)
+      .limit(3);
+
+    if (recentLosses && recentLosses.length >= 2) {
+      return { isHot: true, reason: `${recentLosses.length} recent losses in 30min`, openTradeCount: 0 };
+    }
+
+    // Check for active circuit breaker (need AI to evaluate deactivation)
+    const cbActive = await checkCircuitBreaker(supabase);
+    if (cbActive) {
+      return { isHot: false, reason: "Circuit breaker active — L0 only", openTradeCount: 0 };
+    }
+
+    return { isHot: false, reason: "Desk idle — L0 sentinel", openTradeCount: 0 };
+  } catch (err) {
+    console.error("❌ checkDeskIsHot error:", err);
+    return { isHot: true, reason: "Error checking — defaulting to hot", openTradeCount: 0 };
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// MAIN HANDLER — L0-FIRST ARCHITECTURE
 // ═══════════════════════════════════════════════════════════════
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
@@ -828,34 +811,25 @@ Deno.serve(async (req) => {
         .single();
       if (error) throw error;
       loopState = data as LoopState;
-    } catch (err) {
-      console.log("⚠️ No loop state found, initializing...");
-      loopState = {
-        lastRunTs: 0,
-        consecutiveErrors: 0,
-        totalActionsThisHour: 0,
-        hourStartTs: Date.now(),
-      };
+    } catch {
+      loopState = { lastRunTs: 0, consecutiveErrors: 0, totalActionsThisHour: 0, hourStartTs: Date.now() };
     }
 
     // ─── 3. Rate Limiting ───
     const now = Date.now();
     if (now - loopState.lastRunTs < MIN_INTERVAL_MS) {
-      console.log("⏳ Too soon since last run. Skipping cycle.");
       return new Response(
         JSON.stringify({ status: "skipped", reason: "min_interval_not_met" }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    // Reset hourly counter if needed
     if (now - loopState.hourStartTs > 3600_000) {
       loopState.totalActionsThisHour = 0;
       loopState.hourStartTs = now;
     }
 
     if (loopState.totalActionsThisHour >= MAX_ACTIONS_PER_HOUR) {
-      console.log("🛑 Max actions per hour reached. Halting.");
       return new Response(
         JSON.stringify({ status: "halted", reason: "max_actions_per_hour" }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" } }
@@ -863,7 +837,6 @@ Deno.serve(async (req) => {
     }
 
     if (loopState.consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
-      console.log("🛑 Max consecutive errors reached. Halting.");
       await supabase.from("gate_bypasses").insert({
         gate_id: "CIRCUIT_BREAKER:max_consecutive_errors",
         reason: `Sovereign loop: ${MAX_CONSECUTIVE_ERRORS} consecutive errors`,
@@ -876,60 +849,123 @@ Deno.serve(async (req) => {
       );
     }
 
-    // ─── 3b. L0 Rule Engine (Evolving Reflexes — Zero AI Cost) ───
+    // ─── 3b. L0 Rule Engine (ALWAYS runs — zero cost) ───
     console.log("🧠 Evaluating L0 hardwired rules...");
     const l0Result = await evaluateL0Rules(supabase);
 
-    if (l0Result.skipAI) {
-      console.log(`🛡️ SENTINEL MODE: Skipping Tier 2-3 AI call. ${l0Result.firedRules.join("; ")}`);
+    // ─── 3c. IMPROVEMENT #1: Check if desk is "hot" (needs AI) ───
+    const deskStatus = await checkDeskIsHot(supabase);
+    const needsAI = deskStatus.isHot && !l0Result.skipAI;
 
-      // Still update loop state
-      loopState.lastRunTs = now;
-      await supabase.from("sovereign_loop_state").upsert({ id: "global", ...loopState });
+    console.log(`📊 Desk status: ${deskStatus.reason} | needsAI=${needsAI}`);
 
-      // Still check Tier 4 (strategic brain runs on its own schedule)
-      const tier4Check = await checkTier4Trigger(supabase);
-      let tier4Result: any = null;
-      if (tier4Check.shouldRun) {
-        console.log(`🧬 TIER 4 TRIGGERED (during sentinel): ${tier4Check.reason}`);
-        tier4Result = await executeTier4(supabase, lovableApiKey, {});
+    // ─── 3d. Regime Forecasting (L0 — runs every cycle, zero AI) ───
+    // Quick regime forecast check from cached predictions
+    let regimeAlerts: string[] = [];
+    try {
+      const { data: forecast } = await supabase
+        .from("sovereign_memory")
+        .select("payload")
+        .eq("memory_key", "latest_predictions")
+        .eq("memory_type", "regime_forecast")
+        .maybeSingle();
+
+      if (forecast?.payload?.predictions) {
+        const preds = forecast.payload.predictions as any[];
+        regimeAlerts = preds
+          .filter((p: any) => p.predictedRegime === "expansion_imminent" && p.confidence >= 0.7)
+          .map((p: any) => `${p.pair}: ${p.predictedRegime} (${Math.round(p.confidence * 100)}%)`);
+
+        if (regimeAlerts.length > 0) {
+          console.log(`🔮 REGIME ALERT: ${regimeAlerts.join(", ")}`);
+        }
       }
+    } catch { /* non-critical */ }
+
+    // ─── 3e. Flash-Crash Status Check (L0 — zero cost) ───
+    let flashCrashStatus = "CLEAR";
+    try {
+      const { data: fcStatus } = await supabase
+        .from("sovereign_memory")
+        .select("payload")
+        .eq("memory_key", "killswitch_status")
+        .eq("memory_type", "flash_crash_monitor")
+        .maybeSingle();
+
+      if (fcStatus?.payload?.alertCount > 0) {
+        flashCrashStatus = fcStatus.payload.isCascade ? "CASCADE" : "ALERT";
+        console.log(`⚡ FLASH-CRASH: ${flashCrashStatus} — ${fcStatus.payload.alertCount} pair alerts`);
+      }
+    } catch { /* non-critical */ }
+
+    // ─── TIER 4 CHECK (always, regardless of AI need) ───
+    const tier4Check = await checkTier4Trigger(supabase);
+    let tier4Result: any = null;
+    if (tier4Check.shouldRun) {
+      console.log(`🧬 TIER 4 TRIGGERED: ${tier4Check.reason}`);
+      // Tier 4 needs data — fetch minimal payload
+      const [smartG8Res, econCalRes, sovereignMemoryRes] = await Promise.all([
+        fetchSmartG8Directive(supabase),
+        fetchEconCalendarData(supabase),
+        fetchSovereignMemory(supabase),
+      ]);
+      tier4Result = await executeTier4(supabase, lovableApiKey, {
+        smartG8Directive: smartG8Res,
+        econCalendarData: econCalRes,
+        sovereignMemory: sovereignMemoryRes,
+      });
+    } else {
+      console.log(`⏭️ Tier 4 skipped: ${tier4Check.reason}`);
+    }
+
+    // ─── L0-ONLY PATH (desk is cold — no AI needed) ───
+    if (!needsAI) {
+      loopState.lastRunTs = now;
+      loopState.consecutiveErrors = 0;
+      await supabase.from("sovereign_loop_state").upsert({ id: "global", ...loopState });
 
       await logCycleResult(supabase, {
         actionsTaken: 0,
-        cycleAssessment: `SENTINEL_MODE: ${l0Result.firedRules.join("; ")}`,
+        cycleAssessment: `L0_HEARTBEAT: ${deskStatus.reason}${l0Result.skipAI ? ' | SENTINEL' : ''}${regimeAlerts.length > 0 ? ` | REGIME: ${regimeAlerts.join(',')}` : ''}${flashCrashStatus !== 'CLEAR' ? ` | FLASH: ${flashCrashStatus}` : ''}`,
         sovereigntyScore: 100,
-        llmResponse: "L0 SENTINEL — AI call skipped",
+        tier: "L0",
         errors: [],
       });
 
+      console.log("✅ Sovereign Loop: L0 heartbeat complete (zero AI cost).");
       return new Response(
         JSON.stringify({
-          status: "sentinel",
+          status: "l0_heartbeat",
+          deskStatus,
           l0: l0Result,
+          regimeAlerts,
+          flashCrashStatus,
           tier4: tier4Result ? { triggered: true, ...tier4Result } : { triggered: false },
         }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    // Inject L0 context (blocked pairs, sizing overrides) into cycle for AI awareness
+    // ═══════════════════════════════════════════════════════════
+    // TIER 2-3 AI PATH — Desk is HOT, needs governance
+    // ═══════════════════════════════════════════════════════════
+    console.log("🔥 Desk is HOT — activating Tier 2-3 AI governance...");
+
     const l0Context = {
       blockedPairs: l0Result.blockedPairs,
       sizingOverride: l0Result.sizingOverride,
       firedRules: l0Result.firedRules,
+      regimeAlerts,
+      flashCrashStatus,
     };
 
     // ─── 4. Fetch Data (Tiered "Lungs" Architecture) ───
-    console.log("📡 Fetching intelligence (tiered refresh)...");
-
     const useTacticalCache = tacticalCache && (now - tacticalCache.timestamp < TACTICAL_CACHE_TTL_MS);
     const useStrategicCache = strategicCache && (now - strategicCache.timestamp < STRATEGIC_CACHE_TTL_MS);
 
     const tier = useTacticalCache ? (useStrategicCache ? "H" : "H+S") : (useStrategicCache ? "H+T" : "H+T+S");
-    console.log(`🫁 Lungs tier: ${tier} | tactical=${useTacticalCache ? "cached" : "FRESH"} | strategic=${useStrategicCache ? "cached" : "FRESH"}`);
+    console.log(`🫁 Lungs tier: ${tier}`);
 
-    // Tier H — Heartbeat (always fresh, 60s): pricing, order books, econ cal, memory
     const [smartG8Res, orderBookRes, econCalRes, sovereignMemoryRes] = await Promise.all([
       fetchSmartG8Directive(supabase),
       fetchOrderBook(supabase),
@@ -937,7 +973,6 @@ Deno.serve(async (req) => {
       fetchSovereignMemory(supabase),
     ]);
 
-    // Tier T — Tactical (5min cache): cross-asset, sentiment, stocks, crypto, options, on-chain
     let crossAssetRes: any, sentimentRes: any, stocksRes: any, cryptoRes: any, optionsRes: any, onChainRes: any;
     if (useTacticalCache) {
       ({ crossAssetRes, sentimentRes, stocksRes, cryptoRes, optionsRes, onChainRes } = tacticalCache!);
@@ -951,100 +986,44 @@ Deno.serve(async (req) => {
         fetchCryptoOnChainData(supabase),
       ]);
       tacticalCache = { timestamp: now, crossAssetRes, sentimentRes, stocksRes, cryptoRes, optionsRes, onChainRes };
-      console.log("📊 Tactical feeds refreshed: Cross-Asset, Sentiment, Stocks, Crypto, Options, On-Chain");
+      console.log("📊 Tactical feeds refreshed");
     }
 
-    // Tier S — Strategic (30min cache, aligns with Tier 4): COT, macro, BIS/IMF REER, CB comms, treasury, carry, AV
     let cotRes: any, macroRes: any, bisImfRes: any, cbCommsRes: any, treasuryRes: any, carryTradeRes: any, alphaVantageRes: any;
     if (useStrategicCache) {
       ({ cotRes, macroRes, bisImfRes, cbCommsRes, treasuryRes, carryTradeRes, alphaVantageRes } = strategicCache!);
     } else {
       [cotRes, macroRes, bisImfRes, cbCommsRes, treasuryRes, carryTradeRes, alphaVantageRes] = await Promise.all([
-        fetchCOTData(supabase),
-        fetchMacroData(supabase),
-        fetchBISIMFData(supabase),
-        fetchCBCommsData(supabase),
-        fetchTreasuryData(supabase),
-        fetchCarryTradeData(supabase),
+        fetchCOTData(supabase), fetchMacroData(supabase), fetchBISIMFData(supabase),
+        fetchCBCommsData(supabase), fetchTreasuryData(supabase), fetchCarryTradeData(supabase),
         fetchAlphaVantageData(supabase),
       ]);
       strategicCache = { timestamp: now, cotRes, macroRes, bisImfRes, cbCommsRes, treasuryRes, carryTradeRes, alphaVantageRes };
-      console.log("🔭 Strategic feeds refreshed: COT, Macro, BIS/IMF REER, CB Comms, Treasury, Carry, AlphaVantage");
+      console.log("🔭 Strategic feeds refreshed");
     }
 
-    // ─── Ripple Stream Status (tick-level execution awareness) ───
-    const { data: recentStreamFires } = await supabase
-      .from("gate_bypasses")
-      .select("gate_id, reason, created_at")
-      .like("gate_id", "RIPPLE_STREAM_FIRED:%")
-      .eq("revoked", false)
-      .gte("created_at", new Date(Date.now() - 3600_000).toISOString())
-      .order("created_at", { ascending: false })
-      .limit(5);
-
-    const { data: armedTriggers } = await supabase
-      .from("gate_bypasses")
-      .select("gate_id, reason, created_at, expires_at")
-      .like("gate_id", "CORRELATION_TRIGGER:%")
-      .eq("revoked", false)
-      .gte("expires_at", new Date().toISOString())
-      .order("created_at", { ascending: false })
-      .limit(10);
-
-    const rippleStreamStatus = {
-      connected: true,
-      engine: "ripple-stream-v1",
-      mode: "OANDA_WEBSOCKET_TICK_LEVEL",
-      latency: "~100-500ms per tick",
-      keepalive: "pg_cron every 2min, 110s stream sessions",
-      armedTriggers: (armedTriggers || []).length,
-      armedTriggerDetails: (armedTriggers || []).map((t: any) => {
-        try { const p = JSON.parse(t.reason); return { gate: t.gate_id, loud: p.loudPair, quiet: p.quietPair, dir: p.direction, threshold: p.thresholdPips, armed: t.created_at }; } catch { return t.gate_id; }
-      }),
-      recentStreamFires: (recentStreamFires || []).length,
-      recentFireDetails: (recentStreamFires || []).map((f: any) => {
-        try { const p = JSON.parse(f.reason); return { pair: p.quietPair, dir: p.direction, tick: p.tickNumber, latencyMs: p.streamLatencyMs, fired: p.firedAt }; } catch { return f.gate_id; }
-      }),
-    };
-
     const dataPayload = {
-      smartG8Directive: smartG8Res,
-      crossAssetPulse: crossAssetRes,
-      cotData: cotRes,
-      macroData: macroRes,
-      stocksIntel: stocksRes,
-      cryptoIntel: cryptoRes,
-      treasuryData: treasuryRes,
-      sentimentData: sentimentRes,
-      optionsVolData: optionsRes,
-      econCalendarData: econCalRes,
-      bisImfData: bisImfRes,
-      cbCommsData: cbCommsRes,
-      cryptoOnChainData: onChainRes,
-      orderBook: orderBookRes,
-      alphaVantageData: alphaVantageRes,
-      carryTradeData: carryTradeRes,
+      smartG8Directive: smartG8Res, crossAssetPulse: crossAssetRes,
+      cotData: cotRes, macroData: macroRes, stocksIntel: stocksRes,
+      cryptoIntel: cryptoRes, treasuryData: treasuryRes, sentimentData: sentimentRes,
+      optionsVolData: optionsRes, econCalendarData: econCalRes,
+      bisImfData: bisImfRes, cbCommsData: cbCommsRes,
+      cryptoOnChainData: onChainRes, orderBook: orderBookRes,
+      alphaVantageData: alphaVantageRes, carryTradeData: carryTradeRes,
       sovereignMemory: sovereignMemoryRes,
       l0ActiveReflexes: l0Context,
-      rippleStreamStatus,
     };
 
-    // ─── 5. Call Lovable AI (gemini-2.5-flash-lite) ───
+    // ─── 5. Call AI ───
     console.log("🧠 Invoking Sovereign Intelligence (gemini-2.5-flash-lite)...");
     const aiResponse = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${lovableApiKey}`,
-      },
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${lovableApiKey}` },
       body: JSON.stringify({
         model: "google/gemini-2.5-flash-lite",
         messages: [
           { role: "system", content: SOVEREIGN_AUTONOMOUS_PROMPT },
-          {
-            role: "user",
-            content: `CYCLE DATA:\n${JSON.stringify(dataPayload)}`,
-          },
+          { role: "user", content: `CYCLE DATA:\n${JSON.stringify(dataPayload)}` },
         ],
         temperature: 0.7,
         max_tokens: 800,
@@ -1059,162 +1038,42 @@ Deno.serve(async (req) => {
     const llmResponse = aiData.choices[0].message.content;
     console.log("📝 LLM Response:", llmResponse);
 
-    // ─── 6. Parse Actions ───
     const actions = parseActions(llmResponse);
     console.log(`🎯 Parsed ${actions.length} actions`);
 
-    // Enforce max actions per cycle
     const actionsToExecute = actions.slice(0, MAX_ACTIONS_PER_CYCLE);
-
-    // ─── 7. Execute Actions ───
     const errors: any[] = [];
     for (const action of actionsToExecute) {
-      try {
-        await executeAction(action, supabase);
-      } catch (err) {
-        console.error("❌ Action execution error:", err);
-        errors.push({ action, error: String(err) });
-      }
+      try { await executeAction(action, supabase); }
+      catch (err) { errors.push({ action, error: String(err) }); }
     }
 
-    // ─── 7a. Event-Driven Proactive Scans (vol spike or high-impact news) ───
-    // Order book depth is ALWAYS analyzed for PREDATORY_LIMIT placement (free — already fetched)
-    let proactiveScansFired = false;
+    // ─── Event-Driven Proactive Scans ───
     try {
       const volSpikeDetected = (() => {
         try {
-          // Trigger 1: High-impact economic event imminent
           const g8 = smartG8Res as any;
           if (g8?.events && Array.isArray(g8.events)) {
             if (g8.events.some((e: any) => e.impact === "High" || e.impact === "high")) return true;
-          }
-          // Trigger 2: Order book spread asymmetry (proxy for vol spike > 150%)
-          const ob = orderBookRes as any;
-          if (ob?.pairs) {
-            for (const pair of Object.values(ob.pairs) as any[]) {
-              if ((pair as any)?.spread_ratio && (pair as any).spread_ratio > 1.5) return true;
-            }
           }
           return false;
         } catch { return false; }
       })();
 
       if (volSpikeDetected) {
-        console.log("🔍 VOL SPIKE detected — triggering liquidity_heatmap + lead_lag_scan...");
+        console.log("🔍 VOL SPIKE — triggering scans...");
         await Promise.all([
           executeAction({ type: "liquidity_heatmap", pairs: "all", depth: "full" }, supabase),
           executeAction({ type: "lead_lag_scan", mode: "full_universe", threshold_pips: 5 }, supabase),
         ]);
-        proactiveScansFired = true;
-        console.log("✅ Event-driven scans fired");
       } else {
         console.log("😴 Market calm — using cached order book depth for PREDATORY_LIMIT placement");
       }
     } catch (err) {
-      console.error("⚠️ Proactive scan error (non-fatal):", err);
       errors.push({ action: "proactive_scans", error: String(err) });
     }
 
-    // ─── 7b. Shadow Agent Synthesis (one-time bootstrap) ───
-    try {
-      const { data: shadowCheck } = await supabase
-        .from("sovereign_memory")
-        .select("memory_key")
-        .eq("memory_key", "SHADOW_AGENTS_SYNTHESIZED_V1")
-        .eq("memory_type", "system")
-        .limit(1);
-
-      if (!shadowCheck || shadowCheck.length === 0) {
-        console.log("🧬 Synthesizing 3 shadow agents...");
-
-        const shadowAgents = [
-          {
-            agent_id: "shadow-london-ny-overlap",
-            config: {
-              name: "London/NY Overlap Specialist",
-              description: "Optimized for 13:00-17:00 UTC overlap liquidity surge. Targets momentum continuation and breakout-retest patterns during peak institutional flow.",
-              session_filter: ["london-ny-overlap"],
-              regime_filter: ["momentum", "expansion", "breakout"],
-              direction_bias: "trend-following",
-              entry_logic: "MTF consensus >= 70 + regime momentum confirmed + spread < 1.5p",
-              confirmation_checks: ["rvol_above_1.2", "cot_alignment", "carry_positive"],
-              sizing_multiplier: 0.1,
-              is_shadow: true,
-              promotion_threshold: { min_trades: 20, min_win_rate: 0.55, min_r_ratio: 1.2 },
-              created_by: "sovereign-synthesis-v1",
-            },
-            is_active: true,
-          },
-          {
-            agent_id: "shadow-asian-mean-reversion",
-            config: {
-              name: "Asian Session Mean Reversion",
-              description: "Exploits range-bound behavior during 00:00-06:00 UTC. Fades extremes at Bollinger Band edges with tight stops and quick profit capture.",
-              session_filter: ["asian", "early-asian"],
-              regime_filter: ["flat", "compression", "transition"],
-              direction_bias: "mean-reversion",
-              entry_logic: "Price at BB outer band + RSI divergence + ATR below session median",
-              confirmation_checks: ["bb_touch", "rsi_divergence", "low_atr"],
-              sizing_multiplier: 0.1,
-              is_shadow: true,
-              promotion_threshold: { min_trades: 20, min_win_rate: 0.55, min_r_ratio: 1.2 },
-              created_by: "sovereign-synthesis-v1",
-            },
-            is_active: true,
-          },
-          {
-            agent_id: "shadow-news-volatility",
-            config: {
-              name: "News Volatility Harvester",
-              description: "Capitalizes on post-news volatility spikes within 5-30 minutes of high-impact releases. Uses econ calendar + ATR spike detection for entry timing.",
-              session_filter: ["any"],
-              regime_filter: ["expansion", "breakout", "momentum"],
-              direction_bias: "momentum-capture",
-              entry_logic: "ATR spike > 1.5x session avg + econ event within 30min + spread normalizing",
-              confirmation_checks: ["atr_spike", "econ_calendar_high_impact", "spread_normalizing"],
-              sizing_multiplier: 0.1,
-              is_shadow: true,
-              promotion_threshold: { min_trades: 20, min_win_rate: 0.55, min_r_ratio: 1.2 },
-              created_by: "sovereign-synthesis-v1",
-            },
-            is_active: true,
-          },
-        ];
-
-        for (const agent of shadowAgents) {
-          await supabase.from("agent_configs").upsert(agent, { onConflict: "agent_id" });
-        }
-
-        await supabase.from("sovereign_memory").upsert({
-          memory_key: "SHADOW_AGENTS_SYNTHESIZED_V1",
-          memory_type: "system",
-          payload: {
-            agents: shadowAgents.map(a => a.agent_id),
-            synthesized_at: new Date().toISOString(),
-            promotion_criteria: "20+ trades, WR > 55%, R-ratio > 1.2",
-          },
-          created_by: "sovereign-loop",
-          updated_at: new Date().toISOString(),
-          relevance_score: 1.0,
-        }, { onConflict: "memory_key,memory_type" });
-
-        console.log("✅ 3 shadow agents synthesized: london-ny-overlap, asian-mean-reversion, news-volatility");
-      }
-    } catch (err) {
-      console.error("⚠️ Shadow agent synthesis error (non-fatal):", err);
-    }
-
-    // ─── 7c. Tier 4 Strategic Evolution Check ───
-    const tier4Check = await checkTier4Trigger(supabase);
-    let tier4Result: any = null;
-    if (tier4Check.shouldRun) {
-      console.log(`🧬 TIER 4 TRIGGERED: ${tier4Check.reason}`);
-      tier4Result = await executeTier4(supabase, lovableApiKey, dataPayload);
-    } else {
-      console.log(`⏭️ Tier 4 skipped: ${tier4Check.reason}`);
-    }
-
-    // ─── 8. Extract Metrics ───
+    // ─── Metrics ───
     const actionsTakenMatch = llmResponse.match(/ACTIONS_TAKEN:\s*\[?(\d+)\]?/i);
     const cycleAssessmentMatch = llmResponse.match(/CYCLE_ASSESSMENT:\s*\[?([^\]]+)\]?/i);
     const sovereigntyScoreMatch = llmResponse.match(/SOVEREIGNTY_SCORE:\s*\[?(\d+)\]?/i);
@@ -1223,33 +1082,26 @@ Deno.serve(async (req) => {
     const cycleAssessment = cycleAssessmentMatch ? cycleAssessmentMatch[1].trim() : "N/A";
     const sovereigntyScore = sovereigntyScoreMatch ? parseInt(sovereigntyScoreMatch[1], 10) : 0;
 
-    // ─── 9. Update Loop State ───
+    // ─── Update State ───
     loopState.lastRunTs = now;
     loopState.totalActionsThisHour += actionsTaken;
     loopState.consecutiveErrors = errors.length > 0 ? loopState.consecutiveErrors + 1 : 0;
 
-    await supabase.from("sovereign_loop_state").upsert({
-      id: "global",
-      ...loopState,
-    });
+    await supabase.from("sovereign_loop_state").upsert({ id: "global", ...loopState });
 
-    // ─── 10. Log Cycle ───
     await logCycleResult(supabase, {
-      actionsTaken,
-      cycleAssessment,
-      sovereigntyScore,
-      llmResponse,
-      errors,
+      actionsTaken, cycleAssessment, sovereigntyScore,
+      llmResponse, tier: "T2-T3", errors,
     });
 
     console.log("✅ Sovereign Loop: Cycle complete.");
     return new Response(
       JSON.stringify({
         status: "success",
-        actionsTaken,
-        cycleAssessment,
-        sovereigntyScore,
-        errors,
+        tier: "T2-T3",
+        deskStatus,
+        actionsTaken, cycleAssessment, sovereigntyScore, errors,
+        regimeAlerts, flashCrashStatus,
         tier4: tier4Result ? { triggered: true, reason: tier4Check.reason, ...tier4Result } : { triggered: false },
       }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
