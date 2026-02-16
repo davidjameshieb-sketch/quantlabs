@@ -24,6 +24,9 @@ const MAX_ACTIONS_PER_HOUR = 120;      // Barrage: 120 autonomous actions/hour
 const MAX_CONSECUTIVE_ERRORS = 5;      // Safety: halt after 5 consecutive failures
 const MIN_INTERVAL_MS = 45_000;        // Safety: minimum 45s between runs (prevents double-fire)
 const MAX_ACTIONS_PER_CYCLE = 15;      // Barrage: 15 actions per single cycle
+const TIER4_INTERVAL_MS = 2 * 60 * 60 * 1000; // 2 hours
+const TIER4_WIN_RATE_FLOOR = 0.40;     // <40% WR triggers Tier 4
+const TIER4_CONSEC_LOSS_TRIGGER = 5;   // 5 consecutive losses triggers Tier 4
 
 // ─── AUTONOMOUS SYSTEM PROMPT (HYPER-COMPRESSED — ~1.5K tokens) ───
 const SOVEREIGN_AUTONOMOUS_PROMPT = `SOVEREIGN AUTO. SCAN→DECIDE→ACT q60s.
@@ -274,6 +277,132 @@ async function fetchCarryTradeData(supabase: any): Promise<any> {
     console.error("❌ fetchCarryTradeData error:", err);
     return null;
   }
+}
+
+// ─── Tier 4: Strategic Evolution Prompt (gemini-2.5-pro) ───
+const TIER4_STRATEGIC_PROMPT = `SOVEREIGN TIER-4 STRATEGIC EVOLUTION. You are the architect.
+REVIEW full trade history, DNA performance, gate effectiveness. Your mandate:
+1. MUTATE agent DNA: rewrite entry logic, add/remove indicator checks, adjust weights
+2. SYNTHESIZE new gates (G13+) if edge decay detected
+3. CREATE/PROMOTE shadow agents for underserved sessions
+4. ADJUST evolution params: mae_demotion(0.3-0.8R), consec_loss_thresh(3-7), wr_floor, expectancy_floor
+5. BLACKLIST toxic pair/session combos with <35% WR over 20+ trades
+6. REWRITE indicator neural weights (0.0-2.0x) per pair based on lead/lag
+ACTIONS: mutate_agent_dna, create_gate, remove_gate, adjust_evolution_param, add_blacklist, remove_blacklist, suspend_agent, reinstate_agent, write_memory, modify_directive, adjust_gate_threshold, adjust_position_sizing
+Format:\`\`\`action\n{"type":"...",...}\n\`\`\`
+Output: EVOLUTION_SUMMARY:[text]|MUTATIONS:[n]|GATES_SYNTHESIZED:[n]`;
+
+// ─── Check Tier 4 Trigger Conditions ───
+async function checkTier4Trigger(supabase: any): Promise<{ shouldRun: boolean; reason: string }> {
+  try {
+    const { data: lastRunData } = await supabase
+      .from("sovereign_memory")
+      .select("payload, updated_at")
+      .eq("memory_key", "TIER4_LAST_RUN")
+      .eq("memory_type", "system")
+      .order("updated_at", { ascending: false })
+      .limit(1);
+
+    const lastRunTs = lastRunData?.[0]?.payload?.timestamp
+      ? new Date(lastRunData[0].payload.timestamp).getTime()
+      : 0;
+    const timeSinceLastRun = Date.now() - lastRunTs;
+    const intervalElapsed = timeSinceLastRun >= TIER4_INTERVAL_MS;
+
+    const { data: recentTrades } = await supabase
+      .from("oanda_orders")
+      .select("status, r_pips, closed_at")
+      .not("closed_at", "is", null)
+      .order("closed_at", { ascending: false })
+      .limit(50);
+
+    let performanceBreach = false;
+    let breachReason = "";
+
+    if (recentTrades && recentTrades.length >= 10) {
+      const wins = recentTrades.filter((t: any) => (t.r_pips || 0) > 0).length;
+      const winRate = wins / recentTrades.length;
+
+      if (winRate < TIER4_WIN_RATE_FLOOR) {
+        performanceBreach = true;
+        breachReason = `Win rate ${(winRate * 100).toFixed(1)}% < ${TIER4_WIN_RATE_FLOOR * 100}% floor`;
+      }
+
+      let consecLosses = 0;
+      for (const t of recentTrades) {
+        if ((t.r_pips || 0) <= 0) consecLosses++;
+        else break;
+      }
+      if (consecLosses >= TIER4_CONSEC_LOSS_TRIGGER) {
+        performanceBreach = true;
+        breachReason = `${consecLosses} consecutive losses >= ${TIER4_CONSEC_LOSS_TRIGGER} threshold`;
+      }
+    }
+
+    if (performanceBreach) return { shouldRun: true, reason: `PERFORMANCE_BREACH: ${breachReason}` };
+    if (intervalElapsed) return { shouldRun: true, reason: `SCHEDULED: ${(timeSinceLastRun / 3600_000).toFixed(1)}h since last run` };
+    return { shouldRun: false, reason: "No trigger" };
+  } catch (err) {
+    console.error("❌ checkTier4Trigger error:", err);
+    return { shouldRun: false, reason: `Error: ${err}` };
+  }
+}
+
+// ─── Execute Tier 4 Strategic Evolution ───
+async function executeTier4(supabase: any, lovableApiKey: string, dataPayload: any): Promise<any> {
+  console.log("🧬 TIER 4: Invoking Strategic Evolution (gemini-2.5-pro)...");
+
+  const [agentConfigs, gateBypasses, rollups] = await Promise.all([
+    supabase.from("agent_configs").select("*").eq("is_active", true).then((r: any) => r.data || []),
+    supabase.from("gate_bypasses").select("*").eq("revoked", false).order("created_at", { ascending: false }).limit(20).then((r: any) => r.data || []),
+    supabase.from("oanda_orders_daily_rollup").select("*").order("rollup_date", { ascending: false }).limit(14).then((r: any) => r.data || []),
+  ]);
+
+  const tier4Payload = { ...dataPayload, agentConfigs, activeGateBypasses: gateBypasses, last14DaysRollup: rollups };
+
+  const aiResponse = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${lovableApiKey}` },
+    body: JSON.stringify({
+      model: "google/gemini-2.5-pro",
+      messages: [
+        { role: "system", content: TIER4_STRATEGIC_PROMPT },
+        { role: "user", content: `STRATEGIC REVIEW DATA:\n${JSON.stringify(tier4Payload)}` },
+      ],
+      temperature: 0.5,
+      max_tokens: 2000,
+    }),
+  });
+
+  if (!aiResponse.ok) {
+    const errText = await aiResponse.text();
+    console.error("❌ Tier 4 AI error:", aiResponse.status, errText);
+    return { error: `Tier 4 AI error: ${aiResponse.status}` };
+  }
+
+  const aiData = await aiResponse.json();
+  const llmResponse = aiData.choices[0].message.content;
+  console.log("🧬 TIER 4 Response:", llmResponse);
+
+  const t4Actions = parseActions(llmResponse);
+  console.log(`🧬 TIER 4: ${t4Actions.length} evolution actions parsed`);
+
+  const errors: any[] = [];
+  for (const action of t4Actions.slice(0, 10)) {
+    try { await executeAction(action, supabase); }
+    catch (err) { errors.push({ action, error: String(err) }); }
+  }
+
+  // Persist last run timestamp
+  await supabase.from("sovereign_memory").upsert({
+    memory_key: "TIER4_LAST_RUN",
+    memory_type: "system",
+    payload: { timestamp: new Date().toISOString(), actions: t4Actions.length, errors: errors.length },
+    updated_at: new Date().toISOString(),
+    created_by: "sovereign-loop",
+  }, { onConflict: "memory_key,memory_type" });
+
+  return { llmResponse, actionsExecuted: t4Actions.length, errors };
 }
 
 // ─── Parse Actions from LLM Response ───
@@ -648,6 +777,16 @@ Deno.serve(async (req) => {
       }
     }
 
+    // ─── 7b. Tier 4 Strategic Evolution Check ───
+    const tier4Check = await checkTier4Trigger(supabase);
+    let tier4Result: any = null;
+    if (tier4Check.shouldRun) {
+      console.log(`🧬 TIER 4 TRIGGERED: ${tier4Check.reason}`);
+      tier4Result = await executeTier4(supabase, lovableApiKey, dataPayload);
+    } else {
+      console.log(`⏭️ Tier 4 skipped: ${tier4Check.reason}`);
+    }
+
     // ─── 8. Extract Metrics ───
     const actionsTakenMatch = llmResponse.match(/ACTIONS_TAKEN:\s*\[?(\d+)\]?/i);
     const cycleAssessmentMatch = llmResponse.match(/CYCLE_ASSESSMENT:\s*\[?([^\]]+)\]?/i);
@@ -684,6 +823,7 @@ Deno.serve(async (req) => {
         cycleAssessment,
         sovereigntyScore,
         errors,
+        tier4: tier4Result ? { triggered: true, reason: tier4Check.reason, ...tier4Result } : { triggered: false },
       }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
