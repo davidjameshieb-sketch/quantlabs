@@ -41,9 +41,25 @@ SELF:commit_rule,write_memory,modify_directive,define_macro,execute_macro,db_wri
 NOTE:mutate_agent_dna is TIER-4 EXCLUSIVE. Do NOT emit mutate_agent_dna actions. If DNA mutation needed, flag via write_memory key="TIER4_DNA_REQUEST".
 Format:\`\`\`action\n{"type":"...",...}\n\`\`\``;
 
-// ─── INTEL CACHE DISABLED — All sources fetch fresh every heartbeat ───
-// God Signal Streaming: BIS/IMF REER + Central Bank sentiment on every cycle
-// Credit budget allows full 16-source refresh at 60s intervals
+// ─── TIERED INTEL REFRESH ("The Lungs") ───
+// Tier H (Heartbeat 60s): Live pricing, order books, smartG8, econ calendar, sovereign memory
+// Tier T (Tactical 5min):  Cross-asset pulse, sentiment, stocks, crypto, options, on-chain
+// Tier S (Strategic 30min): COT, macro, BIS/IMF, CB comms, treasury, carry trade, alpha vantage
+// Event-Driven: liquidity_heatmap + lead_lag_scan fire only on vol spike > 150% of 5-bar avg
+const TACTICAL_CACHE_TTL_MS = 5 * 60 * 1000;   // 5 minutes
+const STRATEGIC_CACHE_TTL_MS = 30 * 60 * 1000;  // 30 minutes
+
+let tacticalCache: {
+  timestamp: number;
+  crossAssetRes: any; sentimentRes: any; stocksRes: any;
+  cryptoRes: any; optionsRes: any; onChainRes: any;
+} | null = null;
+
+let strategicCache: {
+  timestamp: number;
+  cotRes: any; macroRes: any; bisImfRes: any; cbCommsRes: any;
+  treasuryRes: any; carryTradeRes: any; alphaVantageRes: any;
+} | null = null;
 
 // ─── Fetch Sovereign Memory ───
 async function fetchSovereignMemory(supabase: any): Promise<any> {
@@ -877,47 +893,57 @@ Deno.serve(async (req) => {
       firedRules: l0Result.firedRules,
     };
 
-    // ─── 4. Fetch Data (with 2-cycle cache for slow sources) ───
-    console.log("📡 Fetching intelligence...");
+    // ─── 4. Fetch Data (Tiered "Lungs" Architecture) ───
+    console.log("📡 Fetching intelligence (tiered refresh)...");
 
-    // All 16 sources fetch fresh every cycle — God Signal Streaming enabled
-    const [
-      smartG8Res,
-      crossAssetRes,
-      cotRes,
-      macroRes,
-      stocksRes,
-      cryptoRes,
-      treasuryRes,
-      sentimentRes,
-      optionsRes,
-      econCalRes,
-      bisImfRes,
-      cbCommsRes,
-      onChainRes,
-      orderBookRes,
-      alphaVantageRes,
-      carryTradeRes,
-      sovereignMemoryRes,
-    ] = await Promise.all([
+    const useTacticalCache = tacticalCache && (now - tacticalCache.timestamp < TACTICAL_CACHE_TTL_MS);
+    const useStrategicCache = strategicCache && (now - strategicCache.timestamp < STRATEGIC_CACHE_TTL_MS);
+
+    const tier = useTacticalCache ? (useStrategicCache ? "H" : "H+S") : (useStrategicCache ? "H+T" : "H+T+S");
+    console.log(`🫁 Lungs tier: ${tier} | tactical=${useTacticalCache ? "cached" : "FRESH"} | strategic=${useStrategicCache ? "cached" : "FRESH"}`);
+
+    // Tier H — Heartbeat (always fresh, 60s): pricing, order books, econ cal, memory
+    const [smartG8Res, orderBookRes, econCalRes, sovereignMemoryRes] = await Promise.all([
       fetchSmartG8Directive(supabase),
-      fetchCrossAssetPulse(supabase),
-      fetchCOTData(supabase),
-      fetchMacroData(supabase),
-      fetchStocksIntel(supabase),
-      fetchCryptoIntel(supabase),
-      fetchTreasuryData(supabase),
-      fetchSentimentData(supabase),
-      fetchOptionsVolData(supabase),
-      fetchEconCalendarData(supabase),
-      fetchBISIMFData(supabase),
-      fetchCBCommsData(supabase),
-      fetchCryptoOnChainData(supabase),
       fetchOrderBook(supabase),
-      fetchAlphaVantageData(supabase),
-      fetchCarryTradeData(supabase),
+      fetchEconCalendarData(supabase),
       fetchSovereignMemory(supabase),
     ]);
+
+    // Tier T — Tactical (5min cache): cross-asset, sentiment, stocks, crypto, options, on-chain
+    let crossAssetRes: any, sentimentRes: any, stocksRes: any, cryptoRes: any, optionsRes: any, onChainRes: any;
+    if (useTacticalCache) {
+      ({ crossAssetRes, sentimentRes, stocksRes, cryptoRes, optionsRes, onChainRes } = tacticalCache!);
+    } else {
+      [crossAssetRes, sentimentRes, stocksRes, cryptoRes, optionsRes, onChainRes] = await Promise.all([
+        fetchCrossAssetPulse(supabase),
+        fetchSentimentData(supabase),
+        fetchStocksIntel(supabase),
+        fetchCryptoIntel(supabase),
+        fetchOptionsVolData(supabase),
+        fetchCryptoOnChainData(supabase),
+      ]);
+      tacticalCache = { timestamp: now, crossAssetRes, sentimentRes, stocksRes, cryptoRes, optionsRes, onChainRes };
+      console.log("📊 Tactical feeds refreshed: Cross-Asset, Sentiment, Stocks, Crypto, Options, On-Chain");
+    }
+
+    // Tier S — Strategic (30min cache, aligns with Tier 4): COT, macro, BIS/IMF REER, CB comms, treasury, carry, AV
+    let cotRes: any, macroRes: any, bisImfRes: any, cbCommsRes: any, treasuryRes: any, carryTradeRes: any, alphaVantageRes: any;
+    if (useStrategicCache) {
+      ({ cotRes, macroRes, bisImfRes, cbCommsRes, treasuryRes, carryTradeRes, alphaVantageRes } = strategicCache!);
+    } else {
+      [cotRes, macroRes, bisImfRes, cbCommsRes, treasuryRes, carryTradeRes, alphaVantageRes] = await Promise.all([
+        fetchCOTData(supabase),
+        fetchMacroData(supabase),
+        fetchBISIMFData(supabase),
+        fetchCBCommsData(supabase),
+        fetchTreasuryData(supabase),
+        fetchCarryTradeData(supabase),
+        fetchAlphaVantageData(supabase),
+      ]);
+      strategicCache = { timestamp: now, cotRes, macroRes, bisImfRes, cbCommsRes, treasuryRes, carryTradeRes, alphaVantageRes };
+      console.log("🔭 Strategic feeds refreshed: COT, Macro, BIS/IMF REER, CB Comms, Treasury, Carry, AlphaVantage");
+    }
 
     const dataPayload = {
       smartG8Directive: smartG8Res,
@@ -988,14 +1014,39 @@ Deno.serve(async (req) => {
       }
     }
 
-    // ─── 7a. Mandatory Proactive Scans: Liquidity Heatmap + Lead-Lag ───
-    console.log("🔍 Running mandatory liquidity_heatmap + lead_lag_scan...");
+    // ─── 7a. Event-Driven Proactive Scans (vol spike or high-impact news) ───
+    // Order book depth is ALWAYS analyzed for PREDATORY_LIMIT placement (free — already fetched)
+    let proactiveScansFired = false;
     try {
-      await Promise.all([
-        executeAction({ type: "liquidity_heatmap", pairs: "all", depth: "full" }, supabase),
-        executeAction({ type: "lead_lag_scan", mode: "full_universe", threshold_pips: 5 }, supabase),
-      ]);
-      console.log("✅ Proactive scans complete");
+      const volSpikeDetected = (() => {
+        try {
+          // Trigger 1: High-impact economic event imminent
+          const g8 = smartG8Res as any;
+          if (g8?.events && Array.isArray(g8.events)) {
+            if (g8.events.some((e: any) => e.impact === "High" || e.impact === "high")) return true;
+          }
+          // Trigger 2: Order book spread asymmetry (proxy for vol spike > 150%)
+          const ob = orderBookRes as any;
+          if (ob?.pairs) {
+            for (const pair of Object.values(ob.pairs) as any[]) {
+              if ((pair as any)?.spread_ratio && (pair as any).spread_ratio > 1.5) return true;
+            }
+          }
+          return false;
+        } catch { return false; }
+      })();
+
+      if (volSpikeDetected) {
+        console.log("🔍 VOL SPIKE detected — triggering liquidity_heatmap + lead_lag_scan...");
+        await Promise.all([
+          executeAction({ type: "liquidity_heatmap", pairs: "all", depth: "full" }, supabase),
+          executeAction({ type: "lead_lag_scan", mode: "full_universe", threshold_pips: 5 }, supabase),
+        ]);
+        proactiveScansFired = true;
+        console.log("✅ Event-driven scans fired");
+      } else {
+        console.log("😴 Market calm — using cached order book depth for PREDATORY_LIMIT placement");
+      }
     } catch (err) {
       console.error("⚠️ Proactive scan error (non-fatal):", err);
       errors.push({ action: "proactive_scans", error: String(err) });
