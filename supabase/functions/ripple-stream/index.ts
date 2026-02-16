@@ -28,6 +28,16 @@ const OANDA_API = "https://api-fxtrade.oanda.com/v3";
 const OANDA_STREAM = "https://stream-fxtrade.oanda.com/v3";
 const MAX_STREAM_SECONDS = 110;
 
+// ─── Pair-Adaptive Spread Limits ─────────────────────────
+const MAJOR_PAIRS = ["EUR_USD", "GBP_USD", "USD_JPY", "USD_CHF"];
+const MINOR_PAIRS = ["EUR_GBP", "AUD_USD", "NZD_USD", "USD_CAD"];
+// Everything else = cross (GBP_JPY, EUR_JPY, AUD_JPY, etc.)
+function getMaxSpreadPips(pair: string): number {
+  if (MAJOR_PAIRS.includes(pair)) return 1.5;
+  if (MINOR_PAIRS.includes(pair)) return 2.0;
+  return 2.5; // crosses
+}
+
 // ─── Z-Score Strike Constants ────────────────────────────
 const ZSCORE_WINDOW = 120;          // ticks to build rolling mean/stddev
 const ZSCORE_FIRE_THRESHOLD = 2.0;  // z > 2.0 = statistical divergence (overridden by config)
