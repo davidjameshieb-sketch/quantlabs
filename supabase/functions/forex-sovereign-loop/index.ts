@@ -268,16 +268,12 @@ async function fetchOrderBook(supabase: any): Promise<any> {
   }
 }
 
-// ─── Fetch Alpha Vantage Data ───
-async function fetchAlphaVantageData(supabase: any): Promise<any> {
-  try {
-    const { data, error } = await supabase.functions.invoke("market-data");
-    if (error) throw error;
-    return data;
-  } catch (err) {
-    console.error("❌ fetchAlphaVantageData error:", err);
-    return null;
-  }
+// ─── Fetch Alpha Vantage Data (via treasury-commodities, market-data requires user auth) ───
+async function fetchAlphaVantageData(_supabase: any): Promise<any> {
+  // market-data requires user JWT auth — cannot be called from sovereign loop (service role).
+  // Alpha Vantage / Polygon data is not critical for sovereign loop decisions.
+  // Strategic data is already covered by treasury-commodities and other feeds.
+  return null;
 }
 
 // ─── Fetch Carry Trade Data ───

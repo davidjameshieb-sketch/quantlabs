@@ -171,6 +171,7 @@ async function fetchInstrumentDetails(host: string, accountId: string, apiToken:
 
   const allInst = await getForexInstruments(host, accountId, apiToken);
   const url = `${host}/v3/accounts/${accountId}/instruments?instruments=${allInst.join(",")}`;
+  const data = await oandaGet(url, apiToken);
   if (data?.instruments) {
     const instruments: Record<string, unknown> = {};
     for (const inst of data.instruments) {
