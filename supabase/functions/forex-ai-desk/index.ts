@@ -1719,10 +1719,10 @@ async function executeAction(
           }
         }
 
-        // ─── Spread Gate — block if spread > 1.5 pips ───
-        if (!gateBlocked && spreadPips > 1.5) {
-          console.log(`[VACUUM-v3] 🛡 SPREAD GATE: ${pair} spread ${spreadPips.toFixed(1)}p > 1.5p — blocked`);
-          results.push({ action: "execute_liquidity_vacuum", success: false, detail: `Spread gate: ${pair} spread ${spreadPips.toFixed(1)}p too wide` });
+        // ─── Spread Gate — block if spread > 4 pips hard max ───
+        if (!gateBlocked && spreadPips > 4.0) {
+          console.log(`[VACUUM-v3] 🛡 SPREAD GATE: ${pair} spread ${spreadPips.toFixed(1)}p > 4.0p hard max — blocked`);
+          results.push({ action: "execute_liquidity_vacuum", success: false, detail: `Spread gate: ${pair} spread ${spreadPips.toFixed(1)}p > 4.0p hard max` });
           gateBlocked = true;
         }
 
