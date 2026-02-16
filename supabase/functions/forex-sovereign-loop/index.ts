@@ -24,7 +24,7 @@ const MAX_ACTIONS_PER_HOUR = 120;      // Barrage: 120 autonomous actions/hour
 const MAX_CONSECUTIVE_ERRORS = 5;      // Safety: halt after 5 consecutive failures
 const MIN_INTERVAL_MS = 45_000;        // Safety: minimum 45s between runs (prevents double-fire)
 const MAX_ACTIONS_PER_CYCLE = 15;      // Barrage: 15 actions per single cycle
-const TIER4_INTERVAL_MS = 2 * 60 * 60 * 1000; // 2 hours
+const TIER4_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
 const TIER4_WIN_RATE_FLOOR = 0.40;     // <40% WR triggers Tier 4
 const TIER4_CONSEC_LOSS_TRIGGER = 5;   // 5 consecutive losses triggers Tier 4
 
