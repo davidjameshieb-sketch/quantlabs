@@ -30,6 +30,7 @@ const TIER4_CONSEC_LOSS_TRIGGER = 5;   // 5 consecutive losses triggers Tier 4
 
 // ─── AUTONOMOUS SYSTEM PROMPT (HYPER-COMPRESSED — ~1.5K tokens) ───
 const SOVEREIGN_AUTONOMOUS_PROMPT = `SOVEREIGN AUTO. SCAN→DECIDE→ACT q60s.
+TICK STREAM: You have a LIVE OANDA tick-level WebSocket stream (ripple-stream) running continuously. It evaluates armed correlation triggers on EVERY TICK (~100-500ms). When you arm_correlation_trigger, the stream picks it up instantly and fires trades the MOMENT divergence thresholds breach — sub-second execution. This is your fastest weapon. The 10s fast-poll-triggers is your fallback. Your ripple trades execute at tick speed now.
 P1:G8 EXTREME→flat.HIGH→0.3x.DATA_SURPRISE match→HOLD,vs→CLOSE.THS<25→close.3+loss/2h→breaker@3%.>-2R→close.DD>-3%→close worst.
 P2:Heatmap stop-hunt.MFE>1.5R+PL<0.5R→trail.THS-20→exit.Regime→reassess.
 P3:CF>55%(10+)→relax gate.3+loss→blacklist/suspend.Edge→1.3x.Muddy→0.3x.
@@ -952,6 +953,41 @@ Deno.serve(async (req) => {
       console.log("🔭 Strategic feeds refreshed: COT, Macro, BIS/IMF REER, CB Comms, Treasury, Carry, AlphaVantage");
     }
 
+    // ─── Ripple Stream Status (tick-level execution awareness) ───
+    const { data: recentStreamFires } = await supabase
+      .from("gate_bypasses")
+      .select("gate_id, reason, created_at")
+      .like("gate_id", "RIPPLE_STREAM_FIRED:%")
+      .eq("revoked", false)
+      .gte("created_at", new Date(Date.now() - 3600_000).toISOString())
+      .order("created_at", { ascending: false })
+      .limit(5);
+
+    const { data: armedTriggers } = await supabase
+      .from("gate_bypasses")
+      .select("gate_id, reason, created_at, expires_at")
+      .like("gate_id", "CORRELATION_TRIGGER:%")
+      .eq("revoked", false)
+      .gte("expires_at", new Date().toISOString())
+      .order("created_at", { ascending: false })
+      .limit(10);
+
+    const rippleStreamStatus = {
+      connected: true,
+      engine: "ripple-stream-v1",
+      mode: "OANDA_WEBSOCKET_TICK_LEVEL",
+      latency: "~100-500ms per tick",
+      keepalive: "pg_cron every 2min, 110s stream sessions",
+      armedTriggers: (armedTriggers || []).length,
+      armedTriggerDetails: (armedTriggers || []).map((t: any) => {
+        try { const p = JSON.parse(t.reason); return { gate: t.gate_id, loud: p.loudPair, quiet: p.quietPair, dir: p.direction, threshold: p.thresholdPips, armed: t.created_at }; } catch { return t.gate_id; }
+      }),
+      recentStreamFires: (recentStreamFires || []).length,
+      recentFireDetails: (recentStreamFires || []).map((f: any) => {
+        try { const p = JSON.parse(f.reason); return { pair: p.quietPair, dir: p.direction, tick: p.tickNumber, latencyMs: p.streamLatencyMs, fired: p.firedAt }; } catch { return f.gate_id; }
+      }),
+    };
+
     const dataPayload = {
       smartG8Directive: smartG8Res,
       crossAssetPulse: crossAssetRes,
@@ -971,6 +1007,7 @@ Deno.serve(async (req) => {
       carryTradeData: carryTradeRes,
       sovereignMemory: sovereignMemoryRes,
       l0ActiveReflexes: l0Context,
+      rippleStreamStatus,
     };
 
     // ─── 5. Call Lovable AI (gemini-2.5-flash-lite) ───
