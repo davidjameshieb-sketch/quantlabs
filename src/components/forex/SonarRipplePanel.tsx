@@ -25,6 +25,7 @@ interface RippleTrigger {
   reason: string;
   slPips: number;
   tpPips: number;
+  maxLagMinutes: number;
 }
 
 interface StreamFire {
@@ -390,6 +391,21 @@ function StreamEngineStatus({ recentFires }: { recentFires: StreamFire[] }) {
   );
 }
 
+// ─── Gate Condition Row ──────────────────────────────────
+
+function GateRow({ label, description, status }: { label: string; description: string; status: 'waiting' | 'pass' | 'unknown' }) {
+  return (
+    <div className="flex items-center gap-2">
+      <div className={cn(
+        "w-1.5 h-1.5 rounded-full shrink-0",
+        status === 'pass' ? "bg-emerald-400" : status === 'waiting' ? "bg-amber-400 animate-pulse" : "bg-muted-foreground/30"
+      )} />
+      <span className="text-[8px] font-mono font-bold text-muted-foreground/70 w-6 shrink-0">{label}</span>
+      <span className="text-[8px] text-muted-foreground/60 truncate">{description}</span>
+    </div>
+  );
+}
+
 // ─── Enhanced Trigger Card ───────────────────────────────
 
 function TriggerCard({ trigger, index }: { trigger: RippleTrigger; index: number }) {
@@ -400,7 +416,18 @@ function TriggerCard({ trigger, index }: { trigger: RippleTrigger; index: number
     return `${Math.floor(mins / 60)}h ${mins % 60}m`;
   }, [trigger.armedAt]);
 
+  const timeRemaining = useMemo(() => {
+    const ms = Date.now() - new Date(trigger.armedAt).getTime();
+    const maxMs = (trigger.maxLagMinutes || 5) * 60000;
+    const remaining = maxMs - ms;
+    if (remaining <= 0) return 'EXPIRED';
+    const mins = Math.floor(remaining / 60000);
+    const secs = Math.floor((remaining % 60000) / 1000);
+    return `${mins}m ${secs}s`;
+  }, [trigger.armedAt, trigger.maxLagMinutes]);
+
   const isLong = trigger.direction === 'long';
+  const maxSpread = (trigger.thresholdPips * 0.4).toFixed(1);
 
   return (
     <motion.div
@@ -434,7 +461,13 @@ function TriggerCard({ trigger, index }: { trigger: RippleTrigger; index: number
             {trigger.direction.toUpperCase()}
           </Badge>
         </div>
-        <span className="text-[9px] text-muted-foreground font-mono">{timeSinceArmed}</span>
+        <div className="flex items-center gap-1.5">
+          <Clock className="w-3 h-3 text-muted-foreground/50" />
+          <span className={cn(
+            "text-[8px] font-mono",
+            timeRemaining === 'EXPIRED' ? "text-red-400" : "text-amber-400/80"
+          )}>{timeRemaining}</span>
+        </div>
       </div>
 
       {/* Threshold progress bar */}
@@ -452,7 +485,6 @@ function TriggerCard({ trigger, index }: { trigger: RippleTrigger; index: number
             animate={{ width: '65%' }}
             transition={{ duration: 1.8, ease: 'easeOut', delay: index * 0.1 }}
           />
-          {/* Shimmer effect */}
           <motion.div
             className="absolute inset-0 bg-gradient-to-r from-transparent via-white/10 to-transparent"
             animate={{ x: ['-100%', '200%'] }}
@@ -465,6 +497,16 @@ function TriggerCard({ trigger, index }: { trigger: RippleTrigger; index: number
         )}>{trigger.thresholdPips}p</span>
       </div>
 
+      {/* 5-Gate Conditions — what we're waiting for */}
+      <div className="pl-2 py-1.5 space-y-1 border-t border-border/15 border-b border-b-border/15">
+        <span className="text-[7px] font-bold uppercase tracking-widest text-muted-foreground/50 mb-1 block">Execution Gates — Evaluated Every Tick</span>
+        <GateRow label="G1" description={`${trigger.loudPair.replace('_','/')} must move ≥ ${trigger.thresholdPips}p from ${trigger.loudBaseline?.toFixed(4) || '—'}`} status="waiting" />
+        <GateRow label="G2" description={`Move must be ${trigger.direction.toUpperCase()} (≥ 50% directional)`} status="waiting" />
+        <GateRow label="G3" description={`${trigger.quietPair.replace('_','/')} spread must be < ${maxSpread}p`} status="waiting" />
+        <GateRow label="G4" description={`${trigger.quietPair.replace('_','/')} must be still (< 30% of loud move)`} status="waiting" />
+        <GateRow label="G5" description={`Must fire within ${trigger.maxLagMinutes || 5}m of arming (${timeSinceArmed})`} status={timeRemaining === 'EXPIRED' ? 'pass' : 'waiting'} />
+      </div>
+
       {/* Trade params */}
       <div className="flex items-center gap-4 pl-2 text-[9px]">
         <span className="text-muted-foreground">
@@ -475,6 +517,9 @@ function TriggerCard({ trigger, index }: { trigger: RippleTrigger; index: number
         </span>
         <span className="text-muted-foreground">
           TP: <span className="text-emerald-400 font-mono font-bold">{trigger.tpPips}p</span>
+        </span>
+        <span className="text-muted-foreground">
+          Baseline: <span className="text-foreground font-mono">{trigger.loudBaseline?.toFixed(4) || '—'} / {trigger.quietBaseline?.toFixed(4) || '—'}</span>
         </span>
       </div>
 
@@ -520,6 +565,7 @@ export function SonarRipplePanel({ openPositions }: SonarRipplePanelProps) {
               reason: p.reason || '',
               slPips: p.slPips || 12,
               tpPips: p.tpPips || 25,
+              maxLagMinutes: p.maxLagMinutes || 5,
             };
           } catch { return null; }
         }).filter(Boolean) as RippleTrigger[];
