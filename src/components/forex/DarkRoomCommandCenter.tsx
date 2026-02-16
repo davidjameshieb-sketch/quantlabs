@@ -371,16 +371,23 @@ function SystemHealthPanel() {
 
 // ─── Trade Execution Panel ───────────────────────────────
 
-function TradeExecutionPanel({ account, metrics, analytics }: {
+function TradeExecutionPanel({ account, metrics, analytics, brokerOpenTradeIds }: {
   account: OandaAccountSummary | null;
   metrics: RealExecutionMetrics | null;
   analytics: TradeAnalyticsResult;
+  brokerOpenTradeIds?: string[];
 }) {
   const openPositions = useMemo(() => {
     if (!metrics?.recentOrders) return [];
-    return metrics.recentOrders.filter(o => o.status === 'filled' && o.entry_price != null && !o.exit_price && o.oanda_trade_id)
-      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-  }, [metrics]);
+    return metrics.recentOrders.filter(o => {
+      if (o.status !== 'filled' || o.entry_price == null || o.exit_price || !o.oanda_trade_id) return false;
+      // If we have broker open trade IDs, only show trades confirmed open on broker
+      if (brokerOpenTradeIds && brokerOpenTradeIds.length > 0) {
+        return brokerOpenTradeIds.includes(o.oanda_trade_id);
+      }
+      return true;
+    }).sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+  }, [metrics, brokerOpenTradeIds]);
 
   const closedTrades = useMemo(() => {
     if (!metrics?.recentOrders) return [];
@@ -541,9 +548,10 @@ interface DarkRoomProps {
   executionMetrics: RealExecutionMetrics | null;
   tradeAnalytics: TradeAnalyticsResult;
   connected: boolean | null;
+  brokerOpenTradeIds?: string[];
 }
 
-export function DarkRoomCommandCenter({ account, executionMetrics, tradeAnalytics, connected }: DarkRoomProps) {
+export function DarkRoomCommandCenter({ account, executionMetrics, tradeAnalytics, connected, brokerOpenTradeIds }: DarkRoomProps) {
   // Fetch posture from gate_bypasses
   const [posture, setPosture] = useState({ mode: 'DARK-ROOM', sizing: '0.1x', execution: 'MARKET' });
 
@@ -610,7 +618,7 @@ export function DarkRoomCommandCenter({ account, executionMetrics, tradeAnalytic
           <LeadLagRadar />
           <SystemHealthPanel />
         </div>
-        <TradeExecutionPanel account={account} metrics={executionMetrics} analytics={tradeAnalytics} />
+        <TradeExecutionPanel account={account} metrics={executionMetrics} analytics={tradeAnalytics} brokerOpenTradeIds={brokerOpenTradeIds} />
       </div>
     </div>
   );

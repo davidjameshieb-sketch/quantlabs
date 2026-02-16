@@ -1,7 +1,7 @@
 // Forex Dashboard — Dark-Room Command Center
 // Single-screen unified view with AI Floor Manager drawer
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { motion } from 'framer-motion';
 import { Globe, TrendingUp, Mic, MessageSquare } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -27,6 +27,7 @@ const ForexDashboard = () => {
   const [livePricesReady, setLivePricesReady] = useState(hasLivePrices());
 
   const { connected, account, openTrades, fetchAccountSummary } = useOandaExecution();
+  const brokerOpenTradeIds = useMemo(() => openTrades.map(t => t.id), [openTrades]);
   const { metrics: executionMetrics } = useOandaPerformance();
   const tradeAnalytics = useTradeAnalytics(executionMetrics);
   useRealtimeOrders({
@@ -122,6 +123,7 @@ const ForexDashboard = () => {
               executionMetrics={executionMetrics}
               tradeAnalytics={tradeAnalytics}
               connected={connected}
+              brokerOpenTradeIds={brokerOpenTradeIds}
             />
           </TabsContent>
 
