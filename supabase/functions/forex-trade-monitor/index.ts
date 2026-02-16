@@ -1227,20 +1227,22 @@ Deno.serve(async (req) => {
                   "GET", undefined, env
                 );
                 // If order doesn't exist, it was likely filled or cancelled
-                // Mark as expired to clean up
-                await supabase.from("oanda_orders").update({
-                  status: "expired",
+                // Mark as cancelled to clean up
+                const { error: upErr1 } = await supabase.from("oanda_orders").update({
+                  status: "cancelled",
                   error_message: "OANDA order not found — likely expired or cancelled",
                   closed_at: new Date().toISOString(),
                 }).eq("id", po.id);
+                if (upErr1) console.error(`[PENDING-RECON] DB update failed for ${po.id}:`, upErr1.message);
                 pendingReconciled++;
-                console.log(`[PENDING-RECON] ${po.currency_pair}: Order ${po.oanda_order_id} not found — marked expired`);
+                console.log(`[PENDING-RECON] ${po.currency_pair}: Order ${po.oanda_order_id} not found — marked cancelled`);
               } catch {
-                await supabase.from("oanda_orders").update({
-                  status: "expired",
+                const { error: upErr2 } = await supabase.from("oanda_orders").update({
+                  status: "cancelled",
                   error_message: "OANDA order not found",
                   closed_at: new Date().toISOString(),
                 }).eq("id", po.id);
+                if (upErr2) console.error(`[PENDING-RECON] DB update failed for ${po.id}:`, upErr2.message);
                 pendingReconciled++;
               }
               continue;
@@ -1288,11 +1290,12 @@ Deno.serve(async (req) => {
 
             } else if (state === "CANCELLED") {
               const cancelReason = order.cancelledTime ? `Cancelled at ${order.cancelledTime}` : "Cancelled by broker";
-              await supabase.from("oanda_orders").update({
-                status: "expired",
+              const { error: upErr3 } = await supabase.from("oanda_orders").update({
+                status: "cancelled",
                 error_message: `LIMIT cancelled: ${order.cancellingTransactionID || cancelReason}`,
                 closed_at: order.cancelledTime || new Date().toISOString(),
               }).eq("id", po.id);
+              if (upErr3) console.error(`[PENDING-RECON] DB update failed for ${po.id}:`, upErr3.message);
               pendingReconciled++;
               console.log(`[PENDING-RECON] ${po.currency_pair}: LIMIT order CANCELLED`);
 
@@ -1307,11 +1310,12 @@ Deno.serve(async (req) => {
                     "PUT", undefined, env
                   );
                 } catch { /* may already be cancelled */ }
-                await supabase.from("oanda_orders").update({
-                  status: "expired",
+                const { error: upErr4 } = await supabase.from("oanda_orders").update({
+                  status: "cancelled",
                   error_message: "LIMIT order GTD expired",
                   closed_at: new Date().toISOString(),
                 }).eq("id", po.id);
+                if (upErr4) console.error(`[PENDING-RECON] DB update failed for ${po.id}:`, upErr4.message);
                 pendingReconciled++;
                 console.log(`[PENDING-RECON] ${po.currency_pair}: LIMIT order GTD expired — cancelled`);
               }
@@ -1321,11 +1325,12 @@ Deno.serve(async (req) => {
             console.warn(`[PENDING-RECON] Error reconciling ${po.currency_pair} order ${po.oanda_order_id}:`, (poErr as Error).message);
             // If we get a 404, the order is gone
             if ((poErr as Error).message?.includes("404") || (poErr as Error).message?.includes("not found")) {
-              await supabase.from("oanda_orders").update({
-                status: "expired",
+              const { error: upErr5 } = await supabase.from("oanda_orders").update({
+                status: "cancelled",
                 error_message: "OANDA order not found (404)",
                 closed_at: new Date().toISOString(),
               }).eq("id", po.id);
+              if (upErr5) console.error(`[PENDING-RECON] DB update failed for ${po.id}:`, upErr5.message);
               pendingReconciled++;
             }
           }
