@@ -221,8 +221,33 @@ Deno.serve(async (req) => {
     const zScoreFires: string[] = [];
     const velocityFires: string[] = [];
     const snapbackFires: string[] = [];
+    const autonomousExits: string[] = [];
     const startTime = Date.now();
     let tickCount = 0;
+    let lastExitScanTs = 0;
+    const EXIT_SCAN_INTERVAL_MS = 2000; // Scan open trades every 2s on tick data
+
+    // ═══ IMPROVEMENT #2: AUTONOMOUS EXIT AUTHORITY ═══
+    // L0 soldiers now manage exits at tick speed instead of waiting
+    // for the 60s trade-monitor cycle. Three exit triggers:
+    // 1. Profit-Capture Retrace: MFE >= 0.8R but price retracing → lock profit
+    // 2. THS-Decay: Trade health collapsed while in profit → exit
+    // 3. Time-Decay: Trade stale > 15 bars with no MFE progress → exit
+    
+    // Load open trades for exit monitoring
+    const { data: openTradesForExit } = await supabase
+      .from("oanda_orders")
+      .select("id, oanda_trade_id, currency_pair, direction, entry_price, r_pips, mfe_price, mae_price, trade_health_score, bars_since_entry, created_at, environment")
+      .eq("status", "filled")
+      .is("exit_price", null)
+      .not("oanda_trade_id", "is", null)
+      .not("entry_price", "is", null);
+
+    const exitTradeMap = new Map<string, any>();
+    for (const t of (openTradesForExit || [])) {
+      exitTradeMap.set(t.currency_pair, t);
+    }
+    console.log(`[STRIKE-v3] 🎯 Exit authority: monitoring ${exitTradeMap.size} open trades at tick speed`);
 
     // Init z-score trackers per correlation group
     for (const g of correlationGroups) {
