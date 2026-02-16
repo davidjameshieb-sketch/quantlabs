@@ -585,8 +585,8 @@ export function DarkRoomCommandCenter({ account, executionMetrics, tradeAnalytic
 
         {/* Connection */}
         <div className="flex items-center gap-1.5">
-          {connected === true ? <Wifi className="w-3.5 h-3.5 text-emerald-400" /> : connected === false ? <WifiOff className="w-3.5 h-3.5 text-red-400" /> : <Clock className="w-3.5 h-3.5 text-amber-400 animate-pulse" />}
-          <span className="text-[10px] text-muted-foreground">{connected === true ? 'OANDA Live' : connected === false ? 'Disconnected' : 'Connecting…'}</span>
+          {connected === true ? <Wifi className="w-3.5 h-3.5 text-emerald-400" /> : <Clock className="w-3.5 h-3.5 text-amber-400 animate-pulse" />}
+          <span className="text-[10px] text-muted-foreground">{connected === true ? 'OANDA Live' : 'Connecting…'}</span>
         </div>
         <div className="w-px h-5 bg-border/40" />
 
