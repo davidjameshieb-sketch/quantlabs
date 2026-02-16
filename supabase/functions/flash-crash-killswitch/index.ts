@@ -50,6 +50,69 @@ Deno.serve(async (req) => {
     const pairAlerts: any[] = [];
     const now = new Date();
 
+    // ─── #7: Hardware-Level NAV Circuit Breaker ───
+    // Non-AI deterministic check: if NAV drops >3% in <60s, kill everything
+    let navBreaker = false;
+    try {
+      const oandaAccount = Deno.env.get("OANDA_LIVE_ACCOUNT_ID");
+      if (oandaAccount && oandaToken) {
+        const summaryRes = await fetch(
+          `${baseUrl}/v3/accounts/${oandaAccount}/summary`,
+          { headers: { Authorization: `Bearer ${oandaToken}` } }
+        );
+        if (summaryRes.ok) {
+          const summaryData = await summaryRes.json();
+          const nav = parseFloat(summaryData.account?.NAV || "0");
+          const balance = parseFloat(summaryData.account?.balance || "0");
+          const unrealizedPL = parseFloat(summaryData.account?.unrealizedPL || "0");
+          const drawdownPct = balance > 0 ? (unrealizedPL / balance) * 100 : 0;
+
+          if (drawdownPct <= -3) {
+            navBreaker = true;
+            console.log(`[FLASH-CRASH] ☢️ NAV BREAKER: ${drawdownPct.toFixed(1)}% drawdown (NAV: ${nav.toFixed(2)}, Balance: ${balance.toFixed(2)})`);
+
+            // Check if breaker already active
+            const { data: existingBreaker } = await supabase
+              .from("gate_bypasses")
+              .select("id")
+              .eq("gate_id", "CIRCUIT_BREAKER:nav_hardware_killswitch")
+              .eq("revoked", false)
+              .gte("expires_at", now.toISOString())
+              .limit(1);
+
+            if (!existingBreaker?.length) {
+              await supabase.from("gate_bypasses").insert({
+                gate_id: "CIRCUIT_BREAKER:nav_hardware_killswitch",
+                reason: `HARDWARE NAV BREAKER: ${drawdownPct.toFixed(1)}% drawdown. NAV=${nav.toFixed(2)} Balance=${balance.toFixed(2)}. ALL TRADING HALTED.`,
+                expires_at: new Date(now.getTime() + 4 * 3600_000).toISOString(),
+                pair: null,
+                created_by: "hardware-nav-breaker",
+              });
+
+              // Flatten all positions immediately
+              const tradesRes = await fetch(
+                `${baseUrl}/v3/accounts/${oandaAccount}/openTrades`,
+                { headers: { Authorization: `Bearer ${oandaToken}` } }
+              );
+              if (tradesRes.ok) {
+                const { trades: openTrades = [] } = await tradesRes.json();
+                await Promise.allSettled(openTrades.map((t: any) =>
+                  fetch(`${baseUrl}/v3/accounts/${oandaAccount}/trades/${t.id}/close`, {
+                    method: "PUT",
+                    headers: { Authorization: `Bearer ${oandaToken}`, "Content-Type": "application/json" },
+                    body: JSON.stringify({ units: "ALL" }),
+                  })
+                ));
+                console.log(`[FLASH-CRASH] ☢️ NAV BREAKER: Flattened ${openTrades.length} positions`);
+              }
+            }
+          }
+        }
+      }
+    } catch (navErr) {
+      console.warn(`[FLASH-CRASH] NAV check failed: ${(navErr as Error).message}`);
+    }
+
     // Fetch latest S5 candles for all pairs
     const results = await Promise.all(
       ALL_PAIRS.map(async (pair) => {

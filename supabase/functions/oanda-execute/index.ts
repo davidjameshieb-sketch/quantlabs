@@ -16,7 +16,7 @@ const OANDA_HOSTS = {
 } as const;
 
 interface ExecuteRequest {
-  action: "execute" | "close" | "status" | "account-summary" | "update-orders";
+  action: "execute" | "close" | "status" | "account-summary" | "update-orders" | "barrage";
   signalId?: string;
   currencyPair?: string;
   direction?: "long" | "short";
@@ -27,6 +27,14 @@ interface ExecuteRequest {
   environment?: "practice" | "live";
   stopLossPrice?: number;
   takeProfitPrice?: number;
+  // Barrage execution — atomic multi-pair entry
+  barrageOrders?: Array<{
+    currencyPair: string;
+    direction: "long" | "short";
+    units: number;
+    signalId: string;
+    agentId?: string;
+  }>;
 }
 
 // Convert QuantLabs pair format (EUR/USD) to OANDA format (EUR_USD)
@@ -399,8 +407,95 @@ Deno.serve(async (req) => {
       );
     }
 
+    // ─── #9: Atomic Barrage Execution — simultaneous multi-pair entry ───
+    if (body.action === "barrage") {
+      if (!body.barrageOrders?.length) {
+        return new Response(
+          JSON.stringify({ error: "barrageOrders array required for barrage execution" }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      const barrageTs = Date.now();
+      console.log(`[OANDA] ⚡ BARRAGE: ${body.barrageOrders.length} orders firing atomically`);
+
+      // Insert all pending orders first
+      const pendingInserts = body.barrageOrders.map(o => ({
+        user_id: userId,
+        signal_id: o.signalId,
+        currency_pair: o.currencyPair,
+        direction: o.direction,
+        units: o.units,
+        agent_id: o.agentId || "barrage-engine",
+        environment,
+        status: "submitted",
+      }));
+
+      const { data: insertedOrders, error: batchInsertErr } = await supabase
+        .from("oanda_orders")
+        .insert(pendingInserts)
+        .select();
+
+      if (batchInsertErr) throw batchInsertErr;
+
+      // Fire all OANDA orders simultaneously
+      const results = await Promise.allSettled(
+        body.barrageOrders.map(async (o, idx) => {
+          const orderTs = Date.now();
+          const result = await executeMarketOrder(o.currencyPair, o.units, o.direction, environment);
+          const latency = Date.now() - orderTs;
+
+          const oandaOrderId = result.orderCreateTransaction?.id || result.orderFillTransaction?.orderID || null;
+          const oandaTradeId = result.orderFillTransaction?.tradeOpened?.tradeID || null;
+          const filledPrice = result.orderFillTransaction?.price ? parseFloat(result.orderFillTransaction.price) : null;
+
+          if (insertedOrders?.[idx]) {
+            await supabase.from("oanda_orders").update({
+              status: "filled",
+              oanda_order_id: oandaOrderId,
+              oanda_trade_id: oandaTradeId,
+              entry_price: filledPrice,
+              fill_latency_ms: latency,
+            }).eq("id", insertedOrders[idx].id);
+
+            // Log to execution_analytics (#4)
+            await supabase.from("execution_analytics").insert({
+              currency_pair: o.currencyPair,
+              direction: o.direction,
+              fill_price: filledPrice,
+              fill_latency_ms: latency,
+              agent_id: o.agentId || "barrage-engine",
+              oanda_order_id: oandaOrderId,
+            });
+          }
+
+          return { pair: o.currencyPair, direction: o.direction, oandaTradeId, filledPrice, latency };
+        })
+      );
+
+      const totalLatency = Date.now() - barrageTs;
+      const filled = results.filter(r => r.status === "fulfilled").length;
+      console.log(`[OANDA] ⚡ BARRAGE COMPLETE: ${filled}/${body.barrageOrders.length} filled in ${totalLatency}ms`);
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          action: "barrage",
+          totalOrders: body.barrageOrders.length,
+          filled,
+          totalLatencyMs: totalLatency,
+          results: results.map((r, i) => ({
+            pair: body.barrageOrders![i].currencyPair,
+            status: r.status,
+            ...(r.status === "fulfilled" ? r.value : { error: (r as PromiseRejectedResult).reason?.message }),
+          })),
+        }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
     return new Response(
-      JSON.stringify({ error: "Invalid action. Use: execute, close, status, account-summary, update-orders" }),
+      JSON.stringify({ error: "Invalid action. Use: execute, close, status, account-summary, update-orders, barrage" }),
       { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   } catch (err) {

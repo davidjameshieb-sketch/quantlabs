@@ -289,6 +289,96 @@ async function fetchLivePricing(host: string, accountId: string, apiToken: strin
   return cachedPricing;
 }
 
+// ── #3: Order-Book Imbalance Detection ──
+// Detects >30% shift in order book depth in <1 minute → regime shift catalyst
+let previousOrderBookSnapshots: Record<string, { longPct: number; shortPct: number; ts: number }> = {};
+
+function detectOrderBookImbalance(
+  currentBooks: Record<string, unknown>,
+): Array<{ pair: string; shift: number; direction: string; severity: string }> {
+  const imbalances: Array<{ pair: string; shift: number; direction: string; severity: string }> = [];
+  const now = Date.now();
+
+  for (const [pair, bookData] of Object.entries(currentBooks)) {
+    const book = bookData as any;
+    if (!book?.longClusters?.length && !book?.shortClusters?.length) continue;
+
+    const totalLong = (book.longClusters || []).reduce((s: number, c: any) => s + (c.longPct || 0), 0);
+    const totalShort = (book.shortClusters || []).reduce((s: number, c: any) => s + (c.shortPct || 0), 0);
+
+    const prev = previousOrderBookSnapshots[pair];
+    if (prev && (now - prev.ts) < 120_000) { // within 2 min window
+      const longShift = totalLong > 0 ? Math.abs(totalLong - prev.longPct) / Math.max(prev.longPct, 0.1) * 100 : 0;
+      const shortShift = totalShort > 0 ? Math.abs(totalShort - prev.shortPct) / Math.max(prev.shortPct, 0.1) * 100 : 0;
+      const maxShift = Math.max(longShift, shortShift);
+
+      if (maxShift >= 30) {
+        imbalances.push({
+          pair,
+          shift: Math.round(maxShift),
+          direction: longShift > shortShift ? "LONG_IMBALANCE" : "SHORT_IMBALANCE",
+          severity: maxShift >= 60 ? "EXTREME" : "HIGH",
+        });
+      }
+    }
+
+    previousOrderBookSnapshots[pair] = { longPct: totalLong, shortPct: totalShort, ts: now };
+  }
+
+  return imbalances;
+}
+
+// ── #5: Secondary Price Reference (Multi-Broker Arbitrage) ──
+async function fetchSecondaryPrices(): Promise<Record<string, { mid: number; source: string }>> {
+  const prices: Record<string, { mid: number; source: string }> = {};
+  try {
+    // Use exchangerate.host as free secondary reference
+    const res = await fetch("https://api.exchangerate.host/latest?base=USD&symbols=EUR,GBP,JPY,AUD,CAD,NZD,CHF");
+    if (res.ok) {
+      const data = await res.json();
+      if (data?.rates) {
+        // Convert from USD base to pair format
+        const r = data.rates;
+        if (r.EUR) prices["EUR/USD"] = { mid: 1 / r.EUR, source: "exchangerate.host" };
+        if (r.GBP) prices["GBP/USD"] = { mid: 1 / r.GBP, source: "exchangerate.host" };
+        if (r.JPY) prices["USD/JPY"] = { mid: r.JPY, source: "exchangerate.host" };
+        if (r.AUD) prices["AUD/USD"] = { mid: 1 / r.AUD, source: "exchangerate.host" };
+        if (r.CAD) prices["USD/CAD"] = { mid: r.CAD, source: "exchangerate.host" };
+        if (r.NZD) prices["NZD/USD"] = { mid: 1 / r.NZD, source: "exchangerate.host" };
+        if (r.CHF) prices["USD/CHF"] = { mid: r.CHF, source: "exchangerate.host" };
+      }
+    }
+  } catch (e) {
+    console.warn(`[MARKET-INTEL] Secondary price fetch failed: ${(e as Error).message}`);
+  }
+  return prices;
+}
+
+function detectPriceDeviation(
+  oandaPricing: Record<string, unknown>,
+  secondaryPrices: Record<string, { mid: number; source: string }>,
+): Array<{ pair: string; oandaMid: number; refMid: number; deviationPips: number; source: string }> {
+  const deviations: Array<{ pair: string; oandaMid: number; refMid: number; deviationPips: number; source: string }> = [];
+
+  for (const [pair, refData] of Object.entries(secondaryPrices)) {
+    const oanda = oandaPricing[pair] as any;
+    if (!oanda?.mid) continue;
+    const pipMult = pair.includes("JPY") ? 100 : 10000;
+    const devPips = Math.abs(oanda.mid - refData.mid) * pipMult;
+    if (devPips >= 1.5) {
+      deviations.push({
+        pair,
+        oandaMid: oanda.mid,
+        refMid: refData.mid,
+        deviationPips: Math.round(devPips * 10) / 10,
+        source: refData.source,
+      });
+    }
+  }
+
+  return deviations;
+}
+
 // ── Main Handler ──
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
@@ -342,7 +432,34 @@ Deno.serve(async (req) => {
       );
     }
 
+    // Always fetch secondary prices for arbitrage detection
+    if (fetchAll || sections.includes("pricing") || sections.includes("arbitrage")) {
+      fetches.push(
+        fetchSecondaryPrices().then(d => { results.secondaryPrices = d; })
+      );
+    }
+
     await Promise.allSettled(fetches);
+
+    // Post-processing: detect imbalances and deviations
+    if (results.orderBook) {
+      const imbalances = detectOrderBookImbalance(results.orderBook as Record<string, unknown>);
+      if (imbalances.length > 0) {
+        results.orderBookImbalances = imbalances;
+        console.log(`[MARKET-INTEL] 🔴 ORDER BOOK IMBALANCE: ${imbalances.map(i => `${i.pair} ${i.direction} ${i.shift}%`).join(", ")}`);
+      }
+    }
+
+    if (results.livePricing && results.secondaryPrices) {
+      const deviations = detectPriceDeviation(
+        results.livePricing as Record<string, unknown>,
+        results.secondaryPrices as Record<string, { mid: number; source: string }>,
+      );
+      if (deviations.length > 0) {
+        results.priceDeviations = deviations;
+        console.log(`[MARKET-INTEL] ⚠️ PRICE DEVIATION: ${deviations.map(d => `${d.pair} ${d.deviationPips}p`).join(", ")}`);
+      }
+    }
 
     return new Response(JSON.stringify(results), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
