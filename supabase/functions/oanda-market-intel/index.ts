@@ -60,13 +60,10 @@ function getOandaCreds(env: string) {
   return { apiToken, accountId, host };
 }
 
-// Order book & position book endpoints require PRACTICE credentials on OANDA
-// (live API tokens get 401 on these market-data-only endpoints)
+// Use live credentials for order/position books (practice token was returning 401)
 function getOandaCredsForBooks() {
-  const apiToken = Deno.env.get("OANDA_API_TOKEN"); // practice token
-  const accountId = Deno.env.get("OANDA_ACCOUNT_ID"); // practice account
-  const host = OANDA_HOSTS.practice;
-  return { apiToken, accountId, host };
+  const env = Deno.env.get("OANDA_ENV") || "live";
+  return getOandaCreds(env);
 }
 
 async function oandaGet(url: string, apiToken: string): Promise<any> {
