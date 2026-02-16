@@ -83,6 +83,173 @@ function getTickBufferSnapshot(pair?: string, lastMs = 500): TickBufferEntry[] {
   return tickBuffer.filter(t => t.ts >= cutoff && (!pair || t.pair === pair));
 }
 
+// ─── #2: OFI — Synthetic Order Book via Tick-Rule Classification (Lee-Ready) ───
+// Since OANDA won't give us order book data, we BUILD one from tick direction.
+// Each tick is classified as buyer-initiated or seller-initiated using the tick rule:
+//   - If mid > prev mid → BUY (aggressor lifted the ask)
+//   - If mid < prev mid → SELL (aggressor hit the bid)
+//   - If mid == prev mid → use bid/ask proximity (Lee-Ready extension)
+// Rolling OFI = Σ(buy_volume) - Σ(sell_volume) over N ticks
+// VPIN = |buy - sell| / total → toxicity measure (>0.7 = informed flow, avoid)
+
+const OFI_WINDOW = 200;          // ticks for rolling OFI
+const VPIN_BUCKET_SIZE = 50;     // ticks per VPIN bucket
+const VPIN_BUCKETS = 10;         // number of VPIN buckets (500 ticks lookback)
+const OFI_IMBALANCE_THRESHOLD = 0.35; // |OFI_ratio| > 0.35 = directional conviction
+const VPIN_TOXIC_THRESHOLD = 0.7;     // VPIN > 0.7 = toxic flow, widen stops or skip
+
+interface OfiTick {
+  ts: number;
+  mid: number;
+  bid: number;
+  ask: number;
+  side: 1 | -1;  // 1 = buy, -1 = sell
+  spreadPips: number;
+}
+
+interface OfiTracker {
+  ticks: OfiTick[];
+  vpinBuckets: { buys: number; sells: number }[];
+  currentBucket: { buys: number; sells: number; count: number };
+  lastMid: number;
+  lastClassification: 1 | -1;  // for zero-tick rule
+  // Synthetic price-level book (10-pip buckets)
+  syntheticBook: Map<number, { buys: number; sells: number }>;
+}
+
+const ofiTrackers = new Map<string, OfiTracker>();
+
+function getOrCreateOfi(pair: string): OfiTracker {
+  if (!ofiTrackers.has(pair)) {
+    ofiTrackers.set(pair, {
+      ticks: [],
+      vpinBuckets: [],
+      currentBucket: { buys: 0, sells: 0, count: 0 },
+      lastMid: 0,
+      lastClassification: 1,
+      syntheticBook: new Map(),
+    });
+  }
+  return ofiTrackers.get(pair)!;
+}
+
+// Lee-Ready tick-rule classification
+function classifyTick(
+  mid: number, bid: number, ask: number,
+  prevMid: number, lastClass: 1 | -1
+): 1 | -1 {
+  if (mid > prevMid) return 1;   // uptick → buyer aggressor
+  if (mid < prevMid) return -1;  // downtick → seller aggressor
+  // Zero-tick: use bid/ask proximity (Lee-Ready extension)
+  const midpoint = (bid + ask) / 2;
+  if (mid > midpoint) return 1;
+  if (mid < midpoint) return -1;
+  return lastClass; // continuation
+}
+
+function processOfiTick(
+  pair: string, mid: number, bid: number, ask: number,
+  spreadPips: number, ts: number
+): {
+  ofiRatio: number;       // -1 to +1 (positive = net buying pressure)
+  ofiRaw: number;         // raw net ticks (buy - sell)
+  vpin: number;           // 0 to 1 (>0.7 = toxic)
+  buyPressure: number;    // % of ticks classified as buys
+  sellPressure: number;   // % of ticks classified as sells
+  ticksInWindow: number;
+  bias: "BUY" | "SELL" | "NEUTRAL";
+  syntheticDepth: { price: number; buys: number; sells: number; net: number }[];
+} {
+  const tracker = getOrCreateOfi(pair);
+  
+  // Classify this tick
+  const side = tracker.lastMid > 0
+    ? classifyTick(mid, bid, ask, tracker.lastMid, tracker.lastClassification)
+    : 1;
+  
+  tracker.lastClassification = side;
+  tracker.lastMid = mid;
+  
+  // Add to rolling window
+  const tick: OfiTick = { ts, mid, bid, ask, side, spreadPips };
+  tracker.ticks.push(tick);
+  while (tracker.ticks.length > OFI_WINDOW) tracker.ticks.shift();
+  
+  // VPIN bucket accumulation
+  tracker.currentBucket.count++;
+  if (side === 1) tracker.currentBucket.buys++;
+  else tracker.currentBucket.sells++;
+  
+  if (tracker.currentBucket.count >= VPIN_BUCKET_SIZE) {
+    tracker.vpinBuckets.push({
+      buys: tracker.currentBucket.buys,
+      sells: tracker.currentBucket.sells,
+    });
+    if (tracker.vpinBuckets.length > VPIN_BUCKETS) tracker.vpinBuckets.shift();
+    tracker.currentBucket = { buys: 0, sells: 0, count: 0 };
+  }
+  
+  // Update synthetic book (10-pip buckets)
+  const isJpy = pair.includes("JPY");
+  const bucketSize = isJpy ? 0.1 : 0.001; // ~10 pips
+  const priceLevel = Math.round(mid / bucketSize) * bucketSize;
+  if (!tracker.syntheticBook.has(priceLevel)) {
+    tracker.syntheticBook.set(priceLevel, { buys: 0, sells: 0 });
+  }
+  const level = tracker.syntheticBook.get(priceLevel)!;
+  if (side === 1) level.buys++;
+  else level.sells++;
+  
+  // Prune synthetic book to ±50 levels from current
+  const maxLevels = 50;
+  if (tracker.syntheticBook.size > maxLevels * 2) {
+    const sortedKeys = Array.from(tracker.syntheticBook.keys()).sort((a, b) => a - b);
+    const midIdx = sortedKeys.findIndex(k => k >= priceLevel);
+    const keepFrom = Math.max(0, midIdx - maxLevels);
+    const keepTo = Math.min(sortedKeys.length, midIdx + maxLevels);
+    for (let i = 0; i < sortedKeys.length; i++) {
+      if (i < keepFrom || i >= keepTo) tracker.syntheticBook.delete(sortedKeys[i]);
+    }
+  }
+  
+  // Compute OFI
+  const windowTicks = tracker.ticks;
+  const buys = windowTicks.filter(t => t.side === 1).length;
+  const sells = windowTicks.filter(t => t.side === -1).length;
+  const total = windowTicks.length;
+  const ofiRaw = buys - sells;
+  const ofiRatio = total > 0 ? ofiRaw / total : 0;
+  
+  // Compute VPIN across buckets
+  let vpinSum = 0;
+  let vpinTotal = 0;
+  for (const bucket of tracker.vpinBuckets) {
+    const bTotal = bucket.buys + bucket.sells;
+    if (bTotal > 0) {
+      vpinSum += Math.abs(bucket.buys - bucket.sells) / bTotal;
+      vpinTotal++;
+    }
+  }
+  const vpin = vpinTotal > 0 ? vpinSum / vpinTotal : 0;
+  
+  // Build synthetic depth snapshot (top 10 levels each side)
+  const currentLevels = Array.from(tracker.syntheticBook.entries())
+    .map(([price, data]) => ({ price, buys: data.buys, sells: data.sells, net: data.buys - data.sells }))
+    .sort((a, b) => Math.abs(b.price - mid) - Math.abs(a.price - mid))
+    .slice(0, 20);
+  
+  return {
+    ofiRatio: Math.round(ofiRatio * 1000) / 1000,
+    ofiRaw,
+    vpin: Math.round(vpin * 1000) / 1000,
+    buyPressure: total > 0 ? Math.round((buys / total) * 100) : 50,
+    sellPressure: total > 0 ? Math.round((sells / total) * 100) : 50,
+    ticksInWindow: total,
+    bias: ofiRatio > OFI_IMBALANCE_THRESHOLD ? "BUY" : ofiRatio < -OFI_IMBALANCE_THRESHOLD ? "SELL" : "NEUTRAL",
+    syntheticDepth: currentLevels,
+  };
+}
+
 // Detect HFT front-running: rapid bid/ask oscillations without mid movement
 function detectHftPattern(pair: string): { detected: boolean; pattern: string; confidence: number } {
   const recent = getTickBufferSnapshot(pair, 1000); // last 1s
@@ -547,6 +714,9 @@ Deno.serve(async (req) => {
             recordSpread(instrument, spreadPips); // feed rolling average
             recordTickTimestamp(instrument, tickTs); // feed tick-density tracker
 
+            // ─── OFI: Classify tick & update synthetic order book ───
+            const ofi = processOfiTick(instrument, mid, bid, ask, spreadPips, tickTs);
+
             // Update velocity tracker (used by both Velocity Gating AND Z-Score momentum filter)
             const vt = velocityTrackers.get(instrument);
             if (vt && prevPrice) {
@@ -627,11 +797,27 @@ Deno.serve(async (req) => {
                 const expectedDir: 1 | -1 = tradeDirection === "long" ? 1 : -1;
                 const recentTicks = momentumTracker.ticks.filter(t => t.ts > tickTs - 5000);
                 const alignedTicks = recentTicks.filter(t => t.direction === expectedDir);
-                if (alignedTicks.length < ZSCORE_MOMENTUM_TICKS) continue;
+              if (alignedTicks.length < ZSCORE_MOMENTUM_TICKS) continue;
               }
 
-              // ─── GATE 4: Spread OK (baked into executeOrder) ───
-              // Four gates. Spread → Z-Score → Tick-Density → Momentum. Fire.
+              // ─── GATE 4: VPIN Toxicity Filter (synthetic order book) ───
+              const tradeOfi = processOfiTick(tradePair, prices.get(tradePair)!.mid, prices.get(tradePair)!.bid, prices.get(tradePair)!.ask, prices.get(tradePair)!.spreadPips, tickTs);
+              if (tradeOfi.vpin > VPIN_TOXIC_THRESHOLD) {
+                console.log(`[STRIKE-v3] 🧪 VPIN GATE: ${tradePair} VPIN=${tradeOfi.vpin} > ${VPIN_TOXIC_THRESHOLD} — toxic flow, skip`);
+                continue;
+              }
+
+              // ─── GATE 5: OFI directional alignment ───
+              // If OFI strongly opposes trade direction, skip
+              const ofiOpposed = (tradeDirection === "long" && tradeOfi.bias === "SELL") ||
+                                 (tradeDirection === "short" && tradeOfi.bias === "BUY");
+              if (ofiOpposed && Math.abs(tradeOfi.ofiRatio) > 0.5) {
+                console.log(`[STRIKE-v3] 📊 OFI GATE: ${tradePair} OFI=${tradeOfi.ofiRatio} opposes ${tradeDirection} — skip`);
+                continue;
+              }
+
+              // ─── GATE 6: Spread OK (baked into executeOrder) ───
+              // Six gates. Spread → Z-Score → Tick-Density → Momentum → VPIN → OFI. Fire.
 
               const tradePrice = prices.get(tradePair);
               if (!tradePrice) continue;
@@ -639,7 +825,12 @@ Deno.serve(async (req) => {
               tracker.lastFireTs = tickTs;
               tracker.firedDirection = tradeDirection;
 
-              console.log(`[STRIKE-v3] 🎯 Z-SCORE FIRE: ${tradeDirection.toUpperCase()} ${baseUnits} ${tradePair} | z=${z.toFixed(2)} (threshold ${zScoreThreshold}) | group=${group.name} | tps=${densityCheck.tps.toFixed(1)} | tick #${tickCount}`);
+              // OFI conviction boost: aligned flow increases confidence
+              const ofiAligned = (tradeDirection === "long" && tradeOfi.bias === "BUY") ||
+                                 (tradeDirection === "short" && tradeOfi.bias === "SELL");
+              const ofiConfidenceBoost = ofiAligned ? Math.abs(tradeOfi.ofiRatio) * 0.2 : 0;
+
+              console.log(`[STRIKE-v3] 🎯 Z-SCORE FIRE: ${tradeDirection.toUpperCase()} ${baseUnits} ${tradePair} | z=${z.toFixed(2)} | OFI=${tradeOfi.ofiRatio} VPIN=${tradeOfi.vpin} ${tradeOfi.bias} | group=${group.name} | tps=${densityCheck.tps.toFixed(1)} | tick #${tickCount}`);
 
               const result = await executeOrder(
                 tradePair, tradeDirection, baseUnits,
@@ -651,8 +842,9 @@ Deno.serve(async (req) => {
                   tickNumber: tickCount,
                   ticksPerSecond: densityCheck.tps,
                   streamLatencyMs: Date.now() - startTime,
-                  confidence: Math.min(1, Math.abs(z) / 3),
+                  confidence: Math.min(1, (Math.abs(z) / 3) + ofiConfidenceBoost),
                   engine: "zscore-strike-v3",
+                  ofi: { ratio: tradeOfi.ofiRatio, vpin: tradeOfi.vpin, bias: tradeOfi.bias, buyPct: tradeOfi.buyPressure, sellPct: tradeOfi.sellPressure },
                 },
                 tradePrice,
               );
@@ -817,8 +1009,60 @@ Deno.serve(async (req) => {
       };
     }
 
+    // ─── OFI Session Snapshot: persist synthetic order book to sovereign_memory ───
+    const ofiSnapshot: Record<string, unknown> = {};
+    for (const [pair, tracker] of ofiTrackers.entries()) {
+      const ticks = tracker.ticks;
+      if (ticks.length < 10) continue;
+      const buys = ticks.filter(t => t.side === 1).length;
+      const sells = ticks.filter(t => t.side === -1).length;
+      const total = ticks.length;
+      const ofiRatio = total > 0 ? (buys - sells) / total : 0;
+      
+      // VPIN
+      let vpinSum = 0, vpinCount = 0;
+      for (const b of tracker.vpinBuckets) {
+        const bt = b.buys + b.sells;
+        if (bt > 0) { vpinSum += Math.abs(b.buys - b.sells) / bt; vpinCount++; }
+      }
+      const vpin = vpinCount > 0 ? vpinSum / vpinCount : 0;
+      
+      // Top synthetic book levels
+      const depth = Array.from(tracker.syntheticBook.entries())
+        .map(([price, d]) => ({ price: +price.toFixed(5), buys: d.buys, sells: d.sells, net: d.buys - d.sells }))
+        .sort((a, b) => Math.abs(b.net) - Math.abs(a.net))
+        .slice(0, 10);
+      
+      ofiSnapshot[pair.replace("_", "/")] = {
+        ofiRatio: Math.round(ofiRatio * 1000) / 1000,
+        vpin: Math.round(vpin * 1000) / 1000,
+        buyPct: total > 0 ? Math.round((buys / total) * 100) : 50,
+        sellPct: total > 0 ? Math.round((sells / total) * 100) : 50,
+        bias: ofiRatio > OFI_IMBALANCE_THRESHOLD ? "BUY" : ofiRatio < -OFI_IMBALANCE_THRESHOLD ? "SELL" : "NEUTRAL",
+        ticksAnalyzed: total,
+        syntheticDepth: depth,
+      };
+    }
+
+    // Persist OFI synthetic book for dashboard & sovereign loop
+    if (Object.keys(ofiSnapshot).length > 0) {
+      await supabase.from("sovereign_memory").upsert({
+        memory_type: "ofi_synthetic_book",
+        memory_key: "latest_snapshot",
+        payload: {
+          pairs: ofiSnapshot,
+          pairsCount: Object.keys(ofiSnapshot).length,
+          ticksProcessed: tickCount,
+          streamDurationMs: Date.now() - startTime,
+          timestamp: new Date().toISOString(),
+        },
+        relevance_score: 0.8,
+        created_by: "ripple-stream-ofi",
+      }, { onConflict: "memory_type,memory_key" });
+    }
+
     const totalMs = Date.now() - startTime;
-    console.log(`[STRIKE-v3] 📊 Session: ${totalMs}ms, ${tickCount} ticks | Z-Score: ${zScoreFires.length} | Velocity: ${velocityFires.length} | Snap-Back: ${snapbackFires.length}`);
+    console.log(`[STRIKE-v3] 📊 Session: ${totalMs}ms, ${tickCount} ticks | Z-Score: ${zScoreFires.length} | Velocity: ${velocityFires.length} | Snap-Back: ${snapbackFires.length} | OFI: ${Object.keys(ofiSnapshot).length} pairs tracked`);
 
     return new Response(
       JSON.stringify({
@@ -829,6 +1073,7 @@ Deno.serve(async (req) => {
         zscore: { fired: zScoreFires.length, pairs: zScoreFires, groups: correlationGroups.length, threshold: zScoreThreshold },
         velocity: { fired: velocityFires.length, pairs: velocityFires, monitored: velocityPairs.length },
         snapback: { fired: snapbackFires.length, pairs: snapbackFires, monitored: snapbackPairs.length },
+        ofi: { pairsTracked: Object.keys(ofiSnapshot).length, snapshot: ofiSnapshot },
         slippageAudit: slippageSummary,
         timestamp: new Date().toISOString(),
       }),
