@@ -610,6 +610,16 @@ export function DarkRoomCommandCenter({ account, executionMetrics, tradeAnalytic
         </div>
         <div className="w-px h-5 bg-border/40" />
 
+        {/* Ripple Stream Engine */}
+        <div className="flex items-center gap-1.5">
+          <div className="relative">
+            <div className="w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_6px_rgba(34,197,94,0.5)]" />
+            <div className="absolute inset-0 w-2 h-2 rounded-full bg-emerald-400 animate-ping opacity-30" />
+          </div>
+          <span className="text-[10px] font-mono text-emerald-400/80">Stream Engine</span>
+        </div>
+        <div className="w-px h-5 bg-border/40" />
+
         {/* Key stats inline */}
         <div className="flex items-center gap-4 text-[10px]">
           <span className="text-muted-foreground">Posture: <span className="text-foreground font-bold">{posture.execution}</span></span>
