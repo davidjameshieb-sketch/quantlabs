@@ -21,9 +21,11 @@ const OANDA_STREAM = "https://stream-fxtrade.oanda.com/v3";
 const MAX_STREAM_SECONDS = 110;
 
 // ─── Strategy Constants ──────────────────────────────────
-const VELOCITY_WINDOW_MS = 250;
-const VELOCITY_TICK_THRESHOLD = 5;
-const VELOCITY_COOLDOWN_MS = 2000; // prevent rapid re-fires on same pair
+// Velocity Gating uses tick-count window (not fixed time) to adapt to variable tick rates.
+// We require N consecutive same-direction ticks within a max age ceiling.
+const VELOCITY_TICK_THRESHOLD = 5;       // consecutive same-direction ticks needed
+const VELOCITY_MAX_AGE_MS = 2000;        // oldest tick in window can't exceed this (staleness guard)
+const VELOCITY_COOLDOWN_MS = 3000;       // prevent rapid re-fires on same pair
 const SLIPPAGE_THRESHOLD_PIPS = 0.2;
 const SNAPBACK_VOLUME_WINDOW = 15; // ticks to track sell/buy pressure
 const SNAPBACK_EXHAUSTION_RATIO = 0.7; // 70% of window must be directional then reverse
@@ -494,7 +496,8 @@ Deno.serve(async (req) => {
 
             // ═══════════════════════════════════════════
             // STRATEGY 2: VELOCITY GATING
-            // 5+ ticks in same direction within 250ms = impulse fire
+            // Tick-count window: N consecutive same-direction ticks
+            // adapts to variable tick rates (100ms–500ms+)
             // ═══════════════════════════════════════════
             const vt = velocityTrackers.get(instrument);
             if (vt && prevPrice) {
@@ -503,37 +506,40 @@ Deno.serve(async (req) => {
                 const dir: 1 | -1 = delta > 0 ? 1 : -1;
                 vt.ticks.push({ ts: tickTs, mid, direction: dir });
 
-                // Prune ticks outside window
-                const cutoff = tickTs - VELOCITY_WINDOW_MS;
-                vt.ticks = vt.ticks.filter(t => t.ts >= cutoff);
+                // Keep only the last VELOCITY_TICK_THRESHOLD ticks (sliding count window)
+                while (vt.ticks.length > VELOCITY_TICK_THRESHOLD) {
+                  vt.ticks.shift();
+                }
 
-                // Check velocity spike
+                // Check velocity spike: need exactly N ticks, all same direction, within max age
                 if (vt.ticks.length >= VELOCITY_TICK_THRESHOLD && (tickTs - vt.lastFireTs) > VELOCITY_COOLDOWN_MS) {
-                  // All ticks must be same direction
-                  const firstDir = vt.ticks[0].direction;
-                  const allSameDir = vt.ticks.every(t => t.direction === firstDir);
+                  const windowAge = tickTs - vt.ticks[0].ts;
+                  const allSameDir = vt.ticks.every(t => t.direction === vt.ticks[0].direction);
 
-                  if (allSameDir) {
-                    const direction = firstDir === 1 ? "long" : "short";
+                  // All same direction AND not stale (arrived within ceiling)
+                  if (allSameDir && windowAge <= VELOCITY_MAX_AGE_MS) {
+                    const direction = vt.ticks[0].direction === 1 ? "long" : "short";
                     const movePips = Math.abs(toPips(vt.ticks[vt.ticks.length - 1].mid - vt.ticks[0].mid, instrument));
+                    const avgTickInterval = Math.round(windowAge / (vt.ticks.length - 1));
 
                     // Only fire if movement is meaningful (> 1 pip)
                     if (movePips >= 1.0) {
                       vt.lastFireTs = tickTs;
 
-                      console.log(`[STREAM-v2] ⚡ VELOCITY SPIKE: ${instrument} ${vt.ticks.length} ticks ${direction} in ${VELOCITY_WINDOW_MS}ms | ${movePips.toFixed(1)}p impulse`);
+                      console.log(`[STREAM-v2] ⚡ VELOCITY SPIKE: ${instrument} ${vt.ticks.length} ticks ${direction} in ${windowAge}ms (avg ${avgTickInterval}ms/tick) | ${movePips.toFixed(1)}p impulse`);
 
                       const result = await executeOrder(
                         instrument, direction, velocityUnits,
                         velocitySlPips, velocityTpPips, "velocity-gating",
                         {
                           ticksInWindow: vt.ticks.length,
-                          windowMs: VELOCITY_WINDOW_MS,
+                          windowAgeMs: windowAge,
+                          avgTickIntervalMs: avgTickInterval,
                           movePips,
                           tickNumber: tickCount,
                           streamLatencyMs: Date.now() - startTime,
                           confidence: Math.min(1, movePips / 3),
-                          engine: "velocity-gating-v1",
+                          engine: "velocity-gating-v2",
                         },
                         { mid, spreadPips },
                       );
@@ -546,7 +552,8 @@ Deno.serve(async (req) => {
                           gate_id: `VELOCITY_FIRE:${instrument}`,
                           reason: JSON.stringify({
                             pair: instrument, direction, movePips,
-                            ticksInWindow: vt.ticks.length, windowMs: VELOCITY_WINDOW_MS,
+                            ticksInWindow: vt.ticks.length,
+                            windowAgeMs: windowAge, avgTickIntervalMs: avgTickInterval,
                             fillPrice: result.fillPrice, slippage: result.slippage,
                             tickNumber: tickCount,
                           }),
