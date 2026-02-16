@@ -28,14 +28,29 @@ const OANDA_API = "https://api-fxtrade.oanda.com/v3";
 const OANDA_STREAM = "https://stream-fxtrade.oanda.com/v3";
 const MAX_STREAM_SECONDS = 110;
 
-// ─── Pair-Adaptive Spread Limits ─────────────────────────
-const MAJOR_PAIRS = ["EUR_USD", "GBP_USD", "USD_JPY", "USD_CHF"];
-const MINOR_PAIRS = ["EUR_GBP", "AUD_USD", "NZD_USD", "USD_CAD"];
-// Everything else = cross (GBP_JPY, EUR_JPY, AUD_JPY, etc.)
-function getMaxSpreadPips(pair: string): number {
-  if (MAJOR_PAIRS.includes(pair)) return 1.5;
-  if (MINOR_PAIRS.includes(pair)) return 2.0;
-  return 2.5; // crosses
+// ─── Spread Gate: Block if spread > rolling average OR > 4 pip hard max ───
+const SPREAD_HARD_MAX_PIPS = 4.0;
+const SPREAD_AVG_WINDOW = 50; // ticks to build rolling average
+const spreadHistory = new Map<string, number[]>();
+
+function getAvgSpread(pair: string): number {
+  const hist = spreadHistory.get(pair);
+  if (!hist || hist.length < 10) return SPREAD_HARD_MAX_PIPS; // not enough data — use hard max
+  return hist.reduce((a, b) => a + b, 0) / hist.length;
+}
+
+function recordSpread(pair: string, spreadPips: number) {
+  if (!spreadHistory.has(pair)) spreadHistory.set(pair, []);
+  const hist = spreadHistory.get(pair)!;
+  hist.push(spreadPips);
+  if (hist.length > SPREAD_AVG_WINDOW) hist.shift();
+}
+
+function isSpreadTooWide(pair: string, spreadPips: number): { blocked: boolean; avg: number; reason: string } {
+  const avg = getAvgSpread(pair);
+  if (spreadPips > SPREAD_HARD_MAX_PIPS) return { blocked: true, avg, reason: `hard max (${spreadPips.toFixed(1)}p > ${SPREAD_HARD_MAX_PIPS}p)` };
+  if (spreadPips > avg * 1.5) return { blocked: true, avg, reason: `above avg (${spreadPips.toFixed(1)}p > 1.5x avg ${avg.toFixed(1)}p)` };
+  return { blocked: false, avg, reason: "ok" };
 }
 
 // ─── Z-Score Strike Constants ────────────────────────────
@@ -301,10 +316,10 @@ Deno.serve(async (req) => {
         return { success: false };
       }
 
-      // ─── L0 HARD GATE 1: Spread gate — tightened from 2.5 to 1.5 pips ───
-      const maxSpreadPips = 1.5;
-      if (currentPrice.spreadPips > maxSpreadPips) {
-        console.log(`[STRIKE-v3] 🛡 SPREAD GATE: ${pair} spread ${currentPrice.spreadPips.toFixed(1)}p > ${maxSpreadPips}p — BLOCKED`);
+      // ─── L0 HARD GATE 1: Spread gate — block if > rolling avg or > 4 pip hard max ───
+      const spreadCheck = isSpreadTooWide(pair, currentPrice.spreadPips);
+      if (spreadCheck.blocked) {
+        console.log(`[STRIKE-v3] 🛡 SPREAD GATE: ${pair} ${spreadCheck.reason} (avg=${spreadCheck.avg.toFixed(1)}p) — BLOCKED`);
         return { success: false };
       }
 
@@ -452,6 +467,7 @@ Deno.serve(async (req) => {
             const spreadPips = toPips(spread, instrument);
             const prevPrice = prices.get(instrument);
             prices.set(instrument, { bid, ask, mid, spread, spreadPips });
+            recordSpread(instrument, spreadPips); // feed rolling average
 
             // Update velocity tracker (used by both Velocity Gating AND Z-Score momentum filter)
             const vt = velocityTrackers.get(instrument);
