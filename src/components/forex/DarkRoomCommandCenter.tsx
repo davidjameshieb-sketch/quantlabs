@@ -60,106 +60,143 @@ const Chip = ({ label, value, positive, mono = true }: {
 // ─── God Signal Panel ────────────────────────────────────
 
 function GodSignalPanel() {
-  const [godSignal, setGodSignal] = useState<any>(null);
-  const [godGates, setGodGates] = useState<any[]>([]);
+  const [cotReport, setCotReport] = useState<any>(null);
+  const [nlpSignal, setNlpSignal] = useState<any>(null);
+  const [bigFiveGate, setBigFiveGate] = useState<any>(null);
 
   useEffect(() => {
-    const fetchGod = async () => {
-      // Get latest god signal from sovereign_memory
-      const { data: mem } = await supabase
-        .from('sovereign_memory')
-        .select('payload, updated_at')
-        .eq('memory_key', 'god_signal_latest')
-        .maybeSingle();
-      if (mem) setGodSignal(mem);
-
-      // Get active god-signal related gates
-      const { data: gates } = await supabase
-        .from('gate_bypasses')
-        .select('gate_id, reason, pair, created_at, expires_at')
-        .eq('revoked', false)
-        .gte('expires_at', new Date().toISOString())
-        .or('gate_id.ilike.%GOD%,gate_id.ilike.%INSTITUTIONAL%,gate_id.ilike.%G15%,gate_id.ilike.%G21%,reason.ilike.%cot%')
-        .order('created_at', { ascending: false })
-        .limit(10);
-      if (gates) setGodGates(gates);
+    const fetch = async () => {
+      const [cotRes, nlpRes, gateRes] = await Promise.all([
+        supabase.from('sovereign_memory').select('payload, updated_at').eq('memory_key', 'weekly_cot_report').maybeSingle(),
+        supabase.from('sovereign_memory').select('payload, updated_at').eq('memory_key', 'god_signal_latest').maybeSingle(),
+        supabase.from('gate_bypasses').select('gate_id, reason, created_at')
+          .eq('revoked', false).gte('expires_at', new Date().toISOString())
+          .like('gate_id', 'GOD_SIGNAL:big5_scan%')
+          .order('created_at', { ascending: false }).limit(1),
+      ]);
+      if (cotRes.data) setCotReport(cotRes.data);
+      if (nlpRes.data) setNlpSignal(nlpRes.data);
+      if (gateRes.data?.[0]) setBigFiveGate(gateRes.data[0]);
     };
-    fetchGod();
-    const id = setInterval(fetchGod, 30_000);
+    fetch();
+    const id = setInterval(fetch, 30_000);
     return () => clearInterval(id);
   }, []);
 
-  const payload = godSignal?.payload as Record<string, any> | undefined;
-  const pairs = payload?.pairs || payload?.pairSignals || {};
-  const pairEntries = Object.entries(pairs).slice(0, 8);
-  const updatedAgo = godSignal?.updated_at
-    ? `${Math.round((Date.now() - new Date(godSignal.updated_at).getTime()) / 60000)}m ago`
+  const cotPayload = cotReport?.payload as Record<string, any> | undefined;
+  const nlpPayload = nlpSignal?.payload as Record<string, any> | undefined;
+  const pairSignals = cotPayload?.pairSignals || {};
+  const byCurrency = cotPayload?.byCurrency || {};
+  const tradeIdeas = nlpPayload?.nlpAnalysis?.tradeIdeas || [];
+  const usdBias = nlpPayload?.nlpAnalysis?.usdBias || '—';
+  const usdConf = nlpPayload?.nlpAnalysis?.usdConfidence || 0;
+  const masterDirective = cotPayload?.masterDirective || '';
+  const cotUpdated = cotReport?.updated_at
+    ? `${Math.round((Date.now() - new Date(cotReport.updated_at).getTime()) / 3600000)}h ago`
     : '—';
+  const nlpUpdated = nlpSignal?.updated_at
+    ? `${Math.round((Date.now() - new Date(nlpSignal.updated_at).getTime()) / 60000)}m ago`
+    : '—';
+
+  // Sort pair signals by strength descending
+  const topPairs = Object.entries(pairSignals)
+    .map(([pair, sig]: [string, any]) => ({ pair, ...sig }))
+    .sort((a: any, b: any) => (b.strength || 0) - (a.strength || 0))
+    .slice(0, 10);
 
   return (
     <Section title="God Signal — Institutional Flow" icon={Crown} accent="text-amber-400" className="row-span-2">
       <div className="space-y-3 h-full">
-        {/* Status */}
-        <div className="flex items-center justify-between">
-          <Badge variant="outline" className="text-[9px] font-mono border-amber-500/30 text-amber-400">
-            COT + REER Fusion
-          </Badge>
-          <span className="text-[9px] text-muted-foreground">Updated: {updatedAgo}</span>
+        {/* USD Bias + Big5 */}
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <div className="flex items-center gap-2">
+            <Badge variant="outline" className={cn(
+              "text-[9px] font-mono px-2",
+              usdBias === 'bearish' ? "text-red-400 border-red-500/30" : usdBias === 'bullish' ? "text-emerald-400 border-emerald-500/30" : "border-border/50"
+            )}>
+              USD {usdBias.toUpperCase()} {usdConf}%
+            </Badge>
+            {bigFiveGate && (
+              <Badge variant="outline" className="text-[8px] font-mono border-amber-500/30 text-amber-400">
+                Big 5 Scanned
+              </Badge>
+            )}
+          </div>
+          <div className="flex items-center gap-2 text-[9px] text-muted-foreground">
+            <span>COT: {cotUpdated}</span>
+            <span>NLP: {nlpUpdated}</span>
+          </div>
         </div>
 
-        {/* Per-pair signals */}
-        {pairEntries.length > 0 ? (
-          <ScrollArea className="h-[200px]">
-            <div className="space-y-1.5">
-              {pairEntries.map(([pair, sig]: [string, any]) => {
-                const bias = sig?.bias || sig?.direction || 'neutral';
-                const power = sig?.power || sig?.cotPower || sig?.strength || 0;
-                const isBull = bias.toLowerCase().includes('long') || bias.toLowerCase().includes('bull');
-                const isBear = bias.toLowerCase().includes('short') || bias.toLowerCase().includes('bear');
+        {/* Master Directive */}
+        {masterDirective && (
+          <div className="text-[10px] text-muted-foreground bg-muted/20 rounded-lg px-3 py-2 italic">
+            {masterDirective}
+          </div>
+        )}
+
+        {/* NLP Trade Ideas from Big 5 Desks */}
+        {tradeIdeas.length > 0 && (
+          <div className="space-y-1">
+            <span className="text-[9px] text-amber-400 uppercase tracking-wider font-bold">Desk Trade Ideas</span>
+            {tradeIdeas.map((idea: any, i: number) => (
+              <div key={i} className="flex items-center gap-2 bg-muted/20 rounded-lg px-3 py-2">
+                <span className="font-mono text-xs font-bold text-foreground">{(idea.pair || '').replace('/', '_').replace('_', '/')}</span>
+                <Badge variant="outline" className={cn(
+                  "text-[8px] h-3.5 px-1",
+                  idea.direction === 'long' ? "text-emerald-400 border-emerald-500/30" : "text-red-400 border-red-500/30"
+                )}>
+                  {(idea.direction || '').toUpperCase()}
+                </Badge>
+                <Badge variant="outline" className={cn(
+                  "text-[8px] h-3.5 px-1",
+                  idea.conviction === 'high' ? "text-amber-400 border-amber-500/30" : "border-border/50 text-muted-foreground"
+                )}>
+                  {(idea.conviction || '').toUpperCase()}
+                </Badge>
+                <span className="text-[9px] text-muted-foreground ml-auto truncate max-w-[120px]">{idea.rationale?.split('.')[0]}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* COT Pair Signals */}
+        <div className="space-y-1">
+          <span className="text-[9px] text-muted-foreground uppercase tracking-wider font-bold">COT Pair Positioning</span>
+          <ScrollArea className="h-[180px]">
+            <div className="space-y-1">
+              {topPairs.length > 0 ? topPairs.map((p: any) => {
+                const sig = p.signal || 'NEUTRAL';
+                const strength = p.strength || 0;
+                const isLong = sig.includes('LONG');
+                const isShort = sig.includes('SHORT');
                 return (
-                  <div key={pair} className="flex items-center gap-2 bg-muted/20 rounded-lg px-3 py-2">
-                    <span className="font-mono text-xs font-bold text-foreground w-16">{pair.replace('_', '/')}</span>
+                  <div key={p.pair} className="flex items-center gap-2 bg-muted/20 rounded px-3 py-1.5">
+                    <span className="font-mono text-[11px] font-bold text-foreground w-16">{p.pair.replace('_', '/')}</span>
                     <div className="flex-1 h-1.5 bg-muted rounded-full overflow-hidden">
                       <div
-                        className={cn("h-full rounded-full transition-all", isBull ? "bg-emerald-500" : isBear ? "bg-red-500" : "bg-muted-foreground")}
-                        style={{ width: `${Math.min(Math.abs(power), 100)}%` }}
+                        className={cn("h-full rounded-full transition-all", isLong ? "bg-emerald-500" : isShort ? "bg-red-500" : "bg-muted-foreground/40")}
+                        style={{ width: `${Math.min(strength, 100)}%` }}
                       />
                     </div>
                     <Badge variant="outline" className={cn(
-                      "text-[9px] px-1.5 font-mono min-w-[50px] text-center",
-                      isBull ? "text-emerald-400 border-emerald-500/30" : isBear ? "text-red-400 border-red-500/30" : "text-muted-foreground"
+                      "text-[8px] px-1 font-mono min-w-[60px] text-center",
+                      isLong ? "text-emerald-400 border-emerald-500/30" : isShort ? "text-red-400 border-red-500/30" : "text-muted-foreground border-border/30"
                     )}>
-                      {bias.toUpperCase()}
+                      {sig}
                     </Badge>
-                    <span className="text-[9px] font-mono text-muted-foreground w-8 text-right">{Math.round(power)}%</span>
+                    <span className="text-[9px] font-mono text-muted-foreground w-6 text-right">{strength}%</span>
                   </div>
                 );
-              })}
+              }) : (
+                <div className="text-center py-8 text-muted-foreground text-xs">
+                  <Crown className="w-10 h-10 mx-auto mb-2 opacity-20" />
+                  Awaiting COT data
+                </div>
+              )}
             </div>
           </ScrollArea>
-        ) : (
-          <div className="text-center py-8 text-muted-foreground text-xs">
-            <Crown className="w-10 h-10 mx-auto mb-2 opacity-20" />
-            Awaiting COT/TFF data from God Signal Gateway
-          </div>
-        )}
-
-        {/* Active God-Signal Gates */}
-        {godGates.length > 0 && (
-          <div className="space-y-1 pt-2 border-t border-border/20">
-            <span className="text-[9px] text-muted-foreground uppercase tracking-wider font-bold">Active Gates</span>
-            {godGates.slice(0, 4).map((g, i) => {
-              const label = g.gate_id.split(':').pop() || g.gate_id;
-              return (
-                <div key={i} className="flex items-center gap-2 text-[10px]">
-                  <div className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
-                  <span className="font-mono text-foreground">{label}</span>
-                  {g.pair && <Badge variant="outline" className="text-[8px] h-3.5 px-1">{g.pair}</Badge>}
-                </div>
-              );
-            })}
-          </div>
-        )}
+        </div>
       </div>
     </Section>
   );
