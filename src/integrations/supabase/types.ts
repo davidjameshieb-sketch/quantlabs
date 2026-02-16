@@ -189,6 +189,7 @@ export type Database = {
         Row: {
           agent_id: string | null
           bars_since_entry: number | null
+          baseline_excluded: boolean
           closed_at: string | null
           confidence_score: number | null
           confirmation_tf_used: string | null
@@ -252,6 +253,7 @@ export type Database = {
         Insert: {
           agent_id?: string | null
           bars_since_entry?: number | null
+          baseline_excluded?: boolean
           closed_at?: string | null
           confidence_score?: number | null
           confirmation_tf_used?: string | null
@@ -315,6 +317,7 @@ export type Database = {
         Update: {
           agent_id?: string | null
           bars_since_entry?: number | null
+          baseline_excluded?: boolean
           closed_at?: string | null
           confidence_score?: number | null
           confirmation_tf_used?: string | null

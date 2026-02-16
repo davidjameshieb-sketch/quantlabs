@@ -2802,7 +2802,8 @@ Deno.serve(async (req) => {
       .from("oanda_orders")
       .select("agent_id, direction, entry_price, exit_price, currency_pair, status")
       .eq("user_id", USER_ID)
-      .eq("environment", execConfig.oandaEnv) // CRITICAL: only current env, no practice contamination
+      .eq("environment", execConfig.oandaEnv)
+      .eq("baseline_excluded", false)
       .in("status", ["filled", "closed"])
       .not("agent_id", "is", null)
       .not("entry_price", "is", null)
