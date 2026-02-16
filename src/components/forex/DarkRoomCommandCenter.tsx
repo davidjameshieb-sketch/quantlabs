@@ -378,7 +378,7 @@ function TradeExecutionPanel({ account, metrics, analytics }: {
 }) {
   const openPositions = useMemo(() => {
     if (!metrics?.recentOrders) return [];
-    return metrics.recentOrders.filter(o => o.status === 'filled' && o.entry_price != null && !o.exit_price)
+    return metrics.recentOrders.filter(o => o.status === 'filled' && o.entry_price != null && !o.exit_price && o.oanda_trade_id)
       .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
   }, [metrics]);
 
