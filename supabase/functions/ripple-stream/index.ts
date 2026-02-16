@@ -420,6 +420,17 @@ Deno.serve(async (req) => {
               if (trigger.config.fired) continue;
 
               const { config } = trigger;
+
+              // G5: Freshness — check if trigger expired during stream session
+              const armedMs = new Date(config.armedAt).getTime();
+              const maxLagMs = (config.maxLagMinutes || 5) * 60_000;
+              if (tickTs > armedMs + maxLagMs) {
+                trigger.config.fired = true;
+                await supabase.from("gate_bypasses").update({ revoked: true }).eq("id", trigger.id);
+                console.log(`[STREAM-v2] ⏱ G5 EXPIRED mid-stream: ${config.quietPair} (armed ${Math.round((tickTs - armedMs) / 60_000)}m ago, max ${config.maxLagMinutes}m)`);
+                continue;
+              }
+
               const loudPrice = prices.get(config.loudPair);
               const quietPrice = prices.get(config.quietPair);
               if (!loudPrice || !quietPrice) continue;

@@ -34,6 +34,7 @@ interface StreamFire {
   tickNumber: number;
   streamLatencyMs: number;
   firedAt: string;
+  engine?: string;
 }
 
 interface SonarRipplePanelProps {
@@ -541,9 +542,10 @@ export function SonarRipplePanel({ openPositions }: SonarRipplePanelProps) {
       // Fetch armed triggers
       const { data: triggerData } = await supabase
         .from('gate_bypasses')
-        .select('gate_id, reason, pair, created_at, revoked')
+        .select('gate_id, reason, pair, created_at, expires_at, revoked')
         .ilike('gate_id', 'CORRELATION_TRIGGER%')
         .eq('revoked', false)
+        .gte('expires_at', new Date().toISOString())
         .order('created_at', { ascending: false })
         .limit(10);
 
@@ -576,16 +578,24 @@ export function SonarRipplePanel({ openPositions }: SonarRipplePanelProps) {
       const { data: fireData } = await supabase
         .from('gate_bypasses')
         .select('gate_id, reason, created_at')
-        .ilike('gate_id', 'RIPPLE_STREAM_FIRED:%')
+        .or('gate_id.ilike.RIPPLE_STREAM_FIRED:%,gate_id.ilike.VELOCITY_FIRE:%,gate_id.ilike.SNAPBACK_FIRE:%')
         .gte('created_at', new Date(Date.now() - 3600_000).toISOString())
         .order('created_at', { ascending: false })
-        .limit(5);
+        .limit(10);
 
       if (fireData) {
         const fires: StreamFire[] = fireData.map(f => {
           try {
             const p = JSON.parse(f.reason);
-            return { pair: p.quietPair, direction: p.direction, tickNumber: p.tickNumber, streamLatencyMs: p.streamLatencyMs, firedAt: p.firedAt };
+            const engine = f.gate_id.startsWith('VELOCITY_FIRE') ? 'velocity' : f.gate_id.startsWith('SNAPBACK_FIRE') ? 'snapback' : 'ripple';
+            return {
+              pair: p.quietPair || p.pair || '?',
+              direction: p.direction || '?',
+              tickNumber: p.tickNumber || 0,
+              streamLatencyMs: p.streamLatencyMs || 0,
+              firedAt: p.firedAt || f.created_at,
+              engine,
+            };
           } catch { return null; }
         }).filter(Boolean) as StreamFire[];
         setRecentFires(fires);
@@ -699,6 +709,9 @@ export function SonarRipplePanel({ openPositions }: SonarRipplePanelProps) {
                   {fire.direction.toUpperCase()}
                 </span>
                 <span className="text-foreground">{fire.pair?.replace('_', '/')}</span>
+                <Badge variant="outline" className="text-[7px] px-1 py-0 border-border/30 text-muted-foreground">
+                  {fire.engine === 'velocity' ? '⚡VEL' : fire.engine === 'snapback' ? '🎯SNAP' : '🌊RPL'}
+                </Badge>
                 <span className="text-muted-foreground">tick #{fire.tickNumber}</span>
                 <span className="text-primary">{fire.streamLatencyMs}ms</span>
               </div>
