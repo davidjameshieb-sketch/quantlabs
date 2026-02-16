@@ -1,6 +1,6 @@
 // ═══════════════════════════════════════════════════════════════
 // SOVEREIGN INTELLIGENCE — AUTONOMOUS LOOP ("Ghost in the Machine")
-// Heartbeat: Wakes every 3 minutes via cron, reads the tape, strikes, sleeps.
+// Heartbeat: Wakes every 60s via cron, reads the tape, strikes, sleeps.
 // This is NOT a chatbot. This is a process.
 // ═══════════════════════════════════════════════════════════════
 
