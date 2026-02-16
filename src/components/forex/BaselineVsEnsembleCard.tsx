@@ -113,6 +113,7 @@ export const BaselineVsEnsembleCard = ({ mode = 'compact' }: { mode?: 'compact' 
         .from('oanda_orders')
         .select('agent_id, direction, currency_pair, entry_price, exit_price, status, created_at, session_label, regime_label, environment, variant_id, slippage_pips, spread_at_entry')
         .in('status', ['closed'])
+        .eq('baseline_excluded', false)
         .not('entry_price', 'is', null)
         .not('exit_price', 'is', null)
         .order('created_at', { ascending: false })

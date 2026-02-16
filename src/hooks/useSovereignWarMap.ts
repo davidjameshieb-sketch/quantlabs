@@ -76,7 +76,7 @@ export function useSovereignWarMap(pollMs = 15_000): WarMapState {
       // Parallel fetches
       const [bypassRes, ordersRes] = await Promise.all([
         supabase.from('gate_bypasses').select('*').order('created_at', { ascending: false }).limit(200),
-        supabase.from('oanda_orders').select('agent_id, currency_pair, direction, status, confidence_score, trade_health_score, mae_r, gate_result, gate_reasons, created_at, session_label, regime_label').order('created_at', { ascending: false }).limit(100),
+        supabase.from('oanda_orders').select('agent_id, currency_pair, direction, status, confidence_score, trade_health_score, mae_r, gate_result, gate_reasons, created_at, session_label, regime_label').eq('baseline_excluded', false).order('created_at', { ascending: false }).limit(100),
       ]);
 
       const bypasses = (bypassRes.data || []) as GateBypasses[];

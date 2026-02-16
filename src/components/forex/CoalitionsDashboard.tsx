@@ -135,6 +135,7 @@ export function CoalitionsDashboard() {
         .select('agent_id, direction, currency_pair, entry_price, exit_price, session_label, regime_label, spread_at_entry, environment, created_at')
         .eq('user_id', targetUserId)
         .eq('status', 'closed')
+        .eq('baseline_excluded', false)
         .in('environment', envFilter)
         .not('entry_price', 'is', null)
         .not('exit_price', 'is', null)

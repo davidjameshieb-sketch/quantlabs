@@ -15,6 +15,8 @@ export interface FetchAllOrdersOptions {
   environment?: string;
   /** Page size per query (default: 1000) */
   pageSize?: number;
+  /** Include baseline-excluded trades (default: false) */
+  includeExcluded?: boolean;
 }
 
 export async function fetchAllOrders(opts: FetchAllOrdersOptions) {
@@ -25,6 +27,7 @@ export async function fetchAllOrders(opts: FetchAllOrdersOptions) {
     requirePrices = true,
     environment,
     pageSize = 1000,
+    includeExcluded = false,
   } = opts;
 
   let allRows: any[] = [];
@@ -40,6 +43,9 @@ export async function fetchAllOrders(opts: FetchAllOrdersOptions) {
       .order('created_at', { ascending: true })
       .range(offset, offset + pageSize - 1);
 
+    if (!includeExcluded) {
+      query = query.eq('baseline_excluded', false);
+    }
     if (requirePrices) {
       query = query.not('entry_price', 'is', null).not('exit_price', 'is', null);
     }

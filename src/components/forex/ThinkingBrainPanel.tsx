@@ -396,6 +396,7 @@ export function ThinkingBrainPanel({ executionMetrics }: ThinkingBrainPanelProps
         .select('*')
         .gte('created_at', CUTOFF)
         .eq('environment', 'live')
+        .eq('baseline_excluded', false)
         .order('created_at', { ascending: false })
         .limit(100);
 

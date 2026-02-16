@@ -36,6 +36,7 @@ export function InternalizationAlphaTracker() {
         .not('requested_price', 'is', null)
         .not('entry_price', 'is', null)
         .not('spread_at_entry', 'is', null)
+        .eq('baseline_excluded', false)
         .in('status', ['filled', 'closed'])
         .order('created_at', { ascending: false })
         .limit(200);
