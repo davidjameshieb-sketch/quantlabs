@@ -53,6 +53,38 @@ function isSpreadTooWide(pair: string, spreadPips: number): { blocked: boolean; 
   return { blocked: false, avg, reason: "ok" };
 }
 
+// ─── Tick-Density Tracker (ticksPerSecond per pair) ───
+// High tick density = institutional flow (high conviction)
+// Low tick density = illiquid noise (false signals)
+const TICK_DENSITY_WINDOW_MS = 5000; // 5-second rolling window
+const TICK_DENSITY_MIN_TPS = 2.0; // minimum ticks/sec for Z-Score conviction
+const tickTimestamps = new Map<string, number[]>();
+
+function recordTickTimestamp(pair: string, ts: number) {
+  if (!tickTimestamps.has(pair)) tickTimestamps.set(pair, []);
+  const hist = tickTimestamps.get(pair)!;
+  hist.push(ts);
+  // Prune old timestamps outside the window
+  const cutoff = ts - TICK_DENSITY_WINDOW_MS;
+  while (hist.length > 0 && hist[0] < cutoff) hist.shift();
+}
+
+function getTicksPerSecond(pair: string): number {
+  const hist = tickTimestamps.get(pair);
+  if (!hist || hist.length < 2) return 0;
+  const windowMs = hist[hist.length - 1] - hist[0];
+  if (windowMs < 500) return 0; // not enough time elapsed
+  return (hist.length / windowMs) * 1000; // ticks per second
+}
+
+function isTickDensitySufficient(pair: string): { ok: boolean; tps: number; reason: string } {
+  const tps = getTicksPerSecond(pair);
+  if (tps < TICK_DENSITY_MIN_TPS) {
+    return { ok: false, tps, reason: `low density (${tps.toFixed(1)} tps < ${TICK_DENSITY_MIN_TPS} min)` };
+  }
+  return { ok: true, tps, reason: "ok" };
+}
+
 // ─── Z-Score Strike Constants ────────────────────────────
 const ZSCORE_WINDOW = 120;          // ticks to build rolling mean/stddev
 const ZSCORE_FIRE_THRESHOLD = 2.0;  // z > 2.0 = statistical divergence (overridden by config)
@@ -468,6 +500,7 @@ Deno.serve(async (req) => {
             const prevPrice = prices.get(instrument);
             prices.set(instrument, { bid, ask, mid, spread, spreadPips });
             recordSpread(instrument, spreadPips); // feed rolling average
+            recordTickTimestamp(instrument, tickTs); // feed tick-density tracker
 
             // Update velocity tracker (used by both Velocity Gating AND Z-Score momentum filter)
             const vt = velocityTrackers.get(instrument);
@@ -536,7 +569,14 @@ Deno.serve(async (req) => {
 
               if (blockedPairs.includes(tradePair)) continue;
 
-              // ─── GATE 2: Momentum burst (quiet pair waking up) ───
+              // ─── GATE 2: Tick-Density (institutional flow filter) ───
+              const densityCheck = isTickDensitySufficient(tradePair);
+              if (!densityCheck.ok) {
+                // Low tick density = illiquid noise, skip
+                continue;
+              }
+
+              // ─── GATE 3: Momentum burst (quiet pair waking up) ───
               const momentumTracker = velocityTrackers.get(tradePair);
               if (momentumTracker) {
                 const expectedDir: 1 | -1 = tradeDirection === "long" ? 1 : -1;
@@ -545,8 +585,8 @@ Deno.serve(async (req) => {
                 if (alignedTicks.length < ZSCORE_MOMENTUM_TICKS) continue;
               }
 
-              // ─── GATE 3: Spread OK (baked into executeOrder) ───
-              // That's it. Three gates. Spread → Z-Score → Momentum. Fire.
+              // ─── GATE 4: Spread OK (baked into executeOrder) ───
+              // Four gates. Spread → Z-Score → Tick-Density → Momentum. Fire.
 
               const tradePrice = prices.get(tradePair);
               if (!tradePrice) continue;
@@ -554,7 +594,7 @@ Deno.serve(async (req) => {
               tracker.lastFireTs = tickTs;
               tracker.firedDirection = tradeDirection;
 
-              console.log(`[STRIKE-v3] 🎯 Z-SCORE FIRE: ${tradeDirection.toUpperCase()} ${baseUnits} ${tradePair} | z=${z.toFixed(2)} (threshold ${zScoreThreshold}) | group=${group.name} | tick #${tickCount}`);
+              console.log(`[STRIKE-v3] 🎯 Z-SCORE FIRE: ${tradeDirection.toUpperCase()} ${baseUnits} ${tradePair} | z=${z.toFixed(2)} (threshold ${zScoreThreshold}) | group=${group.name} | tps=${densityCheck.tps.toFixed(1)} | tick #${tickCount}`);
 
               const result = await executeOrder(
                 tradePair, tradeDirection, baseUnits,
@@ -564,6 +604,7 @@ Deno.serve(async (req) => {
                   group: group.name,
                   pairA: group.pairA, pairB: group.pairB,
                   tickNumber: tickCount,
+                  ticksPerSecond: densityCheck.tps,
                   streamLatencyMs: Date.now() - startTime,
                   confidence: Math.min(1, Math.abs(z) / 3),
                   engine: "zscore-strike-v3",
