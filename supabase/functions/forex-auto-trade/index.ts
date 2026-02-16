@@ -243,19 +243,20 @@ function calibrateGatesFromData(
     const wr = stats.wins / total;
     const exp = stats.totalPips / total;
 
-    // G11 ATR stretch calibration
+    // G11 calibration — legacy ATR stretch overrides (kept for telemetry/logging)
+    // G11 now uses price action regime signals (exhaustion + divergence) for decisions, not ATR ratio.
     if (wr < 0.40) {
       overrides.push({
         gateId: "G11", regime, param: "atrStretchThreshold",
         from: 1.8, to: 1.6,
-        reason: `Regime '${regime}' WR=${(wr*100).toFixed(0)}% < 40% — tightening G11 to 1.6x`,
+        reason: `Regime '${regime}' WR=${(wr*100).toFixed(0)}% < 40% — logged for telemetry (G11 uses PA regime now)`,
         ts: Date.now(),
       });
     } else if (wr > 0.60 && exp > 1.0) {
       overrides.push({
         gateId: "G11", regime, param: "atrStretchThreshold",
         from: 1.8, to: 2.0,
-        reason: `Regime '${regime}' WR=${(wr*100).toFixed(0)}%, exp=${exp.toFixed(1)}p — loosening G11 to 2.0x`,
+        reason: `Regime '${regime}' WR=${(wr*100).toFixed(0)}%, exp=${exp.toFixed(1)}p — logged for telemetry (G11 uses PA regime now)`,
         ts: Date.now(),
       });
     }
@@ -3654,7 +3655,9 @@ Deno.serve(async (req) => {
       let breakoutVolAccel = 0;
       let breakoutAccelLevel = "stable";
       let parsedRegimeFamilyHoldBars = 0; // Hoisted for post-indicator choke point
-      let indicatorAtrRatio: number | null = null; // ATR current / ATR(50) — for G11 extension gate
+      let indicatorAtrRatio: number | null = null; // ATR current / ATR(50) — for G11 telemetry (not decisions)
+      let regimeDivergingHoisted = false;  // Hoisted for G11 price action gate
+      let regimeEarlyWarningHoisted = false; // Hoisted for G11 price action gate
 
       if (forceMode) {
         direction = reqBody.direction || "long";
@@ -3734,7 +3737,9 @@ Deno.serve(async (req) => {
                 // ═══ ASYMMETRIC PERSISTENCE: Fast exit fields ═══
                 const divergentBars = indicatorData.regime.divergentBars || 0;
                 const regimeDiverging = indicatorData.regime.regimeDiverging === true;
+                regimeDivergingHoisted = regimeDiverging;
                 const regimeEarlyWarning = indicatorData.regime.regimeEarlyWarning === true;
+                regimeEarlyWarningHoisted = regimeEarlyWarning;
                 // ═══ VOLATILITY ACCELERATION: Anti-false-expansion fields ═══
                 const volAcceleration = indicatorData.regime.volAcceleration || 0;
                 const accelLevel = indicatorData.regime.accelLevel || "stable";
@@ -4203,15 +4208,19 @@ Deno.serve(async (req) => {
         }
       }
 
-      // ═══ G11 EXTENSION EXHAUSTION — DYNAMIC ATR STRETCH GATE ═══
-      // Threshold dynamically calibrated by Autonomous Governance Engine per regime.
-      // Default 1.8x, tightens to 1.6x if regime WR < 40%, loosens to 2.0x if proven.
+      // ═══ G11 EXTENSION EXHAUSTION — PRICE ACTION MICROSTRUCTURE GATE ═══
+      // Replaced ATR ratio threshold with regime-based exhaustion detection.
+      // The regime engine already detects exhaustion via price progress stalling,
+      // ROC declining, and efficiency declining — pure price action signals.
+      // ATR ratio is logged for telemetry but NOT used for blocking decisions.
       const effectiveG11Threshold = getEffectiveG11Threshold(indicatorRegime !== "unknown" ? indicatorRegime : regime);
-      if (!forceMode && indicatorAtrRatio !== null && indicatorAtrRatio > effectiveG11Threshold) {
-        const isBreakdownShort = direction === "short" && (indicatorRegime === "breakdown" || indicatorRegime === "risk-off" || indicatorRegime === "exhaustion");
-        const isExhaustedEntry = indicatorRegime === "exhaustion";
-        if ((isBreakdownShort || isExhaustedEntry) && !isGateBypassedServer("G11_EXTENSION_EXHAUSTION", pair)) {
-          console.log(`[G11_EXTENSION_EXHAUSTION] ${pair} ${direction}: ATR ratio ${indicatorAtrRatio.toFixed(2)}x > ${effectiveG11Threshold}x threshold (auto-calibrated) — BLOCKED (regime=${indicatorRegime})`);
+      if (!forceMode && !isGateBypassedServer("G11_EXTENSION_EXHAUSTION", pair)) {
+        const isExhaustedRegime = indicatorRegime === "exhaustion";
+        const isBreakdownShort = direction === "short" && (indicatorRegime === "breakdown" || indicatorRegime === "risk-off");
+        // Block exhaustion entries AND breakdown shorts in exhaustion — price action says move is spent
+        if (isExhaustedRegime || (isBreakdownShort && regimeDivergingHoisted)) {
+          const atrInfo = indicatorAtrRatio !== null ? ` (ATR ratio ${indicatorAtrRatio.toFixed(2)}x logged for telemetry)` : "";
+          console.log(`[G11_EXTENSION_EXHAUSTION] ${pair} ${direction}: regime=${indicatorRegime}, diverging=${regimeDivergingHoisted}, earlyWarn=${regimeEarlyWarningHoisted}${atrInfo} — BLOCKED by price action exhaustion`);
           results.push({ pair, direction, status: "g11-extension-exhaustion", agentId, govState });
           continue;
         }

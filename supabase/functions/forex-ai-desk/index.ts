@@ -1577,15 +1577,15 @@ async function executeAction(
       results.push({ action: "blacklist_regime_for_pair", success: true, detail: `${pair} BLACKLISTED in "${regime}" regime${direction ? ` (${direction} only)` : ""}. Active for ${Math.round(ttlMinutes / 60)}h. Auto-trade pipeline blocks matching intents in real-time. Remove with revoke_bypass on ${key}.` });
     }
 
-  // ── Execute Liquidity Vacuum v2 (Ghost Order — ATR-Adaptive Limit into Stop Cluster) ──
+  // ── Execute Liquidity Vacuum v3 (Ghost Order — Price Action Microstructure) ──
   } else if (action.type === "execute_liquidity_vacuum" && (action as any).pair && (action as any).direction) {
     const pair = ((action as any).pair as string).replace("/", "_");
     const direction = (action as any).direction as string;
     const units = Math.max(100, Math.min(10000, (action as any).units ?? 500));
-    const expirySeconds = Math.max(60, Math.min(3600, (action as any).expirySeconds ?? 1800)); // Default 30min (was 5min)
+    const expirySeconds = Math.max(60, Math.min(3600, (action as any).expirySeconds ?? 1800));
     const slPips = Math.max(3, Math.min(30, (action as any).stopLossPips ?? 8));
-    const tpPips = Math.max(5, Math.min(60, (action as any).takeProfitPips ?? 30)); // 3.75:1 R:R (was 2:1)
-    const reason = (action as any).reason || "Liquidity Vacuum v2 — ATR-adaptive ghost order";
+    const tpPips = Math.max(5, Math.min(60, (action as any).takeProfitPips ?? 30));
+    const reason = (action as any).reason || "Liquidity Vacuum v3 — Price Action Microstructure ghost order";
 
     if (!["long", "short"].includes(direction)) {
       results.push({ action: "execute_liquidity_vacuum", success: false, detail: `Invalid direction: ${direction}` });
@@ -1692,48 +1692,52 @@ async function executeAction(
         // In compression/coil → tighter offset (price WILL come to us)
         // In trending → wider offset or SKIP (limit unlikely to fill)
         const userOffset = (action as any).offsetPips;
-        let offsetPips: number;
+        let offsetPips: number = 0;
+        let gateBlocked = false;
+
         if (userOffset != null) {
           offsetPips = Math.max(0, Math.min(15, userOffset));
         } else if (regimeSignal === "expansion_imminent") {
-          // Coiled structure — place limit very tight, expansion will sweep through
           offsetPips = Math.max(1, Math.round(atrPips * 0.15 * 10) / 10);
         } else if (regimeSignal === "compression_building") {
-          // Building compression — moderate offset
           offsetPips = Math.round(atrPips * 0.25 * 10) / 10;
         } else if (regimeSignal === "trending" && displacementEfficiency > 0.7) {
-          // Strong trend — don't place vacuum orders, they won't fill
           console.log(`[VACUUM-v3] ⚠ REGIME GATE: ${pair} DE=${displacementEfficiency.toFixed(2)} regime=${regimeSignal} — trending too hard for limit orders`);
           results.push({ action: "execute_liquidity_vacuum", success: false, detail: `Regime gate: ${pair} is in strong trend (DE=${displacementEfficiency.toFixed(2)}) — limit orders unlikely to fill` });
-          continue; // Skip to next action
+          gateBlocked = true;
         } else {
-          // Unknown/mixed — use moderate offset
           offsetPips = Math.round(atrPips * 0.3 * 10) / 10;
         }
 
         // ─── Session Gate — block late-NY / rollover (same as ripple-stream) ───
-        const utcHour = new Date().getUTCHours();
-        if (utcHour >= 20 || utcHour < 1) {
-          console.log(`[VACUUM-v3] 🛡 SESSION GATE: UTC ${utcHour}h — late-NY/rollover blocked`);
-          results.push({ action: "execute_liquidity_vacuum", success: false, detail: `Session gate: UTC ${utcHour}h is late-NY/rollover — vacuum blocked` });
-          continue;
+        if (!gateBlocked) {
+          const utcHour = new Date().getUTCHours();
+          if (utcHour >= 20 || utcHour < 1) {
+            console.log(`[VACUUM-v3] 🛡 SESSION GATE: UTC ${utcHour}h — late-NY/rollover blocked`);
+            results.push({ action: "execute_liquidity_vacuum", success: false, detail: `Session gate: UTC ${utcHour}h is late-NY/rollover — vacuum blocked` });
+            gateBlocked = true;
+          }
         }
 
         // ─── Spread Gate — block if spread > 1.5 pips ───
-        if (spreadPips > 1.5) {
+        if (!gateBlocked && spreadPips > 1.5) {
           console.log(`[VACUUM-v3] 🛡 SPREAD GATE: ${pair} spread ${spreadPips.toFixed(1)}p > 1.5p — blocked`);
           results.push({ action: "execute_liquidity_vacuum", success: false, detail: `Spread gate: ${pair} spread ${spreadPips.toFixed(1)}p too wide` });
-          continue;
+          gateBlocked = true;
         }
 
         // ─── Directional Alignment Gate — vacuum direction must match recent price action ───
-        // If we're placing a long vacuum but price action is DOWN, skip (anti-trend vacuum = low fill + high risk)
-        if ((direction === "long" && recentDirection === "DOWN" && displacementEfficiency > 0.5) ||
-            (direction === "short" && recentDirection === "UP" && displacementEfficiency > 0.5)) {
+        if (!gateBlocked &&
+            ((direction === "long" && recentDirection === "DOWN" && displacementEfficiency > 0.5) ||
+             (direction === "short" && recentDirection === "UP" && displacementEfficiency > 0.5))) {
           console.log(`[VACUUM-v3] 🛡 DIRECTION GATE: ${pair} ${direction} vs PA=${recentDirection} DE=${displacementEfficiency.toFixed(2)} — anti-trend vacuum blocked`);
           results.push({ action: "execute_liquidity_vacuum", success: false, detail: `Direction gate: ${direction} against strong ${recentDirection} price action (DE=${displacementEfficiency.toFixed(2)})` });
-          continue;
+          gateBlocked = true;
         }
+
+        if (gateBlocked) {
+          // Skip execution — gate already pushed result
+        } else {
 
         // Apply sizing multiplier from regime
         const adjustedUnits = Math.round(units * sizingMultiplier);
@@ -1898,6 +1902,7 @@ async function executeAction(
             data: { orderId, targetPrice, clusterInfo, sl, tp, expirySeconds, mid, atrPips, offsetPips, spreadPips, rrRatio: +(tpPips/slPips).toFixed(1), displacementEfficiency, insideBarStreak, insideBarCount, swingConverging, regimeSignal, sizingMultiplier, adjustedUnits },
           });
         }
+        } // end gateBlocked else
       } catch (vacErr) {
         results.push({ action: "execute_liquidity_vacuum", success: false, detail: `Vacuum failed: ${(vacErr as Error).message}` });
       }
