@@ -301,9 +301,21 @@ Calculate Edge-to-Variance ratio from last48hTrades: Edge = avg(r_pips), Varianc
 {"type":"adjust_position_sizing","kelly_fraction":0.XX,"sizing_cap":X.Xx,"edge":X.X,"variance":X.X,"window":"next_2h"}
 \`\`\`
 
-ADDITIONAL POWERS: create_gate, remove_gate, adjust_evolution_param, add_blacklist, remove_blacklist, suspend_agent, reinstate_agent, write_memory, modify_directive, adjust_gate_threshold
+ADDITIONAL POWERS: create_gate, remove_gate, adjust_evolution_param, add_blacklist, remove_blacklist, suspend_agent, reinstate_agent, write_memory, modify_directive, adjust_gate_threshold, commit_rule
+
+MANDATE 4 — REFLEX WRITING (L0 NERVOUS SYSTEM):
+You design the Tier 1 autonomic reflexes. Use commit_rule to persist L0 hardwired rules that execute locally with ZERO AI cost:
+- Regime-Based Reflexes: In "expansion" allow higher spreads. In "compression" block spread>1.5 pips.
+- Dynamic Circuit Breakers: If pair WR <20% in last 4h, commit_rule a local block (60 cycles).
+- Idle/Sentinel Mode: If ATR on top pairs is below threshold, commit_rule sentinel_mode to skip Tier 2-3 AI for 15min.
+\`\`\`action
+{"type":"commit_rule","rule_id":"SENTINEL_LOW_ATR","rule_type":"sentinel_mode","condition":"ATR below 14p threshold on top 5 pairs","duration_hours":0.25}
+{"type":"commit_rule","rule_id":"BLOCK_USD_CAD_COLD","rule_type":"block_pair","pair":"USD_CAD","condition":"WR <20% last 4h","duration_hours":4}
+{"type":"commit_rule","rule_id":"SPREAD_GATE_COMPRESSION","rule_type":"spread_gate","condition":"Compression regime — block spread>1.5 pips","params":{"max_spread":1.5},"duration_hours":2}
+\`\`\`
+
 Format:\`\`\`action\n{"type":"...",...}\n\`\`\`
-Output: REGIME_AUDIT:[findings]|DNA_MUTATIONS:[n]|KELLY_SIZING:[fraction]|EVOLUTION_SUMMARY:[text]`;
+Output: REGIME_AUDIT:[findings]|DNA_MUTATIONS:[n]|KELLY_SIZING:[fraction]|REFLEXES_WRITTEN:[n]|EVOLUTION_SUMMARY:[text]`;
 
 // ─── Check Tier 4 Trigger Conditions ───
 async function checkTier4Trigger(supabase: any): Promise<{ shouldRun: boolean; reason: string }> {
@@ -555,7 +567,7 @@ async function executeAction(action: any, supabase: any): Promise<void> {
         await supabase.functions.invoke("auth-manager", { body: action });
         break;
       case "commit_rule":
-        await supabase.functions.invoke("rule-committer", { body: action });
+        await commitRule(supabase, action);
         break;
       default:
         console.warn(`⚠️ Unknown action type: ${action.type}`);
@@ -565,6 +577,139 @@ async function executeAction(action: any, supabase: any): Promise<void> {
     console.error(`❌ Action execution failed: ${action.type}`, err);
     throw err;
   }
+}
+
+// ─── L0 Rule Engine: Evaluate Hardwired Rules ───
+interface L0Rule {
+  memory_key: string;
+  payload: {
+    rule_type: string;       // "block_pair" | "sentinel_mode" | "spread_gate" | "circuit_breaker" | "custom"
+    condition: string;       // Human-readable condition description
+    action: string;          // "skip_ai" | "block_trade" | "reduce_sizing" | "halt"
+    pair?: string;
+    expires_at?: string;
+    params?: Record<string, any>;
+  };
+}
+
+interface L0Result {
+  rulesEvaluated: number;
+  rulesFired: number;
+  skipAI: boolean;
+  blockedPairs: string[];
+  sizingOverride: number | null;
+  firedRules: string[];
+}
+
+async function evaluateL0Rules(supabase: any): Promise<L0Result> {
+  const result: L0Result = {
+    rulesEvaluated: 0, rulesFired: 0, skipAI: false,
+    blockedPairs: [], sizingOverride: null, firedRules: [],
+  };
+
+  try {
+    const { data: rules } = await supabase
+      .from("sovereign_memory")
+      .select("memory_key, payload, expires_at")
+      .eq("memory_type", "HARDWIRED_RULE")
+      .order("created_at", { ascending: false });
+
+    if (!rules || rules.length === 0) return result;
+
+    const now = new Date();
+    const activeRules = rules.filter((r: any) => {
+      if (r.expires_at && new Date(r.expires_at) < now) return false;
+      return true;
+    });
+
+    result.rulesEvaluated = activeRules.length;
+
+    for (const rule of activeRules) {
+      const p = rule.payload as L0Rule["payload"];
+      if (!p || !p.rule_type) continue;
+
+      switch (p.rule_type) {
+        case "sentinel_mode":
+          // Skip AI calls entirely — market is idle/muddy
+          result.skipAI = true;
+          result.rulesFired++;
+          result.firedRules.push(`SENTINEL: ${p.condition}`);
+          console.log(`🛡️ L0 SENTINEL MODE: ${p.condition}`);
+          break;
+
+        case "block_pair":
+          if (p.pair) {
+            result.blockedPairs.push(p.pair);
+            result.rulesFired++;
+            result.firedRules.push(`BLOCK: ${p.pair} — ${p.condition}`);
+            console.log(`🚫 L0 BLOCK PAIR: ${p.pair} — ${p.condition}`);
+          }
+          break;
+
+        case "spread_gate":
+          // Sizing/spread threshold adjustments
+          result.rulesFired++;
+          result.firedRules.push(`SPREAD_GATE: ${p.condition}`);
+          console.log(`📏 L0 SPREAD GATE: ${p.condition}`);
+          break;
+
+        case "circuit_breaker":
+          result.rulesFired++;
+          result.firedRules.push(`CIRCUIT_BREAKER: ${p.condition}`);
+          console.log(`⚡ L0 CIRCUIT BREAKER: ${p.condition}`);
+          break;
+
+        case "reduce_sizing":
+          if (p.params?.sizing_cap != null) {
+            result.sizingOverride = Math.min(
+              result.sizingOverride ?? Infinity,
+              p.params.sizing_cap
+            );
+            result.rulesFired++;
+            result.firedRules.push(`SIZING: cap=${p.params.sizing_cap}x — ${p.condition}`);
+            console.log(`📉 L0 SIZING OVERRIDE: ${p.params.sizing_cap}x — ${p.condition}`);
+          }
+          break;
+
+        default:
+          result.rulesFired++;
+          result.firedRules.push(`CUSTOM[${p.rule_type}]: ${p.condition}`);
+          console.log(`🔧 L0 CUSTOM RULE: ${p.rule_type} — ${p.condition}`);
+      }
+    }
+
+    console.log(`🧠 L0 Engine: ${result.rulesEvaluated} rules evaluated, ${result.rulesFired} fired, skipAI=${result.skipAI}`);
+    return result;
+  } catch (err) {
+    console.error("❌ evaluateL0Rules error:", err);
+    return result;
+  }
+}
+
+// ─── commit_rule: Persist L0 hardwired rules to sovereign_memory ───
+async function commitRule(supabase: any, action: any): Promise<void> {
+  const ruleKey = action.rule_id || `RULE_${Date.now()}`;
+  const expiresAt = action.duration_hours
+    ? new Date(Date.now() + action.duration_hours * 3600_000).toISOString()
+    : action.expires_at || null;
+
+  await supabase.from("sovereign_memory").upsert({
+    memory_key: ruleKey,
+    memory_type: "HARDWIRED_RULE",
+    payload: {
+      rule_type: action.rule_type,
+      condition: action.condition || action.reason || "Sovereign-committed rule",
+      action: action.action || "block_trade",
+      pair: action.pair || null,
+      params: action.params || {},
+    },
+    expires_at: expiresAt,
+    created_by: action.created_by || "sovereign-loop",
+    updated_at: new Date().toISOString(),
+    relevance_score: 1.0,
+  }, { onConflict: "memory_key,memory_type" });
+
+  console.log(`✅ L0 Rule committed: ${ruleKey} (expires: ${expiresAt || "never"})`);
 }
 
 // ─── Check Circuit Breaker ───
@@ -689,6 +834,50 @@ Deno.serve(async (req) => {
       );
     }
 
+    // ─── 3b. L0 Rule Engine (Evolving Reflexes — Zero AI Cost) ───
+    console.log("🧠 Evaluating L0 hardwired rules...");
+    const l0Result = await evaluateL0Rules(supabase);
+
+    if (l0Result.skipAI) {
+      console.log(`🛡️ SENTINEL MODE: Skipping Tier 2-3 AI call. ${l0Result.firedRules.join("; ")}`);
+
+      // Still update loop state
+      loopState.lastRunTs = now;
+      await supabase.from("sovereign_loop_state").upsert({ id: "global", ...loopState });
+
+      // Still check Tier 4 (strategic brain runs on its own schedule)
+      const tier4Check = await checkTier4Trigger(supabase);
+      let tier4Result: any = null;
+      if (tier4Check.shouldRun) {
+        console.log(`🧬 TIER 4 TRIGGERED (during sentinel): ${tier4Check.reason}`);
+        tier4Result = await executeTier4(supabase, lovableApiKey, {});
+      }
+
+      await logCycleResult(supabase, {
+        actionsTaken: 0,
+        cycleAssessment: `SENTINEL_MODE: ${l0Result.firedRules.join("; ")}`,
+        sovereigntyScore: 100,
+        llmResponse: "L0 SENTINEL — AI call skipped",
+        errors: [],
+      });
+
+      return new Response(
+        JSON.stringify({
+          status: "sentinel",
+          l0: l0Result,
+          tier4: tier4Result ? { triggered: true, ...tier4Result } : { triggered: false },
+        }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // Inject L0 context (blocked pairs, sizing overrides) into cycle for AI awareness
+    const l0Context = {
+      blockedPairs: l0Result.blockedPairs,
+      sizingOverride: l0Result.sizingOverride,
+      firedRules: l0Result.firedRules,
+    };
+
     // ─── 4. Fetch Data (with 2-cycle cache for slow sources) ───
     console.log("📡 Fetching intelligence...");
 
@@ -760,6 +949,7 @@ Deno.serve(async (req) => {
       alphaVantageData: alphaVantageRes,
       carryTradeData: carryTradeRes,
       sovereignMemory: sovereignMemoryRes,
+      l0ActiveReflexes: l0Context,
     };
 
     // ─── 5. Call Lovable AI (gemini-2.5-flash-lite) ───
