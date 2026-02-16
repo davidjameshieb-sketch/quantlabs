@@ -364,7 +364,11 @@ async function checkTier4Trigger(supabase: any): Promise<{ shouldRun: boolean; r
       }
     }
 
-    if (performanceBreach) return { shouldRun: true, reason: `PERFORMANCE_BREACH: ${breachReason}` };
+    // Performance breach still respects cooldown — otherwise Tier 4 fires EVERY 60s cycle
+    const BREACH_COOLDOWN_MS = TIER4_INTERVAL_MS; // same as scheduled interval
+    if (performanceBreach && timeSinceLastRun >= BREACH_COOLDOWN_MS) {
+      return { shouldRun: true, reason: `PERFORMANCE_BREACH: ${breachReason}` };
+    }
     if (intervalElapsed) return { shouldRun: true, reason: `SCHEDULED: ${(timeSinceLastRun / 3600_000).toFixed(1)}h since last run` };
     return { shouldRun: false, reason: "No trigger" };
   } catch (err) {
