@@ -41,15 +41,9 @@ SELF:commit_rule,write_memory,modify_directive,define_macro,execute_macro,db_wri
 NOTE:mutate_agent_dna is TIER-4 EXCLUSIVE. Do NOT emit mutate_agent_dna actions. If DNA mutation needed, flag via write_memory key="TIER4_DNA_REQUEST".
 Format:\`\`\`action\n{"type":"...",...}\n\`\`\``;
 
-// ─── 2-CYCLE INTEL CACHE for slow-moving data sources ───
-// OANDA pricing stays real-time. COT/macro/sentiment/etc cached for 2 cycles (~2min)
-const INTEL_CACHE_TTL_MS = 2 * 60 * 1000; // 2 minutes (2 cycles at 60s)
-let intelCache: {
-  timestamp: number;
-  cotRes: any; macroRes: any; stocksRes: any; cryptoRes: any;
-  treasuryRes: any; sentimentRes: any; optionsRes: any;
-  econCalRes: any; bisImfRes: any; cbCommsRes: any; onChainRes: any;
-} | null = null;
+// ─── INTEL CACHE DISABLED — All sources fetch fresh every heartbeat ───
+// God Signal Streaming: BIS/IMF REER + Central Bank sentiment on every cycle
+// Credit budget allows full 16-source refresh at 60s intervals
 
 // ─── Fetch Sovereign Memory ───
 async function fetchSovereignMemory(supabase: any): Promise<any> {
@@ -886,8 +880,7 @@ Deno.serve(async (req) => {
     // ─── 4. Fetch Data (with 2-cycle cache for slow sources) ───
     console.log("📡 Fetching intelligence...");
 
-    const useCache = intelCache && (now - intelCache.timestamp < INTEL_CACHE_TTL_MS);
-
+    // All 16 sources fetch fresh every cycle — God Signal Streaming enabled
     const [
       smartG8Res,
       crossAssetRes,
@@ -909,32 +902,22 @@ Deno.serve(async (req) => {
     ] = await Promise.all([
       fetchSmartG8Directive(supabase),
       fetchCrossAssetPulse(supabase),
-      useCache ? intelCache!.cotRes : fetchCOTData(supabase),
-      useCache ? intelCache!.macroRes : fetchMacroData(supabase),
-      useCache ? intelCache!.stocksRes : fetchStocksIntel(supabase),
-      useCache ? intelCache!.cryptoRes : fetchCryptoIntel(supabase),
-      useCache ? intelCache!.treasuryRes : fetchTreasuryData(supabase),
-      useCache ? intelCache!.sentimentRes : fetchSentimentData(supabase),
-      useCache ? intelCache!.optionsRes : fetchOptionsVolData(supabase),
-      useCache ? intelCache!.econCalRes : fetchEconCalendarData(supabase),
-      useCache ? intelCache!.bisImfRes : fetchBISIMFData(supabase),
-      useCache ? intelCache!.cbCommsRes : fetchCBCommsData(supabase),
-      useCache ? intelCache!.onChainRes : fetchCryptoOnChainData(supabase),
+      fetchCOTData(supabase),
+      fetchMacroData(supabase),
+      fetchStocksIntel(supabase),
+      fetchCryptoIntel(supabase),
+      fetchTreasuryData(supabase),
+      fetchSentimentData(supabase),
+      fetchOptionsVolData(supabase),
+      fetchEconCalendarData(supabase),
+      fetchBISIMFData(supabase),
+      fetchCBCommsData(supabase),
+      fetchCryptoOnChainData(supabase),
       fetchOrderBook(supabase),
       fetchAlphaVantageData(supabase),
       fetchCarryTradeData(supabase),
       fetchSovereignMemory(supabase),
     ]);
-
-    // Update cache if we fetched fresh data
-    if (!useCache) {
-      intelCache = {
-        timestamp: now,
-        cotRes, macroRes, stocksRes, cryptoRes,
-        treasuryRes, sentimentRes, optionsRes,
-        econCalRes, bisImfRes, cbCommsRes, onChainRes,
-      };
-    }
 
     const dataPayload = {
       smartG8Directive: smartG8Res,
@@ -1005,7 +988,109 @@ Deno.serve(async (req) => {
       }
     }
 
-    // ─── 7b. Tier 4 Strategic Evolution Check ───
+    // ─── 7a. Mandatory Proactive Scans: Liquidity Heatmap + Lead-Lag ───
+    console.log("🔍 Running mandatory liquidity_heatmap + lead_lag_scan...");
+    try {
+      await Promise.all([
+        executeAction({ type: "liquidity_heatmap", pairs: "all", depth: "full" }, supabase),
+        executeAction({ type: "lead_lag_scan", mode: "full_universe", threshold_pips: 5 }, supabase),
+      ]);
+      console.log("✅ Proactive scans complete");
+    } catch (err) {
+      console.error("⚠️ Proactive scan error (non-fatal):", err);
+      errors.push({ action: "proactive_scans", error: String(err) });
+    }
+
+    // ─── 7b. Shadow Agent Synthesis (one-time bootstrap) ───
+    try {
+      const { data: shadowCheck } = await supabase
+        .from("sovereign_memory")
+        .select("memory_key")
+        .eq("memory_key", "SHADOW_AGENTS_SYNTHESIZED_V1")
+        .eq("memory_type", "system")
+        .limit(1);
+
+      if (!shadowCheck || shadowCheck.length === 0) {
+        console.log("🧬 Synthesizing 3 shadow agents...");
+
+        const shadowAgents = [
+          {
+            agent_id: "shadow-london-ny-overlap",
+            config: {
+              name: "London/NY Overlap Specialist",
+              description: "Optimized for 13:00-17:00 UTC overlap liquidity surge. Targets momentum continuation and breakout-retest patterns during peak institutional flow.",
+              session_filter: ["london-ny-overlap"],
+              regime_filter: ["momentum", "expansion", "breakout"],
+              direction_bias: "trend-following",
+              entry_logic: "MTF consensus >= 70 + regime momentum confirmed + spread < 1.5p",
+              confirmation_checks: ["rvol_above_1.2", "cot_alignment", "carry_positive"],
+              sizing_multiplier: 0.1,
+              is_shadow: true,
+              promotion_threshold: { min_trades: 20, min_win_rate: 0.55, min_r_ratio: 1.2 },
+              created_by: "sovereign-synthesis-v1",
+            },
+            is_active: true,
+          },
+          {
+            agent_id: "shadow-asian-mean-reversion",
+            config: {
+              name: "Asian Session Mean Reversion",
+              description: "Exploits range-bound behavior during 00:00-06:00 UTC. Fades extremes at Bollinger Band edges with tight stops and quick profit capture.",
+              session_filter: ["asian", "early-asian"],
+              regime_filter: ["flat", "compression", "transition"],
+              direction_bias: "mean-reversion",
+              entry_logic: "Price at BB outer band + RSI divergence + ATR below session median",
+              confirmation_checks: ["bb_touch", "rsi_divergence", "low_atr"],
+              sizing_multiplier: 0.1,
+              is_shadow: true,
+              promotion_threshold: { min_trades: 20, min_win_rate: 0.55, min_r_ratio: 1.2 },
+              created_by: "sovereign-synthesis-v1",
+            },
+            is_active: true,
+          },
+          {
+            agent_id: "shadow-news-volatility",
+            config: {
+              name: "News Volatility Harvester",
+              description: "Capitalizes on post-news volatility spikes within 5-30 minutes of high-impact releases. Uses econ calendar + ATR spike detection for entry timing.",
+              session_filter: ["any"],
+              regime_filter: ["expansion", "breakout", "momentum"],
+              direction_bias: "momentum-capture",
+              entry_logic: "ATR spike > 1.5x session avg + econ event within 30min + spread normalizing",
+              confirmation_checks: ["atr_spike", "econ_calendar_high_impact", "spread_normalizing"],
+              sizing_multiplier: 0.1,
+              is_shadow: true,
+              promotion_threshold: { min_trades: 20, min_win_rate: 0.55, min_r_ratio: 1.2 },
+              created_by: "sovereign-synthesis-v1",
+            },
+            is_active: true,
+          },
+        ];
+
+        for (const agent of shadowAgents) {
+          await supabase.from("agent_configs").upsert(agent, { onConflict: "agent_id" });
+        }
+
+        await supabase.from("sovereign_memory").upsert({
+          memory_key: "SHADOW_AGENTS_SYNTHESIZED_V1",
+          memory_type: "system",
+          payload: {
+            agents: shadowAgents.map(a => a.agent_id),
+            synthesized_at: new Date().toISOString(),
+            promotion_criteria: "20+ trades, WR > 55%, R-ratio > 1.2",
+          },
+          created_by: "sovereign-loop",
+          updated_at: new Date().toISOString(),
+          relevance_score: 1.0,
+        }, { onConflict: "memory_key,memory_type" });
+
+        console.log("✅ 3 shadow agents synthesized: london-ny-overlap, asian-mean-reversion, news-volatility");
+      }
+    } catch (err) {
+      console.error("⚠️ Shadow agent synthesis error (non-fatal):", err);
+    }
+
+    // ─── 7c. Tier 4 Strategic Evolution Check ───
     const tier4Check = await checkTier4Trigger(supabase);
     let tier4Result: any = null;
     if (tier4Check.shouldRun) {
