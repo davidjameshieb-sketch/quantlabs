@@ -215,6 +215,69 @@ export type Database = {
         }
         Relationships: []
       }
+      execution_analytics: {
+        Row: {
+          agent_id: string | null
+          created_at: string
+          currency_pair: string
+          direction: string
+          fill_latency_ms: number
+          fill_price: number | null
+          id: string
+          is_news_window: boolean
+          oanda_order_id: string | null
+          provider_latency_ms: number | null
+          regime_label: string | null
+          requested_price: number | null
+          session_label: string | null
+          slippage_pips: number
+          spread_at_entry: number | null
+          tick_density: number | null
+          toxicity_score: number | null
+          vix_at_entry: number | null
+        }
+        Insert: {
+          agent_id?: string | null
+          created_at?: string
+          currency_pair: string
+          direction: string
+          fill_latency_ms?: number
+          fill_price?: number | null
+          id?: string
+          is_news_window?: boolean
+          oanda_order_id?: string | null
+          provider_latency_ms?: number | null
+          regime_label?: string | null
+          requested_price?: number | null
+          session_label?: string | null
+          slippage_pips?: number
+          spread_at_entry?: number | null
+          tick_density?: number | null
+          toxicity_score?: number | null
+          vix_at_entry?: number | null
+        }
+        Update: {
+          agent_id?: string | null
+          created_at?: string
+          currency_pair?: string
+          direction?: string
+          fill_latency_ms?: number
+          fill_price?: number | null
+          id?: string
+          is_news_window?: boolean
+          oanda_order_id?: string | null
+          provider_latency_ms?: number | null
+          regime_label?: string | null
+          requested_price?: number | null
+          session_label?: string | null
+          slippage_pips?: number
+          spread_at_entry?: number | null
+          tick_density?: number | null
+          toxicity_score?: number | null
+          vix_at_entry?: number | null
+        }
+        Relationships: []
+      }
       gate_bypasses: {
         Row: {
           bypassed_at: string
@@ -581,39 +644,129 @@ export type Database = {
         }
         Relationships: []
       }
+      shadow_trade_ledger: {
+        Row: {
+          agent_id: string
+          closed_at: string | null
+          created_at: string
+          currency_pair: string
+          direction: string
+          dna_template: string | null
+          entry_price: number
+          entry_reason: string | null
+          entry_spread: number | null
+          exit_price: number | null
+          exit_reason: string | null
+          friction_score: number | null
+          id: string
+          mae_pips: number | null
+          mfe_pips: number | null
+          opened_at: string
+          r_pips: number | null
+          regime_label: string | null
+          session_label: string | null
+          signal_id: string
+          status: string
+          units: number
+          updated_at: string
+        }
+        Insert: {
+          agent_id: string
+          closed_at?: string | null
+          created_at?: string
+          currency_pair: string
+          direction: string
+          dna_template?: string | null
+          entry_price: number
+          entry_reason?: string | null
+          entry_spread?: number | null
+          exit_price?: number | null
+          exit_reason?: string | null
+          friction_score?: number | null
+          id?: string
+          mae_pips?: number | null
+          mfe_pips?: number | null
+          opened_at?: string
+          r_pips?: number | null
+          regime_label?: string | null
+          session_label?: string | null
+          signal_id: string
+          status?: string
+          units?: number
+          updated_at?: string
+        }
+        Update: {
+          agent_id?: string
+          closed_at?: string | null
+          created_at?: string
+          currency_pair?: string
+          direction?: string
+          dna_template?: string | null
+          entry_price?: number
+          entry_reason?: string | null
+          entry_spread?: number | null
+          exit_price?: number | null
+          exit_reason?: string | null
+          friction_score?: number | null
+          id?: string
+          mae_pips?: number | null
+          mfe_pips?: number | null
+          opened_at?: string
+          r_pips?: number | null
+          regime_label?: string | null
+          session_label?: string | null
+          signal_id?: string
+          status?: string
+          units?: number
+          updated_at?: string
+        }
+        Relationships: []
+      }
       sovereign_memory: {
         Row: {
+          change_velocity: number | null
           created_at: string
           created_by: string
+          decision_latency_ms: number | null
           expires_at: string | null
           id: string
           memory_key: string
           memory_type: string
           payload: Json
+          previous_payload: Json | null
           relevance_score: number | null
           updated_at: string
+          version: number
         }
         Insert: {
+          change_velocity?: number | null
           created_at?: string
           created_by?: string
+          decision_latency_ms?: number | null
           expires_at?: string | null
           id?: string
           memory_key: string
           memory_type: string
           payload?: Json
+          previous_payload?: Json | null
           relevance_score?: number | null
           updated_at?: string
+          version?: number
         }
         Update: {
+          change_velocity?: number | null
           created_at?: string
           created_by?: string
+          decision_latency_ms?: number | null
           expires_at?: string | null
           id?: string
           memory_key?: string
           memory_type?: string
           payload?: Json
+          previous_payload?: Json | null
           relevance_score?: number | null
           updated_at?: string
+          version?: number
         }
         Relationships: []
       }

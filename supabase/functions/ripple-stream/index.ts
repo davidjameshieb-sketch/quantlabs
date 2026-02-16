@@ -60,6 +60,51 @@ const TICK_DENSITY_WINDOW_MS = 5000; // 5-second rolling window
 const TICK_DENSITY_MIN_TPS = 2.0; // minimum ticks/sec for Z-Score conviction
 const tickTimestamps = new Map<string, number[]>();
 
+// ─── #1: Sub-Second Tick-Buffer (500 ticks with timestamps) ───
+// Stores raw tick micro-vibrations for HFT front-running detection
+const TICK_BUFFER_SIZE = 500;
+interface TickBufferEntry {
+  ts: number;
+  pair: string;
+  bid: number;
+  ask: number;
+  mid: number;
+  spreadPips: number;
+}
+const tickBuffer: TickBufferEntry[] = [];
+
+function addToTickBuffer(entry: TickBufferEntry) {
+  tickBuffer.push(entry);
+  if (tickBuffer.length > TICK_BUFFER_SIZE) tickBuffer.shift();
+}
+
+function getTickBufferSnapshot(pair?: string, lastMs = 500): TickBufferEntry[] {
+  const cutoff = Date.now() - lastMs;
+  return tickBuffer.filter(t => t.ts >= cutoff && (!pair || t.pair === pair));
+}
+
+// Detect HFT front-running: rapid bid/ask oscillations without mid movement
+function detectHftPattern(pair: string): { detected: boolean; pattern: string; confidence: number } {
+  const recent = getTickBufferSnapshot(pair, 1000); // last 1s
+  if (recent.length < 10) return { detected: false, pattern: "insufficient_data", confidence: 0 };
+
+  // Check for spread oscillation without mid movement
+  const midRange = Math.max(...recent.map(t => t.mid)) - Math.min(...recent.map(t => t.mid));
+  const spreadVariance = recent.reduce((s, t, i) => {
+    if (i === 0) return 0;
+    return s + Math.abs(t.spreadPips - recent[i - 1].spreadPips);
+  }, 0) / recent.length;
+
+  const pipMult = pair.includes("JPY") ? 100 : 10000;
+  const midRangePips = midRange * pipMult;
+
+  if (spreadVariance > 0.3 && midRangePips < 0.5) {
+    return { detected: true, pattern: "spread_oscillation", confidence: Math.min(spreadVariance * 2, 1) };
+  }
+
+  return { detected: false, pattern: "clean", confidence: 0 };
+}
+
 function recordTickTimestamp(pair: string, ts: number) {
   if (!tickTimestamps.has(pair)) tickTimestamps.set(pair, []);
   const hist = tickTimestamps.get(pair)!;
