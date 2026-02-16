@@ -188,7 +188,7 @@ Respond in valid JSON with this structure:
       relevance_score: 1.0,
       created_by: "god-signal-gateway",
       updated_at: new Date().toISOString(),
-    }, { onConflict: "memory_key" });
+    }, { onConflict: "memory_type,memory_key" });
 
     if (memErr) console.warn("[GOD-SIGNAL] Memory persist error:", memErr);
 

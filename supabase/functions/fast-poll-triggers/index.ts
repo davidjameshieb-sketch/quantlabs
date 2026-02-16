@@ -95,23 +95,31 @@ serve(async (req) => {
       }
     }
 
-    if (instruments.size === 0) {
+    if (instruments.size === 0 || parsedTriggers.length === 0) {
       return new Response(JSON.stringify({ success: true, evaluated: 0, message: "No parseable triggers" }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
-    // 3. Fetch live prices from OANDA
-    const instrumentList = Array.from(instruments).join(",");
+    // 3. Fetch live prices from OANDA — validate instruments are OANDA format (XXX_YYY)
+    const validInstruments = Array.from(instruments).filter(i => /^[A-Z]{3}_[A-Z]{3}$/.test(i));
+    if (validInstruments.length === 0) {
+      return new Response(JSON.stringify({ success: true, evaluated: 0, message: "No valid OANDA instruments in triggers" }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    const instrumentList = validInstruments.join(",");
     const priceRes = await fetch(
       `${OANDA_API}/accounts/${OANDA_ACCOUNT}/pricing?instruments=${instrumentList}`,
       { headers: { Authorization: `Bearer ${OANDA_TOKEN}` } }
     );
 
     if (!priceRes.ok) {
-      console.error(`[FAST-POLL] OANDA pricing failed: ${priceRes.status}`);
-      return new Response(JSON.stringify({ error: `OANDA pricing error: ${priceRes.status}` }), {
-        status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
+      const errBody = await priceRes.text().catch(() => "");
+      console.warn(`[FAST-POLL] OANDA pricing ${priceRes.status}: ${errBody.slice(0, 200)}`);
+      return new Response(JSON.stringify({ success: true, evaluated: 0, message: `OANDA pricing unavailable: ${priceRes.status}` }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
