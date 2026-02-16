@@ -86,11 +86,19 @@ serve(async (req) => {
       try {
         // Parse config from reason JSON or structured gate_id
         const reasonData = JSON.parse(t.reason) as TriggerConfig;
-        instruments.add(reasonData.loudPair);
-        instruments.add(reasonData.quietPair);
-        parsedTriggers.push({ trigger: t, config: reasonData });
+        // Strip venue prefixes (e.g. "CME:EUR_USD" → "EUR_USD") — CME instruments don't exist in OANDA
+        const cleanPair = (p: string) => p.replace(/^[A-Z]+:/, "");
+        const loudPair = cleanPair(reasonData.loudPair);
+        const quietPair = cleanPair(reasonData.quietPair);
+        // Skip if loud and quiet resolve to same instrument after stripping
+        if (loudPair === quietPair) {
+          console.warn(`[FAST-POLL] Skipping ${t.gate_id}: loud/quiet resolve to same pair ${loudPair}`);
+          continue;
+        }
+        instruments.add(loudPair);
+        instruments.add(quietPair);
+        parsedTriggers.push({ trigger: t, config: { ...reasonData, loudPair, quietPair } });
       } catch {
-        // Try parsing from gate_id format: CORRELATION_TRIGGER:LOUD_QUIET
         console.warn(`[FAST-POLL] Could not parse trigger ${t.gate_id}, skipping`);
       }
     }
