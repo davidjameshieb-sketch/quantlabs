@@ -16,6 +16,7 @@ import { cn } from '@/lib/utils';
 import type { OandaAccountSummary } from '@/hooks/useOandaExecution';
 import type { RealExecutionMetrics, RealOrder } from '@/hooks/useOandaPerformance';
 import type { TradeAnalyticsResult } from '@/hooks/useTradeAnalytics';
+import { SonarRipplePanel } from '@/components/forex/SonarRipplePanel';
 
 // ─── Helpers ─────────────────────────────────────────────
 
@@ -578,6 +579,17 @@ export function DarkRoomCommandCenter({ account, executionMetrics, tradeAnalytic
 
   const nav = account ? parseFloat(account.nav) : 0;
 
+  const sonarOpenPositions = useMemo(() => {
+    if (!executionMetrics?.recentOrders) return [];
+    return executionMetrics.recentOrders.filter(o => {
+      if (o.status !== 'filled' || o.entry_price == null || o.exit_price || !o.oanda_trade_id) return false;
+      if (brokerOpenTradeIds && brokerOpenTradeIds.length > 0) {
+        return brokerOpenTradeIds.includes(o.oanda_trade_id);
+      }
+      return true;
+    });
+  }, [executionMetrics, brokerOpenTradeIds]);
+
   return (
     <div className="space-y-4">
       {/* ─── Status Bar ─── */}
@@ -610,6 +622,9 @@ export function DarkRoomCommandCenter({ account, executionMetrics, tradeAnalytic
           Institutional Flow + Lead-Lag
         </Badge>
       </motion.div>
+
+      {/* ─── Sonar Ripple Dashboard ─── */}
+      <SonarRipplePanel openPositions={sonarOpenPositions} />
 
       {/* ─── 4-Quadrant Grid ─── */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 auto-rows-min">
