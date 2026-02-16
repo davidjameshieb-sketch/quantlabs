@@ -120,9 +120,9 @@ export function G19RippleTriggerPanel({ data }: Props) {
               </div>
               <div className="flex items-center gap-1 w-24 justify-end">
                 <span className={`text-[9px] font-mono font-bold ${
-                  cs.netPips > 0 ? 'text-[hsl(var(--neural-green))]' : cs.netPips < 0 ? 'text-[hsl(var(--neural-red))]' : 'text-muted-foreground'
+                  (cs.netPips ?? 0) > 0 ? 'text-[hsl(var(--neural-green))]' : (cs.netPips ?? 0) < 0 ? 'text-[hsl(var(--neural-red))]' : 'text-muted-foreground'
                 }`}>
-                  {cs.netPips > 0 ? '+' : ''}{cs.netPips.toFixed(1)}p
+                  {(cs.netPips ?? 0) > 0 ? '+' : ''}{(cs.netPips ?? 0).toFixed(1)}p
                 </span>
                 <span className="text-[8px] text-muted-foreground">
                   {cs.pairsUp}↑{cs.pairsDown}↓
@@ -148,7 +148,7 @@ export function G19RippleTriggerPanel({ data }: Props) {
               }
               <span className="text-[8px] text-muted-foreground flex-1 leading-tight">
                 <span className="text-[hsl(var(--neural-orange))] font-bold">{a.anchorCurrency}</span> {a.dominance} — 
-                Laggard <span className="font-mono font-bold">{a.laggardPair?.replace('_','/')}</span> gap {a.laggardGapPips?.toFixed(1)}p
+151:                 Laggard <span className="font-mono font-bold">{a.laggardPair?.replace('_','/')}</span> gap {(a.laggardGapPips ?? 0).toFixed(1)}p
               </span>
               <Badge className="text-[7px] bg-[hsl(var(--neural-cyan))]/20 text-[hsl(var(--neural-cyan))]">
                 FRONT-RUN {a.frontRunDirection?.toUpperCase()}
@@ -169,7 +169,7 @@ export function G19RippleTriggerPanel({ data }: Props) {
             <div key={i} className="flex items-center gap-2 p-2 rounded-lg bg-[hsl(var(--neural-purple))]/5 border border-[hsl(var(--neural-purple))]/20">
               <ShieldAlert className="w-3 h-3 text-[hsl(var(--neural-purple))] shrink-0" />
               <span className="text-[8px] text-muted-foreground flex-1 leading-tight">
-                <span className="font-mono font-bold">{l.laggardPair?.replace('_','/')}</span> flat ({l.laggardMove?.toFixed(1)}p) while {l.currency}-bloc avg {l.avgLoudMove?.toFixed(1)}p
+                <span className="font-mono font-bold">{l.laggardPair?.replace('_','/')}</span> flat ({(l.laggardMove ?? 0).toFixed(1)}p) while {l.currency}-bloc avg {(l.avgLoudMove ?? 0).toFixed(1)}p
               </span>
               <Badge className="text-[7px] bg-[hsl(var(--neural-green))]/20 text-[hsl(var(--neural-green))]">
                 {l.direction?.toUpperCase()} 1.5x
