@@ -187,6 +187,7 @@ export function FocusPairsEdgeDashboard() {
         .from('oanda_orders')
         .select('currency_pair, environment, direction, entry_price, exit_price, spread_at_entry, slippage_pips, execution_quality_score, session_label, governance_composite, confidence_score, status')
         .eq('status', 'closed')
+        .eq('baseline_excluded', false)
         .eq('direction', 'long')
         .not('entry_price', 'is', null)
         .not('exit_price', 'is', null)

@@ -77,6 +77,7 @@ export const IndicatorPerformancePanel = () => {
         .from('oanda_orders')
         .select('id, currency_pair, direction, entry_price, exit_price, governance_payload, created_at, status')
         .in('status', ['filled', 'closed'])
+        .eq('baseline_excluded', false)
         .not('entry_price', 'is', null)
         .not('exit_price', 'is', null)
         .not('governance_payload', 'is', null)

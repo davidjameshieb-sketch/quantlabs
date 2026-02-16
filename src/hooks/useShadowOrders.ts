@@ -40,6 +40,7 @@ export function useShadowOrders(pollMs = 15_000) {
         .from('oanda_orders')
         .select('id, agent_id, currency_pair, direction, status, entry_price, exit_price, created_at, closed_at, environment, r_pips, confidence_score, regime_label, session_label')
         .like('agent_id', 'shadow-%')
+        .eq('baseline_excluded', false)
         .order('created_at', { ascending: false })
         .limit(100);
 

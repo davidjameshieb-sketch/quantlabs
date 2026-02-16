@@ -155,6 +155,7 @@ export const ExecutionProofPanel = () => {
         .from('oanda_orders')
         .select('governance_payload, status')
         .neq('currency_pair', 'SYSTEM')
+        .eq('baseline_excluded', false)
         .not('governance_payload', 'is', null)
         .order('created_at', { ascending: false })
         .limit(20);

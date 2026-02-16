@@ -25,6 +25,7 @@ export function ConfidenceCompetencePanel() {
       .from('oanda_orders')
       .select('agent_id, trade_health_score, r_pips, entry_ths, status')
       .in('status', ['filled', 'closed'])
+      .eq('baseline_excluded', false)
       .not('agent_id', 'is', null)
       .not('entry_price', 'is', null)
       .not('exit_price', 'is', null)

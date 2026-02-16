@@ -30,6 +30,7 @@ export function useExplosiveGrowth() {
           .from('oanda_orders')
           .select('*')
           .eq('user_id', user.id)
+          .eq('baseline_excluded', false)
           .in('status', ['filled', 'closed'])
           .not('entry_price', 'is', null)
           .not('exit_price', 'is', null)

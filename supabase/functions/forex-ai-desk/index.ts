@@ -329,6 +329,7 @@ async function fetchRecentClosedTrades(sb: ReturnType<typeof createClient>, limi
     .from("oanda_orders")
     .select("*")
     .eq("environment", "live")
+    .eq("baseline_excluded", false)
     .in("status", ["filled", "closed"])
     .not("exit_price", "is", null)
     .order("closed_at", { ascending: false })

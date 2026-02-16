@@ -29,6 +29,7 @@ export function useUsdCadLearning() {
         .from('oanda_orders')
         .select('*')
         .eq('user_id', user.id)
+        .eq('baseline_excluded', false)
         .ilike('currency_pair', '%USD_CAD%')
         .in('status', ['filled', 'closed', 'shadow_eval'])
         .gte('created_at', since)

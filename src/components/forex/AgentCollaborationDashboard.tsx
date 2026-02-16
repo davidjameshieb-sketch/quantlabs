@@ -86,6 +86,7 @@ export const AgentCollaborationDashboard = () => {
         .from('oanda_orders')
         .select('agent_id, direction, currency_pair, entry_price, exit_price, status, created_at, confidence_score, session_label, governance_composite, environment, regime_label')
         .in('status', ['closed', 'shadow_eval', 'rejected', 'throttled', 'gated'])
+        .eq('baseline_excluded', false)
         .not('agent_id', 'is', null)
         .order('created_at', { ascending: false })
         .limit(2000);

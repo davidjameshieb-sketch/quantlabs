@@ -29,6 +29,7 @@ export function GhostTapePanel() {
       .from('oanda_orders')
       .select('id, currency_pair, direction, gate_result, gate_reasons, counterfactual_pips, counterfactual_result, counterfactual_entry_price, agent_id, created_at, governance_composite')
       .in('status', ['rejected', 'blocked', 'skipped'])
+      .eq('baseline_excluded', false)
       .gte('created_at', sevenDaysAgo)
       .order('created_at', { ascending: false })
       .limit(40);

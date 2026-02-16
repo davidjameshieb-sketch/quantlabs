@@ -55,6 +55,7 @@ async function fetchOrders(
     let q = db
       .from("oanda_orders")
       .select("*")
+      .eq("baseline_excluded", false)
       .in("status", statuses)
       .gte("created_at", cutoff)
       .not("entry_price", "is", null)

@@ -120,6 +120,7 @@ export function CounterfactualPanel() {
         .from('oanda_orders')
         .select('id, currency_pair, direction, created_at, error_message, gate_result, counterfactual_entry_price, counterfactual_exit_5m, counterfactual_exit_10m, counterfactual_exit_15m, counterfactual_pips, counterfactual_result, governance_payload, session_label, regime_label')
         .in('status', ['rejected', 'blocked', 'skipped'])
+        .eq('baseline_excluded', false)
         .eq('user_id', user.id)
         .gte('created_at', sevenDaysAgo)
         .order('created_at', { ascending: false })

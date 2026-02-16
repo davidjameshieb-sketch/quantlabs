@@ -66,6 +66,7 @@ export function FailurePatternTicker() {
       .from('oanda_orders')
       .select('currency_pair, mfe_r, r_pips, direction')
       .in('status', ['filled', 'closed'])
+      .eq('baseline_excluded', false)
       .not('mfe_r', 'is', null)
       .not('r_pips', 'is', null)
       .gte('created_at', oneHourAgo)
@@ -92,6 +93,7 @@ export function FailurePatternTicker() {
       .from('oanda_orders')
       .select('r_pips, currency_pair')
       .in('status', ['filled', 'closed'])
+      .eq('baseline_excluded', false)
       .not('r_pips', 'is', null)
       .order('created_at', { ascending: false })
       .limit(10);
@@ -118,6 +120,7 @@ export function FailurePatternTicker() {
       .from('oanda_orders')
       .select('counterfactual_result')
       .in('status', ['rejected', 'blocked', 'skipped'])
+      .eq('baseline_excluded', false)
       .not('counterfactual_result', 'is', null)
       .gte('created_at', new Date(now - 24 * 60 * 60 * 1000).toISOString())
       .limit(100);
