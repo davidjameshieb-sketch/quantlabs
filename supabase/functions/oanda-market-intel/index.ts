@@ -60,6 +60,15 @@ function getOandaCreds(env: string) {
   return { apiToken, accountId, host };
 }
 
+// Order book & position book endpoints require PRACTICE credentials on OANDA
+// (live API tokens get 401 on these market-data-only endpoints)
+function getOandaCredsForBooks() {
+  const apiToken = Deno.env.get("OANDA_API_TOKEN"); // practice token
+  const accountId = Deno.env.get("OANDA_ACCOUNT_ID"); // practice account
+  const host = OANDA_HOSTS.practice;
+  return { apiToken, accountId, host };
+}
+
 async function oandaGet(url: string, apiToken: string): Promise<any> {
   const res = await fetch(url, {
     headers: { Authorization: `Bearer ${apiToken}`, Accept: "application/json" },
@@ -73,17 +82,19 @@ async function oandaGet(url: string, apiToken: string): Promise<any> {
 }
 
 // ── Order Book ──
-async function fetchOrderBooks(host: string, accountId: string, apiToken: string): Promise<Record<string, unknown>> {
+async function fetchOrderBooks(host: string, accountId: string, apiToken: string, bookHost?: string, bookToken?: string): Promise<Record<string, unknown>> {
   const now = Date.now();
   if (now - cacheTimestamps.orderBook < CACHE_TTL.orderBook && Object.keys(cachedOrderBooks).length > 0) {
     return cachedOrderBooks;
   }
 
   const instruments = await getForexInstruments(host, accountId, apiToken);
+  const effectiveHost = bookHost || host;
+  const effectiveToken = bookToken || apiToken;
   const books: Record<string, unknown> = {};
   const results = await Promise.allSettled(
     instruments.map(async (inst) => {
-      const data = await oandaGet(`${host}/v3/instruments/${inst}/orderBook`, apiToken);
+      const data = await oandaGet(`${effectiveHost}/v3/instruments/${inst}/orderBook`, effectiveToken);
       if (data?.orderBook) {
         const ob = data.orderBook;
         // Extract just the key buckets around current price
@@ -123,17 +134,19 @@ async function fetchOrderBooks(host: string, accountId: string, apiToken: string
 }
 
 // ── Position Book ──
-async function fetchPositionBooks(host: string, accountId: string, apiToken: string): Promise<Record<string, unknown>> {
+async function fetchPositionBooks(host: string, accountId: string, apiToken: string, bookHost?: string, bookToken?: string): Promise<Record<string, unknown>> {
   const now = Date.now();
   if (now - cacheTimestamps.positionBook < CACHE_TTL.positionBook && Object.keys(cachedPositionBooks).length > 0) {
     return cachedPositionBooks;
   }
 
   const instruments = await getForexInstruments(host, accountId, apiToken);
+  const effectiveHost = bookHost || host;
+  const effectiveToken = bookToken || apiToken;
   const books: Record<string, unknown> = {};
   await Promise.allSettled(
     instruments.map(async (inst) => {
-      const data = await oandaGet(`${host}/v3/instruments/${inst}/positionBook`, apiToken);
+      const data = await oandaGet(`${effectiveHost}/v3/instruments/${inst}/positionBook`, effectiveToken);
       if (data?.positionBook) {
         const pb = data.positionBook;
         const buckets = (pb.buckets || []).map((b: any) => ({
@@ -388,6 +401,8 @@ Deno.serve(async (req) => {
   try {
     const env = Deno.env.get("OANDA_ENV") || "live";
     const { apiToken, accountId, host } = getOandaCreds(env);
+    // Practice credentials for order/position books (OANDA restricts these on live tokens)
+    const bookCreds = getOandaCredsForBooks();
 
     if (!apiToken || !accountId) {
       return new Response(
@@ -413,12 +428,12 @@ Deno.serve(async (req) => {
     }
     if (fetchAll || sections.includes("orderBook")) {
       fetches.push(
-        fetchOrderBooks(host, accountId, apiToken).then(d => { results.orderBook = d; })
+        fetchOrderBooks(host, accountId, apiToken, bookCreds.host, bookCreds.apiToken).then(d => { results.orderBook = d; })
       );
     }
     if (fetchAll || sections.includes("positionBook")) {
       fetches.push(
-        fetchPositionBooks(host, accountId, apiToken).then(d => { results.positionBook = d; })
+        fetchPositionBooks(host, accountId, apiToken, bookCreds.host, bookCreds.apiToken).then(d => { results.positionBook = d; })
       );
     }
     if (fetchAll || sections.includes("instruments")) {

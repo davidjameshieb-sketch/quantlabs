@@ -786,8 +786,24 @@ Deno.serve(async (req) => {
             closedCount++;
             continue;
           }
-        } catch {
-          console.warn(`[TRADE-MONITOR] Could not fetch trade ${order.oanda_trade_id} details`);
+        } catch (fetchErr) {
+          const errMsg = (fetchErr as Error).message || "";
+          // If OANDA returns 404 (NO_SUCH_TRADE), the trade was closed and purged on broker side
+          // Mark it closed in DB to stop the error loop
+          if (errMsg.includes("NO_SUCH_TRADE") || errMsg.includes("404") || errMsg.includes("does not exist")) {
+            console.warn(`[TRADE-MONITOR] ${order.currency_pair}: Trade ${order.oanda_trade_id} no longer exists on OANDA — marking closed (orphan reconciliation)`);
+            await supabase
+              .from("oanda_orders")
+              .update({
+                status: "closed",
+                closed_at: new Date().toISOString(),
+                error_message: `Orphan reconciliation: OANDA trade ${order.oanda_trade_id} no longer exists (404)`,
+              })
+              .eq("id", order.id);
+            closedCount++;
+            continue;
+          }
+          console.warn(`[TRADE-MONITOR] Could not fetch trade ${order.oanda_trade_id} details: ${errMsg}`);
         }
         
         heldCount++;
