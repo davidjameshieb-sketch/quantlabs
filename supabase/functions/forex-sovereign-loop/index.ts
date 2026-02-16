@@ -337,6 +337,7 @@ async function checkTier4Trigger(supabase: any): Promise<{ shouldRun: boolean; r
     const { data: recentTrades } = await supabase
       .from("oanda_orders")
       .select("status, r_pips, closed_at")
+      .eq("baseline_excluded", false)
       .not("closed_at", "is", null)
       .order("closed_at", { ascending: false })
       .limit(50);
