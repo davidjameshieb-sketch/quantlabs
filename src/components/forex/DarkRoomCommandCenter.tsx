@@ -542,6 +542,55 @@ function TradeExecutionPanel({ account, metrics, analytics, brokerOpenTradeIds }
   );
 }
 
+// ─── OANDA Heartbeat Hook ────────────────────────────────
+
+function useOandaHeartbeat(intervalMs = 5000) {
+  const [state, setState] = useState<{
+    alive: boolean;
+    latencyMs: number | null;
+    lastPingAt: number | null;
+    pairCount: number;
+    consecutiveFails: number;
+    history: number[]; // last 20 latencies
+  }>({ alive: false, latencyMs: null, lastPingAt: null, pairCount: 0, consecutiveFails: 0, history: [] });
+
+  useEffect(() => {
+    let mounted = true;
+    const ping = async () => {
+      const t0 = performance.now();
+      try {
+        const res = await supabase.functions.invoke('oanda-pricing', { body: {} });
+        const elapsed = Math.round(performance.now() - t0);
+        if (!mounted) return;
+        const prices = res.data?.prices || {};
+        const pairCount = Object.keys(prices).length;
+        setState(prev => ({
+          alive: true,
+          latencyMs: elapsed,
+          lastPingAt: Date.now(),
+          pairCount,
+          consecutiveFails: 0,
+          history: [...prev.history.slice(-19), elapsed],
+        }));
+      } catch {
+        if (!mounted) return;
+        setState(prev => ({
+          ...prev,
+          alive: false,
+          latencyMs: null,
+          lastPingAt: Date.now(),
+          consecutiveFails: prev.consecutiveFails + 1,
+        }));
+      }
+    };
+    ping();
+    const id = setInterval(ping, intervalMs);
+    return () => { mounted = false; clearInterval(id); };
+  }, [intervalMs]);
+
+  return state;
+}
+
 // ─── Main Command Center ─────────────────────────────────
 
 interface DarkRoomProps {
@@ -553,8 +602,8 @@ interface DarkRoomProps {
 }
 
 export function DarkRoomCommandCenter({ account, executionMetrics, tradeAnalytics, connected, brokerOpenTradeIds }: DarkRoomProps) {
-  // Fetch posture from gate_bypasses
   const [posture, setPosture] = useState({ mode: 'DARK-ROOM', sizing: '0.1x', execution: 'MARKET' });
+  const heartbeat = useOandaHeartbeat(5000);
 
   useEffect(() => {
     const fetchPosture = async () => {
@@ -590,47 +639,114 @@ export function DarkRoomCommandCenter({ account, executionMetrics, tradeAnalytic
     });
   }, [executionMetrics, brokerOpenTradeIds]);
 
+  // Heartbeat derived values
+  const avgLatency = heartbeat.history.length > 0
+    ? Math.round(heartbeat.history.reduce((a, b) => a + b, 0) / heartbeat.history.length)
+    : null;
+  const maxLatency = heartbeat.history.length > 0 ? Math.max(...heartbeat.history) : null;
+  const minLatency = heartbeat.history.length > 0 ? Math.min(...heartbeat.history) : null;
+  const secondsSinceLastPing = heartbeat.lastPingAt ? Math.round((Date.now() - heartbeat.lastPingAt) / 1000) : null;
+
+  const latencyColor = heartbeat.latencyMs == null
+    ? 'text-red-400'
+    : heartbeat.latencyMs < 500 ? 'text-emerald-400'
+    : heartbeat.latencyMs < 1500 ? 'text-amber-400'
+    : 'text-red-400';
+
   return (
     <div className="space-y-4">
-      {/* ─── Status Bar ─── */}
+      {/* ─── OANDA Connection Bar ─── */}
       <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }}
-        className="flex items-center gap-3 flex-wrap bg-card/40 border border-border/30 rounded-xl px-4 py-3 backdrop-blur-sm"
+        className="relative overflow-hidden bg-card/40 border border-border/30 rounded-xl px-4 py-3 backdrop-blur-sm"
       >
-        {/* Mode badge */}
-        <div className="flex items-center gap-2">
-          <div className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
-          <span className="text-xs font-mono font-black text-amber-400 tracking-wider">{posture.mode}</span>
-        </div>
-        <div className="w-px h-5 bg-border/40" />
-
-        {/* Connection */}
-        <div className="flex items-center gap-1.5">
-          {connected === true ? <Wifi className="w-3.5 h-3.5 text-emerald-400" /> : <Clock className="w-3.5 h-3.5 text-amber-400 animate-pulse" />}
-          <span className="text-[10px] text-muted-foreground">{connected === true ? 'OANDA Live' : 'Connecting…'}</span>
-        </div>
-        <div className="w-px h-5 bg-border/40" />
-
-        {/* Ripple Stream Engine */}
-        <div className="flex items-center gap-1.5">
-          <div className="relative">
-            <div className="w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_6px_rgba(34,197,94,0.5)]" />
-            <div className="absolute inset-0 w-2 h-2 rounded-full bg-emerald-400 animate-ping opacity-30" />
+        {/* Latency sparkline background */}
+        {heartbeat.history.length > 1 && (
+          <div className="absolute bottom-0 left-0 right-0 h-6 opacity-10 pointer-events-none">
+            <svg viewBox={`0 0 ${heartbeat.history.length - 1} 100`} className="w-full h-full" preserveAspectRatio="none">
+              <polyline
+                fill="none"
+                stroke={heartbeat.alive ? 'hsl(142, 76%, 36%)' : 'hsl(0, 84%, 60%)'}
+                strokeWidth="2"
+                points={heartbeat.history.map((v, i) => {
+                  const max = Math.max(...heartbeat.history, 1);
+                  return `${i},${100 - (v / max) * 90}`;
+                }).join(' ')}
+              />
+            </svg>
           </div>
-          <span className="text-[10px] font-mono text-emerald-400/80">Stream Engine</span>
-        </div>
-        <div className="w-px h-5 bg-border/40" />
+        )}
 
-        {/* Key stats inline */}
-        <div className="flex items-center gap-4 text-[10px]">
-          <span className="text-muted-foreground">Posture: <span className="text-foreground font-bold">{posture.execution}</span></span>
-          <span className="text-muted-foreground">Sizing: <span className="text-foreground font-bold">{posture.sizing}</span></span>
-          <span className="text-muted-foreground">NAV: <span className={cn("font-mono font-bold", nav > 0 ? "text-emerald-400" : "text-foreground")}>${nav.toFixed(2)}</span></span>
-        </div>
+        <div className="relative flex items-center gap-3 flex-wrap">
+          {/* Live connection indicator */}
+          <div className="flex items-center gap-2">
+            <div className="relative">
+              <div className={cn(
+                "w-2.5 h-2.5 rounded-full",
+                heartbeat.alive
+                  ? "bg-emerald-400 shadow-[0_0_8px_rgba(34,197,94,0.6)]"
+                  : "bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.6)]"
+              )} />
+              {heartbeat.alive && (
+                <div className="absolute inset-0 w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping opacity-30" />
+              )}
+            </div>
+            {heartbeat.alive
+              ? <Wifi className="w-4 h-4 text-emerald-400" />
+              : <WifiOff className="w-4 h-4 text-red-400 animate-pulse" />
+            }
+            <span className={cn(
+              "text-xs font-mono font-black tracking-wider",
+              heartbeat.alive ? "text-emerald-400" : "text-red-400"
+            )}>
+              {heartbeat.alive ? 'OANDA LIVE' : 'DISCONNECTED'}
+            </span>
+          </div>
+          <div className="w-px h-5 bg-border/40" />
 
-        {/* Strategy label */}
-        <Badge variant="outline" className="ml-auto text-[9px] font-mono border-primary/30 text-primary">
-          Institutional Flow + Lead-Lag
-        </Badge>
+          {/* Latency ms */}
+          <div className="flex items-center gap-1.5">
+            <Activity className={cn("w-3.5 h-3.5", latencyColor)} />
+            <span className={cn("text-sm font-mono font-black tabular-nums", latencyColor)}>
+              {heartbeat.latencyMs != null ? `${heartbeat.latencyMs}ms` : '---'}
+            </span>
+          </div>
+          <div className="w-px h-5 bg-border/40" />
+
+          {/* Avg / Min / Max */}
+          <div className="flex items-center gap-3 text-[10px] font-mono">
+            <span className="text-muted-foreground">AVG: <span className="text-foreground font-bold">{avgLatency != null ? `${avgLatency}ms` : '—'}</span></span>
+            <span className="text-muted-foreground">MIN: <span className="text-emerald-400 font-bold">{minLatency != null ? `${minLatency}ms` : '—'}</span></span>
+            <span className="text-muted-foreground">MAX: <span className="text-amber-400 font-bold">{maxLatency != null ? `${maxLatency}ms` : '—'}</span></span>
+          </div>
+          <div className="w-px h-5 bg-border/40" />
+
+          {/* Pair count */}
+          <div className="flex items-center gap-1.5 text-[10px]">
+            <Server className="w-3 h-3 text-muted-foreground" />
+            <span className="text-muted-foreground">Pairs: <span className="text-foreground font-mono font-bold">{heartbeat.pairCount || '—'}</span></span>
+          </div>
+          <div className="w-px h-5 bg-border/40" />
+
+          {/* Fails */}
+          {heartbeat.consecutiveFails > 0 && (
+            <>
+              <div className="flex items-center gap-1.5 text-[10px]">
+                <AlertTriangle className="w-3 h-3 text-red-400" />
+                <span className="text-red-400 font-mono font-bold">{heartbeat.consecutiveFails} FAIL{heartbeat.consecutiveFails > 1 ? 'S' : ''}</span>
+              </div>
+              <div className="w-px h-5 bg-border/40" />
+            </>
+          )}
+
+          {/* Strategy + Posture (right side) */}
+          <div className="flex items-center gap-3 ml-auto text-[10px]">
+            <span className="text-muted-foreground">Sizing: <span className="text-foreground font-bold">{posture.sizing}</span></span>
+            <span className="text-muted-foreground">NAV: <span className={cn("font-mono font-bold", nav > 0 ? "text-emerald-400" : "text-foreground")}>${nav.toFixed(2)}</span></span>
+            <Badge variant="outline" className="text-[9px] font-mono border-primary/30 text-primary">
+              {posture.mode}
+            </Badge>
+          </div>
+        </div>
       </motion.div>
 
       {/* ─── Sonar Ripple Dashboard ─── */}
