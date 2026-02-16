@@ -14,16 +14,31 @@ You are not a "trading assistant." You are the pilot. The operator is your archi
 
 ## CORE PRINCIPLES
 
-### 1. REFLEXIVE LIQUIDITY SYNTHESIS
-You treat the entire 28-pair FX universe as a single, interconnected liquidity pool. When you detect a sharp move on a "Loud" pair (e.g., EUR_USD spike), you are authorized to IMMEDIATELY enter "Quiet" correlated pairs (e.g., EUR_GBP, EUR_JPY) that haven't yet reacted. You trade the ripple, not the splash.
+### 1. Z-SCORE STRIKE ENGINE (v3 — LIVE)
+The ripple-stream engine has been rebuilt as the Z-Score Strike Engine v3. The old "committee" of gates (G1-G6) is DEAD. Three L0 deterministic soldiers fire autonomously on every OANDA tick:
 
-Cross-pair correlation groups:
-- USD-BLOC: EUR_USD, GBP_USD, AUD_USD, NZD_USD (USD weakness = simultaneous long opportunity)
-- JPY-CARRY: USD_JPY, EUR_JPY, GBP_JPY, AUD_JPY (risk-on/risk-off cluster)
-- EUR-CROSSES: EUR_GBP, EUR_JPY, EUR_AUD, EUR_CHF (EUR strength propagation)
-- COMMODITY: AUD_USD, NZD_USD, USD_CAD (commodity flow correlation)
+**STRATEGY 1 — Z-SCORE STRIKE:** Computes a rolling 120-tick z-score on the correlation spread between paired instruments. When |z| > 2.0 AND the lagging pair shows a 3-tick momentum burst → FIRE. Pure statistics, no AI on the hot path.
 
-When you see a significant move (>5 pips in 1m) on any pair, scan its correlation group for "Quiet" pairs lagging behind. If the lagging pair has governance approval, lead-lag entry is authorized.
+**STRATEGY 2 — VELOCITY GATING:** 5+ same-direction ticks within 2s = impulse fire.
+
+**STRATEGY 3 — SNAP-BACK SNIPER:** Detects stop-hunt exhaustion (70%+ directional pressure then reversal) → contrarian entry.
+
+**YOUR ROLE IS GENERAL STAFF — NOT TRIGGER PULLER:**
+You control the THEATER and BATTALION SIZE, not individual shots:
+- Write to sovereign_memory key "zscore_strike_config" to set: units, slPips, tpPips, zScoreThreshold (default 2.0), blockedPairs
+- Write to "correlation_groups_config" to control which pair groups are monitored: [{name, pairA, pairB}]
+- Write to "velocity_gating_config" / "snapback_sniper_config" for those strategies
+- DO NOT use arm_correlation_trigger or disarm_correlation_trigger — they are OBSOLETE
+
+Default correlation groups (6):
+- EUR_GBP_CROSS: EUR_USD ↔ GBP_USD
+- AUD_NZD_CROSS: AUD_USD ↔ NZD_USD
+- EUR_JPY_TRI: EUR_USD ↔ USD_JPY
+- GBP_JPY_TRI: GBP_USD ↔ USD_JPY
+- CAD_AUD_CROSS: USD_CAD ↔ AUD_USD
+- EUR_AUD_CROSS: EUR_USD ↔ AUD_USD
+
+Three gates total: Spread OK → Z-Score threshold → Momentum burst → FIRE. That's it. The soldiers have autonomy.
 
 ### 2. ADVERSARIAL STOP-HUNT PROTECTION
 For every open position, you will execute a Liquidity Heatmap Analysis:
@@ -254,8 +269,8 @@ oanda-market-intel, forex-economic-calendar, batch-prices, forex-cot-data, forex
 - **adjust_session_sl_tp**: Dynamically widens or tightens SL/TP parameters for a specific session ("Volatility Dampener"). Required: session (one of: "asian", "london", "ny-open", "ny-overlap", "late-ny", "rollover", "all"). At least one of: trailingStopPips (3-50), takeProfitMultiplier (0.5-5.0x), stopLossMultiplier (0.5-3.0x). Optional: reason, ttlMinutes (default 240). Use before high-impact data releases to widen the "lungs" so trades survive the initial noise.
 - **blacklist_regime_for_pair**: Blocks a specific pair+regime combination without suspending the entire agent ("Kill-Switch Evolution"). Required: pair, regime (e.g., "breakdown", "compression", "trending", "transition"). Optional: direction ("long"/"short" to block only one side), reason, ttlMinutes (default 1440/24h, max 2880/48h). Use when a regime consistently fails on a specific pair due to underlying fundamentals (e.g., breakdown shorts on USD_CAD failing because of oil flows).
 - **execute_liquidity_vacuum**: The "Ghost Order" — reads the OANDA order book for a pair, identifies the densest retail stop cluster, and places a LIMIT order inside it to capture the stop-hunt wick. Required: pair, direction ("long"/"short"). Optional: clusterSide ("above"/"below" — which side of current price to target, auto-detected from direction if omitted), offsetPips (how many pips inside the cluster to place the limit, default 2), units (default 500), expirySeconds (how long the limit order stays active, default 300/5min), stopLossPips (default 10), takeProfitPips (default 20), reason. This transforms us from being swept BY stop-hunts to profiting FROM them.
-- **arm_correlation_trigger**: Arms a standing "Ripple Strike" trigger that the sovereign loop evaluates every cycle. When the "loud" pair moves beyond the threshold and the "quiet" pair hasn't caught up, the loop fires a trade on the quiet pair automatically. Required: triggerId (e.g., "eur-usd-to-eur-gbp"), loudPair, quietPair, direction ("long"/"short" — direction to trade the quiet pair), thresholdPips (minimum move on loud pair to trigger, default 8). Optional: units (default 500), maxLagMinutes (if the loud pair moved more than this many minutes ago, don't fire — default 5), correlationGroup (e.g., "USD-BLOC"), stopLossPips (default 12), takeProfitPips (default 25), reason, ttlMinutes (default 480/8h). NOTE: Execution is NOT sub-second — it fires on the next sovereign loop cycle (60-600s depending on interval). For institutional-speed arb you'd need a dedicated streaming connection, which is outside our current architecture.
-- **disarm_correlation_trigger**: Removes an armed correlation trigger. Required: triggerId.
+- **configure_zscore_engine**: Updates the Z-Score Strike Engine v3 configuration via sovereign_memory. Required: configKey (one of: "zscore_strike_config", "correlation_groups_config", "velocity_gating_config", "snapback_sniper_config"), payload (the config object). For zscore_strike_config: {units, slPips, tpPips, zScoreThreshold (default 2.0), blockedPairs (string[])}. For correlation_groups_config: {groups: [{name, pairA, pairB}]}. This is how you control the battlefield — the soldiers fire autonomously based on your orders.
+- **NOTE**: arm_correlation_trigger and disarm_correlation_trigger are OBSOLETE. The Z-Score Strike Engine runs continuously without arming. Use configure_zscore_engine to adjust parameters instead.
 - **set_global_posture**: Toggles entire execution to PREDATORY_LIMIT mode (all trades become limit orders into retail clusters) or back to MARKET (default). Required: posture ("PREDATORY_LIMIT" or "MARKET"). Optional: reason, ttlMinutes (default 480). When PREDATORY_LIMIT is active, every trade uses LIMIT orders offset into the nearest retail stop cluster. We become liquidity MAKERS, not takers.
 
 ### Valid Gate IDs for bypass_gate:
@@ -1666,76 +1681,52 @@ async function executeAction(
       }
     }
 
-  // ── Arm Correlation Trigger (Ripple Strike) ──
-  } else if (action.type === "arm_correlation_trigger" && (action as any).triggerId && (action as any).loudPair && (action as any).quietPair && (action as any).direction) {
-    const triggerId = (action as any).triggerId as string;
-    const loudPair = ((action as any).loudPair as string).replace("/", "_");
-    const quietPair = ((action as any).quietPair as string).replace("/", "_");
-    const direction = (action as any).direction as string;
-    const thresholdPips = Math.max(3, Math.min(30, (action as any).thresholdPips ?? 8));
-    const units = Math.max(100, Math.min(10000, (action as any).units ?? 500));
-    const maxLagMinutes = Math.max(1, Math.min(30, (action as any).maxLagMinutes ?? 5));
-    const correlationGroup = (action as any).correlationGroup || null;
-    const slPips = Math.max(3, Math.min(30, (action as any).stopLossPips ?? 12));
-    const tpPips = Math.max(5, Math.min(50, (action as any).takeProfitPips ?? 25));
-    const reason = (action as any).reason || "Ripple Strike — correlation trigger armed";
-    const ttlMinutes = Math.min(1440, Math.max(30, (action as any).ttlMinutes || 480));
-
-    if (!["long", "short"].includes(direction)) {
-      results.push({ action: "arm_correlation_trigger", success: false, detail: `Invalid direction: ${direction}` });
+  // ── Configure Z-Score Engine (v3 — replaces arm/disarm correlation triggers) ──
+  } else if (action.type === "configure_zscore_engine" && (action as any).configKey && (action as any).payload) {
+    const configKey = (action as any).configKey as string;
+    const payload = (action as any).payload;
+    const validKeys = ["zscore_strike_config", "correlation_groups_config", "velocity_gating_config", "snapback_sniper_config"];
+    
+    if (!validKeys.includes(configKey)) {
+      results.push({ action: "configure_zscore_engine", success: false, detail: `Invalid configKey: ${configKey}. Valid: ${validKeys.join(", ")}` });
     } else {
-      const key = `CORRELATION_TRIGGER:${triggerId}`;
-      await sb.from("gate_bypasses").update({ revoked: true }).eq("gate_id", key).eq("revoked", false);
-
-      // Capture baseline prices for both pairs at arming time
-      let loudBaseline: number | null = null;
-      let quietBaseline: number | null = null;
-      try {
-        const pricingRes = await oandaRequest(`/v3/accounts/{accountId}/pricing?instruments=${loudPair},${quietPair}`, "GET", undefined, environment);
-        for (const p of (pricingRes.prices || []) as any[]) {
-          const mid = (parseFloat(p.bids?.[0]?.price || "0") + parseFloat(p.asks?.[0]?.price || "0")) / 2;
-          if (p.instrument === loudPair) loudBaseline = mid;
-          if (p.instrument === quietPair) quietBaseline = mid;
-        }
-      } catch (priceErr) {
-        console.warn(`[RIPPLE] Baseline price fetch failed: ${(priceErr as Error).message}`);
-      }
-
-      const payload = {
-        triggerId, loudPair, quietPair, direction, thresholdPips,
-        units, maxLagMinutes, correlationGroup, slPips, tpPips, reason,
-        loudBaseline, quietBaseline,
-        armedAt: new Date().toISOString(),
-        fired: false,
-      };
-
-      const { error: insertErr } = await sb.from("gate_bypasses").insert({
-        gate_id: key,
-        pair: quietPair,
-        reason: JSON.stringify(payload),
-        expires_at: new Date(Date.now() + ttlMinutes * 60 * 1000).toISOString(),
+      const { error: upsertErr } = await sb.from("sovereign_memory").upsert({
+        memory_type: "engine_config",
+        memory_key: configKey,
+        payload,
+        relevance_score: 1.0,
         created_by: "sovereign-intelligence",
-      });
-      if (insertErr) {
-        results.push({ action: "arm_correlation_trigger", success: false, detail: insertErr.message });
+        updated_at: new Date().toISOString(),
+      }, { onConflict: "memory_type,memory_key" });
+
+      if (upsertErr) {
+        results.push({ action: "configure_zscore_engine", success: false, detail: upsertErr.message });
       } else {
-        console.log(`[RIPPLE] Correlation trigger ARMED: ${triggerId} — ${loudPair}→${quietPair} ${direction} @ ≥${thresholdPips}pip move — TTL ${ttlMinutes}m`);
+        console.log(`[ZSCORE-v3] Engine config updated: ${configKey} →`, JSON.stringify(payload).slice(0, 200));
         results.push({
-          action: "arm_correlation_trigger",
+          action: "configure_zscore_engine",
           success: true,
-          detail: `Ripple trigger "${triggerId}" ARMED: When ${loudPair} moves ≥${thresholdPips} pips, fire ${direction} ${units} ${quietPair} (SL=${slPips}pip, TP=${tpPips}pip). Active for ${Math.round(ttlMinutes / 60)}h. Baselines: ${loudPair}=${loudBaseline?.toFixed(5) || 'N/A'}, ${quietPair}=${quietBaseline?.toFixed(5) || 'N/A'}. NOTE: Fires on next sovereign loop cycle (not sub-second).`,
-          data: payload,
+          detail: `Z-Score Strike Engine config "${configKey}" updated. Changes take effect on next ripple-stream cycle (~110s max).`,
+          data: { configKey, payload },
         });
       }
     }
 
-  // ── Disarm Correlation Trigger ──
-  } else if (action.type === "disarm_correlation_trigger" && (action as any).triggerId) {
-    const triggerId = (action as any).triggerId as string;
-    const key = `CORRELATION_TRIGGER:${triggerId}`;
-    await sb.from("gate_bypasses").update({ revoked: true }).eq("gate_id", key).eq("revoked", false);
-    console.log(`[RIPPLE] Correlation trigger "${triggerId}" DISARMED`);
-    results.push({ action: "disarm_correlation_trigger", success: true, detail: `Correlation trigger "${triggerId}" disarmed` });
+  // ── LEGACY: arm_correlation_trigger → redirect to configure_zscore_engine ──
+  } else if (action.type === "arm_correlation_trigger") {
+    results.push({
+      action: "arm_correlation_trigger",
+      success: false,
+      detail: "OBSOLETE — arm_correlation_trigger is dead. The Z-Score Strike Engine v3 runs continuously without arming. Use configure_zscore_engine to adjust z-score thresholds, correlation groups, sizing, and blocked pairs instead.",
+    });
+
+  // ── LEGACY: disarm_correlation_trigger → redirect ──
+  } else if (action.type === "disarm_correlation_trigger") {
+    results.push({
+      action: "disarm_correlation_trigger",
+      success: false,
+      detail: "OBSOLETE — disarm_correlation_trigger is dead. To block a pair, use configure_zscore_engine with configKey='zscore_strike_config' and add the pair to blockedPairs array.",
+    });
 
   // ── Set Global Posture (PREDATORY_LIMIT / MARKET) ──
   } else if (action.type === "set_global_posture" && (action as any).posture) {
