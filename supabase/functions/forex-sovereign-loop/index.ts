@@ -2231,10 +2231,10 @@ Deno.serve(async (req) => {
       byAgent: (systemState as any).byAgent,
       blockedTradeAnalysis: (systemState as any).blockedTradeAnalysis,
       webHeadlines: ((webSearchData as any)?.results || []).slice(0, 3).map((r: any) => r.title),
-      sovereignMemory: sovereignMemory.slice(0, 20).map((m: any) => ({
+      sovereignMemory: sovereignMemory.slice(0, 10).map((m: any) => ({
         type: m.memory_type, key: m.memory_key,
-        payload: m.payload, relevance: m.relevance_score,
-        updated: m.updated_at,
+        summary: typeof m.payload === 'object' ? (m.payload as any)?.description || (m.payload as any)?.content || m.memory_key : m.memory_key,
+        relevance: m.relevance_score,
       })),
       // Surface prior physics discoveries for continuity
       physicsDiscoveries: sovereignMemory
@@ -2265,11 +2265,13 @@ Deno.serve(async (req) => {
     const winRate = perfSummary.winRate || 50;
     const maxConsecLosses = perfSummary.maxConsecutiveLosses || 0;
 
-    const needsL4 =
-      hoursSinceL4 >= 8 ||                          // At least every 8 hours
-      (winRate < 40 && stats.length >= 20) ||        // Performance degradation
-      maxConsecLosses >= 5 ||                        // Severe losing streak
-      (hoursSinceL4 >= 4 && stats.length >= 50);     // 4h+ and enough data
+    // HARD MINIMUM: Never fire L4 within 2 hours of last L4 (prevents double-fire)
+    const l4CooldownMet = hoursSinceL4 >= 2;
+    const needsL4 = l4CooldownMet && (
+      hoursSinceL4 >= 8 ||                          // Scheduled: every 8 hours
+      (winRate < 40 && stats.length >= 20 && hoursSinceL4 >= 4) ||  // Performance degradation (4h min)
+      (maxConsecLosses >= 5 && hoursSinceL4 >= 3)   // Severe losing streak (3h min)
+    );  // REMOVED: 4h+50 trades trigger (was firing every cycle with 281 stats)
 
     let tierUsed: "L1-only" | "L2-L3" | "L4" = "L2-L3";
     let aiModel = "google/gemini-3-flash-preview";
@@ -2284,12 +2286,15 @@ Deno.serve(async (req) => {
     
     let directiveInjection = "";
     if (directiveMemories.length > 0) {
-      directiveInjection = "\n\n## YOUR SELF-DEFINED DIRECTIVES (You wrote these — follow them)\n";
-      for (const d of directiveMemories) {
+      // For L2-L3: only inject top 25 highest-priority directives to save ~60% prompt tokens
+      // For L4: inject all directives for full strategic context
+      const directivesToInject = needsL4 ? directiveMemories : directiveMemories.slice(0, 25);
+      directiveInjection = `\n\n## YOUR SELF-DEFINED DIRECTIVES (${directivesToInject.length}/${directiveMemories.length} loaded — ${needsL4 ? 'FULL L4' : 'top-25 L2-L3'})\n`;
+      for (const d of directivesToInject) {
         const p = d.payload as any;
         directiveInjection += `- [priority=${p.priority || 1}] ${p.content}\n`;
       }
-      console.log(`[SOVEREIGN-LOOP] 📜 ${directiveMemories.length} self-defined directives loaded`);
+      console.log(`[SOVEREIGN-LOOP] 📜 ${directivesToInject.length}/${directiveMemories.length} directives loaded (${needsL4 ? 'L4 full' : 'L2-L3 compressed'})`);
     }
 
     // ─── LOAD MACRO DEFINITIONS for context ───
