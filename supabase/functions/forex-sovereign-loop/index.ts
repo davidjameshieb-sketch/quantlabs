@@ -369,7 +369,6 @@ async function buildRegimeForecastPayload(supabase: any): Promise<any> {
     const results = await Promise.all(
       FORECAST_PAIRS.map(async (pair) => {
         try {
-          // Fetch M15 candles (last 30 bars = ~7.5h)
           const res = await fetch(
             `${baseUrl}/v3/instruments/${pair}/candles?granularity=M15&count=30`,
             { headers: { Authorization: `Bearer ${oandaToken}` } }
@@ -388,75 +387,138 @@ async function buildRegimeForecastPayload(supabase: any): Promise<any> {
       const isJpy = pair.includes("JPY");
       const mult = isJpy ? 100 : 10000;
 
-      // Calculate ATR for each candle
-      const atrs: number[] = candles.map((c: any) =>
-        (parseFloat(c.mid.h) - parseFloat(c.mid.l)) * mult
-      );
+      // Parse OHLC once
+      const bars = candles.map((c: any) => ({
+        o: parseFloat(c.mid.o),
+        h: parseFloat(c.mid.h),
+        l: parseFloat(c.mid.l),
+        c: parseFloat(c.mid.c),
+      }));
 
-      // Split into windows
-      const recentATR = atrs.slice(-5);
-      const olderATR = atrs.slice(-15, -5);
-
-      const avgRecent = recentATR.reduce((a: number, b: number) => a + b, 0) / recentATR.length;
-      const avgOlder = olderATR.reduce((a: number, b: number) => a + b, 0) / olderATR.length;
-
-      // ATR compression ratio: < 0.6 = strong compression, > 1.3 = expansion
-      const compressionRatio = avgOlder > 0 ? avgRecent / avgOlder : 1;
-
-      // Body-to-range ratio (doji detection = indecision)
-      const recentBodies = candles.slice(-5).map((c: any) => {
-        const range = parseFloat(c.mid.h) - parseFloat(c.mid.l);
-        const body = Math.abs(parseFloat(c.mid.c) - parseFloat(c.mid.o));
-        return range > 0 ? body / range : 0;
+      // ═══ SIGNAL 1: Displacement Efficiency ═══
+      // Ratio of actual price movement (|close - open|) to total range (high - low).
+      // Marubozu = 1.0 (all movement is useful), Doji = ~0.0 (all wick noise).
+      // Superior to ATR: ATR treats a 20-pip doji = 20-pip marubozu. This doesn't.
+      const recentDE = bars.slice(-5).map(b => {
+        const range = (b.h - b.l) * mult;
+        const body = Math.abs(b.c - b.o) * mult;
+        return range > 0.1 ? body / range : 0;
       });
-      const avgBodyRatio = recentBodies.reduce((a: number, b: number) => a + b, 0) / recentBodies.length;
+      const olderDE = bars.slice(-15, -5).map(b => {
+        const range = (b.h - b.l) * mult;
+        const body = Math.abs(b.c - b.o) * mult;
+        return range > 0.1 ? body / range : 0;
+      });
+      const avgRecentDE = recentDE.reduce((a, b) => a + b, 0) / recentDE.length;
+      const avgOlderDE = olderDE.reduce((a, b) => a + b, 0) / olderDE.length;
+      const deShift = avgOlderDE > 0 ? avgRecentDE / avgOlderDE : 1;
 
-      // Close-to-close directional consistency
-      const closes = candles.slice(-8).map((c: any) => parseFloat(c.mid.c));
+      // ═══ SIGNAL 2: Inside Bar Sequence Count ═══
+      // Count consecutive inside bars from the most recent bar backwards.
+      // Inside bar = current H ≤ prior H AND current L ≥ prior L (contained).
+      // 3+ consecutive inside bars = extreme compression coil.
+      let insideBarStreak = 0;
+      for (let i = bars.length - 1; i > 0; i--) {
+        if (bars[i].h <= bars[i - 1].h && bars[i].l >= bars[i - 1].l) {
+          insideBarStreak++;
+        } else break;
+      }
+
+      // Also count total inside bars in last 10 (not just consecutive)
+      let insideBarCount = 0;
+      for (let i = bars.length - 1; i > Math.max(0, bars.length - 10); i--) {
+        if (bars[i].h <= bars[i - 1].h && bars[i].l >= bars[i - 1].l) {
+          insideBarCount++;
+        }
+      }
+
+      // ═══ SIGNAL 3: Swing Convergence (Structural Squeeze) ═══
+      // Detect swing highs compressing down + swing lows compressing up = triangle.
+      // A swing high = bar[i].h > bar[i-1].h AND bar[i].h > bar[i+1].h
+      const swingHighs: number[] = [];
+      const swingLows: number[] = [];
+      for (let i = 1; i < bars.length - 1; i++) {
+        if (bars[i].h > bars[i - 1].h && bars[i].h > bars[i + 1].h) swingHighs.push(bars[i].h);
+        if (bars[i].l < bars[i - 1].l && bars[i].l < bars[i + 1].l) swingLows.push(bars[i].l);
+      }
+
+      // Swing convergence = last 3 swing highs descending + last 3 swing lows ascending
+      let highsDescending = false, lowsAscending = false;
+      if (swingHighs.length >= 3) {
+        const last3H = swingHighs.slice(-3);
+        highsDescending = last3H[2] < last3H[1] && last3H[1] < last3H[0];
+      }
+      if (swingLows.length >= 3) {
+        const last3L = swingLows.slice(-3);
+        lowsAscending = last3L[2] > last3L[1] && last3L[1] > last3L[0];
+      }
+      const swingConverging = highsDescending && lowsAscending;
+      // Range compression: how tight is the most recent swing range vs the oldest?
+      let swingRangeCompression = 1;
+      if (swingHighs.length >= 2 && swingLows.length >= 2) {
+        const oldRange = (swingHighs[0] - swingLows[0]) * mult;
+        const newRange = (swingHighs[swingHighs.length - 1] - swingLows[swingLows.length - 1]) * mult;
+        swingRangeCompression = oldRange > 0 ? newRange / oldRange : 1;
+      }
+
+      // ═══ SIGNAL 4: Directional Consistency (Close-to-Close) ═══
+      const closes = bars.slice(-8).map(b => b.c);
       const deltas = closes.slice(1).map((c, i) => c - closes[i]);
       const upCount = deltas.filter(d => d > 0).length;
       const downCount = deltas.filter(d => d < 0).length;
       const directionalStrength = Math.max(upCount, downCount) / deltas.length;
 
-      // Predict regime
+      // ═══ COMPOSITE REGIME PREDICTION ═══
       let predictedRegime = "flat";
       let confidence = 0.5;
       let sizingRec = 1.0;
 
-      if (compressionRatio < 0.55 && avgBodyRatio < 0.35) {
-        // Strong compression + dojis → EXPANSION imminent
+      // EXPANSION IMMINENT: structural squeeze + low displacement efficiency (doji clustering)
+      if (swingConverging && avgRecentDE < 0.35 && insideBarCount >= 3) {
         predictedRegime = "expansion_imminent";
-        confidence = Math.min(0.9, 0.6 + (0.55 - compressionRatio) * 2);
-        sizingRec = 1.3; // Pre-load sizing
-      } else if (compressionRatio < 0.7) {
+        confidence = Math.min(0.95, 0.7 + insideBarStreak * 0.05 + (swingConverging ? 0.1 : 0));
+        sizingRec = 1.5; // Pre-load — the coil is about to snap
+      } else if (insideBarStreak >= 3 || (insideBarCount >= 4 && avgRecentDE < 0.3)) {
+        predictedRegime = "expansion_imminent";
+        confidence = Math.min(0.9, 0.65 + insideBarStreak * 0.05);
+        sizingRec = 1.3;
+      } else if (swingConverging || (insideBarCount >= 2 && deShift < 0.6)) {
         predictedRegime = "compression_building";
-        confidence = 0.6;
-        sizingRec = 0.8; // Reduce during compression
-      } else if (compressionRatio > 1.4 && directionalStrength > 0.7) {
+        confidence = 0.65;
+        sizingRec = 0.7; // Reduce — price is coiling, don't get chopped
+      } else if (avgRecentDE > 0.65 && directionalStrength > 0.7 && deShift > 1.2) {
+        // High displacement efficiency + directional = strong trend
         predictedRegime = "trending";
-        confidence = Math.min(0.85, 0.5 + directionalStrength * 0.3);
-        sizingRec = 1.2;
-      } else if (compressionRatio > 1.3) {
+        confidence = Math.min(0.9, 0.55 + avgRecentDE * 0.3 + directionalStrength * 0.1);
+        sizingRec = 1.3;
+      } else if (avgRecentDE > 0.55 && deShift > 1.1) {
         predictedRegime = "expansion";
-        confidence = 0.55;
-        sizingRec = 1.0;
+        confidence = 0.6;
+        sizingRec = 1.1;
+      } else if (avgRecentDE < 0.3 && directionalStrength < 0.5) {
+        predictedRegime = "choppy";
+        confidence = 0.6;
+        sizingRec = 0.5; // Danger zone — no edge
       }
 
-      // Cross-pair divergence signal
-      const last3Direction = deltas.slice(-3).reduce((s, d) => s + (d > 0 ? 1 : -1), 0);
+      const last3Dir = deltas.slice(-3).reduce((s, d) => s + (d > 0 ? 1 : -1), 0);
 
       forecasts.push({
         pair,
-        currentATR: Math.round(avgRecent * 10) / 10,
-        olderATR: Math.round(avgOlder * 10) / 10,
-        compressionRatio: Math.round(compressionRatio * 100) / 100,
-        avgBodyRatio: Math.round(avgBodyRatio * 100) / 100,
+        // Price Action Microstructure (replaces ATR)
+        displacementEfficiency: Math.round(avgRecentDE * 100) / 100,
+        deShift: Math.round(deShift * 100) / 100,
+        insideBarStreak,
+        insideBarCount,
+        swingConverging,
+        swingRangeCompression: Math.round(swingRangeCompression * 100) / 100,
         directionalStrength: Math.round(directionalStrength * 100) / 100,
+        // Prediction
         predictedRegime,
         confidence: Math.round(confidence * 100) / 100,
         sizingRecommendation: sizingRec,
-        barsAhead: compressionRatio < 0.6 ? 2 : 4,
-        recentDirection: last3Direction > 0 ? "UP" : last3Direction < 0 ? "DOWN" : "MIXED",
+        barsAhead: (insideBarStreak >= 3 || swingConverging) ? 2 : 4,
+        recentDirection: last3Dir > 0 ? "UP" : last3Dir < 0 ? "DOWN" : "MIXED",
       });
     }
 
@@ -466,13 +528,17 @@ async function buildRegimeForecastPayload(supabase: any): Promise<any> {
         memory_type: "regime_forecast",
         memory_key: "latest_predictions",
         payload: {
+          engine: "price_action_microstructure_v1",
           predictions: forecasts,
           generatedAt: new Date().toISOString(),
           pairsAnalyzed: forecasts.length,
-          compressionAlerts: forecasts.filter(f => f.predictedRegime.includes("compression") || f.predictedRegime.includes("expansion_imminent")).length,
+          compressionAlerts: forecasts.filter(f =>
+            f.predictedRegime === "compression_building" || f.predictedRegime === "expansion_imminent"
+          ).length,
+          choppyAlerts: forecasts.filter(f => f.predictedRegime === "choppy").length,
         },
-        relevance_score: 0.9,
-        created_by: "regime-forecaster",
+        relevance_score: 0.95,
+        created_by: "regime-forecaster-pa-v1",
       }, { onConflict: "memory_type,memory_key" });
     }
 
