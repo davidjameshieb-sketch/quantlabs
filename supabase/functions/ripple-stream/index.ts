@@ -30,9 +30,9 @@ const MAX_STREAM_SECONDS = 110;
 
 // ─── Z-Score Strike Constants ────────────────────────────
 const ZSCORE_WINDOW = 120;          // ticks to build rolling mean/stddev
-const ZSCORE_FIRE_THRESHOLD = 2.0;  // z > 2.0 = statistical divergence
+const ZSCORE_FIRE_THRESHOLD = 2.0;  // z > 2.0 = statistical divergence (overridden by config)
 const ZSCORE_EXIT_TARGET = 0.0;     // mean reversion target
-const ZSCORE_COOLDOWN_MS = 10_000;  // 10s between fires on same group
+const ZSCORE_COOLDOWN_MS = 300_000; // 5 MINUTES between fires on same group (was 10s — caused triple-taps)
 const ZSCORE_MOMENTUM_TICKS = 3;    // quiet pair must show 3 aligned ticks in 5s
 
 // ─── Velocity Gating Constants ───────────────────────────
@@ -135,9 +135,9 @@ Deno.serve(async (req) => {
       .maybeSingle();
 
     const govPayload = governanceConfig?.payload as Record<string, unknown> | null;
-    const baseUnits: number = (govPayload?.units as number) || 500;
+    const baseUnits: number = (govPayload?.units as number) || 1000;
     const baseSlPips: number = (govPayload?.slPips as number) || 8;
-    const baseTpPips: number = (govPayload?.tpPips as number) || 15;
+    const baseTpPips: number = (govPayload?.tpPips as number) || 30;
     const zScoreThreshold: number = (govPayload?.zScoreThreshold as number) || ZSCORE_FIRE_THRESHOLD;
     const blockedPairs: string[] = (govPayload?.blockedPairs as string[]) || [];
 
@@ -291,10 +291,24 @@ Deno.serve(async (req) => {
         return { success: false };
       }
 
-      // Spread gate — universal L0 safety (3 gates max: spread is gate 1)
-      const maxSpreadPips = 2.5;
+      // ─── L0 HARD GATE 1: Spread gate — tightened from 2.5 to 1.5 pips ───
+      const maxSpreadPips = 1.5;
       if (currentPrice.spreadPips > maxSpreadPips) {
-        console.log(`[STRIKE-v3] 🛡 SPREAD GATE: ${pair} spread ${currentPrice.spreadPips.toFixed(1)}p > ${maxSpreadPips}p — blocked`);
+        console.log(`[STRIKE-v3] 🛡 SPREAD GATE: ${pair} spread ${currentPrice.spreadPips.toFixed(1)}p > ${maxSpreadPips}p — BLOCKED`);
+        return { success: false };
+      }
+
+      // ─── L0 HARD GATE 2: Late-NY / Rollover session block (20:00-23:59 UTC) ───
+      const utcHour = new Date().getUTCHours();
+      if (utcHour >= 20 || utcHour < 0) {
+        console.log(`[STRIKE-v3] 🛡 SESSION GATE: UTC ${utcHour}h — late-NY/rollover blocked`);
+        return { success: false };
+      }
+
+      // ─── L0 HARD GATE 3: Friction-to-edge ratio — spread must be < 30% of TP target ───
+      const frictionPct = (currentPrice.spreadPips / tpPips) * 100;
+      if (frictionPct > 30) {
+        console.log(`[STRIKE-v3] 🛡 FRICTION GATE: ${pair} spread ${currentPrice.spreadPips.toFixed(1)}p = ${frictionPct.toFixed(0)}% of TP(${tpPips}p) — too expensive`);
         return { success: false };
       }
 
