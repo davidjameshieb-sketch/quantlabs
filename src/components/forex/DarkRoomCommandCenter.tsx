@@ -377,16 +377,49 @@ function TradeExecutionPanel({ account, metrics, analytics }: {
               <span className="relative flex h-2 w-2"><span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-primary opacity-75" /><span className="relative inline-flex rounded-full h-2 w-2 bg-primary" /></span>
               Open ({openPositions.length})
             </span>
-            {openPositions.map((o, i) => (
-              <div key={o.id} className="flex items-center gap-2 bg-primary/5 border border-primary/20 rounded px-2 py-1.5 text-[10px]">
-                <span className="font-mono font-bold text-foreground">{o.currency_pair.replace('_','/')}</span>
-                <Badge variant="outline" className={cn("text-[8px] h-3.5 px-1", o.direction === 'long' ? "text-emerald-400" : "text-red-400")}>
-                  {o.direction.toUpperCase()}
-                </Badge>
-                <span className="text-muted-foreground ml-auto">{o.entry_price?.toFixed(5)}</span>
-                <span className="text-muted-foreground">{o.units}u</span>
-              </div>
-            ))}
+            {openPositions.map((o) => {
+              const gov = o.governance_payload as Record<string, any> | undefined;
+              const cotPower = gov?.cotPower ?? gov?.godSignalPower ?? null;
+              const engine = o.direction_engine || 'auto-governance';
+              const overrideTag = o.sovereign_override_tag;
+              const confidence = o.confidence_score ? Math.round(o.confidence_score * 100) : null;
+              const ageMin = Math.round((Date.now() - new Date(o.created_at).getTime()) / 60000);
+
+              return (
+                <div key={o.id} className="bg-primary/5 border border-primary/20 rounded-lg px-3 py-2 space-y-1.5">
+                  {/* Row 1: Pair + Direction + Entry */}
+                  <div className="flex items-center gap-2 text-[10px]">
+                    <span className="font-mono font-bold text-foreground text-xs">{o.currency_pair.replace('_','/')}</span>
+                    <Badge variant="outline" className={cn("text-[8px] h-3.5 px-1", o.direction === 'long' ? "text-emerald-400 border-emerald-500/30" : "text-red-400 border-red-500/30")}>
+                      {o.direction.toUpperCase()}
+                    </Badge>
+                    {overrideTag && (
+                      <Badge variant="outline" className="text-[8px] h-3.5 px-1 text-amber-400 border-amber-500/30">
+                        {overrideTag}
+                      </Badge>
+                    )}
+                    <span className="text-muted-foreground ml-auto font-mono">{o.entry_price?.toFixed(5)}</span>
+                    <span className="text-muted-foreground font-mono">{o.units}u</span>
+                  </div>
+                  {/* Row 2: Tactical Posture */}
+                  <div className="flex items-center gap-3 text-[9px] text-muted-foreground flex-wrap">
+                    {cotPower != null && (
+                      <span className="flex items-center gap-1">
+                        <Crown className="w-3 h-3 text-amber-400" />
+                        <span className="text-foreground font-bold">{Math.round(cotPower)}%</span> COT
+                      </span>
+                    )}
+                    {confidence != null && (
+                      <span>Conv: <span className={cn("font-bold", confidence >= 60 ? "text-emerald-400" : "text-foreground")}>{confidence}%</span></span>
+                    )}
+                    <span>Engine: <span className="text-foreground">{engine.replace('auto-','').replace('-',' ')}</span></span>
+                    <span>Age: <span className="text-foreground">{ageMin < 60 ? `${ageMin}m` : `${Math.round(ageMin/60)}h`}</span></span>
+                    {o.regime_label && <span>Regime: <span className="text-foreground">{o.regime_label}</span></span>}
+                    {o.session_label && <span>Session: <span className="text-foreground">{o.session_label}</span></span>}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         )}
 

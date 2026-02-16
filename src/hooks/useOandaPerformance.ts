@@ -64,6 +64,8 @@ export interface RealOrder {
   bars_since_entry: number | null;
   progress_fail: boolean | null;
   health_governance_action: string | null;
+  direction_engine: string | null;
+  sovereign_override_tag: string | null;
   created_at: string;
   closed_at: string | null;
 }
