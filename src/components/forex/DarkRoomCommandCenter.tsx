@@ -140,21 +140,23 @@ function GodSignalPanel() {
           <div className="space-y-1">
             <span className="text-[9px] text-amber-400 uppercase tracking-wider font-bold">Desk Trade Ideas</span>
             {tradeIdeas.map((idea: any, i: number) => (
-              <div key={i} className="flex items-center gap-2 bg-muted/20 rounded-lg px-3 py-2">
-                <span className="font-mono text-xs font-bold text-foreground">{(idea.pair || '').replace('/', '_').replace('_', '/')}</span>
-                <Badge variant="outline" className={cn(
-                  "text-[8px] h-3.5 px-1",
-                  idea.direction === 'long' ? "text-emerald-400 border-emerald-500/30" : "text-red-400 border-red-500/30"
-                )}>
-                  {(idea.direction || '').toUpperCase()}
-                </Badge>
-                <Badge variant="outline" className={cn(
-                  "text-[8px] h-3.5 px-1",
-                  idea.conviction === 'high' ? "text-amber-400 border-amber-500/30" : "border-border/50 text-muted-foreground"
-                )}>
-                  {(idea.conviction || '').toUpperCase()}
-                </Badge>
-                <span className="text-[9px] text-muted-foreground ml-auto truncate max-w-[120px]">{idea.rationale?.split('.')[0]}</span>
+              <div key={i} className="bg-muted/20 rounded-lg px-3 py-2 space-y-1">
+                <div className="flex items-center gap-2">
+                  <span className="font-mono text-xs font-bold text-foreground">{(idea.pair || '').replace('/', '_').replace('_', '/')}</span>
+                  <Badge variant="outline" className={cn(
+                    "text-[8px] h-3.5 px-1",
+                    idea.direction === 'long' ? "text-emerald-400 border-emerald-500/30" : "text-red-400 border-red-500/30"
+                  )}>
+                    {(idea.direction || '').toUpperCase()}
+                  </Badge>
+                  <Badge variant="outline" className={cn(
+                    "text-[8px] h-3.5 px-1",
+                    idea.conviction === 'high' ? "text-amber-400 border-amber-500/30" : "border-border/50 text-muted-foreground"
+                  )}>
+                    {(idea.conviction || '').toUpperCase()}
+                  </Badge>
+                </div>
+                <p className="text-[10px] text-muted-foreground leading-relaxed">{idea.rationale}</p>
               </div>
             ))}
           </div>
@@ -163,39 +165,37 @@ function GodSignalPanel() {
         {/* COT Pair Signals */}
         <div className="space-y-1">
           <span className="text-[9px] text-muted-foreground uppercase tracking-wider font-bold">COT Pair Positioning</span>
-          <ScrollArea className="h-[180px]">
-            <div className="space-y-1">
-              {topPairs.length > 0 ? topPairs.map((p: any) => {
-                const sig = p.signal || 'NEUTRAL';
-                const strength = p.strength || 0;
-                const isLong = sig.includes('LONG');
-                const isShort = sig.includes('SHORT');
-                return (
-                  <div key={p.pair} className="flex items-center gap-2 bg-muted/20 rounded px-3 py-1.5">
-                    <span className="font-mono text-[11px] font-bold text-foreground w-16">{p.pair.replace('_', '/')}</span>
-                    <div className="flex-1 h-1.5 bg-muted rounded-full overflow-hidden">
-                      <div
-                        className={cn("h-full rounded-full transition-all", isLong ? "bg-emerald-500" : isShort ? "bg-red-500" : "bg-muted-foreground/40")}
-                        style={{ width: `${Math.min(strength, 100)}%` }}
-                      />
-                    </div>
-                    <Badge variant="outline" className={cn(
-                      "text-[8px] px-1 font-mono min-w-[60px] text-center",
-                      isLong ? "text-emerald-400 border-emerald-500/30" : isShort ? "text-red-400 border-red-500/30" : "text-muted-foreground border-border/30"
-                    )}>
-                      {sig}
-                    </Badge>
-                    <span className="text-[9px] font-mono text-muted-foreground w-6 text-right">{strength}%</span>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-1">
+            {topPairs.length > 0 ? topPairs.map((p: any) => {
+              const sig = p.signal || 'NEUTRAL';
+              const strength = p.strength || 0;
+              const isLong = sig.includes('LONG');
+              const isShort = sig.includes('SHORT');
+              return (
+                <div key={p.pair} className="flex items-center gap-1.5 bg-muted/20 rounded px-2 py-1">
+                  <span className="font-mono text-[10px] font-bold text-foreground w-14">{p.pair.replace('_', '/')}</span>
+                  <div className="flex-1 h-1 bg-muted rounded-full overflow-hidden">
+                    <div
+                      className={cn("h-full rounded-full", isLong ? "bg-emerald-500" : isShort ? "bg-red-500" : "bg-muted-foreground/40")}
+                      style={{ width: `${Math.min(strength, 100)}%` }}
+                    />
                   </div>
-                );
-              }) : (
-                <div className="text-center py-8 text-muted-foreground text-xs">
-                  <Crown className="w-10 h-10 mx-auto mb-2 opacity-20" />
-                  Awaiting COT data
+                  <Badge variant="outline" className={cn(
+                    "text-[7px] px-1 font-mono min-w-[50px] text-center h-3.5",
+                    isLong ? "text-emerald-400 border-emerald-500/30" : isShort ? "text-red-400 border-red-500/30" : "text-muted-foreground border-border/30"
+                  )}>
+                    {sig}
+                  </Badge>
+                  <span className="text-[8px] font-mono text-muted-foreground w-5 text-right">{strength}</span>
                 </div>
-              )}
-            </div>
-          </ScrollArea>
+              );
+            }) : (
+              <div className="col-span-2 text-center py-6 text-muted-foreground text-xs">
+                <Crown className="w-8 h-8 mx-auto mb-2 opacity-20" />
+                Awaiting COT data
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </Section>
