@@ -1193,6 +1193,150 @@ Deno.serve(async (req) => {
     }
 
     // ═══════════════════════════════════════════════════════════
+    // PENDING LIMIT ORDER RECONCILIATION — Vacuum + FM limit orders
+    // Checks OANDA for fill/expire status on orders stuck in "pending"
+    // ═══════════════════════════════════════════════════════════
+    let pendingReconciled = 0;
+    try {
+      const { data: pendingOrders } = await supabase
+        .from("oanda_orders")
+        .select("id, oanda_order_id, currency_pair, direction, environment, agent_id, units")
+        .eq("status", "pending")
+        .not("oanda_order_id", "is", null)
+        .gte("created_at", STRATEGY_CUTOFF)
+        .limit(30);
+
+      if (pendingOrders && pendingOrders.length > 0) {
+        console.log(`[TRADE-MONITOR] Reconciling ${pendingOrders.length} pending LIMIT orders`);
+
+        for (const po of pendingOrders) {
+          try {
+            const env = po.environment || "live";
+            const orderDetail = await oandaRequest(
+              `/v3/accounts/{accountId}/orders/${po.oanda_order_id}`,
+              "GET", undefined, env
+            );
+
+            const order = orderDetail.order;
+            if (!order) {
+              // Order not found — check if it was filled as a trade
+              try {
+                // Search recent transactions for this order
+                const txns = await oandaRequest(
+                  `/v3/accounts/{accountId}/orders/${po.oanda_order_id}`,
+                  "GET", undefined, env
+                );
+                // If order doesn't exist, it was likely filled or cancelled
+                // Mark as expired to clean up
+                await supabase.from("oanda_orders").update({
+                  status: "expired",
+                  error_message: "OANDA order not found — likely expired or cancelled",
+                  closed_at: new Date().toISOString(),
+                }).eq("id", po.id);
+                pendingReconciled++;
+                console.log(`[PENDING-RECON] ${po.currency_pair}: Order ${po.oanda_order_id} not found — marked expired`);
+              } catch {
+                await supabase.from("oanda_orders").update({
+                  status: "expired",
+                  error_message: "OANDA order not found",
+                  closed_at: new Date().toISOString(),
+                }).eq("id", po.id);
+                pendingReconciled++;
+              }
+              continue;
+            }
+
+            const state = order.state; // PENDING, FILLED, CANCELLED, TRIGGERED
+            if (state === "FILLED" || state === "TRIGGERED") {
+              // Order was filled — find the associated trade
+              const tradeId = order.filledTradeID || order.tradeOpenedID || null;
+              const fillPrice = order.price ? parseFloat(order.price) : null;
+              const fillingTxn = order.fillingTransactionID;
+
+              // Try to get fill details from transaction
+              let actualFillPrice = fillPrice;
+              let oandaTradeId = tradeId;
+              if (fillingTxn) {
+                try {
+                  const txnDetail = await oandaRequest(
+                    `/v3/accounts/{accountId}/transactions/${fillingTxn}`,
+                    "GET", undefined, env
+                  );
+                  const txn = txnDetail.transaction;
+                  if (txn) {
+                    actualFillPrice = txn.price ? parseFloat(txn.price) : fillPrice;
+                    oandaTradeId = txn.tradeOpened?.tradeID || txn.tradeID || tradeId;
+                  }
+                } catch { /* use order price */ }
+              }
+
+              const pipMult = po.currency_pair.includes("JPY") ? 0.01 : 0.0001;
+              const spreadEst = order.fullPrice
+                ? Math.abs(parseFloat(order.fullPrice.asks?.[0]?.price || "0") - parseFloat(order.fullPrice.bids?.[0]?.price || "0")) / pipMult
+                : null;
+
+              await supabase.from("oanda_orders").update({
+                status: "filled",
+                entry_price: actualFillPrice,
+                oanda_trade_id: oandaTradeId,
+                spread_at_entry: spreadEst,
+                requested_price: fillPrice,
+              }).eq("id", po.id);
+
+              pendingReconciled++;
+              console.log(`[PENDING-RECON] ${po.currency_pair}: LIMIT order FILLED @ ${actualFillPrice} — Trade ID: ${oandaTradeId}`);
+
+            } else if (state === "CANCELLED") {
+              const cancelReason = order.cancelledTime ? `Cancelled at ${order.cancelledTime}` : "Cancelled by broker";
+              await supabase.from("oanda_orders").update({
+                status: "expired",
+                error_message: `LIMIT cancelled: ${order.cancellingTransactionID || cancelReason}`,
+                closed_at: order.cancelledTime || new Date().toISOString(),
+              }).eq("id", po.id);
+              pendingReconciled++;
+              console.log(`[PENDING-RECON] ${po.currency_pair}: LIMIT order CANCELLED`);
+
+            } else if (state === "PENDING") {
+              // Check if GTD expiry has passed
+              const gtdTime = order.gtdTime ? new Date(order.gtdTime).getTime() : 0;
+              if (gtdTime > 0 && Date.now() > gtdTime) {
+                // Expired — cancel on OANDA and mark locally
+                try {
+                  await oandaRequest(
+                    `/v3/accounts/{accountId}/orders/${po.oanda_order_id}/cancel`,
+                    "PUT", undefined, env
+                  );
+                } catch { /* may already be cancelled */ }
+                await supabase.from("oanda_orders").update({
+                  status: "expired",
+                  error_message: "LIMIT order GTD expired",
+                  closed_at: new Date().toISOString(),
+                }).eq("id", po.id);
+                pendingReconciled++;
+                console.log(`[PENDING-RECON] ${po.currency_pair}: LIMIT order GTD expired — cancelled`);
+              }
+              // else: still pending, leave it
+            }
+          } catch (poErr) {
+            console.warn(`[PENDING-RECON] Error reconciling ${po.currency_pair} order ${po.oanda_order_id}:`, (poErr as Error).message);
+            // If we get a 404, the order is gone
+            if ((poErr as Error).message?.includes("404") || (poErr as Error).message?.includes("not found")) {
+              await supabase.from("oanda_orders").update({
+                status: "expired",
+                error_message: "OANDA order not found (404)",
+                closed_at: new Date().toISOString(),
+              }).eq("id", po.id);
+              pendingReconciled++;
+            }
+          }
+        }
+        console.log(`[TRADE-MONITOR] Pending reconciliation: ${pendingReconciled}/${pendingOrders.length} resolved`);
+      }
+    } catch (pendErr) {
+      console.warn(`[TRADE-MONITOR] Pending reconciliation error:`, (pendErr as Error).message);
+    }
+
+    // ═══════════════════════════════════════════════════════════
     // COUNTERFACTUAL MONITOR — Track outcomes for blocked trades
     // ═══════════════════════════════════════════════════════════
     let counterfactualUpdated = 0;
@@ -1271,7 +1415,7 @@ Deno.serve(async (req) => {
     }
 
     const elapsed = Date.now() - startTime;
-    console.log(`[TRADE-MONITOR] Complete: ${openOrders.length} monitored | ${closedCount} closed | ${heldCount} held | ${counterfactualUpdated} counterfactual | ${elapsed}ms`);
+    console.log(`[TRADE-MONITOR] Complete: ${openOrders.length} monitored | ${closedCount} closed | ${heldCount} held | ${pendingReconciled} pending reconciled | ${counterfactualUpdated} counterfactual | ${elapsed}ms`);
 
     return new Response(
       JSON.stringify({
@@ -1279,6 +1423,7 @@ Deno.serve(async (req) => {
         monitored: openOrders.length,
         closed: closedCount,
         held: heldCount,
+        pendingReconciled,
         counterfactualUpdated,
         results,
         elapsed,

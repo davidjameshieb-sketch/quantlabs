@@ -760,7 +760,13 @@ async function executeAction(
         data: result,
       });
     } else {
-      // Successfully filled
+      // Successfully filled — capture full telemetry
+      const halfSpreadCost = result.orderFillTransaction?.halfSpreadCost ? parseFloat(result.orderFillTransaction.halfSpreadCost) : null;
+      const spreadAtEntry = halfSpreadCost !== null ? Math.abs(halfSpreadCost * 2) / (instrument.includes("JPY") ? 0.01 : 0.0001) : null;
+      const slippagePips = (currentPrice && filledPrice)
+        ? Math.abs(filledPrice - currentPrice) / (instrument.includes("JPY") ? 0.01 : 0.0001)
+        : null;
+
       await sb.from("oanda_orders").insert({
         user_id: "00000000-0000-0000-0000-000000000000",
         signal_id: `floor-manager-${Date.now()}`,
@@ -771,7 +777,19 @@ async function executeAction(
         environment,
         oanda_trade_id: oandaTradeId,
         entry_price: filledPrice,
+        requested_price: currentPrice,
+        spread_at_entry: spreadAtEntry,
+        slippage_pips: slippagePips !== null ? Math.round(slippagePips * 10) / 10 : null,
         agent_id: "floor-manager",
+        session_label: (() => {
+          const h = new Date().getUTCHours();
+          if (h >= 0 && h < 7) return "asian";
+          if (h >= 7 && h < 10) return "london-open";
+          if (h >= 10 && h < 13) return "london";
+          if (h >= 13 && h < 17) return "ny-overlap";
+          if (h >= 17 && h < 21) return "ny";
+          return "late-ny";
+        })(),
       });
 
       results.push({
@@ -1655,7 +1673,7 @@ async function executeAction(
         const result = await oandaRequest("/v3/accounts/{accountId}/orders", "POST", orderPayload, environment);
         const orderId = result.orderCreateTransaction?.id || result.orderFillTransaction?.id;
 
-        // Log to DB
+        // Log to DB with session context
         await sb.from("oanda_orders").insert({
           user_id: "00000000-0000-0000-0000-000000000000",
           signal_id: `vacuum-${Date.now()}`,
@@ -1667,6 +1685,15 @@ async function executeAction(
           agent_id: "floor-manager-vacuum",
           oanda_order_id: orderId,
           requested_price: targetPrice,
+          session_label: (() => {
+            const h = new Date().getUTCHours();
+            if (h >= 0 && h < 7) return "asian";
+            if (h >= 7 && h < 10) return "london-open";
+            if (h >= 10 && h < 13) return "london";
+            if (h >= 13 && h < 17) return "ny-overlap";
+            if (h >= 17 && h < 21) return "ny";
+            return "late-ny";
+          })(),
         });
 
         console.log(`[VACUUM] Ghost LIMIT order placed: ${direction} ${units} ${pair} @ ${targetPrice.toFixed(5)} — cluster: ${clusterInfo} — expires in ${expirySeconds}s`);
