@@ -1,12 +1,20 @@
-// Ripple Stream Engine v2 — Predictive Liquidity Capture
-// Three concurrent sub-second strategies on the OANDA tick stream:
+// Ripple Stream Engine v3 — Z-Score Strike Engine
+// The Committee is dead. Long live the Frontline Soldiers.
 //
-// 1. RIPPLE TRIGGERS (existing) — Lead-Lag correlation divergence trades
-// 2. VELOCITY GATING — 5+ same-direction ticks in 250ms = impulse fire
-// 3. SNAP-BACK SNIPER — Detects stop-hunt exhaustion ticks for contrarian entry
+// Three L0 deterministic strategies on OANDA ms tick data:
+//
+// 1. Z-SCORE STRIKE — Continuous correlation-spread z-score across pair groups.
+//    Fire when z > 2.0 + momentum burst on the lagging pair. No triggers, no arming, no AI.
+//    Pure statistics. The edge IS the math.
+//
+// 2. VELOCITY GATING — 5+ same-direction ticks in 2s = impulse fire
+//
+// 3. SNAP-BACK SNIPER — Stop-hunt exhaustion → contrarian entry at reversal
 //
 // Plus: MICRO-SLIPPAGE AUDITOR — Real-time fill audit, auto-switches to
-// PREDATORY_LIMIT if slippage > 0.2 pips on any pair.
+// PREDATORY_LIMIT if slippage > 0.2 pips.
+//
+// AI is the General Staff — sizing, regime, risk (hourly). Soldiers fire autonomously.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
@@ -20,60 +28,55 @@ const OANDA_API = "https://api-fxtrade.oanda.com/v3";
 const OANDA_STREAM = "https://stream-fxtrade.oanda.com/v3";
 const MAX_STREAM_SECONDS = 110;
 
-// ─── Strategy Constants ──────────────────────────────────
-// Velocity Gating uses tick-count window (not fixed time) to adapt to variable tick rates.
-// We require N consecutive same-direction ticks within a max age ceiling.
-const VELOCITY_TICK_THRESHOLD = 5;       // consecutive same-direction ticks needed
-const VELOCITY_MAX_AGE_MS = 2000;        // oldest tick in window can't exceed this (staleness guard)
-const VELOCITY_COOLDOWN_MS = 3000;       // prevent rapid re-fires on same pair
+// ─── Z-Score Strike Constants ────────────────────────────
+const ZSCORE_WINDOW = 120;          // ticks to build rolling mean/stddev
+const ZSCORE_FIRE_THRESHOLD = 2.0;  // z > 2.0 = statistical divergence
+const ZSCORE_EXIT_TARGET = 0.0;     // mean reversion target
+const ZSCORE_COOLDOWN_MS = 10_000;  // 10s between fires on same group
+const ZSCORE_MOMENTUM_TICKS = 3;    // quiet pair must show 3 aligned ticks in 5s
+
+// ─── Velocity Gating Constants ───────────────────────────
+const VELOCITY_TICK_THRESHOLD = 5;
+const VELOCITY_MAX_AGE_MS = 2000;
+const VELOCITY_COOLDOWN_MS = 3000;
+
+// ─── Snap-Back Constants ─────────────────────────────────
+const SNAPBACK_VOLUME_WINDOW = 15;
+const SNAPBACK_EXHAUSTION_RATIO = 0.7;
+const SNAPBACK_MIN_SPIKE_PIPS = 3;
+
+// ─── Shared Constants ────────────────────────────────────
 const SLIPPAGE_THRESHOLD_PIPS = 0.2;
-const SNAPBACK_VOLUME_WINDOW = 15; // ticks to track sell/buy pressure
-const SNAPBACK_EXHAUSTION_RATIO = 0.7; // 70% of window must be directional then reverse
-const SNAPBACK_MIN_SPIKE_PIPS = 3; // minimum move to qualify as stop-hunt
 
-interface TriggerPayload {
-  triggerId: string;
-  loudPair: string;
-  quietPair: string;
-  direction: string;
-  thresholdPips: number;
-  units: number;
-  maxLagMinutes: number;
-  slPips: number;
-  tpPips: number;
-  loudBaseline: number | null;
-  quietBaseline: number | null;
-  armedAt: string;
-  fired: boolean;
-  reason: string;
-  correlationGroup: string | null;
+// ─── Correlation Groups (pairs that move together) ───────
+// Each group: the "spread" between them should be stationary → z-score works.
+const DEFAULT_CORRELATION_GROUPS: { name: string; pairA: string; pairB: string }[] = [
+  { name: "EUR_GBP_CROSS", pairA: "EUR_USD", pairB: "GBP_USD" },
+  { name: "AUD_NZD_CROSS", pairA: "AUD_USD", pairB: "NZD_USD" },
+  { name: "EUR_JPY_TRI",   pairA: "EUR_USD", pairB: "USD_JPY" },
+  { name: "GBP_JPY_TRI",   pairA: "GBP_USD", pairB: "USD_JPY" },
+  { name: "CAD_AUD_CROSS",  pairA: "USD_CAD", pairB: "AUD_USD" },
+  { name: "EUR_AUD_CROSS",  pairA: "EUR_USD", pairB: "AUD_USD" },
+];
+
+// ─── Z-Score Tracker ─────────────────────────────────────
+interface ZScoreTracker {
+  spreadHistory: number[];     // rolling spread values
+  lastFireTs: number;
+  firedDirection: string | null;
 }
 
-interface LiveTrigger {
-  id: string;
-  gate_id: string;
-  config: TriggerPayload;
-}
-
-// ─── Velocity Tracker per instrument ─────────────────────
 interface VelocityTracker {
   ticks: { ts: number; mid: number; direction: 1 | -1 }[];
   lastFireTs: number;
 }
 
-// ─── Snap-Back Tracker per instrument ────────────────────
 interface SnapBackTracker {
   recentTicks: { ts: number; mid: number; delta: number }[];
   lastMid: number | null;
-  huntDetected: boolean;
-  huntDirection: 'down' | 'up' | null; // direction of the hunt
-  huntPeakPrice: number | null;
-  huntStartPrice: number | null;
-  exhaustionFired: boolean;
   lastFireTs: number;
 }
 
-// ─── Slippage Auditor state ──────────────────────────────
 interface SlippageRecord {
   totalSlippage: number;
   fills: number;
@@ -90,6 +93,18 @@ function toPips(priceMove: number, pair: string): number {
 
 function fromPips(pips: number, pair: string): number {
   return pips / pipMultiplier(pair);
+}
+
+function computeZScore(values: number[]): { mean: number; std: number; z: number } {
+  if (values.length < 10) return { mean: 0, std: 0, z: 0 };
+  const n = values.length;
+  const mean = values.reduce((s, v) => s + v, 0) / n;
+  const variance = values.reduce((s, v) => s + (v - mean) ** 2, 0) / n;
+  const std = Math.sqrt(variance);
+  if (std < 1e-10) return { mean, std: 0, z: 0 };
+  const current = values[n - 1];
+  const z = (current - mean) / std;
+  return { mean, std, z };
 }
 
 Deno.serve(async (req) => {
@@ -111,24 +126,22 @@ Deno.serve(async (req) => {
 
   try {
     const now = new Date();
-    const nowISO = now.toISOString();
 
-    // ─── 1. Fetch armed triggers ───
-    const { data: triggers, error: trigErr } = await supabase
-      .from("gate_bypasses")
-      .select("*")
-      .like("gate_id", "CORRELATION_TRIGGER:%")
-      .eq("revoked", false)
-      .gte("expires_at", nowISO);
+    // ─── 1. Load General Staff orders (AI governance: sizing, regime) ───
+    const { data: governanceConfig } = await supabase
+      .from("sovereign_memory")
+      .select("payload")
+      .eq("memory_key", "zscore_strike_config")
+      .maybeSingle();
 
-    if (trigErr) {
-      console.error("[STREAM] Trigger fetch error:", trigErr);
-      return new Response(JSON.stringify({ error: trigErr.message }), {
-        status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
+    const govPayload = governanceConfig?.payload as Record<string, unknown> | null;
+    const baseUnits: number = (govPayload?.units as number) || 500;
+    const baseSlPips: number = (govPayload?.slPips as number) || 8;
+    const baseTpPips: number = (govPayload?.tpPips as number) || 15;
+    const zScoreThreshold: number = (govPayload?.zScoreThreshold as number) || ZSCORE_FIRE_THRESHOLD;
+    const blockedPairs: string[] = (govPayload?.blockedPairs as string[]) || [];
 
-    // ─── 2. Fetch velocity-enabled pairs from sovereign_memory ───
+    // ─── 2. Load velocity & snapback config ───
     const { data: velocityConfig } = await supabase
       .from("sovereign_memory")
       .select("payload")
@@ -139,11 +152,10 @@ Deno.serve(async (req) => {
       "EUR_USD", "GBP_USD", "USD_JPY", "AUD_USD", "USD_CAD",
       "EUR_JPY", "GBP_JPY", "EUR_GBP", "NZD_USD",
     ];
-    const velocityUnits: number = (velocityConfig?.payload as any)?.units || 500;
-    const velocitySlPips: number = (velocityConfig?.payload as any)?.slPips || 8;
-    const velocityTpPips: number = (velocityConfig?.payload as any)?.tpPips || 15;
+    const velocityUnits: number = (velocityConfig?.payload as any)?.units || baseUnits;
+    const velocitySlPips: number = (velocityConfig?.payload as any)?.slPips || baseSlPips;
+    const velocityTpPips: number = (velocityConfig?.payload as any)?.tpPips || baseTpPips;
 
-    // ─── 3. Fetch snap-back config ───
     const { data: snapbackConfig } = await supabase
       .from("sovereign_memory")
       .select("payload")
@@ -153,58 +165,38 @@ Deno.serve(async (req) => {
     const snapbackPairs: string[] = (snapbackConfig?.payload as any)?.pairs || [
       "EUR_USD", "GBP_USD", "USD_JPY", "GBP_JPY", "AUD_USD",
     ];
-    const snapbackUnits: number = (snapbackConfig?.payload as any)?.units || 500;
+    const snapbackUnits: number = (snapbackConfig?.payload as any)?.units || baseUnits;
     const snapbackSlPips: number = (snapbackConfig?.payload as any)?.slPips || 6;
     const snapbackTpPips: number = (snapbackConfig?.payload as any)?.tpPips || 12;
 
-    // ─── 4. Parse triggers ───
-    const cleanPair = (p: string) => p.replace(/^[A-Z]+:/, "");
+    // ─── 3. Load correlation groups (can be overridden by General Staff) ───
+    const { data: corrGroupConfig } = await supabase
+      .from("sovereign_memory")
+      .select("payload")
+      .eq("memory_key", "correlation_groups_config")
+      .maybeSingle();
+
+    const correlationGroups = (corrGroupConfig?.payload as any)?.groups || DEFAULT_CORRELATION_GROUPS;
+
+    // ─── 4. Build instrument set ───
     const instruments = new Set<string>();
-    const liveTriggers: LiveTrigger[] = [];
-
-    for (const t of (triggers || [])) {
-      try {
-        const payload = JSON.parse(t.reason) as TriggerPayload;
-        if (payload.fired) continue;
-
-        const loud = cleanPair(payload.loudPair);
-        const quiet = cleanPair(payload.quietPair);
-        if (loud === quiet) continue;
-        if (payload.loudBaseline == null || payload.quietBaseline == null) continue;
-        if (!/^[A-Z]{3}_[A-Z]{3}$/.test(loud) || !/^[A-Z]{3}_[A-Z]{3}$/.test(quiet)) continue;
-
-        const armedAt = new Date(payload.armedAt).getTime();
-        const maxLag = (payload.maxLagMinutes || 15) * 60_000;
-        if (now.getTime() - armedAt > maxLag) {
-          console.log(`[STREAM] Auto-revoking stale trigger ${t.gate_id}`);
-          await supabase.from("gate_bypasses").update({ revoked: true }).eq("id", t.id);
-          continue;
-        }
-
-        instruments.add(loud);
-        instruments.add(quiet);
-        liveTriggers.push({
-          id: t.id,
-          gate_id: t.gate_id,
-          config: { ...payload, loudPair: loud, quietPair: quiet },
-        });
-      } catch { /* skip unparseable */ }
+    for (const g of correlationGroups) {
+      if (!blockedPairs.includes(g.pairA)) instruments.add(g.pairA);
+      if (!blockedPairs.includes(g.pairB)) instruments.add(g.pairB);
     }
-
-    // Add velocity and snapback instruments
-    for (const p of velocityPairs) instruments.add(p);
-    for (const p of snapbackPairs) instruments.add(p);
+    for (const p of velocityPairs) if (!blockedPairs.includes(p)) instruments.add(p);
+    for (const p of snapbackPairs) if (!blockedPairs.includes(p)) instruments.add(p);
 
     if (instruments.size === 0) {
       return new Response(
-        JSON.stringify({ success: true, evaluated: 0, message: "No instruments to stream" }),
+        JSON.stringify({ success: true, evaluated: 0, message: "No instruments — General Staff has blocked all pairs" }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" } },
       );
     }
 
-    console.log(`[STREAM-v2] 🎯 Opening stream: ${liveTriggers.length} ripple triggers, ${velocityPairs.length} velocity pairs, ${snapbackPairs.length} snapback pairs on ${instruments.size} instruments`);
+    console.log(`[STRIKE-v3] ⚡ Z-Score Strike Engine | ${correlationGroups.length} z-groups, ${velocityPairs.length} velocity, ${snapbackPairs.length} snapback | ${instruments.size} instruments | threshold z>${zScoreThreshold}`);
 
-    // ─── 5. Open OANDA streaming connection ───
+    // ─── 5. Open OANDA stream ───
     const instrumentList = Array.from(instruments).join(",");
     const streamRes = await fetch(
       `${OANDA_STREAM}/accounts/${OANDA_ACCOUNT}/pricing/stream?instruments=${instrumentList}&snapshot=true`,
@@ -213,7 +205,7 @@ Deno.serve(async (req) => {
 
     if (!streamRes.ok || !streamRes.body) {
       const errBody = await streamRes.text().catch(() => "");
-      console.error(`[STREAM-v2] Stream open failed ${streamRes.status}: ${errBody.slice(0, 200)}`);
+      console.error(`[STRIKE-v3] Stream open failed ${streamRes.status}: ${errBody.slice(0, 200)}`);
       return new Response(
         JSON.stringify({ error: `Stream failed: ${streamRes.status}` }),
         { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
@@ -222,36 +214,39 @@ Deno.serve(async (req) => {
 
     // ─── 6. Initialize trackers ───
     const prices = new Map<string, { bid: number; ask: number; mid: number; spread: number; spreadPips: number }>();
+    const zScoreTrackers = new Map<string, ZScoreTracker>();
     const velocityTrackers = new Map<string, VelocityTracker>();
     const snapbackTrackers = new Map<string, SnapBackTracker>();
     const slippageAudit = new Map<string, SlippageRecord>();
-    const firedTriggers: string[] = [];
+    const zScoreFires: string[] = [];
     const velocityFires: string[] = [];
     const snapbackFires: string[] = [];
     const startTime = Date.now();
     let tickCount = 0;
-    let evalCount = 0;
 
-    // Init velocity trackers (include trigger quiet pairs for momentum filter)
-    const allVelocityInstruments = new Set([...velocityPairs]);
-    for (const t of liveTriggers) allVelocityInstruments.add(t.config.quietPair);
-    for (const p of allVelocityInstruments) {
+    // Init z-score trackers per correlation group
+    for (const g of correlationGroups) {
+      zScoreTrackers.set(g.name, { spreadHistory: [], lastFireTs: 0, firedDirection: null });
+    }
+    // Init velocity trackers
+    for (const p of velocityPairs) {
       velocityTrackers.set(p, { ticks: [], lastFireTs: 0 });
+    }
+    // Also track momentum for z-score quiet pairs
+    for (const g of correlationGroups) {
+      if (!velocityTrackers.has(g.pairA)) velocityTrackers.set(g.pairA, { ticks: [], lastFireTs: 0 });
+      if (!velocityTrackers.has(g.pairB)) velocityTrackers.set(g.pairB, { ticks: [], lastFireTs: 0 });
     }
     // Init snapback trackers
     for (const p of snapbackPairs) {
-      snapbackTrackers.set(p, {
-        recentTicks: [], lastMid: null, huntDetected: false,
-        huntDirection: null, huntPeakPrice: null, huntStartPrice: null,
-        exhaustionFired: false, lastFireTs: 0,
-      });
+      snapbackTrackers.set(p, { recentTicks: [], lastMid: null, lastFireTs: 0 });
     }
 
     const reader = streamRes.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
 
-    // Get admin user for order records
+    // Get admin user
     const { data: adminRole } = await supabase
       .from("user_roles")
       .select("user_id")
@@ -259,7 +254,7 @@ Deno.serve(async (req) => {
       .limit(1)
       .single();
 
-    // ─── Helper: Execute order ───
+    // ─── Helper: Execute order (unchanged) ───
     async function executeOrder(
       pair: string, direction: string, units: number,
       slPips: number, tpPips: number, engine: string,
@@ -267,15 +262,21 @@ Deno.serve(async (req) => {
       orderType: "MARKET" | "LIMIT" = "MARKET",
     ): Promise<{ success: boolean; tradeId?: string; fillPrice?: number; slippage?: number }> {
       if (LIVE_ENABLED !== "true") {
-        console.log(`[STREAM-v2] 🔇 ${engine} would fire ${direction} ${units} ${pair} — LIVE DISABLED`);
+        console.log(`[STRIKE-v3] 🔇 ${engine} would fire ${direction} ${units} ${pair} — LIVE DISABLED`);
         return { success: false };
       }
 
-      // Check slippage audit — auto-switch to LIMIT if flagged
+      // Spread gate — universal L0 safety (3 gates max: spread is gate 1)
+      const maxSpreadPips = 2.5;
+      if (currentPrice.spreadPips > maxSpreadPips) {
+        console.log(`[STRIKE-v3] 🛡 SPREAD GATE: ${pair} spread ${currentPrice.spreadPips.toFixed(1)}p > ${maxSpreadPips}p — blocked`);
+        return { success: false };
+      }
+
+      // Slippage audit auto-switch
       const audit = slippageAudit.get(pair);
       if (audit?.switchedToLimit) {
         orderType = "LIMIT";
-        console.log(`[STREAM-v2] ⚡ ${pair} auto-switched to PREDATORY_LIMIT (slippage audit)`);
       }
 
       const dirUnits = direction === "long" ? units : -units;
@@ -312,31 +313,20 @@ Deno.serve(async (req) => {
           const tradeId = fill.tradeOpened?.tradeID || fill.id;
           const slippagePips = Math.abs(toPips(fillPrice - currentPrice.mid, pair));
 
-          // ─── Micro-Slippage Audit ───
+          // Micro-Slippage Audit
           if (!slippageAudit.has(pair)) {
             slippageAudit.set(pair, { totalSlippage: 0, fills: 0, switchedToLimit: false });
           }
           const sa = slippageAudit.get(pair)!;
           sa.totalSlippage += slippagePips;
           sa.fills++;
-          const avgSlippage = sa.totalSlippage / sa.fills;
 
           if (slippagePips > SLIPPAGE_THRESHOLD_PIPS && !sa.switchedToLimit) {
             sa.switchedToLimit = true;
-            console.log(`[STREAM-v2] 🔴 SLIPPAGE AUDIT: ${pair} slippage ${slippagePips.toFixed(2)}p > ${SLIPPAGE_THRESHOLD_PIPS}p — switching to PREDATORY_LIMIT`);
-
-            // Persist the switch via gate_bypasses for Floor Manager visibility
+            console.log(`[STRIKE-v3] 🔴 SLIPPAGE AUDIT: ${pair} → PREDATORY_LIMIT`);
             await supabase.from("gate_bypasses").insert({
               gate_id: `PREDATORY_LIMIT_SWITCH:${pair}`,
-              reason: JSON.stringify({
-                pair,
-                triggerSlippage: slippagePips,
-                avgSlippage,
-                fills: sa.fills,
-                threshold: SLIPPAGE_THRESHOLD_PIPS,
-                switchedAt: new Date().toISOString(),
-                engine: "slippage-auditor-v1",
-              }),
+              reason: JSON.stringify({ pair, slippage: slippagePips, engine: "slippage-auditor-v1" }),
               expires_at: new Date(Date.now() + 3600_000).toISOString(),
               created_by: "slippage-auditor",
             });
@@ -358,23 +348,23 @@ Deno.serve(async (req) => {
               direction_engine: engine,
               sovereign_override_tag: `${engine}:${pair}`,
               confidence_score: (metadata.confidence as number) || 0.5,
-              governance_payload: { ...metadata, slippagePips, avgSlippage, orderType },
+              governance_payload: { ...metadata, slippagePips, orderType },
               requested_price: currentPrice.mid,
               slippage_pips: slippagePips,
               spread_at_entry: currentPrice.spreadPips,
             });
           }
 
-          console.log(`[STREAM-v2] ✅ ${engine} FILLED: Trade ${tradeId} @ ${fillPrice} | ${direction} ${units} ${pair} | slip ${slippagePips.toFixed(2)}p | type ${orderType}`);
+          console.log(`[STRIKE-v3] ✅ ${engine} FILLED: ${tradeId} @ ${fillPrice} | ${direction} ${units} ${pair} | slip ${slippagePips.toFixed(2)}p`);
           return { success: true, tradeId, fillPrice, slippage: slippagePips };
         } else {
           const rejectReason = orderData.orderRejectTransaction?.rejectReason ||
             orderData.orderCancelTransaction?.reason || "Unknown";
-          console.warn(`[STREAM-v2] ❌ ${engine} REJECTED: ${rejectReason}`);
+          console.warn(`[STRIKE-v3] ❌ ${engine} REJECTED: ${rejectReason}`);
           return { success: false };
         }
       } catch (err) {
-        console.error(`[STREAM-v2] ${engine} execution error:`, err);
+        console.error(`[STRIKE-v3] ${engine} execution error:`, err);
         return { success: false };
       }
     }
@@ -384,7 +374,7 @@ Deno.serve(async (req) => {
       while (true) {
         const elapsed = (Date.now() - startTime) / 1000;
         if (elapsed > MAX_STREAM_SECONDS) {
-          console.log(`[STREAM-v2] ⏱ Graceful shutdown after ${elapsed.toFixed(0)}s, ${tickCount} ticks, ${evalCount} evals`);
+          console.log(`[STRIKE-v3] ⏱ Shutdown after ${elapsed.toFixed(0)}s, ${tickCount} ticks`);
           break;
         }
 
@@ -401,7 +391,6 @@ Deno.serve(async (req) => {
 
           try {
             const tick = JSON.parse(trimmed);
-            if (tick.type === "HEARTBEAT") continue;
             if (tick.type !== "PRICE") continue;
 
             tickCount++;
@@ -415,214 +404,195 @@ Deno.serve(async (req) => {
             const prevPrice = prices.get(instrument);
             prices.set(instrument, { bid, ask, mid, spread, spreadPips });
 
-            // ═══════════════════════════════════════════
-            // STRATEGY 1: RIPPLE TRIGGERS (existing)
-            // ═══════════════════════════════════════════
-            for (const trigger of liveTriggers) {
-              if (trigger.config.fired) continue;
-
-              const { config } = trigger;
-
-              // G5: Freshness — check if trigger expired during stream session
-              const armedMs = new Date(config.armedAt).getTime();
-              const maxLagMs = (config.maxLagMinutes || 15) * 60_000;
-              if (tickTs > armedMs + maxLagMs) {
-                trigger.config.fired = true;
-                await supabase.from("gate_bypasses").update({ revoked: true }).eq("id", trigger.id);
-                console.log(`[STREAM-v2] ⏱ G5 EXPIRED mid-stream: ${config.quietPair} (armed ${Math.round((tickTs - armedMs) / 60_000)}m ago, max ${config.maxLagMinutes}m)`);
-                continue;
-              }
-
-              const loudPrice = prices.get(config.loudPair);
-              const quietPrice = prices.get(config.quietPair);
-              if (!loudPrice || !quietPrice) continue;
-
-              evalCount++;
-
-              // G1: Loud pair threshold
-              const loudMovePips = Math.abs(toPips(loudPrice.mid - config.loudBaseline!, config.loudPair));
-              if (loudMovePips < config.thresholdPips) continue;
-
-              // G2: Direction check
-              const dirMult = config.direction.toLowerCase() === "long" ? 1 : -1;
-              const loudDirectional = toPips(loudPrice.mid - config.loudBaseline!, config.loudPair) * dirMult;
-              if (loudDirectional < config.thresholdPips * 0.5) continue;
-
-              // G3: Spread gate
-              const maxSpread = config.thresholdPips * 0.4;
-              if (quietPrice.spreadPips > maxSpread) continue;
-
-              // G4: Quiet stillness — hasn't already caught up
-              const quietMovePips = Math.abs(toPips(quietPrice.mid - config.quietBaseline!, config.quietPair));
-              const quietRatio = loudMovePips > 0 ? quietMovePips / loudMovePips : 0;
-              if (quietRatio > 0.3) {
-                trigger.config.fired = true;
-                await supabase.from("gate_bypasses").update({ revoked: true }).eq("id", trigger.id);
-                console.log(`[STREAM-v2] Quiet ${config.quietPair} already moved ${(quietRatio * 100).toFixed(0)}% — revoked`);
-                continue;
-              }
-
-              // G6: TICK-MOMENTUM FILTER — Quiet pair must be "waking up"
-              // Require 3+ recent ticks on the quiet pair moving in the expected direction
-              // This ensures we don't trade stale lag; we trade the moment it starts moving.
-              const QUIET_MOMENTUM_TICKS = 3;
-              const quietVelocity = velocityTrackers.get(config.quietPair);
-              if (quietVelocity) {
-                const expectedDir: 1 | -1 = config.direction.toLowerCase() === "long" ? 1 : -1;
-                const recentQuietTicks = quietVelocity.ticks.filter(t => t.ts > tickTs - 5000); // last 5s
-                const alignedTicks = recentQuietTicks.filter(t => t.direction === expectedDir);
-                if (alignedTicks.length < QUIET_MOMENTUM_TICKS) {
-                  // Quiet pair hasn't woken up yet — skip this tick, re-evaluate next
-                  continue;
-                }
-                console.log(`[STREAM-v2] 🔥 G6 MOMENTUM: ${config.quietPair} showing ${alignedTicks.length}/${recentQuietTicks.length} ticks ${config.direction} — WAKING UP`);
-              }
-
-              // ═══ ALL GATES PASSED — QUIET PAIR IS WAKING UP — FIRE ═══
-              const divergencePips = loudMovePips - quietMovePips;
-              console.log(`[STREAM-v2] 🎯 RIPPLE-FIRE: ${config.direction.toUpperCase()} ${config.units} ${config.quietPair} | Loud ${loudMovePips.toFixed(1)}p, Quiet lag ${(quietRatio * 100).toFixed(0)}% | Tick #${tickCount}`);
-
-              const result = await executeOrder(
-                config.quietPair, config.direction, config.units,
-                config.slPips, config.tpPips, "ripple-stream",
-                {
-                  triggerId: config.triggerId, loudPair: config.loudPair,
-                  loudMovePips, quietMovePips, divergencePips,
-                  quietSpreadPips: quietPrice.spreadPips, quietRatio,
-                  tickNumber: tickCount, streamLatencyMs: Date.now() - startTime,
-                  confidence: Math.min(1, divergencePips / config.thresholdPips),
-                  engine: "ripple-stream-v2",
-                },
-                quietPrice,
-              );
-
-              // Mark fired
-              trigger.config.fired = true;
-              const firedPayload = {
-                ...config, fired: true, firedAt: new Date().toISOString(),
-                tradeResult: result, engine: "ripple-stream-v2",
-              };
-              await supabase.from("gate_bypasses")
-                .update({ revoked: true, reason: JSON.stringify(firedPayload) })
-                .eq("id", trigger.id);
-
-              // Audit log
-              await supabase.from("gate_bypasses").insert({
-                gate_id: `RIPPLE_STREAM_FIRED:${config.quietPair}`,
-                reason: JSON.stringify({
-                  triggerId: config.triggerId, loudPair: config.loudPair,
-                  quietPair: config.quietPair, direction: config.direction,
-                  loudMovePips, quietMovePips, divergencePips,
-                  fireSuccess: result.success, tickNumber: tickCount,
-                  streamLatencyMs: Date.now() - startTime,
-                }),
-                expires_at: new Date(Date.now() + 3600_000).toISOString(),
-                created_by: "ripple-stream-engine",
-              });
-
-              firedTriggers.push(config.quietPair);
-            }
-
-            // ═══════════════════════════════════════════
-            // STRATEGY 2: VELOCITY GATING
-            // Tick-count window: N consecutive same-direction ticks
-            // adapts to variable tick rates (100ms–500ms+)
-            // ═══════════════════════════════════════════
+            // Update velocity tracker (used by both Velocity Gating AND Z-Score momentum filter)
             const vt = velocityTrackers.get(instrument);
             if (vt && prevPrice) {
               const delta = mid - prevPrice.mid;
               if (Math.abs(delta) > 0) {
                 const dir: 1 | -1 = delta > 0 ? 1 : -1;
                 vt.ticks.push({ ts: tickTs, mid, direction: dir });
+                // Keep last 20 ticks for momentum lookback
+                while (vt.ticks.length > 20) vt.ticks.shift();
+              }
+            }
 
-                // Keep only the last VELOCITY_TICK_THRESHOLD ticks (sliding count window)
-                while (vt.ticks.length > VELOCITY_TICK_THRESHOLD) {
-                  vt.ticks.shift();
-                }
+            // ═══════════════════════════════════════════════
+            // STRATEGY 1: Z-SCORE STRIKE
+            // No triggers. No arming. No AI. Pure statistics.
+            // Compute rolling z-score on the "spread" between correlated pairs.
+            // Fire when z > threshold + momentum burst on the lagging pair.
+            // ═══════════════════════════════════════════════
+            for (const group of correlationGroups) {
+              const priceA = prices.get(group.pairA);
+              const priceB = prices.get(group.pairB);
+              if (!priceA || !priceB) continue;
 
-                // Check velocity spike: need exactly N ticks, all same direction, within max age
-                if (vt.ticks.length >= VELOCITY_TICK_THRESHOLD && (tickTs - vt.lastFireTs) > VELOCITY_COOLDOWN_MS) {
-                  const windowAge = tickTs - vt.ticks[0].ts;
-                  const allSameDir = vt.ticks.every(t => t.direction === vt.ticks[0].direction);
+              // Correlation spread = normalized difference between pair mids
+              // For JPY pairs, normalize to comparable pip scale
+              const normA = priceA.mid * pipMultiplier(group.pairA);
+              const normB = priceB.mid * pipMultiplier(group.pairB);
+              const corrSpread = normA - normB;
 
-                  // All same direction AND not stale (arrived within ceiling)
-                  if (allSameDir && windowAge <= VELOCITY_MAX_AGE_MS) {
-                    const direction = vt.ticks[0].direction === 1 ? "long" : "short";
-                    const movePips = Math.abs(toPips(vt.ticks[vt.ticks.length - 1].mid - vt.ticks[0].mid, instrument));
-                    const avgTickInterval = Math.round(windowAge / (vt.ticks.length - 1));
+              const tracker = zScoreTrackers.get(group.name)!;
+              tracker.spreadHistory.push(corrSpread);
+              if (tracker.spreadHistory.length > ZSCORE_WINDOW) {
+                tracker.spreadHistory.shift();
+              }
 
-                    // Only fire if movement is meaningful (> 1 pip)
-                    if (movePips >= 1.0) {
-                      vt.lastFireTs = tickTs;
+              // Need enough history
+              if (tracker.spreadHistory.length < 30) continue;
 
-                      console.log(`[STREAM-v2] ⚡ VELOCITY SPIKE: ${instrument} ${vt.ticks.length} ticks ${direction} in ${windowAge}ms (avg ${avgTickInterval}ms/tick) | ${movePips.toFixed(1)}p impulse`);
+              const { z, mean, std } = computeZScore(tracker.spreadHistory);
 
-                      const result = await executeOrder(
-                        instrument, direction, velocityUnits,
-                        velocitySlPips, velocityTpPips, "velocity-gating",
-                        {
-                          ticksInWindow: vt.ticks.length,
-                          windowAgeMs: windowAge,
-                          avgTickIntervalMs: avgTickInterval,
-                          movePips,
-                          tickNumber: tickCount,
-                          streamLatencyMs: Date.now() - startTime,
-                          confidence: Math.min(1, movePips / 3),
-                          engine: "velocity-gating-v2",
-                        },
-                        { mid, spreadPips },
-                      );
+              // Cooldown check
+              if (tickTs - tracker.lastFireTs < ZSCORE_COOLDOWN_MS) continue;
 
-                      if (result.success) {
-                        velocityFires.push(instrument);
+              // ─── GATE 1: Z-Score threshold (the only "committee" is math) ───
+              if (Math.abs(z) < zScoreThreshold) continue;
 
-                        // Audit log
-                        await supabase.from("gate_bypasses").insert({
-                          gate_id: `VELOCITY_FIRE:${instrument}`,
-                          reason: JSON.stringify({
-                            pair: instrument, direction, movePips,
-                            ticksInWindow: vt.ticks.length,
-                            windowAgeMs: windowAge, avgTickIntervalMs: avgTickInterval,
-                            fillPrice: result.fillPrice, slippage: result.slippage,
-                            tickNumber: tickCount,
-                          }),
-                          expires_at: new Date(Date.now() + 3600_000).toISOString(),
-                          created_by: "velocity-gating-engine",
-                        });
-                      }
+              // z > 2: pairA is expensive relative to pairB → SHORT pairA or LONG pairB
+              // z < -2: pairA is cheap relative to pairB → LONG pairA or SHORT pairB
+              // We trade the LAGGING pair (the one that hasn't moved yet)
+              const aMovePips = prevPrice ? Math.abs(toPips(priceA.mid - (prices.get(group.pairA)?.mid || priceA.mid), group.pairA)) : 0;
+              
+              let tradePair: string;
+              let tradeDirection: string;
+              
+              if (z > zScoreThreshold) {
+                // pairA overextended up relative to pairB → pairB should catch up (long) OR pairA should revert (short)
+                // Trade the quieter pair in the catch-up direction
+                tradePair = group.pairB;
+                tradeDirection = "long";
+              } else {
+                // z < -threshold: pairA underextended → pairB should drop OR pairA should rise
+                tradePair = group.pairB;
+                tradeDirection = "short";
+              }
 
-                      // Clear ticks after fire
-                      vt.ticks = [];
+              if (blockedPairs.includes(tradePair)) continue;
+
+              // ─── GATE 2: Momentum burst (quiet pair waking up) ───
+              const momentumTracker = velocityTrackers.get(tradePair);
+              if (momentumTracker) {
+                const expectedDir: 1 | -1 = tradeDirection === "long" ? 1 : -1;
+                const recentTicks = momentumTracker.ticks.filter(t => t.ts > tickTs - 5000);
+                const alignedTicks = recentTicks.filter(t => t.direction === expectedDir);
+                if (alignedTicks.length < ZSCORE_MOMENTUM_TICKS) continue;
+              }
+
+              // ─── GATE 3: Spread OK (baked into executeOrder) ───
+              // That's it. Three gates. Spread → Z-Score → Momentum. Fire.
+
+              const tradePrice = prices.get(tradePair);
+              if (!tradePrice) continue;
+
+              tracker.lastFireTs = tickTs;
+              tracker.firedDirection = tradeDirection;
+
+              console.log(`[STRIKE-v3] 🎯 Z-SCORE FIRE: ${tradeDirection.toUpperCase()} ${baseUnits} ${tradePair} | z=${z.toFixed(2)} (threshold ${zScoreThreshold}) | group=${group.name} | tick #${tickCount}`);
+
+              const result = await executeOrder(
+                tradePair, tradeDirection, baseUnits,
+                baseSlPips, baseTpPips, "zscore-strike",
+                {
+                  zScore: z, mean, std,
+                  group: group.name,
+                  pairA: group.pairA, pairB: group.pairB,
+                  tickNumber: tickCount,
+                  streamLatencyMs: Date.now() - startTime,
+                  confidence: Math.min(1, Math.abs(z) / 3),
+                  engine: "zscore-strike-v3",
+                },
+                tradePrice,
+              );
+
+              if (result.success) {
+                zScoreFires.push(`${group.name}:${tradePair}`);
+
+                // Audit log
+                await supabase.from("gate_bypasses").insert({
+                  gate_id: `ZSCORE_FIRE:${group.name}:${tradePair}`,
+                  reason: JSON.stringify({
+                    group: group.name, pair: tradePair,
+                    direction: tradeDirection, zScore: z,
+                    mean, std, threshold: zScoreThreshold,
+                    fillPrice: result.fillPrice,
+                    slippage: result.slippage,
+                    tickNumber: tickCount,
+                  }),
+                  expires_at: new Date(Date.now() + 3600_000).toISOString(),
+                  created_by: "zscore-strike-engine",
+                });
+              }
+            }
+
+            // ═══════════════════════════════════════════════
+            // STRATEGY 2: VELOCITY GATING (unchanged — already L0)
+            // 5+ same-direction ticks in 2s = impulse fire
+            // ═══════════════════════════════════════════════
+            if (vt && prevPrice && velocityPairs.includes(instrument)) {
+              if (vt.ticks.length >= VELOCITY_TICK_THRESHOLD && (tickTs - vt.lastFireTs) > VELOCITY_COOLDOWN_MS) {
+                const recentVTicks = vt.ticks.slice(-VELOCITY_TICK_THRESHOLD);
+                const windowAge = tickTs - recentVTicks[0].ts;
+                const allSameDir = recentVTicks.every(t => t.direction === recentVTicks[0].direction);
+
+                if (allSameDir && windowAge <= VELOCITY_MAX_AGE_MS) {
+                  const direction = recentVTicks[0].direction === 1 ? "long" : "short";
+                  const movePips = Math.abs(toPips(recentVTicks[recentVTicks.length - 1].mid - recentVTicks[0].mid, instrument));
+                  const avgTickInterval = Math.round(windowAge / (recentVTicks.length - 1));
+
+                  if (movePips >= 1.0) {
+                    vt.lastFireTs = tickTs;
+                    console.log(`[STRIKE-v3] ⚡ VELOCITY: ${instrument} ${recentVTicks.length} ticks ${direction} in ${windowAge}ms | ${movePips.toFixed(1)}p`);
+
+                    const result = await executeOrder(
+                      instrument, direction, velocityUnits,
+                      velocitySlPips, velocityTpPips, "velocity-gating",
+                      {
+                        ticksInWindow: recentVTicks.length,
+                        windowAgeMs: windowAge, avgTickIntervalMs: avgTickInterval,
+                        movePips, tickNumber: tickCount,
+                        streamLatencyMs: Date.now() - startTime,
+                        confidence: Math.min(1, movePips / 3),
+                        engine: "velocity-gating-v3",
+                      },
+                      { mid, spreadPips },
+                    );
+
+                    if (result.success) {
+                      velocityFires.push(instrument);
+                      await supabase.from("gate_bypasses").insert({
+                        gate_id: `VELOCITY_FIRE:${instrument}`,
+                        reason: JSON.stringify({
+                          pair: instrument, direction, movePips,
+                          ticksInWindow: recentVTicks.length,
+                          windowAgeMs: windowAge, fillPrice: result.fillPrice,
+                          slippage: result.slippage, tickNumber: tickCount,
+                        }),
+                        expires_at: new Date(Date.now() + 3600_000).toISOString(),
+                        created_by: "velocity-gating-engine",
+                      });
                     }
+                    vt.ticks = [];
                   }
                 }
               }
             }
 
-            // ═══════════════════════════════════════════
-            // STRATEGY 3: SNAP-BACK SNIPER
-            // Detect stop-hunt exhaustion → contrarian entry at reversal
-            // ═══════════════════════════════════════════
+            // ═══════════════════════════════════════════════
+            // STRATEGY 3: SNAP-BACK SNIPER (unchanged — already L0)
+            // ═══════════════════════════════════════════════
             const sb = snapbackTrackers.get(instrument);
             if (sb && prevPrice) {
               const delta = mid - prevPrice.mid;
               const deltaPips = toPips(delta, instrument);
               sb.recentTicks.push({ ts: tickTs, mid, delta: deltaPips });
 
-              // Keep only last N ticks
-              if (sb.recentTicks.length > SNAPBACK_VOLUME_WINDOW) {
-                sb.recentTicks.shift();
-              }
+              if (sb.recentTicks.length > SNAPBACK_VOLUME_WINDOW) sb.recentTicks.shift();
 
               if (sb.recentTicks.length >= SNAPBACK_VOLUME_WINDOW && (tickTs - sb.lastFireTs) > 5000) {
                 const ticks = sb.recentTicks;
-
-                // Count directional pressure
-                const downTicks = ticks.filter(t => t.delta < 0).length;
-                const upTicks = ticks.filter(t => t.delta > 0).length;
                 const totalMovePips = Math.abs(ticks[ticks.length - 1].mid - ticks[0].mid) * pipMultiplier(instrument);
-
-                // Detect stop-hunt flush: majority of window was one direction, then reversal at end
                 const lastFewTicks = ticks.slice(-3);
                 const mainWindowTicks = ticks.slice(0, -3);
 
@@ -631,88 +601,53 @@ Deno.serve(async (req) => {
                   const mainUpRatio = mainWindowTicks.filter(t => t.delta > 0).length / mainWindowTicks.length;
                   const lastFewDirection = lastFewTicks.reduce((sum, t) => sum + t.delta, 0);
 
-                  // CASE 1: Down-flush then snap-back up
+                  // Down-flush → snap-back up
                   if (mainDownRatio >= SNAPBACK_EXHAUSTION_RATIO && lastFewDirection > 0 && totalMovePips >= SNAPBACK_MIN_SPIKE_PIPS) {
                     sb.lastFireTs = tickTs;
-
-                    console.log(`[STREAM-v2] 🎯 SNAP-BACK: ${instrument} down-flush exhausted (${(mainDownRatio * 100).toFixed(0)}% down) → reversal detected | ${totalMovePips.toFixed(1)}p spike`);
+                    console.log(`[STRIKE-v3] 🎯 SNAP-BACK: ${instrument} down-flush → reversal | ${totalMovePips.toFixed(1)}p`);
 
                     const result = await executeOrder(
                       instrument, "long", snapbackUnits,
                       snapbackSlPips, snapbackTpPips, "snapback-sniper",
-                      {
-                        huntDirection: "down",
-                        exhaustionRatio: mainDownRatio,
-                        spikePips: totalMovePips,
-                        windowTicks: SNAPBACK_VOLUME_WINDOW,
-                        tickNumber: tickCount,
-                        streamLatencyMs: Date.now() - startTime,
-                        confidence: Math.min(1, totalMovePips / 5),
-                        engine: "snapback-sniper-v1",
-                      },
+                      { huntDirection: "down", exhaustionRatio: mainDownRatio, spikePips: totalMovePips, tickNumber: tickCount, confidence: Math.min(1, totalMovePips / 5), engine: "snapback-sniper-v3" },
                       { mid, spreadPips },
                     );
-
                     if (result.success) {
                       snapbackFires.push(instrument);
                       await supabase.from("gate_bypasses").insert({
                         gate_id: `SNAPBACK_FIRE:${instrument}`,
-                        reason: JSON.stringify({
-                          pair: instrument, direction: "long",
-                          huntDirection: "down", exhaustionRatio: mainDownRatio,
-                          spikePips: totalMovePips, fillPrice: result.fillPrice,
-                          slippage: result.slippage, tickNumber: tickCount,
-                        }),
+                        reason: JSON.stringify({ pair: instrument, direction: "long", exhaustionRatio: mainDownRatio, spikePips: totalMovePips, tickNumber: tickCount }),
                         expires_at: new Date(Date.now() + 3600_000).toISOString(),
                         created_by: "snapback-sniper-engine",
                       });
                     }
-
                     sb.recentTicks = [];
                   }
 
-                  // CASE 2: Up-flush then snap-back down
+                  // Up-flush → snap-back down
                   if (mainUpRatio >= SNAPBACK_EXHAUSTION_RATIO && lastFewDirection < 0 && totalMovePips >= SNAPBACK_MIN_SPIKE_PIPS) {
                     sb.lastFireTs = tickTs;
-
-                    console.log(`[STREAM-v2] 🎯 SNAP-BACK: ${instrument} up-flush exhausted (${(mainUpRatio * 100).toFixed(0)}% up) → reversal detected | ${totalMovePips.toFixed(1)}p spike`);
+                    console.log(`[STRIKE-v3] 🎯 SNAP-BACK: ${instrument} up-flush → reversal | ${totalMovePips.toFixed(1)}p`);
 
                     const result = await executeOrder(
                       instrument, "short", snapbackUnits,
                       snapbackSlPips, snapbackTpPips, "snapback-sniper",
-                      {
-                        huntDirection: "up",
-                        exhaustionRatio: mainUpRatio,
-                        spikePips: totalMovePips,
-                        windowTicks: SNAPBACK_VOLUME_WINDOW,
-                        tickNumber: tickCount,
-                        streamLatencyMs: Date.now() - startTime,
-                        confidence: Math.min(1, totalMovePips / 5),
-                        engine: "snapback-sniper-v1",
-                      },
+                      { huntDirection: "up", exhaustionRatio: mainUpRatio, spikePips: totalMovePips, tickNumber: tickCount, confidence: Math.min(1, totalMovePips / 5), engine: "snapback-sniper-v3" },
                       { mid, spreadPips },
                     );
-
                     if (result.success) {
                       snapbackFires.push(instrument);
                       await supabase.from("gate_bypasses").insert({
                         gate_id: `SNAPBACK_FIRE:${instrument}`,
-                        reason: JSON.stringify({
-                          pair: instrument, direction: "short",
-                          huntDirection: "up", exhaustionRatio: mainUpRatio,
-                          spikePips: totalMovePips, fillPrice: result.fillPrice,
-                          slippage: result.slippage, tickNumber: tickCount,
-                        }),
+                        reason: JSON.stringify({ pair: instrument, direction: "short", exhaustionRatio: mainUpRatio, spikePips: totalMovePips, tickNumber: tickCount }),
                         expires_at: new Date(Date.now() + 3600_000).toISOString(),
                         created_by: "snapback-sniper-engine",
                       });
                     }
-
                     sb.recentTicks = [];
                   }
                 }
               }
-
               sb.lastMid = mid;
             }
           } catch { /* skip malformed tick */ }
@@ -722,27 +657,25 @@ Deno.serve(async (req) => {
       try { reader.cancel(); } catch { /* ignore */ }
     }
 
-    // ─── 8. Build slippage audit summary ───
+    // ─── 8. Session summary ───
     const slippageSummary: Record<string, { avgSlippage: number; fills: number; switchedToLimit: boolean }> = {};
     for (const [pair, sa] of slippageAudit.entries()) {
       slippageSummary[pair] = {
         avgSlippage: sa.fills > 0 ? Math.round((sa.totalSlippage / sa.fills) * 100) / 100 : 0,
-        fills: sa.fills,
-        switchedToLimit: sa.switchedToLimit,
+        fills: sa.fills, switchedToLimit: sa.switchedToLimit,
       };
     }
 
     const totalMs = Date.now() - startTime;
-    console.log(`[STREAM-v2] 📊 Session: ${totalMs}ms, ${tickCount} ticks, ${evalCount} evals | Ripple: ${firedTriggers.length} | Velocity: ${velocityFires.length} | Snap-Back: ${snapbackFires.length}`);
+    console.log(`[STRIKE-v3] 📊 Session: ${totalMs}ms, ${tickCount} ticks | Z-Score: ${zScoreFires.length} | Velocity: ${velocityFires.length} | Snap-Back: ${snapbackFires.length}`);
 
     return new Response(
       JSON.stringify({
         success: true,
-        version: "v2-predictive-liquidity-capture",
+        version: "v3-zscore-strike-engine",
         streamDurationMs: totalMs,
         ticksProcessed: tickCount,
-        evaluations: evalCount,
-        ripple: { fired: firedTriggers.length, pairs: firedTriggers, monitored: liveTriggers.length },
+        zscore: { fired: zScoreFires.length, pairs: zScoreFires, groups: correlationGroups.length, threshold: zScoreThreshold },
         velocity: { fired: velocityFires.length, pairs: velocityFires, monitored: velocityPairs.length },
         snapback: { fired: snapbackFires.length, pairs: snapbackFires, monitored: snapbackPairs.length },
         slippageAudit: slippageSummary,
@@ -751,7 +684,7 @@ Deno.serve(async (req) => {
       { headers: { ...corsHeaders, "Content-Type": "application/json" } },
     );
   } catch (err) {
-    console.error("[STREAM-v2] Error:", err);
+    console.error("[STRIKE-v3] Error:", err);
     return new Response(
       JSON.stringify({ success: false, error: (err as Error).message }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
