@@ -174,7 +174,7 @@ Deno.serve(async (req) => {
         if (!/^[A-Z]{3}_[A-Z]{3}$/.test(loud) || !/^[A-Z]{3}_[A-Z]{3}$/.test(quiet)) continue;
 
         const armedAt = new Date(payload.armedAt).getTime();
-        const maxLag = (payload.maxLagMinutes || 5) * 60_000;
+        const maxLag = (payload.maxLagMinutes || 15) * 60_000;
         if (now.getTime() - armedAt > maxLag) {
           console.log(`[STREAM] Auto-revoking stale trigger ${t.gate_id}`);
           await supabase.from("gate_bypasses").update({ revoked: true }).eq("id", t.id);
@@ -232,8 +232,10 @@ Deno.serve(async (req) => {
     let tickCount = 0;
     let evalCount = 0;
 
-    // Init velocity trackers
-    for (const p of velocityPairs) {
+    // Init velocity trackers (include trigger quiet pairs for momentum filter)
+    const allVelocityInstruments = new Set([...velocityPairs]);
+    for (const t of liveTriggers) allVelocityInstruments.add(t.config.quietPair);
+    for (const p of allVelocityInstruments) {
       velocityTrackers.set(p, { ticks: [], lastFireTs: 0 });
     }
     // Init snapback trackers
@@ -423,7 +425,7 @@ Deno.serve(async (req) => {
 
               // G5: Freshness — check if trigger expired during stream session
               const armedMs = new Date(config.armedAt).getTime();
-              const maxLagMs = (config.maxLagMinutes || 5) * 60_000;
+              const maxLagMs = (config.maxLagMinutes || 15) * 60_000;
               if (tickTs > armedMs + maxLagMs) {
                 trigger.config.fired = true;
                 await supabase.from("gate_bypasses").update({ revoked: true }).eq("id", trigger.id);
@@ -450,7 +452,7 @@ Deno.serve(async (req) => {
               const maxSpread = config.thresholdPips * 0.4;
               if (quietPrice.spreadPips > maxSpread) continue;
 
-              // G4: Quiet stillness
+              // G4: Quiet stillness — hasn't already caught up
               const quietMovePips = Math.abs(toPips(quietPrice.mid - config.quietBaseline!, config.quietPair));
               const quietRatio = loudMovePips > 0 ? quietMovePips / loudMovePips : 0;
               if (quietRatio > 0.3) {
@@ -460,7 +462,23 @@ Deno.serve(async (req) => {
                 continue;
               }
 
-              // ═══ ALL GATES PASSED — INSTANT FIRE ═══
+              // G6: TICK-MOMENTUM FILTER — Quiet pair must be "waking up"
+              // Require 3+ recent ticks on the quiet pair moving in the expected direction
+              // This ensures we don't trade stale lag; we trade the moment it starts moving.
+              const QUIET_MOMENTUM_TICKS = 3;
+              const quietVelocity = velocityTrackers.get(config.quietPair);
+              if (quietVelocity) {
+                const expectedDir: 1 | -1 = config.direction.toLowerCase() === "long" ? 1 : -1;
+                const recentQuietTicks = quietVelocity.ticks.filter(t => t.ts > tickTs - 5000); // last 5s
+                const alignedTicks = recentQuietTicks.filter(t => t.direction === expectedDir);
+                if (alignedTicks.length < QUIET_MOMENTUM_TICKS) {
+                  // Quiet pair hasn't woken up yet — skip this tick, re-evaluate next
+                  continue;
+                }
+                console.log(`[STREAM-v2] 🔥 G6 MOMENTUM: ${config.quietPair} showing ${alignedTicks.length}/${recentQuietTicks.length} ticks ${config.direction} — WAKING UP`);
+              }
+
+              // ═══ ALL GATES PASSED — QUIET PAIR IS WAKING UP — FIRE ═══
               const divergencePips = loudMovePips - quietMovePips;
               console.log(`[STREAM-v2] 🎯 RIPPLE-FIRE: ${config.direction.toUpperCase()} ${config.units} ${config.quietPair} | Loud ${loudMovePips.toFixed(1)}p, Quiet lag ${(quietRatio * 100).toFixed(0)}% | Tick #${tickCount}`);
 
