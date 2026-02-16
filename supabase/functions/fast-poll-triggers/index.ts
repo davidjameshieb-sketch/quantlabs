@@ -1,13 +1,21 @@
-// Fast-Poll Trigger Evaluator
-// Evaluates armed correlation triggers against live OANDA prices at high frequency (5-10s via pg_cron).
-// This bridges the gap between the 60s sovereign loop and sub-second execution needs.
+// Fast-Poll Trigger Evaluator v2 — Ripple Strike Engine
+// Evaluates armed correlation triggers against live OANDA prices at high frequency (10s via pg_cron).
+// NOW ACTUALLY FIRES TRADES when divergence thresholds are breached.
+//
+// Improvements over v1:
+// 1. Real divergence calculation against stored baselines
+// 2. Spread gate (quiet pair spread must be < 40% of threshold)
+// 3. Quiet-pair stillness check (quiet must have moved < 30% of loud move)
+// 4. Stale trigger expiry (auto-revoke if armed > maxLagMinutes)
+// 5. Autonomous trade execution via OANDA API
+// 6. Idempotency guard (won't re-fire already-fired triggers)
 
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
+  "Access-Control-Allow-Headers":
+    "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
 const OANDA_API = "https://api-fxtrade.oanda.com/v3";
@@ -21,103 +29,154 @@ interface ArmedTrigger {
   created_at: string;
 }
 
-interface TriggerConfig {
+interface TriggerPayload {
+  triggerId: string;
   loudPair: string;
   quietPair: string;
-  direction: "long" | "short";
-  divergenceThreshold: number; // pips
+  direction: string;
+  thresholdPips: number;
   units: number;
-  stopLoss: number;
-  takeProfit: number;
+  maxLagMinutes: number;
+  slPips: number;
+  tpPips: number;
+  loudBaseline: number | null;
+  quietBaseline: number | null;
+  armedAt: string;
+  fired: boolean;
+  reason: string;
+  correlationGroup: string | null;
 }
 
-serve(async (req) => {
+interface PriceInfo {
+  bid: number;
+  ask: number;
+  mid: number;
+  spread: number;
+  spreadPips: number;
+}
+
+function pipMultiplier(pair: string): number {
+  return pair.includes("JPY") ? 100 : 10000;
+}
+
+function toPips(priceMove: number, pair: string): number {
+  return priceMove * pipMultiplier(pair);
+}
+
+function fromPips(pips: number, pair: string): number {
+  return pips / pipMultiplier(pair);
+}
+
+Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
   const OANDA_TOKEN = Deno.env.get("OANDA_LIVE_API_TOKEN");
   const OANDA_ACCOUNT = Deno.env.get("OANDA_LIVE_ACCOUNT_ID");
-  const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
-  const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
+  const SUPABASE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
   const LIVE_ENABLED = Deno.env.get("LIVE_TRADING_ENABLED");
 
   if (!OANDA_TOKEN || !OANDA_ACCOUNT) {
     return new Response(JSON.stringify({ error: "OANDA credentials not configured" }), {
-      status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
-  }
-  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
-    return new Response(JSON.stringify({ error: "Supabase env not configured" }), {
-      status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
+      status: 500,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
 
-  const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+  const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
   try {
-    // 1. Fetch armed CORRELATION_TRIGGER records from gate_bypasses
-    const now = new Date().toISOString();
+    const now = new Date();
+    const nowISO = now.toISOString();
+
+    // ─── 1. Fetch armed CORRELATION_TRIGGER records ───
     const { data: triggers, error: trigErr } = await supabase
       .from("gate_bypasses")
       .select("*")
       .like("gate_id", "CORRELATION_TRIGGER:%")
       .eq("revoked", false)
-      .gte("expires_at", now);
+      .gte("expires_at", nowISO);
 
     if (trigErr) {
-      console.error("[FAST-POLL] Error fetching triggers:", trigErr);
+      console.error("[RIPPLE] Trigger fetch error:", trigErr);
       return new Response(JSON.stringify({ error: trigErr.message }), {
-        status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        status: 500,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
     if (!triggers || triggers.length === 0) {
-      return new Response(JSON.stringify({ success: true, message: "No armed triggers", evaluated: 0 }), {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+      return new Response(
+        JSON.stringify({ success: true, message: "No armed triggers", evaluated: 0 }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
     }
 
-    console.log(`[FAST-POLL] Evaluating ${triggers.length} armed trigger(s)...`);
-
-    // 2. Collect unique instruments needed
+    // ─── 2. Parse and validate triggers ───
+    const cleanPair = (p: string) => p.replace(/^[A-Z]+:/, "");
     const instruments = new Set<string>();
-    const parsedTriggers: { trigger: ArmedTrigger; config: TriggerConfig }[] = [];
+    const parsedTriggers: { trigger: ArmedTrigger; config: TriggerPayload }[] = [];
 
     for (const t of triggers as ArmedTrigger[]) {
       try {
-        // Parse config from reason JSON or structured gate_id
-        const reasonData = JSON.parse(t.reason) as TriggerConfig;
-        // Strip venue prefixes (e.g. "CME:EUR_USD" → "EUR_USD") — CME instruments don't exist in OANDA
-        const cleanPair = (p: string) => p.replace(/^[A-Z]+:/, "");
-        const loudPair = cleanPair(reasonData.loudPair);
-        const quietPair = cleanPair(reasonData.quietPair);
-        // Skip if loud and quiet resolve to same instrument after stripping
-        if (loudPair === quietPair) {
-          console.warn(`[FAST-POLL] Skipping ${t.gate_id}: loud/quiet resolve to same pair ${loudPair}`);
+        const payload = JSON.parse(t.reason) as TriggerPayload;
+
+        // Skip already-fired
+        if (payload.fired) continue;
+
+        const loud = cleanPair(payload.loudPair);
+        const quiet = cleanPair(payload.quietPair);
+
+        // Skip if same pair after cleaning
+        if (loud === quiet) {
+          console.warn(`[RIPPLE] Skip ${t.gate_id}: loud/quiet resolve to same pair`);
           continue;
         }
-        instruments.add(loudPair);
-        instruments.add(quietPair);
-        parsedTriggers.push({ trigger: t, config: { ...reasonData, loudPair, quietPair } });
+
+        // Skip if missing baselines (can't calculate divergence)
+        if (payload.loudBaseline == null || payload.quietBaseline == null) {
+          console.warn(`[RIPPLE] Skip ${t.gate_id}: missing baseline prices`);
+          continue;
+        }
+
+        // Validate OANDA format
+        if (!/^[A-Z]{3}_[A-Z]{3}$/.test(loud) || !/^[A-Z]{3}_[A-Z]{3}$/.test(quiet)) {
+          console.warn(`[RIPPLE] Skip ${t.gate_id}: non-OANDA instruments (${loud}, ${quiet})`);
+          continue;
+        }
+
+        // ── Stale trigger check ──
+        const armedAt = new Date(payload.armedAt).getTime();
+        const maxLag = (payload.maxLagMinutes || 5) * 60_000;
+        if (now.getTime() - armedAt > maxLag) {
+          console.log(`[RIPPLE] Auto-revoking stale trigger ${t.gate_id} (armed ${payload.maxLagMinutes}m ago)`);
+          await supabase
+            .from("gate_bypasses")
+            .update({ revoked: true })
+            .eq("id", t.id);
+          continue;
+        }
+
+        instruments.add(loud);
+        instruments.add(quiet);
+        parsedTriggers.push({
+          trigger: t,
+          config: { ...payload, loudPair: loud, quietPair: quiet },
+        });
       } catch {
-        console.warn(`[FAST-POLL] Could not parse trigger ${t.gate_id}, skipping`);
+        console.warn(`[RIPPLE] Could not parse ${t.gate_id}`);
       }
     }
 
-    if (instruments.size === 0 || parsedTriggers.length === 0) {
-      return new Response(JSON.stringify({ success: true, evaluated: 0, message: "No parseable triggers" }), {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+    if (parsedTriggers.length === 0) {
+      return new Response(
+        JSON.stringify({ success: true, evaluated: 0, message: "No valid triggers" }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
     }
 
-    // 3. Fetch live prices from OANDA — validate instruments are OANDA format (XXX_YYY)
-    const validInstruments = Array.from(instruments).filter(i => /^[A-Z]{3}_[A-Z]{3}$/.test(i));
-    if (validInstruments.length === 0) {
-      return new Response(JSON.stringify({ success: true, evaluated: 0, message: "No valid OANDA instruments in triggers" }), {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
-
-    const instrumentList = validInstruments.join(",");
+    // ─── 3. Fetch live OANDA prices ───
+    const instrumentList = Array.from(instruments).join(",");
     const priceRes = await fetch(
       `${OANDA_API}/accounts/${OANDA_ACCOUNT}/pricing?instruments=${instrumentList}`,
       { headers: { Authorization: `Bearer ${OANDA_TOKEN}` } }
@@ -125,21 +184,35 @@ serve(async (req) => {
 
     if (!priceRes.ok) {
       const errBody = await priceRes.text().catch(() => "");
-      console.warn(`[FAST-POLL] OANDA pricing ${priceRes.status}: ${errBody.slice(0, 200)}`);
-      return new Response(JSON.stringify({ success: true, evaluated: 0, message: `OANDA pricing unavailable: ${priceRes.status}` }), {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+      console.warn(`[RIPPLE] OANDA pricing ${priceRes.status}: ${errBody.slice(0, 200)}`);
+      return new Response(
+        JSON.stringify({ success: true, evaluated: 0, message: `Pricing unavailable: ${priceRes.status}` }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
     }
 
     const priceData = await priceRes.json();
-    const prices = new Map<string, { bid: number; ask: number; mid: number }>();
+    const prices = new Map<string, PriceInfo>();
     for (const p of priceData.prices || []) {
       const bid = parseFloat(p.bids?.[0]?.price || "0");
       const ask = parseFloat(p.asks?.[0]?.price || "0");
-      prices.set(p.instrument, { bid, ask, mid: (bid + ask) / 2 });
+      const mid = (bid + ask) / 2;
+      const spread = ask - bid;
+      const spreadPips = toPips(spread, p.instrument);
+      prices.set(p.instrument, { bid, ask, mid, spread, spreadPips });
     }
 
-    // 4. Evaluate each trigger
+    // ─── 4. Evaluate each trigger ───
+    const results: {
+      triggerId: string;
+      status: string;
+      loudMovePips: number;
+      quietMovePips: number;
+      divergencePips: number;
+      quietSpreadPips: number;
+      threshold: number;
+      detail: string;
+    }[] = [];
     const fired: string[] = [];
 
     for (const { trigger, config } of parsedTriggers) {
@@ -147,80 +220,270 @@ serve(async (req) => {
       const quietPrice = prices.get(config.quietPair);
 
       if (!loudPrice || !quietPrice) {
-        console.warn(`[FAST-POLL] Missing price for ${config.loudPair} or ${config.quietPair}`);
+        results.push({
+          triggerId: config.triggerId,
+          status: "SKIP",
+          loudMovePips: 0,
+          quietMovePips: 0,
+          divergencePips: 0,
+          quietSpreadPips: 0,
+          threshold: config.thresholdPips,
+          detail: `Missing price for ${config.loudPair} or ${config.quietPair}`,
+        });
         continue;
       }
 
-      // Calculate divergence (simplified: compare mid-price percentage moves)
-      // In production, this would compare against a baseline stored when the trigger was armed
-      const isJpyLoud = config.loudPair.includes("JPY");
-      const isJpyQuiet = config.quietPair.includes("JPY");
-      const loudMult = isJpyLoud ? 100 : 10000;
-      const quietMult = isJpyQuiet ? 100 : 10000;
+      // ── Calculate moves from baseline ──
+      const loudMovePips = Math.abs(toPips(loudPrice.mid - config.loudBaseline!, config.loudPair));
+      const quietMovePips = Math.abs(toPips(quietPrice.mid - config.quietBaseline!, config.quietPair));
 
-      // For now, log the evaluation — actual firing logic depends on baseline prices
-      // stored in the trigger's reason/payload
-      const spread = (quietPrice.ask - quietPrice.bid) * quietMult;
-      
-      console.log(`[FAST-POLL] ${config.loudPair} mid=${loudPrice.mid.toFixed(5)} | ${config.quietPair} mid=${quietPrice.mid.toFixed(5)} spread=${spread.toFixed(1)}p`);
+      // Directional loud move (positive = moved in expected direction)
+      const dirMult = config.direction.toLowerCase() === "long" ? 1 : -1;
+      const loudDirectionalMove = toPips(loudPrice.mid - config.loudBaseline!, config.loudPair) * dirMult;
 
-      // If live trading is enabled and divergence exceeds threshold, fire the trade
-      if (LIVE_ENABLED === "true") {
-        // The sovereign loop's L0 engine handles the actual execution logic
-        // This evaluator just logs faster evaluations for the sovereign loop to pick up
-        const logKey = `FAST_POLL_EVAL:${trigger.gate_id}:${Date.now()}`;
-        
-        await supabase.from("gate_bypasses").insert({
-          gate_id: `FAST_POLL_EVAL:${config.quietPair}`,
-          reason: JSON.stringify({
-            trigger_id: trigger.id,
-            loud_pair: config.loudPair,
-            quiet_pair: config.quietPair,
-            loud_mid: loudPrice.mid,
-            quiet_mid: quietPrice.mid,
-            quiet_spread: spread,
-            evaluated_at: new Date().toISOString(),
-          }),
-          expires_at: new Date(Date.now() + 30_000).toISOString(), // 30s TTL
-          created_by: "fast-poll-evaluator",
+      // ── Divergence = how much loud moved vs how little quiet followed ──
+      const divergencePips = loudMovePips - quietMovePips;
+
+      // ── GATE 1: Loud pair must have moved enough ──
+      if (loudMovePips < config.thresholdPips) {
+        results.push({
+          triggerId: config.triggerId,
+          status: "WAITING",
+          loudMovePips: Math.round(loudMovePips * 10) / 10,
+          quietMovePips: Math.round(quietMovePips * 10) / 10,
+          divergencePips: Math.round(divergencePips * 10) / 10,
+          quietSpreadPips: Math.round(quietPrice.spreadPips * 10) / 10,
+          threshold: config.thresholdPips,
+          detail: `Loud ${config.loudPair} moved ${loudMovePips.toFixed(1)}p / ${config.thresholdPips}p threshold`,
+        });
+        continue;
+      }
+
+      // ── GATE 2: Loud must be moving in the RIGHT direction ──
+      if (loudDirectionalMove < config.thresholdPips * 0.5) {
+        results.push({
+          triggerId: config.triggerId,
+          status: "WRONG_DIRECTION",
+          loudMovePips: Math.round(loudMovePips * 10) / 10,
+          quietMovePips: Math.round(quietMovePips * 10) / 10,
+          divergencePips: Math.round(divergencePips * 10) / 10,
+          quietSpreadPips: Math.round(quietPrice.spreadPips * 10) / 10,
+          threshold: config.thresholdPips,
+          detail: `Loud moved ${loudDirectionalMove.toFixed(1)}p but wrong direction for ${config.direction}`,
+        });
+        continue;
+      }
+
+      // ── GATE 3: Quiet pair spread must be < 40% of threshold (friction gate) ──
+      const maxSpread = config.thresholdPips * 0.4;
+      if (quietPrice.spreadPips > maxSpread) {
+        results.push({
+          triggerId: config.triggerId,
+          status: "SPREAD_GATE",
+          loudMovePips: Math.round(loudMovePips * 10) / 10,
+          quietMovePips: Math.round(quietMovePips * 10) / 10,
+          divergencePips: Math.round(divergencePips * 10) / 10,
+          quietSpreadPips: Math.round(quietPrice.spreadPips * 10) / 10,
+          threshold: config.thresholdPips,
+          detail: `Quiet spread ${quietPrice.spreadPips.toFixed(1)}p > max ${maxSpread.toFixed(1)}p`,
+        });
+        continue;
+      }
+
+      // ── GATE 4: Quiet pair must still be "quiet" (< 30% of loud move) ──
+      const quietRatio = loudMovePips > 0 ? quietMovePips / loudMovePips : 0;
+      if (quietRatio > 0.3) {
+        results.push({
+          triggerId: config.triggerId,
+          status: "ALREADY_MOVED",
+          loudMovePips: Math.round(loudMovePips * 10) / 10,
+          quietMovePips: Math.round(quietMovePips * 10) / 10,
+          divergencePips: Math.round(divergencePips * 10) / 10,
+          quietSpreadPips: Math.round(quietPrice.spreadPips * 10) / 10,
+          threshold: config.thresholdPips,
+          detail: `Quiet already moved ${(quietRatio * 100).toFixed(0)}% of loud — ripple window closed`,
         });
 
-        fired.push(config.quietPair);
+        // Auto-revoke stale ripple
+        await supabase
+          .from("gate_bypasses")
+          .update({ revoked: true })
+          .eq("id", trigger.id);
+        continue;
       }
+
+      // ── ALL GATES PASSED — FIRE THE TRADE ──
+      console.log(`[RIPPLE] 🎯 FIRING: ${config.direction.toUpperCase()} ${config.units} ${config.quietPair} | Loud moved ${loudMovePips.toFixed(1)}p, Quiet lagging (${(quietRatio * 100).toFixed(0)}%)`);
+
+      let tradeResult: Record<string, unknown> = {};
+      let fireSuccess = false;
+
+      if (LIVE_ENABLED === "true") {
+        try {
+          // Build OANDA order
+          const units = config.direction.toLowerCase() === "long" ? config.units : -config.units;
+          const slDistance = fromPips(config.slPips, config.quietPair);
+          const tpDistance = fromPips(config.tpPips, config.quietPair);
+
+          const orderBody = {
+            order: {
+              type: "MARKET",
+              instrument: config.quietPair,
+              units: String(units),
+              timeInForce: "FOK",
+              stopLossOnFill: {
+                distance: slDistance.toFixed(5),
+                timeInForce: "GTC",
+              },
+              takeProfitOnFill: {
+                distance: tpDistance.toFixed(5),
+                timeInForce: "GTC",
+              },
+            },
+          };
+
+          const orderRes = await fetch(
+            `${OANDA_API}/accounts/${OANDA_ACCOUNT}/orders`,
+            {
+              method: "POST",
+              headers: {
+                Authorization: `Bearer ${OANDA_TOKEN}`,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify(orderBody),
+            }
+          );
+
+          const orderData = await orderRes.json();
+          tradeResult = orderData;
+
+          const fill = orderData.orderFillTransaction;
+          if (fill) {
+            fireSuccess = true;
+            const fillPrice = parseFloat(fill.price || "0");
+            const tradeId = fill.tradeOpened?.tradeID || fill.id;
+
+            // Write to oanda_orders with full audit trail
+            // Find the user_id (admin user for sovereign trades)
+            const { data: adminRole } = await supabase
+              .from("user_roles")
+              .select("user_id")
+              .eq("role", "admin")
+              .limit(1)
+              .single();
+
+            if (adminRole) {
+              await supabase.from("oanda_orders").insert({
+                user_id: adminRole.user_id,
+                signal_id: `ripple-strike-${config.triggerId}-${Date.now()}`,
+                currency_pair: config.quietPair,
+                direction: config.direction.toLowerCase(),
+                units: config.units,
+                entry_price: fillPrice,
+                oanda_order_id: fill.id,
+                oanda_trade_id: tradeId,
+                status: "filled",
+                environment: "live",
+                direction_engine: "ripple-strike",
+                sovereign_override_tag: `ripple:${config.triggerId}`,
+                confidence_score: Math.min(1, divergencePips / config.thresholdPips),
+                governance_payload: {
+                  triggerId: config.triggerId,
+                  loudPair: config.loudPair,
+                  quietPair: config.quietPair,
+                  loudBaseline: config.loudBaseline,
+                  quietBaseline: config.quietBaseline,
+                  loudMidAtFire: loudPrice.mid,
+                  quietMidAtFire: quietPrice.mid,
+                  loudMovePips,
+                  quietMovePips,
+                  divergencePips,
+                  quietSpreadPips: quietPrice.spreadPips,
+                  quietRatio,
+                  firedAt: nowISO,
+                },
+                requested_price: quietPrice.mid,
+                slippage_pips: Math.abs(toPips(fillPrice - quietPrice.mid, config.quietPair)),
+                spread_at_entry: quietPrice.spreadPips,
+              });
+            }
+
+            console.log(`[RIPPLE] ✅ FILLED: Trade ${tradeId} @ ${fillPrice} | ${config.direction} ${config.units} ${config.quietPair}`);
+          } else {
+            const rejectReason = orderData.orderRejectTransaction?.rejectReason ||
+              orderData.orderCancelTransaction?.reason || "Unknown";
+            console.warn(`[RIPPLE] ❌ ORDER REJECTED: ${rejectReason}`);
+            tradeResult = { rejected: true, reason: rejectReason };
+          }
+        } catch (execErr) {
+          console.error(`[RIPPLE] Execution error:`, execErr);
+          tradeResult = { error: (execErr as Error).message };
+        }
+      }
+
+      // Mark trigger as fired
+      const firedPayload = { ...config, fired: true, firedAt: nowISO, tradeResult };
+      await supabase
+        .from("gate_bypasses")
+        .update({
+          revoked: true,
+          reason: JSON.stringify(firedPayload),
+        })
+        .eq("id", trigger.id);
+
+      // Log evaluation for dashboard
+      await supabase.from("gate_bypasses").insert({
+        gate_id: `RIPPLE_FIRED:${config.quietPair}`,
+        reason: JSON.stringify({
+          triggerId: config.triggerId,
+          loudPair: config.loudPair,
+          quietPair: config.quietPair,
+          direction: config.direction,
+          loudMovePips,
+          quietMovePips,
+          divergencePips,
+          quietSpreadPips: quietPrice.spreadPips,
+          fireSuccess,
+          tradeResult,
+          firedAt: nowISO,
+        }),
+        expires_at: new Date(Date.now() + 3600_000).toISOString(),
+        created_by: "ripple-strike-engine",
+      });
+
+      fired.push(config.quietPair);
+
+      results.push({
+        triggerId: config.triggerId,
+        status: fireSuccess ? "FIRED" : "FIRE_FAILED",
+        loudMovePips: Math.round(loudMovePips * 10) / 10,
+        quietMovePips: Math.round(quietMovePips * 10) / 10,
+        divergencePips: Math.round(divergencePips * 10) / 10,
+        quietSpreadPips: Math.round(quietPrice.spreadPips * 10) / 10,
+        threshold: config.thresholdPips,
+        detail: fireSuccess
+          ? `🎯 FIRED ${config.direction} ${config.units} ${config.quietPair}`
+          : `Fire attempted but failed`,
+      });
     }
 
-    // Also evaluate HARDWIRED_RULE entries that have fast-poll flags
-    const { data: fastRules } = await supabase
-      .from("sovereign_memory")
-      .select("*")
-      .eq("memory_type", "HARDWIRED_RULE")
-      .not("expires_at", "is", null)
-      .gte("expires_at", now);
-
-    let rulesEvaluated = 0;
-    if (fastRules) {
-      for (const rule of fastRules) {
-        const payload = rule.payload as Record<string, unknown>;
-        if (payload.fast_poll !== true) continue;
-        rulesEvaluated++;
-        // Rule evaluation happens in L0 engine; we just ensure freshness
-      }
-    }
+    console.log(
+      `[RIPPLE] Evaluated ${parsedTriggers.length} triggers, fired ${fired.length}: [${fired.join(", ")}]`
+    );
 
     return new Response(
       JSON.stringify({
         success: true,
         evaluated: parsedTriggers.length,
-        rulesEvaluated,
         fired: fired.length,
         firedPairs: fired,
-        timestamp: new Date().toISOString(),
+        results,
+        timestamp: nowISO,
       }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
-
   } catch (err) {
-    console.error("[FAST-POLL] Error:", err);
+    console.error("[RIPPLE] Error:", err);
     return new Response(
       JSON.stringify({ success: false, error: (err as Error).message }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
