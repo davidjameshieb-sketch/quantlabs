@@ -130,7 +130,7 @@ const Z_OFI_FIRE_THRESHOLD = 2.0; // Welford Z-score: "only fire if |Z| > 2.0"
 // Hurst Exponent thresholds
 const HURST_PERSISTENCE_THRESHOLD = 0.55; // H > 0.55 = trending (ripple travels)
 const HURST_MEANREV_THRESHOLD = 0.45;     // H < 0.45 = mean-reverting (snap back)
-const HURST_SCALE = 128;                  // Window for Hall-Wood estimator
+const HURST_SCALE = 40;                   // Window for Hall-Wood estimator (was 128 — too high for 110s sessions)
 
 // Efficiency ratio thresholds for market state classification
 const EFFICIENCY_ABSORBING_THRESHOLD = 0.3; // E < 0.3 = hidden limit player
@@ -194,9 +194,9 @@ interface OfiTracker {
   hurst: number;             // Current H estimate
 
   // ─── Recursive VPIN (O(1) EWMA — no bucket scans) ───
-  ewmaImbalance: number;     // EWMA of |BuyVol - SellVol|
-  ewmaTotalVol: number;      // EWMA of BuyVol + SellVol
-  vpinRecursive: number;     // = ewmaImbalance / ewmaTotalVol
+  ewmaBuyVol: number;        // EWMA of buy-classified volume
+  ewmaSellVol: number;       // EWMA of sell-classified volume
+  vpinRecursive: number;     // = |ewmaBuy - ewmaSell| / (ewmaBuy + ewmaSell)
 
   // ─── Lee-Ready state ───
   lastClassification: 1 | -1;
@@ -236,8 +236,8 @@ function getOrCreateOfi(pair: string): OfiTracker {
       prevDx: 0,
       hurstN: 0,
       hurst: 0.5, // neutral start
-      ewmaImbalance: 0,
-      ewmaTotalVol: 0,
+      ewmaBuyVol: 0,
+      ewmaSellVol: 0,
       vpinRecursive: 0,
       lastClassification: 1,
       priceLevels: new Map(),
@@ -447,14 +447,17 @@ function processOfiTick(
   const ofiRatio = totalTicks > 0 ? (tracker.runningBuys - tracker.runningSells) / totalTicks : 0;
 
   // ─── RECURSIVE VPIN (O(1) EWMA — no bucket scans) ───
-  // VPIN = E[|Buy-Sell|] / E[Buy+Sell]
-  // Uses same gamma as OFI for memory consistency
-  const tradeVol = dxPips * tickVelocity; // Volume proxy: displacement × velocity
-  const imbalance = Math.abs(side * tradeVol); // Directional imbalance
-  tracker.ewmaImbalance = gamma * tracker.ewmaImbalance + (1 - gamma) * imbalance;
-  tracker.ewmaTotalVol = gamma * tracker.ewmaTotalVol + (1 - gamma) * Math.abs(tradeVol);
-  tracker.vpinRecursive = tracker.ewmaTotalVol > 1e-9
-    ? tracker.ewmaImbalance / tracker.ewmaTotalVol
+  // Track buy/sell volume SEPARATELY, then compute imbalance ratio.
+  // VPIN = |ewmaBuy - ewmaSell| / (ewmaBuy + ewmaSell)
+  // 0 = balanced flow, 1 = all informed (one-directional)
+  const tradeVol = Math.abs(dxPips * tickVelocity); // Volume proxy: displacement × velocity
+  const buyInc = side === 1 ? tradeVol : 0;
+  const sellInc = side === -1 ? tradeVol : 0;
+  tracker.ewmaBuyVol = gamma * tracker.ewmaBuyVol + (1 - gamma) * buyInc;
+  tracker.ewmaSellVol = gamma * tracker.ewmaSellVol + (1 - gamma) * sellInc;
+  const totalVol = tracker.ewmaBuyVol + tracker.ewmaSellVol;
+  tracker.vpinRecursive = totalVol > 1e-9
+    ? Math.abs(tracker.ewmaBuyVol - tracker.ewmaSellVol) / totalVol
     : 0;
   const vpin = tracker.vpinRecursive;
 
@@ -1103,10 +1106,46 @@ Deno.serve(async (req) => {
               const densityCheck = isTickDensitySufficient(tradePair);
               if (!densityCheck.ok) continue;
 
-              // ─── STOP. COMPUTE PHYSICS ───
-              // Only the <1% of ticks surviving Gates 1 & 2 reach here.
-              // processOfiTick is O(1) recursive — but we still gate it to save the function call overhead.
-              const tradeOfi = processOfiTick(tradePair, prices.get(tradePair)!.mid, prices.get(tradePair)!.bid, prices.get(tradePair)!.ask, prices.get(tradePair)!.spreadPips, tickTs);
+              // ─── READ PHYSICS (already computed at line 1029 for all instruments) ───
+              // DO NOT call processOfiTick again — double-updating corrupts recursive state
+              // (dt≈0 → Infinity velocity → NaN cascade). Read from tracker directly.
+              const tradeTracker = getOrCreateOfi(tradePair);
+              if (tradeTracker.tickCount < 10) continue; // not enough data
+              const sqrtD2Trade = Math.sqrt(Math.abs(tradeTracker.D2));
+              const driftNormTrade = sqrtD2Trade > 1e-10 ? tradeTracker.D1 / sqrtD2Trade : 0;
+              const absD1Trade = Math.abs(tradeTracker.D1);
+              const absOfiTrade = Math.abs(tradeTracker.ofiRecursive);
+              const pipMultTrade = tradePair.includes("JPY") ? 100 : 10000;
+              const ofiScaledTrade = absOfiTrade / (pipMultTrade * 10);
+              const efficiencyTrade = ofiScaledTrade / (absD1Trade + EFFICIENCY_EPSILON);
+              const marketStateTrade = classifyMarketState(efficiencyTrade);
+              const hiddenPlayerTrade = detectHiddenLimitPlayer(tradeTracker.ofiRecursive, tradeTracker.D1, efficiencyTrade, marketStateTrade);
+              const hurstRegimeTrade = tradeTracker.hurst > HURST_PERSISTENCE_THRESHOLD ? "PERSISTENT" :
+                tradeTracker.hurst < HURST_MEANREV_THRESHOLD ? "MEAN_REVERTING" : "RANDOM_WALK";
+              const ofiNormTrade = Math.tanh(tradeTracker.ofiRecursive / 100);
+              const tradeOfi = {
+                ofiRatio: 0, ofiRaw: 0,
+                ofiWeighted: Math.round(ofiNormTrade * 1000) / 1000,
+                vpin: Math.round(tradeTracker.vpinRecursive * 1000) / 1000,
+                buyPressure: Math.round(tradeTracker.ewmaBuyPct * 100),
+                sellPressure: Math.round(tradeTracker.ewmaSellPct * 100),
+                ticksInWindow: tradeTracker.tickCount,
+                bias: (ofiNormTrade > OFI_IMBALANCE_THRESHOLD ? "BUY" : ofiNormTrade < -OFI_IMBALANCE_THRESHOLD ? "SELL" : "NEUTRAL") as "BUY" | "SELL" | "NEUTRAL",
+                syntheticDepth: [] as any[],
+                km: {
+                  D1: tradeTracker.D1, D2: tradeTracker.D2,
+                  driftNormalized: Math.round(driftNormTrade * 1000) / 1000,
+                  sampleSize: tradeTracker.tickCount,
+                  alphaAdaptive: Math.round(tradeTracker.alpha * 10000) / 10000,
+                },
+                hiddenPlayer: hiddenPlayerTrade,
+                resistanceLevels: [] as any[],
+                efficiency: Math.round(efficiencyTrade * 1000) / 1000,
+                marketState: marketStateTrade,
+                zOfi: Math.round(tradeTracker.zOfi * 1000) / 1000,
+                hurst: Math.round(tradeTracker.hurst * 1000) / 1000,
+                hurstRegime: hurstRegimeTrade,
+              };
 
               // ─── GATE 3: REGIME (Hurst — will the ripple travel?) ───
               // Cost: Zero (reading computed float). The "Weather Report" — don't sail in a storm.
@@ -1123,8 +1162,9 @@ Deno.serve(async (req) => {
 
               // ─── GATE 5: VELOCITY (KM Drift — is price actually moving?) ───
               // Cost: Zero (replaces O(N) momentum array scan). Kills: high-force moves fighting gravity.
-              // Confirms "Force" is translating into "Motion".
-              if (Math.abs(tradeOfi.km.driftNormalized) < 0.1) {
+              // driftNormalized = D1/√D2 (signal-to-noise ratio). Typical forex values: 1-20.
+              // Threshold 2.0 ensures meaningful directional velocity above noise.
+              if (Math.abs(tradeOfi.km.driftNormalized) < 2.0) {
                 continue;
               }
 
