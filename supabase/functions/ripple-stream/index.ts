@@ -236,9 +236,12 @@ function getOrCreateOfi(pair: string): OfiTracker {
       prevDx: 0,
       hurstN: 0,
       hurst: 0.55, // warm start: reduces cold-start bias (0.5 → 0.60 took 60+ ticks)
-      ewmaBuyVol: 0,
-      ewmaSellVol: 0,
-      vpinRecursive: 0,
+      // BUG FIX: VPIN cold-start — ewmaBuyVol/ewmaSellVol initialized at 0 meant VPIN=0 for
+      // first ~20 ticks, killing every scan immediately after warmup passes. Warm-start at
+      // balanced 0.5/0.5 proxy volume so VPIN reflects actual flow from the very first ticks.
+      ewmaBuyVol: 0.5,
+      ewmaSellVol: 0.5,
+      vpinRecursive: 0, // will converge from 0 rapidly once real ticks flow in
       lastClassification: 1,
       priceLevels: new Map(),
       runningBuys: 0,
@@ -424,11 +427,17 @@ function processOfiTick(
     tracker.hurst > HURST_PERSISTENCE_THRESHOLD ? "PERSISTENT" :
     tracker.hurst < HURST_MEANREV_THRESHOLD ? "MEAN_REVERTING" : "RANDOM_WALK";
 
-  // ─── EFFICIENCY RATIO (The Alpha) — consistent scaling for all pairs ───
+  // ─── EFFICIENCY RATIO (The Alpha) — pure OFI / D1 with matching units ───
+  // BUG FIX: ofiNormalized (÷100000 → ~1e-3) divided by D1 in price/sec (EUR_USD ~1e-6 → ~1e-3 px/ms).
+  // Dividing dimensionless by price/sec gives efficiency in sec/price — NOT a meaningful ratio.
+  // CORRECT: use raw ofiRecursive (force units = pips·tps) and raw |D1| (drift in price/sec).
+  // Scale ofiRecursive by pipMult to convert to consistent pip-velocity units.
   const absD1 = Math.abs(tracker.D1);
   const absOfi = Math.abs(tracker.ofiRecursive);
-  const ofiNormalized = absOfi / 100000; // Fixed: consistent for all pairs (was pipMult*10 → JPY 100x bias)
-  const efficiency = ofiNormalized / (absD1 + EFFICIENCY_EPSILON);
+  // Scale OFI to pip-velocity (divide by pip multiplier to normalize across JPY/non-JPY)
+  const ofiNormalized = absOfi / pipMult;  // pip-velocity units → same dimension as |D1|*pipMult
+  const d1PipVel = absD1 * pipMult;        // convert D1 from price/sec to pips/sec
+  const efficiency = ofiNormalized / (d1PipVel + EFFICIENCY_EPSILON);
   const marketState = classifyMarketState(efficiency);
 
   // ─── Update state for next tick ───
@@ -437,7 +446,9 @@ function processOfiTick(
   tracker.tickCount++;
 
   // ─── Running buy/sell counts (O(1) with EWMA) ───
-  const buyDecay = 0.99;
+  // BUG FIX: decay was 0.99 (~100-tick half-life) — buyPressure always ≈50, never > 52 threshold.
+  // Changed to 0.95 (~14-tick half-life) so weighting responds within a single session (~70 ticks/pair).
+  const buyDecay = 0.95;
   if (side === 1) {
     tracker.runningBuys++;
     tracker.ewmaBuyPct = buyDecay * tracker.ewmaBuyPct + (1 - buyDecay) * 1;
@@ -1484,8 +1495,12 @@ Deno.serve(async (req) => {
 
               // ─── DETERMINE DIRECTION FROM FLOW ───
               // Use last ~20 ticks from velocity tracker for responsive OFI ratio
+              // BUG FIX: With 8+ instruments sharing 110s streams, each pair gets ~8-10 ticks/pair.
+              // A 20-tick buffer with only 6 ticks filled gives unreliable ratios (e.g., 1 buy / 0 sells = 10.0).
+              // Require at least 6 ticks in the window before using the ratio.
               const vt = velocityTrackers.get(tradePair);
               const recentDirTicks = vt?.ticks || [];
+              if (recentDirTicks.length < 6) { pState.consecutivePassCount = 0; gateDiag.ofiRatio++; continue; }
               const recentBuys = recentDirTicks.filter(t => t.direction === 1).length;
               const recentSells = recentDirTicks.filter(t => t.direction === -1).length;
               const shortWindowRatio = recentSells > 0
@@ -1501,17 +1516,18 @@ Deno.serve(async (req) => {
               if (!tradeDirection) { pState.consecutivePassCount = 0; gateDiag.ofiRatio++; continue; }
 
               // ─── COMPUTE PHYSICS METRICS ───
-              // BUG FIX: Add D2 floor (1e-14) to prevent numerical instability in driftNorm.
-              // During clean trends D2→0, causing D1/√D2 to oscillate between 0 and infinity.
+              // BUG FIX: D2 floor prevents driftNorm from exploding during near-zero diffusion.
               const d2Floored = Math.max(Math.abs(tradeTracker.D2), 1e-14);
               const sqrtD2Trade = Math.sqrt(d2Floored);
               const driftNormTrade = sqrtD2Trade > 1e-10 ? tradeTracker.D1 / sqrtD2Trade : 0;
               const absD1Trade = Math.abs(tradeTracker.D1);
               const absOfiTrade = Math.abs(tradeTracker.ofiRecursive);
-              // BUG FIX: JPY Efficiency bias — JPY pairs had 100x higher scaled OFI (÷1000 vs ÷100000).
-              // Normalize ALL pairs to the same pip-unit scale by always dividing by the same constant.
-              const ofiScaledTrade = absOfiTrade / 100000; // Consistent scaling for all pairs
-              const efficiencyTrade = ofiScaledTrade / (absD1Trade + EFFICIENCY_EPSILON);
+              // BUG FIX: Efficiency unit mismatch — use pip-velocity units for both ofi and D1.
+              // ofiRecursive = pips * ticks/s (force); D1 = price/sec → convert to pips/sec.
+              const tradePipMult = tradePair.includes("JPY") ? 100 : 10000;
+              const ofiScaledTrade = absOfiTrade / tradePipMult;   // normalize to pip-velocity
+              const d1PipVelTrade = absD1Trade * tradePipMult;     // D1 in pips/sec
+              const efficiencyTrade = ofiScaledTrade / (d1PipVelTrade + EFFICIENCY_EPSILON);
               const ofiNormTrade = Math.tanh(tradeTracker.ofiRecursive / 100);
 
               const tradeOfi = {
@@ -1728,11 +1744,13 @@ Deno.serve(async (req) => {
       const totalTicks = tracker.runningBuys + tracker.runningSells;
       const ofiRatio = totalTicks > 0 ? (tracker.runningBuys - tracker.runningSells) / totalTicks : 0;
 
-      // Efficiency ratio — consistent scaling (matches predator gate fix)
+      // Efficiency ratio — pip-velocity units match (consistent with predator gate)
       const absD1 = Math.abs(tracker.D1);
       const absOfi = Math.abs(tracker.ofiRecursive);
-      const ofiScaled = absOfi / 100000; // Consistent for all pairs (fixed JPY 100x bias)
-      const efficiency = ofiScaled / (absD1 + EFFICIENCY_EPSILON);
+      const snapPipMult = pair.includes("JPY") ? 100 : 10000;
+      const ofiScaled = absOfi / snapPipMult;    // pip-velocity units
+      const d1PipVel = absD1 * snapPipMult;      // D1 in pips/sec
+      const efficiency = ofiScaled / (d1PipVel + EFFICIENCY_EPSILON);
       const marketState = classifyMarketState(efficiency);
 
       if (marketState === "ABSORBING") absorbingPairs++;
