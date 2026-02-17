@@ -424,10 +424,10 @@ function processOfiTick(
     tracker.hurst > HURST_PERSISTENCE_THRESHOLD ? "PERSISTENT" :
     tracker.hurst < HURST_MEANREV_THRESHOLD ? "MEAN_REVERTING" : "RANDOM_WALK";
 
-  // ─── EFFICIENCY RATIO (The Alpha) ───
+  // ─── EFFICIENCY RATIO (The Alpha) — consistent scaling for all pairs ───
   const absD1 = Math.abs(tracker.D1);
   const absOfi = Math.abs(tracker.ofiRecursive);
-  const ofiNormalized = absOfi / (pipMult * 10);
+  const ofiNormalized = absOfi / 100000; // Fixed: consistent for all pairs (was pipMult*10 → JPY 100x bias)
   const efficiency = ofiNormalized / (absD1 + EFFICIENCY_EPSILON);
   const marketState = classifyMarketState(efficiency);
 
@@ -634,7 +634,7 @@ const PREDATOR_WEIGHTING_MIN = 52;      // Gate 4: Buy/Sell weighting > 52% (tig
 const PREDATOR_RULE_OF_3 = 3;           // All gates must hold for 3 consecutive ticks
 const PREDATOR_VPIN_MIN = 0.40;         // VPIN validation: >= 0.40 for institutional participation (was 0.45)
 const PREDATOR_VPIN_GHOST_MAX = 0.15;   // VPIN < 0.15 = "Ghost Move" = retail-driven, block (was 0.20)
-const PREDATOR_KM_DRIFT_MIN = 0.30;     // KM Drift minimum (was 0.50 — too strict, blocked valid momentum)
+const PREDATOR_KM_DRIFT_MIN = 0.12;     // KM Drift minimum (was 0.30→0.12 — D1/√D2 is numerically unstable early; 43 scans died at 0.30)
 const PREDATOR_WALL_OFFSET_PIPS = 0.3;  // Stop-Limit placed 0.3 pips BEYOND the wall
 // Market Order Override: Only slap the ask if the Tsunami is confirmed beyond doubt
 const PREDATOR_MARKET_OVERRIDE_EFFICIENCY = 7.0;  // E > 7.0 = extreme vacuum
@@ -883,6 +883,31 @@ Deno.serve(async (req) => {
       lastPassDirection: string | null;
       lastFireTs: number;
     }>();
+
+    // BUG FIX: Cross-session cooldown — load recent fires from DB to prevent
+    // re-firing within 5 min. predatorState was re-initialized every 110s session,
+    // so lastFireTs=0 allowed firing every session instead of respecting cooldown.
+    try {
+      const fiveMinAgo = new Date(Date.now() - ZSCORE_COOLDOWN_MS).toISOString();
+      const { data: recentFires } = await supabase
+        .from("oanda_orders")
+        .select("currency_pair, created_at")
+        .eq("direction_engine", "predatory-hunter")
+        .eq("environment", "live")
+        .gte("created_at", fiveMinAgo)
+        .order("created_at", { ascending: false });
+
+      for (const fire of (recentFires || [])) {
+        predatorState.set(fire.currency_pair, {
+          consecutivePassCount: 0,
+          lastPassDirection: null,
+          lastFireTs: new Date(fire.created_at).getTime(),
+        });
+      }
+      if (recentFires?.length) {
+        console.log(`[STRIKE-v3] 🔁 Cross-session cooldown: ${recentFires.length} recent fires loaded`);
+      }
+    } catch { /* non-critical — default to fresh state */ }
 
     // ═══ GATE DIAGNOSTICS: Track which gates kill signals ═══
     const gateDiag = { total: 0, density: 0, warmup: 0, hurst: 0, efficiency: 0, ofiRatio: 0, weighting: 0, kmDrift: 0, vpinGhost: 0, vpinMin: 0, ruleOf3: 0, passed: 0 };
@@ -1135,9 +1160,32 @@ Deno.serve(async (req) => {
           console.log(`[STRIKE-v3] ✅ ${engine} FILLED: ${tradeId} @ ${fillPrice} | ${direction} ${units} ${pair} | slip ${slippagePips.toFixed(2)}p`);
           return { success: true, tradeId, fillPrice, slippage: slippagePips };
         } else {
-          const rejectReason = orderData.orderRejectTransaction?.rejectReason ||
-            orderData.orderCancelTransaction?.reason || "Unknown";
-          console.warn(`[STRIKE-v3] ❌ ${engine} REJECTED: ${rejectReason}`);
+          // BUG FIX: Track pending LIMIT orders that weren't immediately filled.
+          // These live on OANDA with 5-min GTD but had no DB record → "invisible trades."
+          const pendingOrderId = orderData.orderCreateTransaction?.id;
+          if (orderType === "LIMIT" && pendingOrderId && adminRole) {
+            console.warn(`[STRIKE-v3] ⏳ ${engine} LIMIT PENDING: order ${pendingOrderId} ${pair} — tracking in DB`);
+            await supabase.from("oanda_orders").insert({
+              user_id: adminRole.user_id,
+              signal_id: `${engine}-${pair}-${Date.now()}`,
+              currency_pair: pair,
+              direction: direction.toLowerCase(),
+              units,
+              oanda_order_id: pendingOrderId,
+              status: "submitted",
+              environment: "live",
+              direction_engine: engine,
+              sovereign_override_tag: `${engine}:${pair}:pending-limit`,
+              confidence_score: (metadata.confidence as number) || 0.5,
+              governance_payload: { ...metadata, orderType: "LIMIT", limitPrice: limitPrice ?? currentPrice.mid },
+              requested_price: limitPrice ?? currentPrice.mid,
+              spread_at_entry: currentPrice.spreadPips,
+            });
+          } else {
+            const rejectReason = orderData.orderRejectTransaction?.rejectReason ||
+              orderData.orderCancelTransaction?.reason || "Unknown";
+            console.warn(`[STRIKE-v3] ❌ ${engine} REJECTED: ${rejectReason}`);
+          }
           return { success: false };
         }
       } catch (err) {
@@ -1186,16 +1234,17 @@ Deno.serve(async (req) => {
             // ─── OFI: Classify tick & update synthetic order book ───
             const ofi = processOfiTick(instrument, mid, bid, ask, spreadPips, tickTs);
 
-            // Update velocity tracker (used by both Velocity Gating AND Z-Score momentum filter)
+            // Update velocity tracker with Lee-Ready classification for ALL ticks (not just mid-movers)
+            // BUG FIX: Previously skipped zero-delta ticks (Math.abs(delta) > 0).
+            // In quiet markets, many ticks have zero mid-delta but bid/ask shifts — these were dropped,
+            // causing the 20-tick window to span minutes and making OFI ratio unreliable (blocked 62%).
             const vt = velocityTrackers.get(instrument);
-            if (vt && prevPrice) {
-              const delta = mid - prevPrice.mid;
-              if (Math.abs(delta) > 0) {
-                const dir: 1 | -1 = delta > 0 ? 1 : -1;
-                vt.ticks.push({ ts: tickTs, mid, direction: dir });
-                // Keep last 20 ticks for momentum lookback
-                while (vt.ticks.length > 20) vt.ticks.shift();
-              }
+            if (vt) {
+              const tracker = getOrCreateOfi(instrument);
+              const tickDir = tracker.lastClassification; // Lee-Ready direction (handles zero-delta via quote rule)
+              vt.ticks.push({ ts: tickTs, mid, direction: tickDir });
+              // Keep last 20 ticks for momentum lookback
+              while (vt.ticks.length > 20) vt.ticks.shift();
             }
 
             // ═══ PREDATORY HUNTER: AUTONOMOUS EXIT AUTHORITY ═══
@@ -1452,12 +1501,16 @@ Deno.serve(async (req) => {
               if (!tradeDirection) { pState.consecutivePassCount = 0; gateDiag.ofiRatio++; continue; }
 
               // ─── COMPUTE PHYSICS METRICS ───
-              const sqrtD2Trade = Math.sqrt(Math.abs(tradeTracker.D2));
+              // BUG FIX: Add D2 floor (1e-14) to prevent numerical instability in driftNorm.
+              // During clean trends D2→0, causing D1/√D2 to oscillate between 0 and infinity.
+              const d2Floored = Math.max(Math.abs(tradeTracker.D2), 1e-14);
+              const sqrtD2Trade = Math.sqrt(d2Floored);
               const driftNormTrade = sqrtD2Trade > 1e-10 ? tradeTracker.D1 / sqrtD2Trade : 0;
               const absD1Trade = Math.abs(tradeTracker.D1);
               const absOfiTrade = Math.abs(tradeTracker.ofiRecursive);
-              const pipMultTrade = tradePair.includes("JPY") ? 100 : 10000;
-              const ofiScaledTrade = absOfiTrade / (pipMultTrade * 10);
+              // BUG FIX: JPY Efficiency bias — JPY pairs had 100x higher scaled OFI (÷1000 vs ÷100000).
+              // Normalize ALL pairs to the same pip-unit scale by always dividing by the same constant.
+              const ofiScaledTrade = absOfiTrade / 100000; // Consistent scaling for all pairs
               const efficiencyTrade = ofiScaledTrade / (absD1Trade + EFFICIENCY_EPSILON);
               const ofiNormTrade = Math.tanh(tradeTracker.ofiRecursive / 100);
 
@@ -1675,11 +1728,10 @@ Deno.serve(async (req) => {
       const totalTicks = tracker.runningBuys + tracker.runningSells;
       const ofiRatio = totalTicks > 0 ? (tracker.runningBuys - tracker.runningSells) / totalTicks : 0;
 
-      // Efficiency ratio
+      // Efficiency ratio — consistent scaling (matches predator gate fix)
       const absD1 = Math.abs(tracker.D1);
       const absOfi = Math.abs(tracker.ofiRecursive);
-      const pipMult = pair.includes("JPY") ? 100 : 10000;
-      const ofiScaled = absOfi / (pipMult * 10);
+      const ofiScaled = absOfi / 100000; // Consistent for all pairs (fixed JPY 100x bias)
       const efficiency = ofiScaled / (absD1 + EFFICIENCY_EPSILON);
       const marketState = classifyMarketState(efficiency);
 
