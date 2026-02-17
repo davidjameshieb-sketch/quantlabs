@@ -1,23 +1,27 @@
-// Ripple Stream Engine v5 — Senior Ops Synthetic Order Book
+// Ripple Stream Engine v6 — Lean 6 Zero-Lag Protocol
 // The Committee is dead. Long live the Frontline Soldiers.
 //
-// SENIOR OPS SYNTHETIC ORDER BOOK (zero-lag O(1) recursive):
+// SENIOR OPS SYNTHETIC ORDER BOOK (100% O(1) recursive):
 //   - Adaptive Z-OFI (Welford's): Z-score of OFI auto-adjusts per session dynamics
 //   - Adaptive KM Windowing ("Gear Shift"): α adapts to D2 noise level
 //   - Fast Hurst Exponent (Hall-Wood): O(1) regime classification (trend vs mean-rev)
 //   - Velocity+Displacement Weighted OFI: recursive, no arrays
 //   - Kramers-Moyal Drift/Diffusion: recursive D1/D2
+//   - Recursive VPIN (EWMA): O(1) toxicity — no bucket scans
 //   - Efficiency Ratio E = |OFI|/(|D1|+ε): LIQUID/ABSORBING/SLIPPING
 //   - Hidden Limit Player Detection via E ratio
 //   - Price-Level Persistence: tick-density S/R
 //
-// 9-Gate Z-Score Pipeline:
-//   1. Z-Score threshold  2. Tick-Density  3. Momentum burst
-//   4. VPIN toxicity  5. OFI alignment  6. Hurst regime
-//   7. Adaptive Z-OFI intensity  8. Efficiency/hidden player  9. Spread
+// LEAN 6 ZERO-LAG GATE PIPELINE (all O(1) float comparisons):
+//   1. SIGNAL    — Z-Score > threshold (something is happening)
+//   2. LIQUIDITY — Tick Density (safe to enter)
+//   3. REGIME    — Hurst H > 0.45 (move will travel, not snap back)
+//   4. FORCE     — Z-OFI > 2.0 (buying pressure is statistically abnormal)
+//   5. VELOCITY  — KM Drift |D1| (replaces O(N) momentum array scan)
+//   6. STRUCTURE — Efficiency E (replaces hidden player — detects iceberg walls)
 //
 // Three L0 deterministic strategies on OANDA ms tick data:
-//   1. Z-SCORE STRIKE — 9-gate pipeline with Senior Ops synthetic book
+//   1. Z-SCORE STRIKE — Lean 6 pipeline with Senior Ops synthetic book
 //   2. VELOCITY GATING — 5+ same-direction ticks in 2s = impulse fire
 //   3. SNAP-BACK SNIPER — Stop-hunt exhaustion → contrarian entry
 //
@@ -109,8 +113,6 @@ function getTickBufferSnapshot(pair?: string, lastMs = 500): TickBufferEntry[] {
 //
 // Price-level persistence still uses a map (inherently O(1) per tick).
 
-const VPIN_BUCKET_SIZE = 50;
-const VPIN_BUCKETS = 10;
 const OFI_IMBALANCE_THRESHOLD = 0.35;
 const VPIN_TOXIC_THRESHOLD = 0.7;
 const PRICE_LEVEL_MEMORY = 500;
@@ -191,9 +193,10 @@ interface OfiTracker {
   hurstN: number;            // Tick counter for Hurst (mod HURST_SCALE)
   hurst: number;             // Current H estimate
 
-  // ─── VPIN (still bucket-based — inherently O(1) per tick) ───
-  vpinBuckets: { buys: number; sells: number }[];
-  currentBucket: { buys: number; sells: number; count: number };
+  // ─── Recursive VPIN (O(1) EWMA — no bucket scans) ───
+  ewmaImbalance: number;     // EWMA of |BuyVol - SellVol|
+  ewmaTotalVol: number;      // EWMA of BuyVol + SellVol
+  vpinRecursive: number;     // = ewmaImbalance / ewmaTotalVol
 
   // ─── Lee-Ready state ───
   lastClassification: 1 | -1;
@@ -233,8 +236,9 @@ function getOrCreateOfi(pair: string): OfiTracker {
       prevDx: 0,
       hurstN: 0,
       hurst: 0.5, // neutral start
-      vpinBuckets: [],
-      currentBucket: { buys: 0, sells: 0, count: 0 },
+      ewmaImbalance: 0,
+      ewmaTotalVol: 0,
+      vpinRecursive: 0,
       lastClassification: 1,
       priceLevels: new Map(),
       runningBuys: 0,
@@ -442,23 +446,17 @@ function processOfiTick(
   const totalTicks = tracker.runningBuys + tracker.runningSells;
   const ofiRatio = totalTicks > 0 ? (tracker.runningBuys - tracker.runningSells) / totalTicks : 0;
 
-  // ─── VPIN (O(1) bucket accumulation) ───
-  tracker.currentBucket.count++;
-  if (side === 1) tracker.currentBucket.buys++;
-  else tracker.currentBucket.sells++;
-
-  if (tracker.currentBucket.count >= VPIN_BUCKET_SIZE) {
-    tracker.vpinBuckets.push({ buys: tracker.currentBucket.buys, sells: tracker.currentBucket.sells });
-    if (tracker.vpinBuckets.length > VPIN_BUCKETS) tracker.vpinBuckets.shift();
-    tracker.currentBucket = { buys: 0, sells: 0, count: 0 };
-  }
-
-  let vpinSum = 0, vpinTotal = 0;
-  for (const bucket of tracker.vpinBuckets) {
-    const bTotal = bucket.buys + bucket.sells;
-    if (bTotal > 0) { vpinSum += Math.abs(bucket.buys - bucket.sells) / bTotal; vpinTotal++; }
-  }
-  const vpin = vpinTotal > 0 ? vpinSum / vpinTotal : 0;
+  // ─── RECURSIVE VPIN (O(1) EWMA — no bucket scans) ───
+  // VPIN = E[|Buy-Sell|] / E[Buy+Sell]
+  // Uses same gamma as OFI for memory consistency
+  const tradeVol = dxPips * tickVelocity; // Volume proxy: displacement × velocity
+  const imbalance = Math.abs(side * tradeVol); // Directional imbalance
+  tracker.ewmaImbalance = gamma * tracker.ewmaImbalance + (1 - gamma) * imbalance;
+  tracker.ewmaTotalVol = gamma * tracker.ewmaTotalVol + (1 - gamma) * Math.abs(tradeVol);
+  tracker.vpinRecursive = tracker.ewmaTotalVol > 1e-9
+    ? tracker.ewmaImbalance / tracker.ewmaTotalVol
+    : 0;
+  const vpin = tracker.vpinRecursive;
 
   // ─── Price-Level Persistence (O(1) map lookup) ───
   const bucketSize = isJpy ? 0.1 : 0.001;
@@ -615,7 +613,7 @@ const ZSCORE_WINDOW = 120;          // ticks to build rolling mean/stddev
 const ZSCORE_FIRE_THRESHOLD = 2.0;  // z > 2.0 = statistical divergence (overridden by config)
 const ZSCORE_EXIT_TARGET = 0.0;     // mean reversion target
 const ZSCORE_COOLDOWN_MS = 300_000; // 5 MINUTES between fires on same group (was 10s — caused triple-taps)
-const ZSCORE_MOMENTUM_TICKS = 3;    // quiet pair must show 3 aligned ticks in 5s
+// (Momentum gate removed — replaced by KM Drift in Lean 6 pipeline)
 
 // ─── Velocity Gating Constants ───────────────────────────
 const VELOCITY_TICK_THRESHOLD = 5;
@@ -1097,59 +1095,40 @@ Deno.serve(async (req) => {
 
               if (blockedPairs.includes(tradePair)) continue;
 
-              // ─── GATE 2: Tick-Density (institutional flow filter) ───
+              // ═══ LEAN 6 ZERO-LAG GATES (all O(1) float comparisons) ═══
+              // Gate 1 (Signal/Z-Score) already passed above
+
+              // ─── GATE 2: LIQUIDITY (Tick Density — is it safe to enter?) ───
               const densityCheck = isTickDensitySufficient(tradePair);
-              if (!densityCheck.ok) {
-                // Low tick density = illiquid noise, skip
-                continue;
-              }
+              if (!densityCheck.ok) continue;
 
-              // ─── GATE 3: Momentum burst (quiet pair waking up) ───
-              const momentumTracker = velocityTrackers.get(tradePair);
-              if (momentumTracker) {
-                const expectedDir: 1 | -1 = tradeDirection === "long" ? 1 : -1;
-                const recentTicks = momentumTracker.ticks.filter(t => t.ts > tickTs - 5000);
-                const alignedTicks = recentTicks.filter(t => t.direction === expectedDir);
-              if (alignedTicks.length < ZSCORE_MOMENTUM_TICKS) continue;
-              }
-
-              // ─── GATE 4: VPIN Toxicity Filter (synthetic order book) ───
+              // Get O(1) physics state for trade pair
               const tradeOfi = processOfiTick(tradePair, prices.get(tradePair)!.mid, prices.get(tradePair)!.bid, prices.get(tradePair)!.ask, prices.get(tradePair)!.spreadPips, tickTs);
-              if (tradeOfi.vpin > VPIN_TOXIC_THRESHOLD) {
-                console.log(`[STRIKE-v3] 🧪 VPIN GATE: ${tradePair} VPIN=${tradeOfi.vpin} > ${VPIN_TOXIC_THRESHOLD} — toxic flow, skip`);
+
+              // ─── GATE 3: REGIME (Hurst — will the move travel or snap back?) ───
+              if (tradeOfi.hurst < 0.45) {
+                console.log(`[LEAN6] 🔬 HURST REJECT: ${tradePair} H=${tradeOfi.hurst} < 0.45 — mean-reverting, skip`);
                 continue;
               }
 
-              // ─── GATE 5: OFI directional alignment (now uses weighted OFI) ───
-              const ofiOpposed = (tradeDirection === "long" && tradeOfi.bias === "SELL") ||
-                                 (tradeDirection === "short" && tradeOfi.bias === "BUY");
-              if (ofiOpposed && Math.abs(tradeOfi.ofiWeighted) > 0.5) {
-                console.log(`[STRIKE-v3] 📊 OFI GATE: ${tradePair} wOFI=${tradeOfi.ofiWeighted} opposes ${tradeDirection} — skip`);
-                continue;
-              }
-
-              // ─── GATE 6: Hurst Regime Check (Is the medium capable of a ripple?) ───
-              if (tradeOfi.hurstRegime === "MEAN_REVERTING") {
-                // H < 0.45 — price will snap back, not travel. Skip momentum trades.
-                console.log(`[STRIKE-v4] 🔬 HURST GATE: ${tradePair} H=${tradeOfi.hurst} ${tradeOfi.hurstRegime} — ripple won't travel, skip`);
-                continue;
-              }
-
-              // ─── GATE 7: Adaptive Z-OFI Intensity (Is this move abnormal for NOW?) ───
-              // Welford Z-score auto-adjusts: sleepy Asian session ≠ violent London open
+              // ─── GATE 4: FORCE (Z-OFI — is buying pressure statistically abnormal?) ───
               if (Math.abs(tradeOfi.zOfi) < Z_OFI_FIRE_THRESHOLD && tradeOfi.ticksInWindow > 50) {
-                // OFI is within normal bounds for current session dynamics
                 continue;
               }
 
-              // ─── GATE 8: Efficiency Check (Is there a hidden player?) ───
+              // ─── GATE 5: VELOCITY (KM Drift — replaces O(N) momentum array) ───
+              // |driftNormalized| > 0.1 = price is actually moving fast enough
+              if (Math.abs(tradeOfi.km.driftNormalized) < 0.1) {
+                continue;
+              }
+
+              // ─── GATE 6: STRUCTURE (Efficiency — are we hitting an iceberg wall?) ───
               if (tradeOfi.hiddenPlayer.detected && tradeOfi.hiddenPlayer.recommendation === "FADE") {
-                console.log(`[STRIKE-v4] 🕵️ HIDDEN PLAYER: ${tradePair} ${tradeOfi.hiddenPlayer.type} | E=${tradeOfi.efficiency} ${tradeOfi.marketState} — ${tradeOfi.hiddenPlayer.recommendation}`);
+                console.log(`[LEAN6] 🕵️ EFFICIENCY REJECT: ${tradePair} ${tradeOfi.hiddenPlayer.type} | E=${tradeOfi.efficiency} ${tradeOfi.marketState}`);
                 continue;
               }
 
-              // ─── GATE 9: Spread OK (baked into executeOrder) ───
-              // Nine gates. Spread → Z-Score → Density → Momentum → VPIN → OFI → Hurst → Z-OFI → Efficiency. Fire.
+              // ═══ ALL 6 GATES PASSED — FIRE ═══
 
               const tradePrice = prices.get(tradePair);
               if (!tradePrice) continue;
@@ -1159,7 +1138,7 @@ Deno.serve(async (req) => {
 
 
 
-              console.log(`[STRIKE-v4] 🎯 Z-SCORE FIRE: ${tradeDirection.toUpperCase()} ${baseUnits} ${tradePair} | z=${z.toFixed(2)} | Z_OFI=${tradeOfi.zOfi.toFixed(2)} H=${tradeOfi.hurst} ${tradeOfi.hurstRegime} | E=${tradeOfi.efficiency} ${tradeOfi.marketState} | KM_α=${tradeOfi.km.alphaAdaptive} | group=${group.name} | tps=${densityCheck.tps.toFixed(1)} | tick #${tickCount}`);
+              console.log(`[LEAN6] 🎯 FIRE: ${tradeDirection.toUpperCase()} ${baseUnits} ${tradePair} | z=${z.toFixed(2)} | Z_OFI=${tradeOfi.zOfi.toFixed(2)} H=${tradeOfi.hurst} ${tradeOfi.hurstRegime} | D1_norm=${tradeOfi.km.driftNormalized} | E=${tradeOfi.efficiency} ${tradeOfi.marketState} | KM_α=${tradeOfi.km.alphaAdaptive} | group=${group.name} | tps=${densityCheck.tps.toFixed(1)} | tick #${tickCount}`);
 
               // Conviction: combine z-score + OFI alignment + KM + Hurst
               const ofiAligned = (tradeDirection === "long" && tradeOfi.bias === "BUY") ||
@@ -1181,7 +1160,7 @@ Deno.serve(async (req) => {
                   ticksPerSecond: densityCheck.tps,
                   streamLatencyMs: Date.now() - startTime,
                   confidence: Math.min(1, (Math.abs(z) / 3) + ofiConfidenceBoost + kmBoost + hurstBoost),
-                  engine: "zscore-strike-v5-senior-ops",
+                  engine: "zscore-strike-v6-lean6",
                   ofi: {
                     ratio: tradeOfi.ofiRatio, weighted: tradeOfi.ofiWeighted,
                     vpin: tradeOfi.vpin, bias: tradeOfi.bias,
@@ -1382,13 +1361,8 @@ Deno.serve(async (req) => {
       if (marketState === "ABSORBING") absorbingPairs++;
       if (marketState === "SLIPPING") slippingPairs++;
 
-      // VPIN
-      let vpinSum = 0, vpinCount = 0;
-      for (const b of tracker.vpinBuckets) {
-        const bt = b.buys + b.sells;
-        if (bt > 0) { vpinSum += Math.abs(b.buys - b.sells) / bt; vpinCount++; }
-      }
-      const vpin = vpinCount > 0 ? vpinSum / vpinCount : 0;
+      // Recursive VPIN — just read the O(1) state
+      const vpin = tracker.vpinRecursive;
 
       // Hidden player
       const hidden = detectHiddenLimitPlayer(tracker.ofiRecursive, tracker.D1, efficiency, marketState);
@@ -1463,7 +1437,7 @@ Deno.serve(async (req) => {
         memory_type: "ofi_synthetic_book",
         memory_key: "latest_snapshot",
         payload: {
-          version: "v4-senior-ops-recursive",
+          version: "v6-lean6-zero-lag",
           pairs: ofiSnapshot,
           pairsCount: Object.keys(ofiSnapshot).length,
           hiddenPlayerAlerts,
@@ -1474,12 +1448,13 @@ Deno.serve(async (req) => {
           timestamp: new Date().toISOString(),
           architecture: "O(1)_recursive_welford_hurst",
           decayFactors: { kmAlphaRange: [KM_ALPHA_MIN, KM_ALPHA_MAX], ofiGamma: OFI_GAMMA_DEFAULT },
+          gates: ["1:SIGNAL(Z-Score)", "2:LIQUIDITY(Density)", "3:REGIME(Hurst)", "4:FORCE(Z-OFI)", "5:VELOCITY(KM_Drift)", "6:STRUCTURE(Efficiency)"],
           capabilities: [
             "adaptive_km_gear_shift", "welford_z_ofi", "hall_wood_hurst",
             "recursive_kramers_moyal", "recursive_velocity_displacement_ofi",
-            "efficiency_ratio_E", "market_state_classification",
+            "recursive_vpin_ewma", "efficiency_ratio_E", "market_state_classification",
             "hidden_limit_detection", "price_level_persistence", "tick_density_sr",
-            "9_gate_pipeline",
+            "lean_6_pipeline",
           ],
         },
         relevance_score: hiddenPlayerAlerts > 0 ? 1.0 : 0.8,
@@ -1488,29 +1463,30 @@ Deno.serve(async (req) => {
     }
 
     const totalMs = Date.now() - startTime;
-    console.log(`[STRIKE-v4] 📊 Session: ${totalMs}ms, ${tickCount} ticks | Z-Score: ${zScoreFires.length} | Velocity: ${velocityFires.length} | Snap-Back: ${snapbackFires.length} | OFI-v3: ${Object.keys(ofiSnapshot).length} pairs | Hidden: ${hiddenPlayerAlerts} | Absorbing: ${absorbingPairs} | Slipping: ${slippingPairs}`);
+    console.log(`[LEAN6] 📊 Session: ${totalMs}ms, ${tickCount} ticks | Z-Score: ${zScoreFires.length} | Velocity: ${velocityFires.length} | Snap-Back: ${snapbackFires.length} | OFI: ${Object.keys(ofiSnapshot).length} pairs | Hidden: ${hiddenPlayerAlerts} | Absorbing: ${absorbingPairs} | Slipping: ${slippingPairs}`);
 
     return new Response(
       JSON.stringify({
         success: true,
-        version: "v5-senior-ops-9gate",
+        version: "v6-lean6-zero-lag",
         streamDurationMs: totalMs,
         ticksProcessed: tickCount,
         zscore: { fired: zScoreFires.length, pairs: zScoreFires, groups: correlationGroups.length, threshold: zScoreThreshold },
         velocity: { fired: velocityFires.length, pairs: velocityFires, monitored: velocityPairs.length },
         snapback: { fired: snapbackFires.length, pairs: snapbackFires, monitored: snapbackPairs.length },
         syntheticBook: {
-          version: "v4-senior-ops-recursive",
-          architecture: "O(1)_recursive_welford_hurst",
+          version: "v6-lean6-zero-lag",
+          architecture: "O(1)_100pct_recursive",
           pairsTracked: Object.keys(ofiSnapshot).length,
           hiddenPlayerAlerts,
           absorbingPairs,
           slippingPairs,
+          gates: ["1:SIGNAL", "2:LIQUIDITY", "3:REGIME", "4:FORCE", "5:VELOCITY", "6:STRUCTURE"],
           capabilities: [
             "adaptive_km_gear_shift", "welford_z_ofi", "hall_wood_hurst",
             "recursive_kramers_moyal", "recursive_velocity_displacement_ofi",
-            "efficiency_ratio_E", "market_state_classification",
-            "hidden_limit_detection", "price_level_persistence", "9_gate_pipeline",
+            "recursive_vpin_ewma", "efficiency_ratio_E", "market_state_classification",
+            "hidden_limit_detection", "price_level_persistence", "lean_6_pipeline",
           ],
           snapshot: ofiSnapshot,
         },
