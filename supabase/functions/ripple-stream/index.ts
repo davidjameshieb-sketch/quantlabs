@@ -938,6 +938,13 @@ Deno.serve(async (req) => {
       consecutivePassCount: number;
       lastPassDirection: string | null;
       lastFireTs: number;
+      // FIX #4: Hurst window counter — require Hurst < 0.45 for 2 consecutive windows
+      hurstBelowExitCount: number;
+      // FIX #6: Track previous Z-OFI for momentum acceleration check
+      prevZOfi: number;
+      // FIX #7: Pending limit order tracking for gap-fill recovery
+      pendingLimitPrice: number | null;
+      pendingLimitTs: number | null;
     }>();
 
     // BUG FIX: Cross-session cooldown — load recent fires from DB to prevent
@@ -958,6 +965,10 @@ Deno.serve(async (req) => {
           consecutivePassCount: 0,
           lastPassDirection: null,
           lastFireTs: new Date(fire.created_at).getTime(),
+          hurstBelowExitCount: 0,
+          prevZOfi: 0,
+          pendingLimitPrice: null,
+          pendingLimitTs: null,
         });
       }
       if (recentFires?.length) {
@@ -1335,9 +1346,28 @@ Deno.serve(async (req) => {
                   const holdBlocked = tradeAgeMs < PREDATOR_MIN_HOLD_MS;
 
                   if (!holdBlocked) {
-                    // ─── REGIME EXIT: Hurst < 0.45 → whales are done ───
-                    if (exitTracker.hurst < PREDATOR_EXIT_HURST_MIN) {
-                      exitReason = `REGIME_EXIT: H=${exitTracker.hurst.toFixed(3)} < ${PREDATOR_EXIT_HURST_MIN} — persistence collapsed`;
+                    // FIX #4: REGIME EXIT — require Hurst < 0.45 for 2 CONSECUTIVE 20-tick windows.
+                    // Single-window Hurst drops caused false exits due to window-reset noise spikes.
+                    // Each Hurst recalc fires every HURST_SCALE=20 ticks → ~2 windows = 40 ticks = ~10-20s.
+                    // Only declare persistence collapsed if both windows confirm below exit threshold.
+                    const hurstBelowExit = exitTracker.hurst < PREDATOR_EXIT_HURST_MIN;
+                    if (!predatorState.has(instrument)) {
+                      predatorState.set(instrument, { consecutivePassCount: 0, lastPassDirection: null, lastFireTs: 0, hurstBelowExitCount: 0, prevZOfi: 0, pendingLimitPrice: null, pendingLimitTs: null });
+                    }
+                    const pStateExit = predatorState.get(instrument)!;
+                    if (hurstBelowExit) {
+                      pStateExit.hurstBelowExitCount++;
+                      if (pStateExit.hurstBelowExitCount >= 2) {
+                        exitReason = `REGIME_EXIT: H=${exitTracker.hurst.toFixed(3)} < ${PREDATOR_EXIT_HURST_MIN} for ${pStateExit.hurstBelowExitCount} consecutive windows — persistence confirmed collapsed`;
+                      } else {
+                        console.log(`[PREDATOR_EXIT] ⚠️ Hurst window ${pStateExit.hurstBelowExitCount}/2 below exit threshold for ${instrument} — watching`);
+                      }
+                    } else {
+                      // Hurst recovered — reset window counter
+                      if (pStateExit.hurstBelowExitCount > 0) {
+                        console.log(`[PREDATOR_EXIT] ✅ Hurst recovered for ${instrument} (${exitTracker.hurst.toFixed(3)}) — resetting exit counter`);
+                        pStateExit.hurstBelowExitCount = 0;
+                      }
                     }
 
                     // ─── FLOW EXIT: Weighting hits 40% (directional consensus firmly lost) ───
@@ -1550,7 +1580,7 @@ Deno.serve(async (req) => {
 
               // Per-instrument state
               if (!predatorState.has(tradePair)) {
-                predatorState.set(tradePair, { consecutivePassCount: 0, lastPassDirection: null, lastFireTs: 0 });
+                predatorState.set(tradePair, { consecutivePassCount: 0, lastPassDirection: null, lastFireTs: 0, hurstBelowExitCount: 0, prevZOfi: 0, pendingLimitPrice: null, pendingLimitTs: null });
               }
               const pState = predatorState.get(tradePair)!;
 
@@ -1668,21 +1698,40 @@ Deno.serve(async (req) => {
                 continue;
               }
 
-              // ═══ RULE OF 3 ═══
-              // BUG FIX: A direction flip was resetting consecutivePassCount to 1, treating the
-              // direction-change tick as a partial pass. A direction change means we lost
-              // consecutive conviction — reset to 0 and start fresh from next tick.
+              // ═══ FIX #5: GHOST DOUBLE-ENTRY GUARD ═══
+              // Before firing, check if there's already an open trade on this pair.
+              // Prevents Ghost Limit stacking and avoids doubling position size from
+              // two concurrent strategies on the same pair.
+              const existingTrade = exitTradeMap.get(tradePair);
+              if (existingTrade) {
+                console.log(`[PREDATOR] 🛡️ DOUBLE-ENTRY GUARD: ${tradePair} already has open trade ${existingTrade.oanda_trade_id} — BLOCKED`);
+                pState.consecutivePassCount = 0;
+                continue;
+              }
+
+              // ═══ FIX #6: RULE OF 2 WITH MOMENTUM ACCELERATION ═══
+              // Standard Rule of 3 adds 0.5–1.5 pip lag. If Z-OFI is accelerating in the
+              // trade direction (growing magnitude), only require 2 consecutive passes.
+              // Keeps 3-pass requirement for flat/decelerating flow (higher noise).
               if (pState.lastPassDirection === tradeDirection) {
                 pState.consecutivePassCount++;
               } else {
-                // Direction changed — this is NOT a pass, start over
+                // Direction changed — not a pass, start over
                 pState.consecutivePassCount = 0;
                 pState.lastPassDirection = tradeDirection;
+                pState.prevZOfi = tradeOfi.zOfi;
                 gateDiag.ruleOf3++;
                 continue;
               }
-              if (pState.consecutivePassCount < PREDATOR_RULE_OF_3) {
-                console.log(`[PREDATOR] ⏳ RULE OF 3: ${tradePair} ${tradeDirection} pass ${pState.consecutivePassCount}/${PREDATOR_RULE_OF_3} | H=${tradeOfi.hurst} E=${tradeOfi.efficiency} R=${shortWindowRatio.toFixed(2)} VPIN=${tradeOfi.vpin}`);
+
+              const zOfiAccelerating = tradeDirection === "long"
+                ? (tradeOfi.zOfi > 0 && tradeOfi.zOfi > pState.prevZOfi)
+                : (tradeOfi.zOfi < 0 && tradeOfi.zOfi < pState.prevZOfi);
+              const requiredPasses = zOfiAccelerating ? 2 : PREDATOR_RULE_OF_3;
+              pState.prevZOfi = tradeOfi.zOfi;
+
+              if (pState.consecutivePassCount < requiredPasses) {
+                console.log(`[PREDATOR] ⏳ RULE OF ${requiredPasses}${zOfiAccelerating ? " (ACCEL)" : ""}: ${tradePair} ${tradeDirection} pass ${pState.consecutivePassCount}/${requiredPasses} | H=${tradeOfi.hurst} E=${tradeOfi.efficiency} R=${shortWindowRatio.toFixed(2)} Z=${tradeOfi.zOfi.toFixed(2)} VPIN=${tradeOfi.vpin}`);
                 gateDiag.ruleOf3++;
                 continue;
               }
@@ -1700,9 +1749,7 @@ Deno.serve(async (req) => {
               // LONG: Find nearest SELL wall ABOVE price → place Stop-Limit 0.3 pips ABOVE it
               //        (piggyback retail stop-hunt above resistance)
               // SHORT: Find nearest SELL wall ABOVE price → place Stop-Limit 0.3 pips BELOW it
-              //        (BUG FIX: was scanning for buy walls BELOW price — wrong type/direction.
-              //         For short entry we still want to anchor against the nearest SELL wall above
-              //         to place a stop-limit just below it, capturing the breakdown entry.)
+              //        (anchor against sell wall, place limit just below for breakdown entry)
               let wallPrice: number | null = null;
               const wallOffset = fromPips(PREDATOR_WALL_OFFSET_PIPS, tradePair);
               for (const [price, info] of tradeTracker.priceLevels.entries()) {
@@ -1710,30 +1757,48 @@ Deno.serve(async (req) => {
                 const priceNum = +price;
                 const distPips = Math.abs(toPips(priceNum - tradePrice.mid, tradePair));
                 if (distPips < 1 || distPips > 30) continue;
-                if (tradeDirection === "long" && info.sells >= 2 && priceNum > tradePrice.mid) {
-                  // Nearest sell wall above → stop-limit just above it
+                if (info.sells >= 2 && priceNum > tradePrice.mid) {
                   if (!wallPrice || priceNum < wallPrice) wallPrice = priceNum;
                 }
-                if (tradeDirection === "short" && info.sells >= 2 && priceNum > tradePrice.mid) {
-                  // BUG FIX: Also anchor short entries to nearest sell wall above price.
-                  // Place stop-limit BELOW it (limit sell = wall price - offset).
-                  // Old code scanned buy walls below price → never found the right cluster.
-                  if (!wallPrice || priceNum < wallPrice) wallPrice = priceNum;
+              }
+
+              // ─── FIX #7: STOP-LIMIT GAP-FILL RECOVERY ───
+              // If a previous LIMIT order was placed but price gapped > 1.5x SL distance
+              // past the wall without filling (stale limit), cancel it and submit MARKET.
+              // Check if this pair has a pending limit that is now stale (>3 ticks / >5s elapsed).
+              const pendingLimit = pState.pendingLimitPrice;
+              const pendingLimitTs = pState.pendingLimitTs;
+              let gapFillOverride = false;
+              if (pendingLimit !== null && pendingLimitTs !== null) {
+                const limitAge = tickTs - pendingLimitTs;
+                const gapDistance = Math.abs(toPips(tradePrice.mid - pendingLimit, tradePair));
+                const slDistPips = baseSlPips;
+                if (limitAge > 5000 && gapDistance > slDistPips * 1.5) {
+                  gapFillOverride = true;
+                  pState.pendingLimitPrice = null;
+                  pState.pendingLimitTs = null;
+                  console.log(`[PREDATOR] 🌊 GAP-FILL RECOVERY: ${tradePair} limit@${pendingLimit.toFixed(5)} stale (age=${(limitAge/1000).toFixed(0)}s, gap=${gapDistance.toFixed(1)}p > 1.5×SL=${slDistPips}p) → MARKET override`);
                 }
               }
 
               // ─── MARKET ORDER MATRIX: Entry Protocol ───
               const tsunamiOverride = tradeOfi.efficiency > PREDATOR_MARKET_OVERRIDE_EFFICIENCY
                 && tradeOfi.vpin > PREDATOR_MARKET_OVERRIDE_VPIN;
-              const orderType: "MARKET" | "LIMIT" = tsunamiOverride ? "MARKET" : (wallPrice ? "LIMIT" : "MARKET");
-              const limitEntryPrice = (!tsunamiOverride && wallPrice)
+              const orderType: "MARKET" | "LIMIT" = (tsunamiOverride || gapFillOverride) ? "MARKET" : (wallPrice ? "LIMIT" : "MARKET");
+              const limitEntryPrice = (!tsunamiOverride && !gapFillOverride && wallPrice)
                 ? (tradeDirection === "long" ? wallPrice + wallOffset : wallPrice - wallOffset)
                 : undefined;
               if (tsunamiOverride) {
                 console.log(`[PREDATOR] 🌊 TSUNAMI OVERRIDE: ${tradePair} E=${tradeOfi.efficiency} VPIN=${tradeOfi.vpin} → MARKET`);
               }
 
-              console.log(`[PREDATOR] 🎯 FIRE: ${tradeDirection.toUpperCase()} ${baseUnits} ${tradePair} | H=${tradeOfi.hurst} E=${tradeOfi.efficiency} EWMA_R=${shortWindowRatio.toFixed(2)} VPIN=${tradeOfi.vpin} | Buy%=${tradeOfi.buyPressure} Sell%=${tradeOfi.sellPressure} | |D1n|=${Math.abs(tradeOfi.km.driftNormalized).toFixed(2)} | Wall=${wallPrice?.toFixed(tradePair.includes("JPY") ? 3 : 5) ?? "NONE"} → ${orderType} | tick #${tickCount}`);
+              // Track pending limit order for gap-fill recovery (Fix #7)
+              if (orderType === "LIMIT" && limitEntryPrice != null) {
+                pState.pendingLimitPrice = limitEntryPrice;
+                pState.pendingLimitTs = tickTs;
+              }
+
+              console.log(`[PREDATOR] 🎯 FIRE: ${tradeDirection.toUpperCase()} ${baseUnits} ${tradePair} | H=${tradeOfi.hurst} E=${tradeOfi.efficiency} EWMA_R=${shortWindowRatio.toFixed(2)} VPIN=${tradeOfi.vpin} | Buy%=${tradeOfi.buyPressure} Sell%=${tradeOfi.sellPressure} | |D1n|=${Math.abs(tradeOfi.km.driftNormalized).toFixed(2)} | Wall=${wallPrice?.toFixed(tradePair.includes("JPY") ? 3 : 5) ?? "NONE"} → ${orderType}${zOfiAccelerating ? " (ACCEL)" : ""} | tick #${tickCount}`);
 
               const hurstConviction = Math.min(0.3, (tradeOfi.hurst - 0.5) * 3);
               const effConviction = Math.min(0.3, (tradeOfi.efficiency - 3.0) * 0.1);
@@ -1760,7 +1825,8 @@ Deno.serve(async (req) => {
                     sellPct: tradeOfi.sellPressure,
                     vpin: tradeOfi.vpin,
                     kmDrift: tradeOfi.km.driftNormalized,
-                    ruleOf3: true,
+                    ruleOf3: requiredPasses,
+                    zOfiAccelerating,
                   },
                   wall: wallPrice ? { price: wallPrice, offset: PREDATOR_WALL_OFFSET_PIPS } : null,
                   ofi: {
@@ -1779,6 +1845,12 @@ Deno.serve(async (req) => {
 
               if (result.success) {
                 zScoreFires.push(`predator:${tradePair}`);
+                // Clear pending limit tracking on successful fill
+                pState.pendingLimitPrice = null;
+                pState.pendingLimitTs = null;
+
+                // Register in exitTradeMap to prevent double-entry on next tick
+                exitTradeMap.set(tradePair, { id: result.tradeId, oanda_trade_id: result.tradeId, currency_pair: tradePair, direction: tradeDirection, entry_price: result.fillPrice, r_pips: null, mfe_price: null, created_at: new Date().toISOString(), environment: "live" });
 
                 // Audit log
                 await supabase.from("gate_bypasses").insert({
@@ -1789,10 +1861,11 @@ Deno.serve(async (req) => {
                     hurst: tradeOfi.hurst, efficiency: tradeOfi.efficiency,
                     ewmaRatio: shortWindowRatio, vpin: tradeOfi.vpin,
                     buyPct: tradeOfi.buyPressure, sellPct: tradeOfi.sellPressure,
-                    wall: wallPrice, orderType,
+                    wall: wallPrice, orderType, gapFillOverride,
                     fillPrice: result.fillPrice,
                     slippage: result.slippage,
                     tickNumber: tickCount,
+                    zOfiAccelerating,
                   }),
                   expires_at: new Date(Date.now() + 3600_000).toISOString(),
                   created_by: "predatory-hunter-engine",
