@@ -100,10 +100,13 @@ let strategicCache: {
 // ─── Sovereign Memory ───
 async function fetchSovereignMemory(supabase: any): Promise<any> {
   try {
+    // Order by updated_at (NOT created_at) — upserted rows like ofi_synthetic_book
+    // keep their original created_at but updated_at changes every cycle.
+    // Using created_at would cause the synthetic book to fall off the top 50.
     const { data, error } = await supabase
       .from("sovereign_memory")
       .select("*")
-      .order("created_at", { ascending: false })
+      .order("updated_at", { ascending: false })
       .limit(50);
     if (error) throw error;
     return data || [];
