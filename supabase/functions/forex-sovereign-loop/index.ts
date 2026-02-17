@@ -338,13 +338,13 @@ async function executeTier4(supabase: any, lovableApiKey: string, dataPayload: a
     const errText = await aiResponse.text();
     console.error("❌ Tier 4 AI error:", aiResponse.status, errText);
     if (aiResponse.status === 402) {
-      creditExhausted = true;
+      await persistCreditExhausted(supabase, true);
       console.log("🔋 Tier 4: Credits exhausted — falling back to DGE-T4");
       return await deterministicTier4(supabase);
     }
     return { error: `Tier 4 AI error: ${aiResponse.status}` };
   }
-  creditExhausted = false; // AI call succeeded — clear flag
+  await persistCreditExhausted(supabase, false); // AI call succeeded — clear flag
 
   const aiData = await aiResponse.json();
   const llmResponse = aiData.choices[0].message.content;
@@ -1038,7 +1038,44 @@ async function commitRule(supabase: any, action: any): Promise<void> {
 // forecasts, and recent performance to make governance decisions.
 // ═══════════════════════════════════════════════════════════════
 
-let creditExhausted = false; // sticky flag — set on first 402, cleared on successful AI call
+let creditExhausted = false; // in-memory flag — hydrated from sovereign_memory on each cold-start
+
+// ─── Hydrate/persist creditExhausted from sovereign_memory (survives cold-starts) ───
+async function hydrateCreditExhausted(supabase: any): Promise<void> {
+  try {
+    const { data } = await supabase
+      .from("sovereign_memory")
+      .select("payload")
+      .eq("memory_key", "credit_exhaustion_state")
+      .eq("memory_type", "system")
+      .maybeSingle();
+    if (data?.payload?.exhausted === true) {
+      creditExhausted = true;
+      console.log("🔋 Hydrated creditExhausted=true from sovereign_memory");
+    }
+  } catch { /* non-critical */ }
+}
+
+async function persistCreditExhausted(supabase: any, exhausted: boolean): Promise<void> {
+  creditExhausted = exhausted;
+  try {
+    await supabase.from("sovereign_memory").upsert({
+      memory_type: "system",
+      memory_key: "credit_exhaustion_state",
+      payload: { exhausted, updatedAt: new Date().toISOString() },
+      relevance_score: 1.0,
+      created_by: "sovereign-loop",
+    }, { onConflict: "memory_type,memory_key" });
+  } catch { /* non-critical */ }
+}
+
+// ─── Normalize pair keys: EUR/USD ↔ EUR_USD ───
+function normalizePairKey(pair: string): string {
+  return pair.replace("/", "_");
+}
+function slashPairKey(pair: string): string {
+  return pair.replace("_", "/");
+}
 
 // ─── Lead-Indicator Matrix: Regime → Data Priority ───
 // Without this, a deterministic engine is "blind" to which data actually matters right now.
@@ -1195,20 +1232,42 @@ async function recursiveSelfAudit(supabase: any, openTrades: any[]): Promise<{ a
     return { actions, notes, pcrAlert };
   }
 
-  // Calculate Profit Capture Ratio: Realized P&L / MFE
+  // Calculate Profit Capture Ratio: Realized P&L / MFE (both in pips for consistency)
   // If you captured 2 pips but MFE was 15 pips → PCR = 13% = terrible exit timing
+  // We compute MFE in pips from price data when mfe_r is in R-multiples
   let totalRealized = 0;
   let totalMFE = 0;
+  let qualifyingTrades = 0;
 
   for (const t of recentClosed) {
     const realized = t.r_pips || 0;
-    const mfe = t.mfe_r || 0;
+    const isJpy = (t.currency_pair || "").includes("JPY");
+    const mult = isJpy ? 100 : 10000;
+
+    // Compute MFE in pips from mfe_price if available, else use r_pips as baseline
+    let mfePips = 0;
+    if (t.mfe_price && t.entry_price) {
+      const dir = t.direction === "long" ? 1 : -1;
+      mfePips = (t.mfe_price - t.entry_price) * mult * dir;
+    } else if (t.mfe_r && t.mfe_r > 0) {
+      // Fallback: if mfe_r is positive and r_pips exists, estimate MFE pips
+      // mfe_r is R-multiples where 1R = r_pips distance. Scale accordingly.
+      const rPips = Math.abs(t.r_pips || 1);
+      mfePips = t.mfe_r * rPips;
+    }
 
     // Only count trades where MFE was positive (had a chance to profit)
-    if (mfe > 0) {
+    if (mfePips > 0) {
       totalRealized += Math.max(0, realized); // don't let losses count negative
-      totalMFE += mfe;
+      totalMFE += mfePips;
+      qualifyingTrades++;
     }
+  }
+
+  // Need at least 3 qualifying trades for meaningful PCR
+  if (qualifyingTrades < 3) {
+    notes.push(`SELF-AUDIT: Only ${qualifyingTrades} trades with MFE data — skipping`);
+    return { actions, notes, pcrAlert };
   }
 
   const pcr = totalMFE > 0 ? (totalRealized / totalMFE) * 100 : 100;
@@ -1307,7 +1366,12 @@ async function deterministicGovernance(supabase: any, dataPayload: any): Promise
   const syntheticBookMem = (dataPayload.sovereignMemory || []).find(
     (m: any) => m.memory_key === "latest_snapshot" && m.memory_type === "ofi_synthetic_book"
   );
-  const syntheticBook = syntheticBookMem?.payload?.pairs || {};
+  // Normalize synthetic book keys: EUR/USD → EUR_USD for consistent lookups
+  const rawBook = syntheticBookMem?.payload?.pairs || {};
+  const syntheticBook: Record<string, any> = {};
+  for (const [key, val] of Object.entries(rawBook)) {
+    syntheticBook[normalizePairKey(key)] = val;
+  }
   const bookPairs = Object.keys(syntheticBook);
 
   // ─── 2. Parse Regime Forecasts ───
@@ -1735,6 +1799,9 @@ Deno.serve(async (req) => {
   try {
     console.log("🤖 Sovereign Loop: Waking up...");
 
+    // ─── 0. Hydrate credit exhaustion state from DB (survives cold-starts) ───
+    await hydrateCreditExhausted(supabase);
+
     // ─── 1. Circuit Breaker Check ───
     const circuitBreakerActive = await checkCircuitBreaker(supabase);
     if (circuitBreakerActive) {
@@ -1993,7 +2060,7 @@ Deno.serve(async (req) => {
 
       if (!aiResponse.ok) {
         if (aiResponse.status === 402) {
-          creditExhausted = true;
+          await persistCreditExhausted(supabase, true);
           console.log("🔋 Tier 2-3: Credits exhausted (402) — falling back to DGE");
           const dge = await deterministicGovernance(supabase, dataPayload);
           actions = dge.actions;
@@ -2003,7 +2070,7 @@ Deno.serve(async (req) => {
           throw new Error(`AI gateway error: ${aiResponse.status} ${aiResponse.statusText}`);
         }
       } else {
-        creditExhausted = false; // AI succeeded — clear exhaustion flag
+        await persistCreditExhausted(supabase, false); // AI succeeded — clear exhaustion flag
         const aiData = await aiResponse.json();
         llmResponse = aiData.choices[0].message.content;
         console.log("📝 LLM Response:", llmResponse);
