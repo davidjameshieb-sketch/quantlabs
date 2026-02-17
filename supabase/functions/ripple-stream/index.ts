@@ -639,6 +639,10 @@ const PREDATOR_WALL_OFFSET_PIPS = 0.3;  // Stop-Limit placed 0.3 pips BEYOND the
 // Exit Protocol:
 const PREDATOR_EXIT_HURST_MIN = 0.45;   // Close if Hurst drops below 0.45
 const PREDATOR_EXIT_WEIGHTING_THRESHOLD = 49; // Close if Buy/Sell weighting hits 49%
+// Whale-Shadow Trail: stop tucked 0.3 pips behind the largest resting wall within 3 pips
+const WHALE_SHADOW_RANGE_PIPS = 3.0;    // scan radius for nearby walls
+const WHALE_SHADOW_OFFSET_PIPS = 0.3;   // tuck stop 0.3 pips behind the wall
+const WHALE_SHADOW_MIN_HITS = 3;        // wall must have ≥3 hits to qualify
 
 // ─── Velocity Gating Constants ───────────────────────────
 const VELOCITY_TICK_THRESHOLD = 5;
@@ -1160,7 +1164,7 @@ Deno.serve(async (req) => {
             // Tick-speed exit scans every 2s. Three exit triggers:
             // 1. Regime Exit: Close if Hurst drops below 0.45
             // 2. Flow Exit: Close if Buy/Sell Weighting hits 49%
-            // 3. VWAP Trail: (simulated via drift reversal — no VWAP feed available)
+            // 3. Whale-Shadow Trail: Move SL behind largest resting wall within 3 pips
             if (tickTs - lastExitScanTs >= EXIT_SCAN_INTERVAL_MS) {
               lastExitScanTs = tickTs;
               const openTrade = exitTradeMap.get(instrument);
@@ -1185,14 +1189,77 @@ Deno.serve(async (req) => {
                     }
                   }
 
-                  // ─── DRIFT REVERSAL EXIT (VWAP proxy): KM Drift flips against position ───
+                  // ─── WHALE-SHADOW TRAIL: Tuck SL behind largest resting wall within 3 pips ───
+                  // Instead of drift reversal, we use the whales as a physical shield.
+                  // For LONG: find the biggest Buy Wall below price → SL = wall - 0.3 pips
+                  // For SHORT: find the biggest Sell Wall above price → SL = wall + 0.3 pips
                   if (!exitReason) {
-                    const sqD2 = Math.sqrt(Math.abs(exitTracker.D2));
-                    const dNorm = sqD2 > 1e-10 ? exitTracker.D1 / sqD2 : 0;
                     const isLong = openTrade.direction === "long";
-                    // If drift has flipped against us by > 1.0, exit
-                    if ((isLong && dNorm < -1.0) || (!isLong && dNorm > 1.0)) {
-                      exitReason = `DRIFT_EXIT: D1_norm=${dNorm.toFixed(2)} — drift reversed against ${openTrade.direction}`;
+                    const rangePx = fromPips(WHALE_SHADOW_RANGE_PIPS, instrument);
+                    const offsetPx = fromPips(WHALE_SHADOW_OFFSET_PIPS, instrument);
+                    let bestWallPrice: number | null = null;
+                    let bestWallStrength = 0; // measured by |net| order flow at the level
+
+                    for (const [levelPrice, info] of exitTracker.priceLevels.entries()) {
+                      if (info.hits < WHALE_SHADOW_MIN_HITS) continue;
+                      const dist = Math.abs(levelPrice - mid);
+                      if (dist > rangePx) continue; // outside 3-pip scan radius
+
+                      if (isLong) {
+                        // Buy Walls BELOW price (support shields)
+                        if (levelPrice < mid && info.buys >= 2 && info.net > 0) {
+                          const strength = info.net * info.hits; // compound: net flow × persistence
+                          if (strength > bestWallStrength) {
+                            bestWallStrength = strength;
+                            bestWallPrice = levelPrice;
+                          }
+                        }
+                      } else {
+                        // Sell Walls ABOVE price (resistance shields)
+                        if (levelPrice > mid && info.sells >= 2 && info.net < 0) {
+                          const strength = Math.abs(info.net) * info.hits;
+                          if (strength > bestWallStrength) {
+                            bestWallStrength = strength;
+                            bestWallPrice = levelPrice;
+                          }
+                        }
+                      }
+                    }
+
+                    if (bestWallPrice !== null) {
+                      // Calculate new SL: 0.3 pips behind the wall
+                      const newSL = isLong
+                        ? bestWallPrice - offsetPx   // below the buy wall
+                        : bestWallPrice + offsetPx;  // above the sell wall
+
+                      // Only move SL in the profitable direction (never widen)
+                      const entryPrice = openTrade.entry_price || 0;
+                      const currentSLImproves = isLong
+                        ? newSL > entryPrice * 0.998  // SL is above ~0.2% below entry (reasonable floor)
+                        : newSL < entryPrice * 1.002;
+
+                      if (currentSLImproves) {
+                        // Move the stop-loss on OANDA via trade order modification
+                        try {
+                          const slStr = newSL.toFixed(instrument.includes("JPY") ? 3 : 5);
+                          const updateRes = await fetch(
+                            `${OANDA_API}/accounts/${OANDA_ACCOUNT}/trades/${openTrade.oanda_trade_id}/orders`,
+                            {
+                              method: "PUT",
+                              headers: { Authorization: `Bearer ${OANDA_TOKEN}`, "Content-Type": "application/json" },
+                              body: JSON.stringify({ stopLoss: { price: slStr, timeInForce: "GTC" } }),
+                            },
+                          );
+                          if (updateRes.ok) {
+                            console.log(`[WHALE_SHADOW] 🐋 ${instrument} ${isLong ? "LONG" : "SHORT"} — SL moved to ${slStr} (wall@${bestWallPrice.toFixed(5)}, strength=${bestWallStrength})`);
+                          } else {
+                            const errData = await updateRes.json();
+                            console.warn(`[WHALE_SHADOW] ⚠️ SL update failed for ${instrument}: ${JSON.stringify(errData)}`);
+                          }
+                        } catch (err) {
+                          console.error(`[WHALE_SHADOW] ❌ SL update error for ${instrument}:`, err);
+                        }
+                      }
                     }
                   }
 
@@ -1207,7 +1274,6 @@ Deno.serve(async (req) => {
                         const closeData = await closeRes.json();
                         const exitPrice = parseFloat(closeData.orderFillTransaction?.price || "0");
                         autonomousExits.push(`${instrument}:${exitReason}`);
-                        // Update DB
                         await supabase.from("oanda_orders").update({
                           exit_price: exitPrice,
                           status: "closed",
