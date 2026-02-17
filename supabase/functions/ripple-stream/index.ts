@@ -1,20 +1,25 @@
-// Ripple Stream Engine v4 — Senior Ops Synthetic Order Book
+// Ripple Stream Engine v5 — Senior Ops Synthetic Order Book
 // The Committee is dead. Long live the Frontline Soldiers.
 //
-// SYNTHETIC ORDER BOOK (better than institutional):
-//   - Velocity-Weighted OFI: ticks weighted by 1/Δt (fast ticks = toxic/informed)
-//   - Displacement-Weighted: ticks weighted by |ΔP| (big moves > noise)
-//   - Price-Level Persistence: frequency map of hits/bounces → S/R from tick density
-//   - Kramers-Moyal Drift/Diffusion: μ=force direction, σ²=noise level
-//   - Hidden Limit Player Detection: OFI Force ≠ KM Velocity = institutional absorption
+// SENIOR OPS SYNTHETIC ORDER BOOK (zero-lag O(1) recursive):
+//   - Adaptive Z-OFI (Welford's): Z-score of OFI auto-adjusts per session dynamics
+//   - Adaptive KM Windowing ("Gear Shift"): α adapts to D2 noise level
+//   - Fast Hurst Exponent (Hall-Wood): O(1) regime classification (trend vs mean-rev)
+//   - Velocity+Displacement Weighted OFI: recursive, no arrays
+//   - Kramers-Moyal Drift/Diffusion: recursive D1/D2
+//   - Efficiency Ratio E = |OFI|/(|D1|+ε): LIQUID/ABSORBING/SLIPPING
+//   - Hidden Limit Player Detection via E ratio
+//   - Price-Level Persistence: tick-density S/R
+//
+// 9-Gate Z-Score Pipeline:
+//   1. Z-Score threshold  2. Tick-Density  3. Momentum burst
+//   4. VPIN toxicity  5. OFI alignment  6. Hurst regime
+//   7. Adaptive Z-OFI intensity  8. Efficiency/hidden player  9. Spread
 //
 // Three L0 deterministic strategies on OANDA ms tick data:
-//   1. Z-SCORE STRIKE — Rolling z-score on correlation-spreads, 7-gate pipeline
+//   1. Z-SCORE STRIKE — 9-gate pipeline with Senior Ops synthetic book
 //   2. VELOCITY GATING — 5+ same-direction ticks in 2s = impulse fire
-//   3. SNAP-BACK SNIPER — Stop-hunt exhaustion → contrarian entry at reversal
-//
-// Plus: MICRO-SLIPPAGE AUDITOR — Real-time fill audit, auto-switches to
-// PREDATORY_LIMIT if slippage > 0.2 pips.
+//   3. SNAP-BACK SNIPER — Stop-hunt exhaustion → contrarian entry
 //
 // AI is the General Staff — sizing, regime, risk (hourly). Soldiers fire autonomously.
 
@@ -112,8 +117,18 @@ const PRICE_LEVEL_MEMORY = 500;
 
 // Recursive decay factors (evolvable by sovereign loop per session)
 const KM_ALPHA_DEFAULT = 0.05;     // KM smoothing — higher = faster adaptation
+const KM_ALPHA_MIN = 0.01;        // Minimum alpha (long memory, high noise)
+const KM_ALPHA_MAX = 0.15;        // Maximum alpha (short memory, low noise)
 const OFI_GAMMA_DEFAULT = 0.95;    // OFI memory — higher = longer memory
 const EFFICIENCY_EPSILON = 1e-10;  // prevent division by zero
+
+// Adaptive Z-OFI threshold (replaces static 0.4)
+const Z_OFI_FIRE_THRESHOLD = 2.0; // Welford Z-score: "only fire if |Z| > 2.0"
+
+// Hurst Exponent thresholds
+const HURST_PERSISTENCE_THRESHOLD = 0.55; // H > 0.55 = trending (ripple travels)
+const HURST_MEANREV_THRESHOLD = 0.45;     // H < 0.45 = mean-reverting (snap back)
+const HURST_SCALE = 128;                  // Window for Hall-Wood estimator
 
 // Efficiency ratio thresholds for market state classification
 const EFFICIENCY_ABSORBING_THRESHOLD = 0.3; // E < 0.3 = hidden limit player
@@ -151,7 +166,7 @@ interface HiddenSellerSignal {
 }
 
 interface OfiTracker {
-  // ─── O(1) Recursive State (the only 4 vars that matter) ───
+  // ─── O(1) Recursive State ───
   prevMid: number;
   prevTs: number;
   D1: number;                // Kramers-Moyal recursive drift
@@ -160,8 +175,21 @@ interface OfiTracker {
   tickCount: number;         // total ticks processed (for warm-up)
 
   // ─── Decay factors (evolvable per session) ───
-  alpha: number;             // KM decay rate
+  alpha: number;             // KM decay rate (NOW ADAPTIVE via D2 gear shift)
   gamma: number;             // OFI memory factor
+
+  // ─── Adaptive Z-OFI (Welford's Online Algorithm) ───
+  ofiMean: number;           // Running mean of OFI
+  ofiM2: number;             // Running sum of squared deviations
+  ofiWelfordN: number;       // Count for Welford's
+  zOfi: number;              // Current Z-score of OFI (the adaptive gate)
+
+  // ─── Fast Hurst Exponent (Hall-Wood O(1)) ───
+  sumD1Abs: number;          // Σ|Δx| at scale 1 (single tick)
+  sumD2Abs: number;          // Σ|Δx₂| at scale 2 (two-tick returns)
+  prevDx: number;            // Previous Δx for scale-2 computation
+  hurstN: number;            // Tick counter for Hurst (mod HURST_SCALE)
+  hurst: number;             // Current H estimate
 
   // ─── VPIN (still bucket-based — inherently O(1) per tick) ───
   vpinBuckets: { buys: number; sells: number }[];
@@ -194,6 +222,17 @@ function getOrCreateOfi(pair: string): OfiTracker {
       tickCount: 0,
       alpha: KM_ALPHA_DEFAULT,
       gamma: OFI_GAMMA_DEFAULT,
+      // Welford's adaptive Z-OFI
+      ofiMean: 0,
+      ofiM2: 0,
+      ofiWelfordN: 0,
+      zOfi: 0,
+      // Fast Hurst (Hall-Wood)
+      sumD1Abs: 0,
+      sumD2Abs: 0,
+      prevDx: 0,
+      hurstN: 0,
+      hurst: 0.5, // neutral start
       vpinBuckets: [],
       currentBucket: { buys: 0, sells: 0, count: 0 },
       lastClassification: 1,
@@ -276,20 +315,24 @@ function processOfiTick(
   pair: string, mid: number, bid: number, ask: number,
   spreadPips: number, ts: number
 ): {
-  ofiRatio: number;          // simple buy-sell ratio (backward compat)
-  ofiRaw: number;            // raw buy-sell count
-  ofiWeighted: number;       // RECURSIVE velocity+displacement OFI (the real signal)
+  ofiRatio: number;
+  ofiRaw: number;
+  ofiWeighted: number;
   vpin: number;
   buyPressure: number;
   sellPressure: number;
   ticksInWindow: number;
   bias: "BUY" | "SELL" | "NEUTRAL";
   syntheticDepth: { price: number; buys: number; sells: number; net: number; hits: number; bounces: number; broken: boolean }[];
-  km: KramersMoyalState;
+  km: KramersMoyalState & { alphaAdaptive: number };
   hiddenPlayer: HiddenSellerSignal;
   resistanceLevels: { price: number; strength: number; type: "SUPPORT" | "RESISTANCE" }[];
-  efficiency: number;        // NEW: E ratio (Force/Velocity)
-  marketState: MarketState;  // NEW: classified market regime
+  efficiency: number;
+  marketState: MarketState;
+  // ─── NEW: Senior Ops Recursive Metrics ───
+  zOfi: number;              // Welford Z-score of OFI (adaptive intensity)
+  hurst: number;             // Fast Hurst exponent (regime: >0.5 trend, <0.5 mean-rev)
+  hurstRegime: "PERSISTENT" | "MEAN_REVERTING" | "RANDOM_WALK";
 } {
   const tracker = getOrCreateOfi(pair);
   const isJpy = pair.includes("JPY");
@@ -306,9 +349,16 @@ function processOfiTick(
   const dt = tracker.prevTs > 0 ? Math.max(ts - tracker.prevTs, 1) : 1000; // ms
   const dtSec = dt / 1000; // seconds for KM normalization
 
-  // ─── RECURSIVE KRAMERS-MOYAL (O(1)) ───
-  // D1(t) = α·(Δx/Δt) + (1-α)·D1(t-1)
-  // D2(t) = α·(Δx - D1·Δt)²/Δt + (1-α)·D2(t-1)
+  // ─── UPGRADE 2: ADAPTIVE KM WINDOWING ("Gear Shift") ───
+  // α adapts based on D2 (noise level):
+  //   High D2 → low α (long memory, filter chaos)
+  //   Low D2 → high α (short memory, hyper-responsive)
+  // αAdaptive = αMin + (αMax - αMin) · exp(-κ · D2)
+  const kappa = 1e6; // sensitivity to diffusion (tuned to forex pip-scale D2)
+  const adaptiveAlpha = KM_ALPHA_MIN + (KM_ALPHA_MAX - KM_ALPHA_MIN) * Math.exp(-kappa * Math.abs(tracker.D2));
+  tracker.alpha = adaptiveAlpha;
+
+  // ─── RECURSIVE KRAMERS-MOYAL (O(1)) with ADAPTIVE α ───
   const alpha = tracker.alpha;
   if (tracker.tickCount > 0 && dtSec > 0) {
     const instantDrift = dx / dtSec;
@@ -320,19 +370,56 @@ function processOfiTick(
   }
 
   // ─── RECURSIVE OFI (O(1)) ───
-  // OFI(t) = γ·OFI(t-1) + sgn(Δx)·|Δx|·(1/Δt)
   const gamma = tracker.gamma;
   const dxPips = Math.abs(dx) * pipMult;
-  const tickVelocity = 1000 / dt; // ticks per second equivalent
+  const tickVelocity = 1000 / dt;
   const ofiContribution = side * dxPips * tickVelocity;
   tracker.ofiRecursive = gamma * tracker.ofiRecursive + ofiContribution;
 
+  // ─── UPGRADE 1: ADAPTIVE Z-OFI (Welford's Online Algorithm) ───
+  // Instead of static 0.4 threshold, compute how "abnormal" current OFI is.
+  // Running mean and M2 update in O(1):
+  //   n++; delta = x - mean; mean += delta/n; delta2 = x - mean; M2 += delta*delta2
+  //   variance = M2/n; Z = (x - mean) / sqrt(variance)
+  tracker.ofiWelfordN++;
+  const welfordDelta = tracker.ofiRecursive - tracker.ofiMean;
+  tracker.ofiMean += welfordDelta / tracker.ofiWelfordN;
+  const welfordDelta2 = tracker.ofiRecursive - tracker.ofiMean;
+  tracker.ofiM2 += welfordDelta * welfordDelta2;
+  
+  const ofiVariance = tracker.ofiWelfordN > 1 ? tracker.ofiM2 / tracker.ofiWelfordN : 1;
+  const ofiStd = Math.sqrt(Math.max(ofiVariance, 1e-20));
+  tracker.zOfi = (tracker.ofiRecursive - tracker.ofiMean) / ofiStd;
+
+  // ─── UPGRADE 3: FAST HURST EXPONENT (Hall-Wood O(1)) ───
+  // Track S1 = Σ|Δx| (scale 1) and S2 = Σ|Δx + prevΔx| (scale 2)
+  // H = log2(S2/S1) — computed every HURST_SCALE ticks, then reset
+  const absDx = Math.abs(dx);
+  tracker.sumD1Abs += absDx;
+  const dx2 = dx + tracker.prevDx; // two-tick return
+  tracker.sumD2Abs += Math.abs(dx2);
+  tracker.prevDx = dx;
+  tracker.hurstN++;
+
+  if (tracker.hurstN >= HURST_SCALE && tracker.sumD1Abs > 1e-15) {
+    // H = log2(S2 / S1) — but clamped to [0, 1]
+    const ratio = tracker.sumD2Abs / tracker.sumD1Abs;
+    const rawH = Math.log2(Math.max(ratio, 1e-10));
+    tracker.hurst = Math.max(0, Math.min(1, rawH));
+    // Reset accumulators for next window
+    tracker.sumD1Abs = 0;
+    tracker.sumD2Abs = 0;
+    tracker.hurstN = 0;
+  }
+
+  const hurstRegime: "PERSISTENT" | "MEAN_REVERTING" | "RANDOM_WALK" =
+    tracker.hurst > HURST_PERSISTENCE_THRESHOLD ? "PERSISTENT" :
+    tracker.hurst < HURST_MEANREV_THRESHOLD ? "MEAN_REVERTING" : "RANDOM_WALK";
+
   // ─── EFFICIENCY RATIO (The Alpha) ───
-  // E = |OFI| / (|D1| + ε)
   const absD1 = Math.abs(tracker.D1);
   const absOfi = Math.abs(tracker.ofiRecursive);
-  // Normalize OFI to comparable scale as D1 (both in price-space per second)
-  const ofiNormalized = absOfi / (pipMult * 10); // scale down from pips²/s
+  const ofiNormalized = absOfi / (pipMult * 10);
   const efficiency = ofiNormalized / (absD1 + EFFICIENCY_EPSILON);
   const marketState = classifyMarketState(efficiency);
 
@@ -460,15 +547,19 @@ function processOfiTick(
     bias: ofiNorm > OFI_IMBALANCE_THRESHOLD ? "BUY" : ofiNorm < -OFI_IMBALANCE_THRESHOLD ? "SELL" : "NEUTRAL",
     syntheticDepth: depthLevels,
     km: {
-      drift: Math.round(tracker.D1 * 1e8) / 1e8,
-      diffusion: Math.round(tracker.D2 * 1e12) / 1e12,
+      D1: Math.round(tracker.D1 * 1e8) / 1e8,
+      D2: Math.round(tracker.D2 * 1e12) / 1e12,
       driftNormalized: Math.round(driftNormalized * 1000) / 1000,
       sampleSize: tracker.tickCount,
+      alphaAdaptive: Math.round(tracker.alpha * 10000) / 10000,
     },
     hiddenPlayer,
     resistanceLevels: srLevels.slice(0, 5),
     efficiency: Math.round(efficiency * 1000) / 1000,
     marketState,
+    zOfi: Math.round(tracker.zOfi * 1000) / 1000,
+    hurst: Math.round(tracker.hurst * 1000) / 1000,
+    hurstRegime,
   };
 }
 
@@ -1037,15 +1128,28 @@ Deno.serve(async (req) => {
                 continue;
               }
 
-              // ─── GATE 6: Hidden Limit Player detection (Force vs KM Velocity) ───
-              if (tradeOfi.hiddenPlayer.detected && tradeOfi.hiddenPlayer.recommendation === "FADE") {
-                // OFI force screaming one way but KM drift flat = absorption. Skip.
-                console.log(`[STRIKE-v3] 🕵️ HIDDEN PLAYER: ${tradePair} ${tradeOfi.hiddenPlayer.type} | Force=${tradeOfi.hiddenPlayer.force.toFixed(3)} Drift=${tradeOfi.hiddenPlayer.velocity.toFixed(3)} — ${tradeOfi.hiddenPlayer.recommendation}`);
+              // ─── GATE 6: Hurst Regime Check (Is the medium capable of a ripple?) ───
+              if (tradeOfi.hurstRegime === "MEAN_REVERTING") {
+                // H < 0.45 — price will snap back, not travel. Skip momentum trades.
+                console.log(`[STRIKE-v4] 🔬 HURST GATE: ${tradePair} H=${tradeOfi.hurst} ${tradeOfi.hurstRegime} — ripple won't travel, skip`);
                 continue;
               }
 
-              // ─── GATE 7: Spread OK (baked into executeOrder) ───
-              // Seven gates. Spread → Z-Score → Tick-Density → Momentum → VPIN → OFI → Hidden Player. Fire.
+              // ─── GATE 7: Adaptive Z-OFI Intensity (Is this move abnormal for NOW?) ───
+              // Welford Z-score auto-adjusts: sleepy Asian session ≠ violent London open
+              if (Math.abs(tradeOfi.zOfi) < Z_OFI_FIRE_THRESHOLD && tradeOfi.ticksInWindow > 50) {
+                // OFI is within normal bounds for current session dynamics
+                continue;
+              }
+
+              // ─── GATE 8: Efficiency Check (Is there a hidden player?) ───
+              if (tradeOfi.hiddenPlayer.detected && tradeOfi.hiddenPlayer.recommendation === "FADE") {
+                console.log(`[STRIKE-v4] 🕵️ HIDDEN PLAYER: ${tradePair} ${tradeOfi.hiddenPlayer.type} | E=${tradeOfi.efficiency} ${tradeOfi.marketState} — ${tradeOfi.hiddenPlayer.recommendation}`);
+                continue;
+              }
+
+              // ─── GATE 9: Spread OK (baked into executeOrder) ───
+              // Nine gates. Spread → Z-Score → Density → Momentum → VPIN → OFI → Hurst → Z-OFI → Efficiency. Fire.
 
               const tradePrice = prices.get(tradePair);
               if (!tradePrice) continue;
@@ -1053,16 +1157,18 @@ Deno.serve(async (req) => {
               tracker.lastFireTs = tickTs;
               tracker.firedDirection = tradeDirection;
 
-              // OFI conviction boost: aligned weighted flow increases confidence
+
+
+              console.log(`[STRIKE-v4] 🎯 Z-SCORE FIRE: ${tradeDirection.toUpperCase()} ${baseUnits} ${tradePair} | z=${z.toFixed(2)} | Z_OFI=${tradeOfi.zOfi.toFixed(2)} H=${tradeOfi.hurst} ${tradeOfi.hurstRegime} | E=${tradeOfi.efficiency} ${tradeOfi.marketState} | KM_α=${tradeOfi.km.alphaAdaptive} | group=${group.name} | tps=${densityCheck.tps.toFixed(1)} | tick #${tickCount}`);
+
+              // Conviction: combine z-score + OFI alignment + KM + Hurst
               const ofiAligned = (tradeDirection === "long" && tradeOfi.bias === "BUY") ||
                                  (tradeDirection === "short" && tradeOfi.bias === "SELL");
               const ofiConfidenceBoost = ofiAligned ? Math.abs(tradeOfi.ofiWeighted) * 0.2 : 0;
-              // KM drift alignment boost
               const kmAligned = (tradeDirection === "long" && tradeOfi.km.driftNormalized > 0.1) ||
                                 (tradeDirection === "short" && tradeOfi.km.driftNormalized < -0.1);
               const kmBoost = kmAligned ? Math.min(Math.abs(tradeOfi.km.driftNormalized) * 0.1, 0.15) : 0;
-
-              console.log(`[STRIKE-v3] 🎯 Z-SCORE FIRE: ${tradeDirection.toUpperCase()} ${baseUnits} ${tradePair} | z=${z.toFixed(2)} | wOFI=${tradeOfi.ofiWeighted} KM_drift=${tradeOfi.km.driftNormalized} VPIN=${tradeOfi.vpin} ${tradeOfi.bias} | group=${group.name} | tps=${densityCheck.tps.toFixed(1)} | tick #${tickCount}`);
+              const hurstBoost = tradeOfi.hurst > 0.6 ? 0.1 : 0; // extra confidence in strong trend
 
               const result = await executeOrder(
                 tradePair, tradeDirection, baseUnits,
@@ -1074,14 +1180,16 @@ Deno.serve(async (req) => {
                   tickNumber: tickCount,
                   ticksPerSecond: densityCheck.tps,
                   streamLatencyMs: Date.now() - startTime,
-                  confidence: Math.min(1, (Math.abs(z) / 3) + ofiConfidenceBoost + kmBoost),
-                  engine: "zscore-strike-v4",
+                  confidence: Math.min(1, (Math.abs(z) / 3) + ofiConfidenceBoost + kmBoost + hurstBoost),
+                  engine: "zscore-strike-v5-senior-ops",
                   ofi: {
                     ratio: tradeOfi.ofiRatio, weighted: tradeOfi.ofiWeighted,
                     vpin: tradeOfi.vpin, bias: tradeOfi.bias,
                     buyPct: tradeOfi.buyPressure, sellPct: tradeOfi.sellPressure,
+                    zOfi: tradeOfi.zOfi,
                   },
                   kramersMoyal: tradeOfi.km,
+                  hurst: { H: tradeOfi.hurst, regime: tradeOfi.hurstRegime },
                   hiddenPlayer: tradeOfi.hiddenPlayer.detected ? tradeOfi.hiddenPlayer : null,
                   resistanceLevels: tradeOfi.resistanceLevels,
                 },
@@ -1308,10 +1416,15 @@ Deno.serve(async (req) => {
       }
       srLevels.sort((a, b) => b.strength - a.strength);
 
+      // Hurst regime
+      const hurstRegime = tracker.hurst > HURST_PERSISTENCE_THRESHOLD ? "PERSISTENT" :
+        tracker.hurst < HURST_MEANREV_THRESHOLD ? "MEAN_REVERTING" : "RANDOM_WALK";
+
       ofiSnapshot[pair.replace("_", "/")] = {
         ofiRatio: Math.round(ofiRatio * 1000) / 1000,
         ofiWeighted: Math.round(ofiNorm * 1000) / 1000,
         ofiRawRecursive: Math.round(tracker.ofiRecursive * 100) / 100,
+        zOfi: Math.round(tracker.zOfi * 1000) / 1000,
         vpin: Math.round(vpin * 1000) / 1000,
         buyPct: Math.round(tracker.ewmaBuyPct * 100),
         sellPct: Math.round(tracker.ewmaSellPct * 100),
@@ -1322,8 +1435,12 @@ Deno.serve(async (req) => {
           D1: Math.round(tracker.D1 * 1e8) / 1e8,
           D2: Math.round(tracker.D2 * 1e12) / 1e12,
           driftNormalized: Math.round(driftNorm * 1000) / 1000,
-          alpha: tracker.alpha,
+          alphaAdaptive: Math.round(tracker.alpha * 10000) / 10000,
           sampleSize: tracker.tickCount,
+        },
+        hurst: {
+          H: Math.round(tracker.hurst * 1000) / 1000,
+          regime: hurstRegime,
         },
         efficiency: Math.round(efficiency * 1000) / 1000,
         marketState,
@@ -1346,7 +1463,7 @@ Deno.serve(async (req) => {
         memory_type: "ofi_synthetic_book",
         memory_key: "latest_snapshot",
         payload: {
-          version: "v3-zero-lag-recursive",
+          version: "v4-senior-ops-recursive",
           pairs: ofiSnapshot,
           pairsCount: Object.keys(ofiSnapshot).length,
           hiddenPlayerAlerts,
@@ -1355,16 +1472,18 @@ Deno.serve(async (req) => {
           ticksProcessed: tickCount,
           streamDurationMs: Date.now() - startTime,
           timestamp: new Date().toISOString(),
-          architecture: "O(1)_recursive_ewma",
-          decayFactors: { kmAlpha: KM_ALPHA_DEFAULT, ofiGamma: OFI_GAMMA_DEFAULT },
+          architecture: "O(1)_recursive_welford_hurst",
+          decayFactors: { kmAlphaRange: [KM_ALPHA_MIN, KM_ALPHA_MAX], ofiGamma: OFI_GAMMA_DEFAULT },
           capabilities: [
+            "adaptive_km_gear_shift", "welford_z_ofi", "hall_wood_hurst",
             "recursive_kramers_moyal", "recursive_velocity_displacement_ofi",
             "efficiency_ratio_E", "market_state_classification",
             "hidden_limit_detection", "price_level_persistence", "tick_density_sr",
+            "9_gate_pipeline",
           ],
         },
         relevance_score: hiddenPlayerAlerts > 0 ? 1.0 : 0.8,
-        created_by: "ripple-stream-ofi-v3-recursive",
+        created_by: "ripple-stream-ofi-v4-senior-ops",
       }, { onConflict: "memory_type,memory_key" });
     }
 
@@ -1374,23 +1493,24 @@ Deno.serve(async (req) => {
     return new Response(
       JSON.stringify({
         success: true,
-        version: "v4-zero-lag-recursive-book",
+        version: "v5-senior-ops-9gate",
         streamDurationMs: totalMs,
         ticksProcessed: tickCount,
         zscore: { fired: zScoreFires.length, pairs: zScoreFires, groups: correlationGroups.length, threshold: zScoreThreshold },
         velocity: { fired: velocityFires.length, pairs: velocityFires, monitored: velocityPairs.length },
         snapback: { fired: snapbackFires.length, pairs: snapbackFires, monitored: snapbackPairs.length },
         syntheticBook: {
-          version: "v3-zero-lag-recursive",
-          architecture: "O(1)_recursive_ewma",
+          version: "v4-senior-ops-recursive",
+          architecture: "O(1)_recursive_welford_hurst",
           pairsTracked: Object.keys(ofiSnapshot).length,
           hiddenPlayerAlerts,
           absorbingPairs,
           slippingPairs,
           capabilities: [
+            "adaptive_km_gear_shift", "welford_z_ofi", "hall_wood_hurst",
             "recursive_kramers_moyal", "recursive_velocity_displacement_ofi",
             "efficiency_ratio_E", "market_state_classification",
-            "hidden_limit_detection", "price_level_persistence",
+            "hidden_limit_detection", "price_level_persistence", "9_gate_pipeline",
           ],
           snapshot: ofiSnapshot,
         },
