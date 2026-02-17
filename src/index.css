@@ -221,6 +221,70 @@
     }
   }
 
+  /* ─── WAR ROOM: Tactical Unit Pulse States ─── */
+
+  /* STRIKE READY: all 4 gates open, waiting for Rule of 3 */
+  @keyframes strike-ready-glow {
+    0%, 100% { box-shadow: 0 0 12px hsl(45 100% 55% / 0.25), inset 0 0 8px hsl(45 100% 55% / 0.05); }
+    50%       { box-shadow: 0 0 28px hsl(45 100% 55% / 0.55), inset 0 0 14px hsl(45 100% 55% / 0.12); }
+  }
+  .tactical-strike-ready {
+    border-color: hsl(45 100% 55% / 0.6) !important;
+    animation: strike-ready-glow 2s ease-in-out infinite;
+  }
+
+  /* ACTIVE TRADE: yellow electric pulse, speed locked to R */
+  @keyframes active-trade-pulse {
+    0%, 100% { box-shadow: 0 0 18px hsl(50 100% 60% / 0.4), 0 0 4px hsl(50 100% 60% / 0.6); }
+    50%       { box-shadow: 0 0 40px hsl(50 100% 60% / 0.9), 0 0 12px hsl(50 100% 60% / 1); }
+  }
+  .tactical-active {
+    border-color: hsl(50 100% 60%) !important;
+    animation: active-trade-pulse var(--pulse-speed, 1.5s) ease-in-out infinite;
+  }
+
+  /* CLIMAX: hyper-fast yellow pulse */
+  @keyframes climax-pulse {
+    0%, 100% { box-shadow: 0 0 24px hsl(55 100% 65% / 0.7), 0 0 8px hsl(55 100% 65%); }
+    50%       { box-shadow: 0 0 56px hsl(55 100% 65%),       0 0 20px hsl(55 100% 65%); }
+  }
+  .tactical-climax {
+    border-color: hsl(55 100% 65%) !important;
+    animation: climax-pulse 0.5s ease-in-out infinite;
+  }
+
+  /* FATIGUE: slow deep-red flatline */
+  @keyframes fatigue-flatline {
+    0%, 100% { box-shadow: 0 0 14px hsl(0 75% 30% / 0.5); }
+    50%       { box-shadow: 0 0 30px hsl(0 75% 30% / 0.85); }
+  }
+  .tactical-fatigue {
+    border-color: hsl(0 75% 35%) !important;
+    animation: fatigue-flatline 3s ease-in-out infinite;
+  }
+
+  /* Lightning SVG path draw animation */
+  @keyframes lightning-draw {
+    0%   { stroke-dashoffset: 120; opacity: 0.3; }
+    40%  { stroke-dashoffset: 0;   opacity: 1; }
+    100% { stroke-dashoffset: 0;   opacity: 0.5; }
+  }
+  .lightning-path {
+    stroke-dasharray: 120;
+    stroke-dashoffset: 120;
+    animation: lightning-draw var(--pulse-speed, 1.5s) ease-in-out infinite;
+  }
+
+  /* Scrolling Command Feed text */
+  @keyframes feed-slide {
+    0%   { transform: translateX(0); }
+    100% { transform: translateX(-50%); }
+  }
+  .command-feed-scroll {
+    animation: feed-slide 18s linear infinite;
+    white-space: nowrap;
+  }
+
   /* Neural network background pattern */
   .neural-grid {
     background-image: 
