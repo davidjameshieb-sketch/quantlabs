@@ -704,11 +704,15 @@ async function executeAction(action: any, supabase: any): Promise<void> {
         const tradeId = action.oanda_trade_id || action.tradeId || action.trade_id;
         if (!tradeId) { console.warn("⚠️ update_sl_tp: no trade ID"); break; }
         const orderUpdate: Record<string, unknown> = {};
+        // FIX: JPY pairs require 3 decimal places, all others 5 — same precision rule as place_trade.
+        // Using .toFixed(5) for JPY was causing PRICE_PRECISION_EXCEEDED on every SL tightening update.
+        const updatePair = (action.pair || action.currency_pair || tradeId || "").toString();
+        const updatePrecision = updatePair.includes("JPY") ? 3 : 5;
         if (action.stopLossPrice != null) {
-          orderUpdate.stopLoss = { price: Number(action.stopLossPrice).toFixed(5), timeInForce: "GTC" };
+          orderUpdate.stopLoss = { price: Number(action.stopLossPrice).toFixed(updatePrecision), timeInForce: "GTC" };
         }
         if (action.takeProfitPrice != null) {
-          orderUpdate.takeProfit = { price: Number(action.takeProfitPrice).toFixed(5), timeInForce: "GTC" };
+          orderUpdate.takeProfit = { price: Number(action.takeProfitPrice).toFixed(updatePrecision), timeInForce: "GTC" };
         }
         if (Object.keys(orderUpdate).length === 0) { console.warn("⚠️ update_sl_tp: no SL/TP values"); break; }
         await fmOandaRequest(`/v3/accounts/{accountId}/trades/${tradeId}/orders`, "PUT", orderUpdate);
