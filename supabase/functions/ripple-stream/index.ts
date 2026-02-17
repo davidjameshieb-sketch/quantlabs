@@ -1,15 +1,17 @@
-// Ripple Stream Engine v3 — Z-Score Strike Engine
+// Ripple Stream Engine v4 — Senior Ops Synthetic Order Book
 // The Committee is dead. Long live the Frontline Soldiers.
 //
+// SYNTHETIC ORDER BOOK (better than institutional):
+//   - Velocity-Weighted OFI: ticks weighted by 1/Δt (fast ticks = toxic/informed)
+//   - Displacement-Weighted: ticks weighted by |ΔP| (big moves > noise)
+//   - Price-Level Persistence: frequency map of hits/bounces → S/R from tick density
+//   - Kramers-Moyal Drift/Diffusion: μ=force direction, σ²=noise level
+//   - Hidden Limit Player Detection: OFI Force ≠ KM Velocity = institutional absorption
+//
 // Three L0 deterministic strategies on OANDA ms tick data:
-//
-// 1. Z-SCORE STRIKE — Continuous correlation-spread z-score across pair groups.
-//    Fire when z > 2.0 + momentum burst on the lagging pair. No triggers, no arming, no AI.
-//    Pure statistics. The edge IS the math.
-//
-// 2. VELOCITY GATING — 5+ same-direction ticks in 2s = impulse fire
-//
-// 3. SNAP-BACK SNIPER — Stop-hunt exhaustion → contrarian entry at reversal
+//   1. Z-SCORE STRIKE — Rolling z-score on correlation-spreads, 7-gate pipeline
+//   2. VELOCITY GATING — 5+ same-direction ticks in 2s = impulse fire
+//   3. SNAP-BACK SNIPER — Stop-hunt exhaustion → contrarian entry at reversal
 //
 // Plus: MICRO-SLIPPAGE AUDITOR — Real-time fill audit, auto-switches to
 // PREDATORY_LIMIT if slippage > 0.2 pips.
@@ -83,28 +85,60 @@ function getTickBufferSnapshot(pair?: string, lastMs = 500): TickBufferEntry[] {
   return tickBuffer.filter(t => t.ts >= cutoff && (!pair || t.pair === pair));
 }
 
-// ─── #2: OFI — Synthetic Order Book via Tick-Rule Classification (Lee-Ready) ───
-// Since OANDA won't give us order book data, we BUILD one from tick direction.
-// Each tick is classified as buyer-initiated or seller-initiated using the tick rule:
-//   - If mid > prev mid → BUY (aggressor lifted the ask)
-//   - If mid < prev mid → SELL (aggressor hit the bid)
-//   - If mid == prev mid → use bid/ask proximity (Lee-Ready extension)
-// Rolling OFI = Σ(buy_volume) - Σ(sell_volume) over N ticks
-// VPIN = |buy - sell| / total → toxicity measure (>0.7 = informed flow, avoid)
+// ─── #2: ENHANCED SYNTHETIC ORDER BOOK (Senior Ops Grade) ───
+// Three improvements over basic tick-rule OFI:
+//   1. VELOCITY WEIGHTING: OFI += direction × (1/Δt) — fast ticks count more (Hawkes-like)
+//   2. DISPLACEMENT WEIGHTING: OFI += sign(ΔP) × |ΔP| — big moves count more
+//   3. PRICE-LEVEL PERSISTENCE: frequency map tracks hits/bounces per level → S/R from tick density
+// Plus: Kramers-Moyal drift (μ) and diffusion (σ²) from raw ticks → "velocity" signal
+// The Alpha: OFI = "Force", KM drift = "Velocity". Force without Velocity = Hidden Limit Seller.
 
 const OFI_WINDOW = 200;          // ticks for rolling OFI
 const VPIN_BUCKET_SIZE = 50;     // ticks per VPIN bucket
 const VPIN_BUCKETS = 10;         // number of VPIN buckets (500 ticks lookback)
-const OFI_IMBALANCE_THRESHOLD = 0.35; // |OFI_ratio| > 0.35 = directional conviction
-const VPIN_TOXIC_THRESHOLD = 0.7;     // VPIN > 0.7 = toxic flow, widen stops or skip
+const OFI_IMBALANCE_THRESHOLD = 0.35;
+const VPIN_TOXIC_THRESHOLD = 0.7;
+const KM_WINDOW = 120;           // ticks for Kramers-Moyal estimation
+const PRICE_LEVEL_MEMORY = 500;  // max price levels tracked
+const HIDDEN_SELLER_FORCE_THRESHOLD = 0.4; // strong OFI force
+const HIDDEN_SELLER_DRIFT_THRESHOLD = 0.1; // but flat KM drift
 
 interface OfiTick {
   ts: number;
   mid: number;
   bid: number;
   ask: number;
-  side: 1 | -1;  // 1 = buy, -1 = sell
+  side: 1 | -1;
   spreadPips: number;
+  velocityWeight: number;    // 1/Δt — speed weight
+  displacement: number;      // |ΔP| in pips
+  weightedContribution: number; // combined: side × (velocity + displacement)
+}
+
+interface PriceLevelInfo {
+  hits: number;              // how many times price visited this level
+  buys: number;
+  sells: number;
+  lastTs: number;
+  bounces: number;           // price visited then reversed
+  lastDirection: 1 | -1;
+  broken: boolean;           // level was decisively broken through
+}
+
+interface KramersMoyalState {
+  drift: number;             // μ — first moment (directional bias)
+  diffusion: number;         // σ² — second moment (volatility/noise)
+  driftNormalized: number;   // drift / sqrt(diffusion) — signal-to-noise
+  sampleSize: number;
+}
+
+interface HiddenSellerSignal {
+  detected: boolean;
+  type: "HIDDEN_LIMIT_SELLER" | "HIDDEN_LIMIT_BUYER" | "NONE";
+  force: number;             // OFI force magnitude
+  velocity: number;          // KM drift magnitude
+  divergence: number;        // force - velocity gap
+  recommendation: "FADE" | "WAIT" | "NONE";
 }
 
 interface OfiTracker {
@@ -112,9 +146,13 @@ interface OfiTracker {
   vpinBuckets: { buys: number; sells: number }[];
   currentBucket: { buys: number; sells: number; count: number };
   lastMid: number;
-  lastClassification: 1 | -1;  // for zero-tick rule
-  // Synthetic price-level book (10-pip buckets)
-  syntheticBook: Map<number, { buys: number; sells: number }>;
+  lastTs: number;
+  lastClassification: 1 | -1;
+  // Enhanced: Price-level persistence map
+  priceLevels: Map<number, PriceLevelInfo>;
+  // Kramers-Moyal state
+  kmReturns: number[];       // rolling log-returns for KM estimation
+  kmState: KramersMoyalState;
 }
 
 const ofiTrackers = new Map<string, OfiTracker>();
@@ -126,54 +164,146 @@ function getOrCreateOfi(pair: string): OfiTracker {
       vpinBuckets: [],
       currentBucket: { buys: 0, sells: 0, count: 0 },
       lastMid: 0,
+      lastTs: 0,
       lastClassification: 1,
-      syntheticBook: new Map(),
+      priceLevels: new Map(),
+      kmReturns: [],
+      kmState: { drift: 0, diffusion: 0, driftNormalized: 0, sampleSize: 0 },
     });
   }
   return ofiTrackers.get(pair)!;
 }
 
-// Lee-Ready tick-rule classification
+// Lee-Ready tick-rule classification (unchanged — proven)
 function classifyTick(
   mid: number, bid: number, ask: number,
   prevMid: number, lastClass: 1 | -1
 ): 1 | -1 {
-  if (mid > prevMid) return 1;   // uptick → buyer aggressor
-  if (mid < prevMid) return -1;  // downtick → seller aggressor
-  // Zero-tick: use bid/ask proximity (Lee-Ready extension)
+  if (mid > prevMid) return 1;
+  if (mid < prevMid) return -1;
   const midpoint = (bid + ask) / 2;
   if (mid > midpoint) return 1;
   if (mid < midpoint) return -1;
-  return lastClass; // continuation
+  return lastClass;
+}
+
+// Kramers-Moyal estimation from tick returns
+function computeKramersMoyal(returns: number[]): KramersMoyalState {
+  if (returns.length < 20) return { drift: 0, diffusion: 0, driftNormalized: 0, sampleSize: returns.length };
+  const n = returns.length;
+  // First moment: drift μ = E[ΔX]
+  const drift = returns.reduce((s, r) => s + r, 0) / n;
+  // Second moment: diffusion σ² = E[(ΔX - μ)²]
+  const diffusion = returns.reduce((s, r) => s + (r - drift) ** 2, 0) / n;
+  const sqrtDiff = Math.sqrt(diffusion);
+  const driftNormalized = sqrtDiff > 1e-10 ? drift / sqrtDiff : 0;
+  return { drift, diffusion, driftNormalized, sampleSize: n };
+}
+
+// Detect Hidden Limit Seller/Buyer: OFI Force ≠ KM Velocity
+function detectHiddenLimitPlayer(
+  ofiForce: number, kmDrift: number
+): HiddenSellerSignal {
+  const absForce = Math.abs(ofiForce);
+  const absDrift = Math.abs(kmDrift);
+  
+  // Strong OFI force but flat KM drift = absorption
+  if (absForce > HIDDEN_SELLER_FORCE_THRESHOLD && absDrift < HIDDEN_SELLER_DRIFT_THRESHOLD) {
+    const divergence = absForce - absDrift;
+    if (ofiForce > 0) {
+      // Buying force but price not moving up → Hidden Limit Seller absorbing
+      return {
+        detected: true,
+        type: "HIDDEN_LIMIT_SELLER",
+        force: ofiForce,
+        velocity: kmDrift,
+        divergence,
+        recommendation: "FADE", // fade the buy pressure — seller is absorbing
+      };
+    } else {
+      // Selling force but price not dropping → Hidden Limit Buyer absorbing
+      return {
+        detected: true,
+        type: "HIDDEN_LIMIT_BUYER",
+        force: ofiForce,
+        velocity: kmDrift,
+        divergence,
+        recommendation: "FADE",
+      };
+    }
+  }
+  
+  // Force and velocity aligned = genuine move, wait for entry
+  if (absForce > HIDDEN_SELLER_FORCE_THRESHOLD && absDrift > HIDDEN_SELLER_DRIFT_THRESHOLD) {
+    if (Math.sign(ofiForce) === Math.sign(kmDrift)) {
+      return { detected: false, type: "NONE", force: ofiForce, velocity: kmDrift, divergence: 0, recommendation: "NONE" };
+    }
+    // Force and velocity opposed = conflicted, wait
+    return { detected: true, type: ofiForce > 0 ? "HIDDEN_LIMIT_SELLER" : "HIDDEN_LIMIT_BUYER", force: ofiForce, velocity: kmDrift, divergence: absForce + absDrift, recommendation: "WAIT" };
+  }
+  
+  return { detected: false, type: "NONE", force: ofiForce, velocity: kmDrift, divergence: 0, recommendation: "NONE" };
 }
 
 function processOfiTick(
   pair: string, mid: number, bid: number, ask: number,
   spreadPips: number, ts: number
 ): {
-  ofiRatio: number;       // -1 to +1 (positive = net buying pressure)
-  ofiRaw: number;         // raw net ticks (buy - sell)
-  vpin: number;           // 0 to 1 (>0.7 = toxic)
-  buyPressure: number;    // % of ticks classified as buys
-  sellPressure: number;   // % of ticks classified as sells
+  ofiRatio: number;
+  ofiRaw: number;
+  ofiWeighted: number;       // NEW: velocity+displacement weighted OFI
+  vpin: number;
+  buyPressure: number;
+  sellPressure: number;
   ticksInWindow: number;
   bias: "BUY" | "SELL" | "NEUTRAL";
-  syntheticDepth: { price: number; buys: number; sells: number; net: number }[];
+  syntheticDepth: { price: number; buys: number; sells: number; net: number; hits: number; bounces: number; broken: boolean }[];
+  km: KramersMoyalState;     // NEW: Kramers-Moyal state
+  hiddenPlayer: HiddenSellerSignal; // NEW: hidden limit detection
+  resistanceLevels: { price: number; strength: number; type: "SUPPORT" | "RESISTANCE" }[];
 } {
   const tracker = getOrCreateOfi(pair);
+  const isJpy = pair.includes("JPY");
+  const pipMult = isJpy ? 100 : 10000;
   
   // Classify this tick
   const side = tracker.lastMid > 0
     ? classifyTick(mid, bid, ask, tracker.lastMid, tracker.lastClassification)
     : 1;
   
+  // ─── IMPROVEMENT 1: Velocity Weighting (1/Δt) ───
+  const deltaT = tracker.lastTs > 0 ? Math.max(ts - tracker.lastTs, 1) : 1000;
+  // Clamp velocity weight: 1/Δt scaled to [0, 10] — cap at 10ms intervals
+  const velocityWeight = Math.min(1000 / deltaT, 10);
+  
+  // ─── IMPROVEMENT 3: Displacement Weighting (|ΔP|) ───
+  const priceDisplacement = tracker.lastMid > 0
+    ? Math.abs(mid - tracker.lastMid) * pipMult
+    : 0;
+  // Combined contribution: direction × (velocity_component + displacement_component)
+  // Normalize displacement to similar scale as velocity
+  const displacementWeight = Math.min(priceDisplacement * 2, 10);
+  const weightedContribution = side * (velocityWeight + displacementWeight);
+  
   tracker.lastClassification = side;
   tracker.lastMid = mid;
+  tracker.lastTs = ts;
   
   // Add to rolling window
-  const tick: OfiTick = { ts, mid, bid, ask, side, spreadPips };
+  const tick: OfiTick = { ts, mid, bid, ask, side, spreadPips, velocityWeight, displacement: priceDisplacement, weightedContribution };
   tracker.ticks.push(tick);
   while (tracker.ticks.length > OFI_WINDOW) tracker.ticks.shift();
+  
+  // ─── Kramers-Moyal: accumulate log-returns ───
+  if (tracker.ticks.length >= 2) {
+    const prevTick = tracker.ticks[tracker.ticks.length - 2];
+    if (prevTick.mid > 0) {
+      const logReturn = Math.log(mid / prevTick.mid);
+      tracker.kmReturns.push(logReturn);
+      if (tracker.kmReturns.length > KM_WINDOW) tracker.kmReturns.shift();
+    }
+  }
+  tracker.kmState = computeKramersMoyal(tracker.kmReturns);
   
   // VPIN bucket accumulation
   tracker.currentBucket.count++;
@@ -181,38 +311,48 @@ function processOfiTick(
   else tracker.currentBucket.sells++;
   
   if (tracker.currentBucket.count >= VPIN_BUCKET_SIZE) {
-    tracker.vpinBuckets.push({
-      buys: tracker.currentBucket.buys,
-      sells: tracker.currentBucket.sells,
-    });
+    tracker.vpinBuckets.push({ buys: tracker.currentBucket.buys, sells: tracker.currentBucket.sells });
     if (tracker.vpinBuckets.length > VPIN_BUCKETS) tracker.vpinBuckets.shift();
     tracker.currentBucket = { buys: 0, sells: 0, count: 0 };
   }
   
-  // Update synthetic book (10-pip buckets)
-  const isJpy = pair.includes("JPY");
+  // ─── IMPROVEMENT 2: Price-Level Persistence (frequency map) ───
   const bucketSize = isJpy ? 0.1 : 0.001; // ~10 pips
   const priceLevel = Math.round(mid / bucketSize) * bucketSize;
-  if (!tracker.syntheticBook.has(priceLevel)) {
-    tracker.syntheticBook.set(priceLevel, { buys: 0, sells: 0 });
+  
+  if (!tracker.priceLevels.has(priceLevel)) {
+    tracker.priceLevels.set(priceLevel, {
+      hits: 0, buys: 0, sells: 0, lastTs: ts,
+      bounces: 0, lastDirection: side, broken: false,
+    });
   }
-  const level = tracker.syntheticBook.get(priceLevel)!;
+  const level = tracker.priceLevels.get(priceLevel)!;
+  level.hits++;
   if (side === 1) level.buys++;
   else level.sells++;
   
-  // Prune synthetic book to ±50 levels from current
-  const maxLevels = 50;
-  if (tracker.syntheticBook.size > maxLevels * 2) {
-    const sortedKeys = Array.from(tracker.syntheticBook.keys()).sort((a, b) => a - b);
-    const midIdx = sortedKeys.findIndex(k => k >= priceLevel);
-    const keepFrom = Math.max(0, midIdx - maxLevels);
-    const keepTo = Math.min(sortedKeys.length, midIdx + maxLevels);
-    for (let i = 0; i < sortedKeys.length; i++) {
-      if (i < keepFrom || i >= keepTo) tracker.syntheticBook.delete(sortedKeys[i]);
+  // Bounce detection: direction changed at this level
+  if (level.lastDirection !== side && level.hits > 2) {
+    level.bounces++;
+    // If broken through (3+ consecutive same-direction at this level), mark broken
+    const recentAtLevel = tracker.ticks.filter(t => Math.round(t.mid / bucketSize) * bucketSize === priceLevel).slice(-4);
+    if (recentAtLevel.length >= 3 && recentAtLevel.every(t => t.side === side)) {
+      level.broken = true;
+    }
+  }
+  level.lastDirection = side;
+  level.lastTs = ts;
+  
+  // Prune price levels to max
+  if (tracker.priceLevels.size > PRICE_LEVEL_MEMORY) {
+    const sorted = Array.from(tracker.priceLevels.entries())
+      .sort((a, b) => Math.abs(b[0] - mid) - Math.abs(a[0] - mid));
+    for (let i = PRICE_LEVEL_MEMORY; i < sorted.length; i++) {
+      tracker.priceLevels.delete(sorted[i][0]);
     }
   }
   
-  // Compute OFI
+  // ─── Compute enhanced OFI metrics ───
   const windowTicks = tracker.ticks;
   const buys = windowTicks.filter(t => t.side === 1).length;
   const sells = windowTicks.filter(t => t.side === -1).length;
@@ -220,33 +360,69 @@ function processOfiTick(
   const ofiRaw = buys - sells;
   const ofiRatio = total > 0 ? ofiRaw / total : 0;
   
-  // Compute VPIN across buckets
-  let vpinSum = 0;
-  let vpinTotal = 0;
+  // Weighted OFI: sum of velocity+displacement weighted contributions
+  const totalWeight = windowTicks.reduce((s, t) => s + Math.abs(t.weightedContribution), 0);
+  const weightedSum = windowTicks.reduce((s, t) => s + t.weightedContribution, 0);
+  const ofiWeighted = totalWeight > 0 ? weightedSum / totalWeight : 0;
+  
+  // VPIN
+  let vpinSum = 0, vpinTotal = 0;
   for (const bucket of tracker.vpinBuckets) {
     const bTotal = bucket.buys + bucket.sells;
-    if (bTotal > 0) {
-      vpinSum += Math.abs(bucket.buys - bucket.sells) / bTotal;
-      vpinTotal++;
-    }
+    if (bTotal > 0) { vpinSum += Math.abs(bucket.buys - bucket.sells) / bTotal; vpinTotal++; }
   }
   const vpin = vpinTotal > 0 ? vpinSum / vpinTotal : 0;
   
-  // Build synthetic depth snapshot (top 10 levels each side)
-  const currentLevels = Array.from(tracker.syntheticBook.entries())
-    .map(([price, data]) => ({ price, buys: data.buys, sells: data.sells, net: data.buys - data.sells }))
+  // ─── Hidden Limit Player detection (Force vs Velocity) ───
+  const hiddenPlayer = detectHiddenLimitPlayer(ofiWeighted, tracker.kmState.driftNormalized);
+  
+  // ─── Build enhanced synthetic depth with persistence data ───
+  const depthLevels = Array.from(tracker.priceLevels.entries())
+    .filter(([, info]) => info.hits >= 2) // only meaningful levels
+    .map(([price, info]) => ({
+      price: +price.toFixed(5),
+      buys: info.buys,
+      sells: info.sells,
+      net: info.buys - info.sells,
+      hits: info.hits,
+      bounces: info.bounces,
+      broken: info.broken,
+    }))
     .sort((a, b) => Math.abs(b.price - mid) - Math.abs(a.price - mid))
     .slice(0, 20);
+  
+  // ─── Identify S/R levels from tick-density persistence ───
+  const srLevels: { price: number; strength: number; type: "SUPPORT" | "RESISTANCE" }[] = [];
+  for (const [price, info] of tracker.priceLevels.entries()) {
+    if (info.bounces >= 2 && !info.broken) {
+      const strength = info.bounces * info.hits;
+      const type = info.sells > info.buys ? "SUPPORT" : "RESISTANCE";
+      srLevels.push({ price: +price.toFixed(5), strength, type });
+    }
+  }
+  srLevels.sort((a, b) => b.strength - a.strength);
+  
+  // Use weighted OFI for bias (more accurate than simple count)
+  const biasThreshold = OFI_IMBALANCE_THRESHOLD;
   
   return {
     ofiRatio: Math.round(ofiRatio * 1000) / 1000,
     ofiRaw,
+    ofiWeighted: Math.round(ofiWeighted * 1000) / 1000,
     vpin: Math.round(vpin * 1000) / 1000,
     buyPressure: total > 0 ? Math.round((buys / total) * 100) : 50,
     sellPressure: total > 0 ? Math.round((sells / total) * 100) : 50,
     ticksInWindow: total,
-    bias: ofiRatio > OFI_IMBALANCE_THRESHOLD ? "BUY" : ofiRatio < -OFI_IMBALANCE_THRESHOLD ? "SELL" : "NEUTRAL",
-    syntheticDepth: currentLevels,
+    bias: ofiWeighted > biasThreshold ? "BUY" : ofiWeighted < -biasThreshold ? "SELL" : "NEUTRAL",
+    syntheticDepth: depthLevels,
+    km: {
+      drift: Math.round(tracker.kmState.drift * 1e8) / 1e8,
+      diffusion: Math.round(tracker.kmState.diffusion * 1e12) / 1e12,
+      driftNormalized: Math.round(tracker.kmState.driftNormalized * 1000) / 1000,
+      sampleSize: tracker.kmState.sampleSize,
+    },
+    hiddenPlayer,
+    resistanceLevels: srLevels.slice(0, 5),
   };
 }
 
@@ -807,17 +983,23 @@ Deno.serve(async (req) => {
                 continue;
               }
 
-              // ─── GATE 5: OFI directional alignment ───
-              // If OFI strongly opposes trade direction, skip
+              // ─── GATE 5: OFI directional alignment (now uses weighted OFI) ───
               const ofiOpposed = (tradeDirection === "long" && tradeOfi.bias === "SELL") ||
                                  (tradeDirection === "short" && tradeOfi.bias === "BUY");
-              if (ofiOpposed && Math.abs(tradeOfi.ofiRatio) > 0.5) {
-                console.log(`[STRIKE-v3] 📊 OFI GATE: ${tradePair} OFI=${tradeOfi.ofiRatio} opposes ${tradeDirection} — skip`);
+              if (ofiOpposed && Math.abs(tradeOfi.ofiWeighted) > 0.5) {
+                console.log(`[STRIKE-v3] 📊 OFI GATE: ${tradePair} wOFI=${tradeOfi.ofiWeighted} opposes ${tradeDirection} — skip`);
                 continue;
               }
 
-              // ─── GATE 6: Spread OK (baked into executeOrder) ───
-              // Six gates. Spread → Z-Score → Tick-Density → Momentum → VPIN → OFI. Fire.
+              // ─── GATE 6: Hidden Limit Player detection (Force vs KM Velocity) ───
+              if (tradeOfi.hiddenPlayer.detected && tradeOfi.hiddenPlayer.recommendation === "FADE") {
+                // OFI force screaming one way but KM drift flat = absorption. Skip.
+                console.log(`[STRIKE-v3] 🕵️ HIDDEN PLAYER: ${tradePair} ${tradeOfi.hiddenPlayer.type} | Force=${tradeOfi.hiddenPlayer.force.toFixed(3)} Drift=${tradeOfi.hiddenPlayer.velocity.toFixed(3)} — ${tradeOfi.hiddenPlayer.recommendation}`);
+                continue;
+              }
+
+              // ─── GATE 7: Spread OK (baked into executeOrder) ───
+              // Seven gates. Spread → Z-Score → Tick-Density → Momentum → VPIN → OFI → Hidden Player. Fire.
 
               const tradePrice = prices.get(tradePair);
               if (!tradePrice) continue;
@@ -825,12 +1007,16 @@ Deno.serve(async (req) => {
               tracker.lastFireTs = tickTs;
               tracker.firedDirection = tradeDirection;
 
-              // OFI conviction boost: aligned flow increases confidence
+              // OFI conviction boost: aligned weighted flow increases confidence
               const ofiAligned = (tradeDirection === "long" && tradeOfi.bias === "BUY") ||
                                  (tradeDirection === "short" && tradeOfi.bias === "SELL");
-              const ofiConfidenceBoost = ofiAligned ? Math.abs(tradeOfi.ofiRatio) * 0.2 : 0;
+              const ofiConfidenceBoost = ofiAligned ? Math.abs(tradeOfi.ofiWeighted) * 0.2 : 0;
+              // KM drift alignment boost
+              const kmAligned = (tradeDirection === "long" && tradeOfi.km.driftNormalized > 0.1) ||
+                                (tradeDirection === "short" && tradeOfi.km.driftNormalized < -0.1);
+              const kmBoost = kmAligned ? Math.min(Math.abs(tradeOfi.km.driftNormalized) * 0.1, 0.15) : 0;
 
-              console.log(`[STRIKE-v3] 🎯 Z-SCORE FIRE: ${tradeDirection.toUpperCase()} ${baseUnits} ${tradePair} | z=${z.toFixed(2)} | OFI=${tradeOfi.ofiRatio} VPIN=${tradeOfi.vpin} ${tradeOfi.bias} | group=${group.name} | tps=${densityCheck.tps.toFixed(1)} | tick #${tickCount}`);
+              console.log(`[STRIKE-v3] 🎯 Z-SCORE FIRE: ${tradeDirection.toUpperCase()} ${baseUnits} ${tradePair} | z=${z.toFixed(2)} | wOFI=${tradeOfi.ofiWeighted} KM_drift=${tradeOfi.km.driftNormalized} VPIN=${tradeOfi.vpin} ${tradeOfi.bias} | group=${group.name} | tps=${densityCheck.tps.toFixed(1)} | tick #${tickCount}`);
 
               const result = await executeOrder(
                 tradePair, tradeDirection, baseUnits,
@@ -842,9 +1028,16 @@ Deno.serve(async (req) => {
                   tickNumber: tickCount,
                   ticksPerSecond: densityCheck.tps,
                   streamLatencyMs: Date.now() - startTime,
-                  confidence: Math.min(1, (Math.abs(z) / 3) + ofiConfidenceBoost),
-                  engine: "zscore-strike-v3",
-                  ofi: { ratio: tradeOfi.ofiRatio, vpin: tradeOfi.vpin, bias: tradeOfi.bias, buyPct: tradeOfi.buyPressure, sellPct: tradeOfi.sellPressure },
+                  confidence: Math.min(1, (Math.abs(z) / 3) + ofiConfidenceBoost + kmBoost),
+                  engine: "zscore-strike-v4",
+                  ofi: {
+                    ratio: tradeOfi.ofiRatio, weighted: tradeOfi.ofiWeighted,
+                    vpin: tradeOfi.vpin, bias: tradeOfi.bias,
+                    buyPct: tradeOfi.buyPressure, sellPct: tradeOfi.sellPressure,
+                  },
+                  kramersMoyal: tradeOfi.km,
+                  hiddenPlayer: tradeOfi.hiddenPlayer.detected ? tradeOfi.hiddenPlayer : null,
+                  resistanceLevels: tradeOfi.resistanceLevels,
                 },
                 tradePrice,
               );
@@ -1009,8 +1202,9 @@ Deno.serve(async (req) => {
       };
     }
 
-    // ─── OFI Session Snapshot: persist synthetic order book to sovereign_memory ───
+    // ─── Enhanced OFI Session Snapshot: persist synthetic order book + KM + hidden players ───
     const ofiSnapshot: Record<string, unknown> = {};
+    let hiddenPlayerAlerts = 0;
     for (const [pair, tracker] of ofiTrackers.entries()) {
       const ticks = tracker.ticks;
       if (ticks.length < 10) continue;
@@ -1018,6 +1212,11 @@ Deno.serve(async (req) => {
       const sells = ticks.filter(t => t.side === -1).length;
       const total = ticks.length;
       const ofiRatio = total > 0 ? (buys - sells) / total : 0;
+      
+      // Weighted OFI
+      const totalWeight = ticks.reduce((s, t) => s + Math.abs(t.weightedContribution), 0);
+      const weightedSum = ticks.reduce((s, t) => s + t.weightedContribution, 0);
+      const ofiWeighted = totalWeight > 0 ? weightedSum / totalWeight : 0;
       
       // VPIN
       let vpinSum = 0, vpinCount = 0;
@@ -1027,53 +1226,101 @@ Deno.serve(async (req) => {
       }
       const vpin = vpinCount > 0 ? vpinSum / vpinCount : 0;
       
-      // Top synthetic book levels
-      const depth = Array.from(tracker.syntheticBook.entries())
-        .map(([price, d]) => ({ price: +price.toFixed(5), buys: d.buys, sells: d.sells, net: d.buys - d.sells }))
+      // KM state
+      const km = tracker.kmState;
+      
+      // Hidden player detection
+      const hidden = detectHiddenLimitPlayer(ofiWeighted, km.driftNormalized);
+      if (hidden.detected) hiddenPlayerAlerts++;
+      
+      // Enhanced depth with persistence
+      const depth = Array.from(tracker.priceLevels.entries())
+        .filter(([, info]) => info.hits >= 2)
+        .map(([price, d]) => ({
+          price: +price.toFixed(5), buys: d.buys, sells: d.sells,
+          net: d.buys - d.sells, hits: d.hits, bounces: d.bounces, broken: d.broken,
+        }))
         .sort((a, b) => Math.abs(b.net) - Math.abs(a.net))
         .slice(0, 10);
       
+      // S/R levels from tick density
+      const srLevels: { price: number; strength: number; type: string }[] = [];
+      for (const [price, info] of tracker.priceLevels.entries()) {
+        if (info.bounces >= 2 && !info.broken) {
+          srLevels.push({
+            price: +price.toFixed(5),
+            strength: info.bounces * info.hits,
+            type: info.sells > info.buys ? "SUPPORT" : "RESISTANCE",
+          });
+        }
+      }
+      srLevels.sort((a, b) => b.strength - a.strength);
+      
       ofiSnapshot[pair.replace("_", "/")] = {
         ofiRatio: Math.round(ofiRatio * 1000) / 1000,
+        ofiWeighted: Math.round(ofiWeighted * 1000) / 1000,
         vpin: Math.round(vpin * 1000) / 1000,
         buyPct: total > 0 ? Math.round((buys / total) * 100) : 50,
         sellPct: total > 0 ? Math.round((sells / total) * 100) : 50,
-        bias: ofiRatio > OFI_IMBALANCE_THRESHOLD ? "BUY" : ofiRatio < -OFI_IMBALANCE_THRESHOLD ? "SELL" : "NEUTRAL",
+        bias: ofiWeighted > OFI_IMBALANCE_THRESHOLD ? "BUY" : ofiWeighted < -OFI_IMBALANCE_THRESHOLD ? "SELL" : "NEUTRAL",
         ticksAnalyzed: total,
         syntheticDepth: depth,
+        kramersMoyal: {
+          drift: Math.round(km.drift * 1e8) / 1e8,
+          diffusion: Math.round(km.diffusion * 1e12) / 1e12,
+          driftNormalized: Math.round(km.driftNormalized * 1000) / 1000,
+          sampleSize: km.sampleSize,
+        },
+        hiddenPlayer: hidden.detected ? {
+          type: hidden.type,
+          force: hidden.force,
+          velocity: hidden.velocity,
+          divergence: hidden.divergence,
+          recommendation: hidden.recommendation,
+        } : null,
+        resistanceLevels: srLevels.slice(0, 5),
       };
     }
 
-    // Persist OFI synthetic book for dashboard & sovereign loop
+    // Persist enhanced synthetic book for dashboard & sovereign loop
     if (Object.keys(ofiSnapshot).length > 0) {
       await supabase.from("sovereign_memory").upsert({
         memory_type: "ofi_synthetic_book",
         memory_key: "latest_snapshot",
         payload: {
+          version: "v2-senior-ops",
           pairs: ofiSnapshot,
           pairsCount: Object.keys(ofiSnapshot).length,
+          hiddenPlayerAlerts,
           ticksProcessed: tickCount,
           streamDurationMs: Date.now() - startTime,
           timestamp: new Date().toISOString(),
+          capabilities: ["velocity_weighted_ofi", "displacement_weighted", "price_level_persistence", "kramers_moyal_drift", "hidden_limit_detection", "tick_density_sr"],
         },
-        relevance_score: 0.8,
-        created_by: "ripple-stream-ofi",
+        relevance_score: hiddenPlayerAlerts > 0 ? 1.0 : 0.8,
+        created_by: "ripple-stream-ofi-v2",
       }, { onConflict: "memory_type,memory_key" });
     }
 
     const totalMs = Date.now() - startTime;
-    console.log(`[STRIKE-v3] 📊 Session: ${totalMs}ms, ${tickCount} ticks | Z-Score: ${zScoreFires.length} | Velocity: ${velocityFires.length} | Snap-Back: ${snapbackFires.length} | OFI: ${Object.keys(ofiSnapshot).length} pairs tracked`);
+    console.log(`[STRIKE-v4] 📊 Session: ${totalMs}ms, ${tickCount} ticks | Z-Score: ${zScoreFires.length} | Velocity: ${velocityFires.length} | Snap-Back: ${snapbackFires.length} | OFI-v2: ${Object.keys(ofiSnapshot).length} pairs | Hidden Players: ${hiddenPlayerAlerts}`);
 
     return new Response(
       JSON.stringify({
         success: true,
-        version: "v3-zscore-strike-engine",
+        version: "v4-senior-ops-synthetic-book",
         streamDurationMs: totalMs,
         ticksProcessed: tickCount,
         zscore: { fired: zScoreFires.length, pairs: zScoreFires, groups: correlationGroups.length, threshold: zScoreThreshold },
         velocity: { fired: velocityFires.length, pairs: velocityFires, monitored: velocityPairs.length },
         snapback: { fired: snapbackFires.length, pairs: snapbackFires, monitored: snapbackPairs.length },
-        ofi: { pairsTracked: Object.keys(ofiSnapshot).length, snapshot: ofiSnapshot },
+        syntheticBook: {
+          version: "v2-senior-ops",
+          pairsTracked: Object.keys(ofiSnapshot).length,
+          hiddenPlayerAlerts,
+          capabilities: ["velocity_weighted_ofi", "displacement_weighted", "price_level_persistence", "kramers_moyal_drift", "hidden_limit_detection", "tick_density_sr"],
+          snapshot: ofiSnapshot,
+        },
         slippageAudit: slippageSummary,
         timestamp: new Date().toISOString(),
       }),
