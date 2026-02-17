@@ -446,9 +446,11 @@ function processOfiTick(
   tracker.tickCount++;
 
   // ─── Running buy/sell counts (O(1) with EWMA) ───
-  // BUG FIX: decay was 0.99 (~100-tick half-life) — buyPressure always ≈50, never > 52 threshold.
-  // Changed to 0.95 (~14-tick half-life) so weighting responds within a single session (~70 ticks/pair).
-  const buyDecay = 0.95;
+  // DECAY CALIBRATION: Each pair gets ~8-10 ticks per 110s session across 8 instruments.
+  // 0.95 decay → half-life ~14 ticks — too fast, oscillates around 50% on sparse data.
+  // 0.88 decay → half-life ~5.5 ticks — responsive but stable enough for 8-10 ticks/pair.
+  // A genuine 4-buy / 0-sell run in 6 ticks pushes ewmaBuyPct to ~53% at 0.88 decay — reachable.
+  const buyDecay = 0.88;
   if (side === 1) {
     tracker.runningBuys++;
     tracker.ewmaBuyPct = buyDecay * tracker.ewmaBuyPct + (1 - buyDecay) * 1;
@@ -641,7 +643,11 @@ const PREDATOR_HURST_MIN = 0.62;        // Gate 1: Persistent regime — raised 
 const PREDATOR_EFFICIENCY_MIN = 2.0;     // Gate 2: Strong momentum (was 3.5 — 0 scans ever reached it)
 const PREDATOR_OFI_RATIO_LONG = 1.6;    // Gate 3 LONG: Whale imbalance
 const PREDATOR_OFI_RATIO_SHORT = 0.625; // Gate 3 SHORT: Whale imbalance (reciprocal of 1.6)
-const PREDATOR_WEIGHTING_MIN = 55;      // Gate 4: Buy/Sell weighting > 55% — raised from 52 to enforce stronger directional conviction at entry
+// WEIGHTING FIX: Was 55 — impossible to reach. ewmaBuyPct starts at 0.5 and each pair receives
+// only ~8-10 ticks per 110s session across 8 instruments with buyDecay=0.95 half-life ~14 ticks.
+// Result: ZERO scans ever passed Gate 4 (Weight=0 every session in logs).
+// Lowered to 51 — a genuine 51:49 directional majority (still meaningful, now reachable).
+const PREDATOR_WEIGHTING_MIN = 51;      // Gate 4: Buy/Sell weighting > 51% — lowered from 55 (was blocking 100% of scans)
 const PREDATOR_RULE_OF_3 = 3;           // All gates must hold for 3 consecutive ticks
 const PREDATOR_VPIN_MIN = 0.40;         // VPIN validation: >= 0.40 for institutional participation
 const PREDATOR_VPIN_GHOST_MAX = 0.15;   // VPIN < 0.15 = "Ghost Move" = retail-driven, block
