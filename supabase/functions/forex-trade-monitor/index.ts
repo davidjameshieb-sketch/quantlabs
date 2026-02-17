@@ -788,16 +788,50 @@ Deno.serve(async (req) => {
           }
         } catch (fetchErr) {
           const errMsg = (fetchErr as Error).message || "";
-          // If OANDA returns 404 (NO_SUCH_TRADE), the trade was closed and purged on broker side
-          // Mark it closed in DB to stop the error loop
+          // If OANDA returns 404 (NO_SUCH_TRADE), the trade was closed and purged from open trades.
+          // BUG FIX: Previously marked closed with NO exit_price → corrupted P&L/r_pips for all orphans.
+          // Fix: Query OANDA /trades endpoint with state=CLOSED to retrieve the actual fill price.
           if (errMsg.includes("NO_SUCH_TRADE") || errMsg.includes("404") || errMsg.includes("does not exist")) {
-            console.warn(`[TRADE-MONITOR] ${order.currency_pair}: Trade ${order.oanda_trade_id} no longer exists on OANDA — marking closed (orphan reconciliation)`);
+            console.warn(`[TRADE-MONITOR] ${order.currency_pair}: Trade ${order.oanda_trade_id} purged from open list — querying closed trades for exit price`);
+            
+            // Try to fetch actual close price from OANDA closed trades list
+            let orphanExitPrice: number | null = null;
+            let orphanCloseTime: string | null = null;
+            let orphanRPips: number | null = null;
+            try {
+              const closedTradesData = await oandaRequest(
+                `/v3/accounts/{accountId}/trades?state=CLOSED&instrument=${order.currency_pair}&count=10`,
+                "GET",
+                undefined,
+                order.environment || "practice"
+              ) as { trades: Array<{ id: string; averageClosePrice?: string; closeTime?: string; realizedPL?: string }> };
+              
+              const matchedTrade = closedTradesData.trades?.find(t => t.id === order.oanda_trade_id);
+              if (matchedTrade?.averageClosePrice) {
+                orphanExitPrice = parseFloat(matchedTrade.averageClosePrice);
+                orphanCloseTime = matchedTrade.closeTime || null;
+                if (orphanExitPrice != null && order.entry_price != null) {
+                  const pipDiv = JPY_PAIRS.includes(order.currency_pair) ? 0.01 : 0.0001;
+                  orphanRPips = order.direction === "long"
+                    ? Math.round(((orphanExitPrice - order.entry_price) / pipDiv) * 10) / 10
+                    : Math.round(((order.entry_price - orphanExitPrice) / pipDiv) * 10) / 10;
+                }
+                console.log(`[TRADE-MONITOR] ${order.currency_pair}: Orphan exit recovered — price=${orphanExitPrice} pips=${orphanRPips}`);
+              }
+            } catch (closedErr) {
+              console.warn(`[TRADE-MONITOR] ${order.currency_pair}: Could not recover orphan exit price: ${(closedErr as Error).message}`);
+            }
+            
             await supabase
               .from("oanda_orders")
               .update({
                 status: "closed",
-                closed_at: new Date().toISOString(),
-                error_message: `Orphan reconciliation: OANDA trade ${order.oanda_trade_id} no longer exists (404)`,
+                exit_price: orphanExitPrice,
+                r_pips: orphanRPips,
+                closed_at: orphanCloseTime || new Date().toISOString(),
+                error_message: orphanExitPrice
+                  ? null  // Clear error if we successfully recovered the price
+                  : `Orphan reconciliation: OANDA trade ${order.oanda_trade_id} — exit price unrecoverable`,
               })
               .eq("id", order.id);
             closedCount++;
