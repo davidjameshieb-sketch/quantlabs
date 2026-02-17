@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { SnapshotStatusBar } from '@/components/dashboard/SnapshotStatusBar';
-import { Activity, Home, BarChart3, Settings, LogOut, Search, ChevronDown, ChevronRight, Menu, BookOpen, Bot, LogIn, Shield, Globe, Wifi } from 'lucide-react';
+import { Activity, Home, BarChart3, Settings, LogOut, Search, ChevronDown, ChevronRight, Menu, BookOpen, Bot, LogIn, Shield, Globe, Wifi, BookMarked } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
@@ -142,6 +142,18 @@ export const DashboardLayout = ({ children }: DashboardLayoutProps) => {
               >
                 <Wifi className="w-3.5 h-3.5" />
                 OANDA Broker
+              </Link>
+              <Link
+                to="/dashboard/forex/order-book"
+                className={cn(
+                  "flex items-center gap-2 px-3 py-1.5 rounded-md text-sm transition-colors",
+                  location.pathname === '/dashboard/forex/order-book'
+                    ? "text-foreground bg-muted/60 font-medium"
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted/30"
+                )}
+              >
+                <BookMarked className="w-3.5 h-3.5" />
+                Synthetic Order Book
               </Link>
             </div>
           )}

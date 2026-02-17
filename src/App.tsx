@@ -18,6 +18,7 @@ import AIAgents from "./pages/AIAgents";
 import Evolution from "./pages/Evolution";
 import ForexDashboard from "./pages/ForexDashboard";
 import ForexOanda from "./pages/ForexOanda";
+import SyntheticOrderBook from "./pages/SyntheticOrderBook";
 import Guide from "./pages/Guide";
 import Admin from "./pages/Admin";
 import BillingSuccess from "./pages/BillingSuccess";
@@ -45,6 +46,7 @@ const App = () => (
                 <Route path="/dashboard/evolution" element={<Evolution />} />
                 <Route path="/dashboard/forex" element={<ForexDashboard />} />
                 <Route path="/dashboard/forex/oanda" element={<ForexOanda />} />
+                <Route path="/dashboard/forex/order-book" element={<SyntheticOrderBook />} />
                 <Route path="/guide" element={<Guide />} />
                 <Route path="/billing/success" element={<BillingSuccess />} />
                 <Route
