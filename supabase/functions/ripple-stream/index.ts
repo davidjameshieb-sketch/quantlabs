@@ -68,7 +68,7 @@ function isSpreadTooWide(pair: string, spreadPips: number): { blocked: boolean; 
 // High tick density = institutional flow (high conviction)
 // Low tick density = illiquid noise (false signals)
 const TICK_DENSITY_WINDOW_MS = 5000; // 5-second rolling window
-const TICK_DENSITY_MIN_TPS = 2.0; // minimum ticks/sec for Z-Score conviction
+const TICK_DENSITY_MIN_TPS = 0.8; // minimum ticks/sec — avg is ~1.18/pair, 2.0 blocked 61% of scans
 const tickTimestamps = new Map<string, number[]>();
 
 // ─── #1: Sub-Second Tick-Buffer (500 ticks with timestamps) ───
@@ -235,7 +235,7 @@ function getOrCreateOfi(pair: string): OfiTracker {
       sumD2Abs: 0,
       prevDx: 0,
       hurstN: 0,
-      hurst: 0.5, // neutral start
+      hurst: 0.55, // warm start: reduces cold-start bias (0.5 → 0.60 took 60+ ticks)
       ewmaBuyVol: 0,
       ewmaSellVol: 0,
       vpinRecursive: 0,
@@ -413,7 +413,7 @@ function processOfiTick(
     const ratio = tracker.sumD2Abs / tracker.sumD1Abs;
     const rawH = Math.log2(Math.max(ratio, 1e-10));
     // EWMA smoothing to avoid single-window noise spikes
-    tracker.hurst = 0.3 * Math.max(0, Math.min(1, rawH)) + 0.7 * tracker.hurst;
+    tracker.hurst = 0.5 * Math.max(0, Math.min(1, rawH)) + 0.5 * tracker.hurst; // faster convergence (was 0.3/0.7 — took 50s to reach 0.60)
     // Reset accumulators for next window
     tracker.sumD1Abs = 0;
     tracker.sumD2Abs = 0;
@@ -626,15 +626,15 @@ const ZSCORE_COOLDOWN_MS = 300_000; // 5 MINUTES between fires on same group (wa
 
 // ═══ PREDATORY HUNTER GATE THRESHOLDS (2026 Strategy) ═══
 // The DGE remains LOCKED until all four gates are open.
-const PREDATOR_HURST_MIN = 0.60;        // Gate 1: Persistent regime only
-const PREDATOR_EFFICIENCY_MIN = 3.5;     // Gate 2: Vacuum (liquidity hole = institutional displacement)
-const PREDATOR_OFI_RATIO_LONG = 2.0;    // Gate 3 LONG: Whale imbalance (OFI ratio >= 2.0 in 20-tick window)
-const PREDATOR_OFI_RATIO_SHORT = 0.50;  // Gate 3 SHORT: Whale imbalance (OFI ratio <= 0.50 in 20-tick window)
-const PREDATOR_WEIGHTING_MIN = 50;      // Gate 4: Buy/Sell weighting > 50%
+const PREDATOR_HURST_MIN = 0.57;        // Gate 1: Persistent regime (was 0.60 — unreachable with cold-start + EWMA)
+const PREDATOR_EFFICIENCY_MIN = 2.0;     // Gate 2: Strong momentum (was 3.5 — 0 scans ever reached it)
+const PREDATOR_OFI_RATIO_LONG = 1.6;    // Gate 3 LONG: Whale imbalance (was 2.0 — needed 14/7 in 20 ticks, blocked 96%)
+const PREDATOR_OFI_RATIO_SHORT = 0.625; // Gate 3 SHORT: Whale imbalance (was 0.50 — reciprocal of 1.6)
+const PREDATOR_WEIGHTING_MIN = 52;      // Gate 4: Buy/Sell weighting > 52% (tighter than 50 to compensate looser OFI)
 const PREDATOR_RULE_OF_3 = 3;           // All gates must hold for 3 consecutive ticks
-const PREDATOR_VPIN_MIN = 0.45;         // VPIN validation: must be >= 0.45 for institutional participation
-const PREDATOR_VPIN_GHOST_MAX = 0.20;   // VPIN < 0.20 = "Ghost Move" = retail-driven, block
-const PREDATOR_KM_DRIFT_MIN = 0.50;     // KM Drift minimum: no escape velocity = stay flat
+const PREDATOR_VPIN_MIN = 0.40;         // VPIN validation: >= 0.40 for institutional participation (was 0.45)
+const PREDATOR_VPIN_GHOST_MAX = 0.15;   // VPIN < 0.15 = "Ghost Move" = retail-driven, block (was 0.20)
+const PREDATOR_KM_DRIFT_MIN = 0.30;     // KM Drift minimum (was 0.50 — too strict, blocked valid momentum)
 const PREDATOR_WALL_OFFSET_PIPS = 0.3;  // Stop-Limit placed 0.3 pips BEYOND the wall
 // Market Order Override: Only slap the ask if the Tsunami is confirmed beyond doubt
 const PREDATOR_MARKET_OVERRIDE_EFFICIENCY = 7.0;  // E > 7.0 = extreme vacuum
@@ -1291,15 +1291,18 @@ Deno.serve(async (req) => {
                     }
 
                     // ─── 🔴 SHORT GUARD: Emergency Exit on OFI Ratio Flip (Absorption) ───
-                    // If we're SHORT and a massive Buy Wall suddenly appears below price,
-                    // the OFI Ratio will spike (buys >> sells) → the "Tsunami hit a dam."
+                    // BUG FIX: Use windowed velocity tracker (last 20 ticks) instead of cumulative
+                    // session counts, which caused false exits from early-session imbalance.
                     if (!isLong && !exitReason) {
-                      const totalTicks = exitTracker.runningBuys + exitTracker.runningSells;
-                      const currentOfiRatio = totalTicks > 0
-                        ? exitTracker.runningBuys / Math.max(1, exitTracker.runningSells)
-                        : 1.0;
-                      if (currentOfiRatio >= WHALE_SHADOW_EMERGENCY_OFI_FLIP) {
-                        exitReason = `EMERGENCY_EXIT: SHORT OFI_RATIO=${currentOfiRatio.toFixed(2)} >= ${WHALE_SHADOW_EMERGENCY_OFI_FLIP} — massive Buy Wall absorption detected (dam hit)`;
+                      const exitVt = velocityTrackers.get(instrument);
+                      const exitRecentTicks = exitVt?.ticks || [];
+                      if (exitRecentTicks.length >= 8) {
+                        const exitBuys = exitRecentTicks.filter(t => t.direction === 1).length;
+                        const exitSells = exitRecentTicks.filter(t => t.direction === -1).length;
+                        const windowedOfiRatio = exitSells > 0 ? exitBuys / exitSells : (exitBuys > 0 ? 10.0 : 1.0);
+                        if (windowedOfiRatio >= WHALE_SHADOW_EMERGENCY_OFI_FLIP) {
+                          exitReason = `EMERGENCY_EXIT: SHORT OFI_RATIO=${windowedOfiRatio.toFixed(2)} >= ${WHALE_SHADOW_EMERGENCY_OFI_FLIP} — massive Buy Wall absorption (windowed 20-tick)`;
+                        }
                       }
                     }
 
@@ -1316,10 +1319,17 @@ Deno.serve(async (req) => {
                     } else {
                       // 📡 OUT-OF-RANGE FAILSAFE: No wall within 3 pips → use Daily VWAP
                       const vwap = getOrResetVwap(instrument, mid);
-                      newSL = isLong
-                        ? vwap - offsetPx   // VWAP - 0.3 pips
-                        : vwap + offsetPx;  // VWAP + 0.3 pips
-                      slSource = `VWAP@${vwap.toFixed(pricePrecision)} (no wall in ${WHALE_SHADOW_RANGE_PIPS}p range)`;
+                      // BUG FIX: Validate VWAP is on correct side of price before using as SL anchor
+                      // If VWAP is on wrong side (e.g., VWAP > price for long), skip SL update to avoid immediate stop-out
+                      const vwapValid = isLong ? (vwap < mid) : (vwap > mid);
+                      if (vwapValid) {
+                        newSL = isLong
+                          ? vwap - offsetPx   // VWAP - 0.3 pips
+                          : vwap + offsetPx;  // VWAP + 0.3 pips
+                        slSource = `VWAP@${vwap.toFixed(pricePrecision)} (no wall in ${WHALE_SHADOW_RANGE_PIPS}p range)`;
+                      } else {
+                        slSource = `VWAP_SKIP (VWAP@${vwap.toFixed(pricePrecision)} on wrong side of price)`;
+                      }
                     }
 
                     // ─── ENFORCE UNIDIRECTIONAL MOVE (never widen SL) ───
@@ -1421,7 +1431,7 @@ Deno.serve(async (req) => {
 
               // ─── READ PHYSICS ───
               const tradeTracker = getOrCreateOfi(tradePair);
-              if (tradeTracker.tickCount < 30) { pState.consecutivePassCount = 0; gateDiag.warmup++; continue; }
+              if (tradeTracker.tickCount < 20) { pState.consecutivePassCount = 0; gateDiag.warmup++; continue; } // was 30 — too conservative for 110s sessions
 
               // ─── DETERMINE DIRECTION FROM FLOW ───
               // Use last ~20 ticks from velocity tracker for responsive OFI ratio
