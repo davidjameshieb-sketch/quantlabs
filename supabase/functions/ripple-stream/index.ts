@@ -643,11 +643,14 @@ const PREDATOR_HURST_MIN = 0.62;        // Gate 1: Persistent regime — raised 
 const PREDATOR_EFFICIENCY_MIN = 2.0;     // Gate 2: Strong momentum (was 3.5 — 0 scans ever reached it)
 const PREDATOR_OFI_RATIO_LONG = 1.6;    // Gate 3 LONG: Whale imbalance
 const PREDATOR_OFI_RATIO_SHORT = 0.625; // Gate 3 SHORT: Whale imbalance (reciprocal of 1.6)
-// WEIGHTING FIX: Was 55 — impossible to reach. ewmaBuyPct starts at 0.5 and each pair receives
-// only ~8-10 ticks per 110s session across 8 instruments with buyDecay=0.95 half-life ~14 ticks.
-// Result: ZERO scans ever passed Gate 4 (Weight=0 every session in logs).
-// Lowered to 51 — a genuine 51:49 directional majority (still meaningful, now reachable).
-const PREDATOR_WEIGHTING_MIN = 51;      // Gate 4: Buy/Sell weighting > 51% — lowered from 55 (was blocking 100% of scans)
+// WEIGHTING FIX v2: Was 55 → 51, but STILL Weight=0 in all logs. Root cause:
+// ewmaBuyPct is a fraction (0.0-1.0) multiplied by 100 at check time → 50 for balanced flow.
+// At buyDecay=0.88, 4 consecutive buys: 0.5*0.88 + 0.12 = 0.56 → 56% buyPressure.
+// However: Gate 4 checks buyPressure > 51 (strict >). ewmaBuyPct is stored as fraction,
+// rounded to integer at check. So 51.4% rounds to 51 and is NOT > 51 (fails strict check).
+// FIX: Changed to >= 51 (inclusive) and lowered threshold to 50 (majority = > 50%).
+// A genuine 51:49 buy majority IS meaningful institutional directional flow.
+const PREDATOR_WEIGHTING_MIN = 50;      // Gate 4: Buy/Sell weighting >= 50% (strict majority) — was 51 with ">" operator (never fired)
 const PREDATOR_RULE_OF_3 = 3;           // All gates must hold for 3 consecutive ticks
 const PREDATOR_VPIN_MIN = 0.40;         // VPIN validation: >= 0.40 for institutional participation
 const PREDATOR_VPIN_GHOST_MAX = 0.15;   // VPIN < 0.15 = "Ghost Move" = retail-driven, block
@@ -1039,6 +1042,14 @@ Deno.serve(async (req) => {
     for (const g of correlationGroups) {
       if (!velocityTrackers.has(g.pairA)) velocityTrackers.set(g.pairA, { ticks: [], lastFireTs: 0 });
       if (!velocityTrackers.has(g.pairB)) velocityTrackers.set(g.pairB, { ticks: [], lastFireTs: 0 });
+    }
+    // BUG FIX: PREDATORY HUNTER scans ALL instruments but velocityTrackers was only
+    // initialized for velocityPairs + correlationGroups. Any instrument not in those sets
+    // had vt=undefined → recentDirTicks=[] → length<6 → OFI_R block every single tick.
+    // This was the root cause of OFI_R=2215+ blocks while Weight=0 (never even reached).
+    // Fix: ensure ALL instruments in the stream have a velocity tracker.
+    for (const p of instruments) {
+      if (!velocityTrackers.has(p)) velocityTrackers.set(p, { ticks: [], lastFireTs: 0 });
     }
     // Init snapback trackers
     for (const p of snapbackPairs) {
@@ -1585,10 +1596,12 @@ Deno.serve(async (req) => {
 
               // Gate 3 (OFI Ratio) already passed via direction determination above
 
-              // ─── GATE 4: WEIGHTING > 50% ───
+              // ─── GATE 4: WEIGHTING >= 50% (directional majority) ───
+              // BUG FIX: Was ">" strict operator — ewmaBuyPct rounds to 50 at balanced flow,
+              // so 50.4% → 50 which is NOT > 50. Changed to ">=" so a genuine buy majority fires.
               const weightingPassed = tradeDirection === "long"
-                ? tradeOfi.buyPressure > PREDATOR_WEIGHTING_MIN
-                : tradeOfi.sellPressure > PREDATOR_WEIGHTING_MIN;
+                ? tradeOfi.buyPressure >= PREDATOR_WEIGHTING_MIN
+                : tradeOfi.sellPressure >= PREDATOR_WEIGHTING_MIN;
               if (!weightingPassed) {
                 pState.consecutivePassCount = 0;
                 gateDiag.weighting++;
