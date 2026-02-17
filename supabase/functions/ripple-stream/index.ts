@@ -623,7 +623,22 @@ const ZSCORE_WINDOW = 120;          // ticks to build rolling mean/stddev
 const ZSCORE_FIRE_THRESHOLD = 2.0;  // z > 2.0 = statistical divergence (overridden by config)
 const ZSCORE_EXIT_TARGET = 0.0;     // mean reversion target
 const ZSCORE_COOLDOWN_MS = 300_000; // 5 MINUTES between fires on same group (was 10s — caused triple-taps)
-// (Momentum gate removed — replaced by KM Drift in Lean 6 pipeline)
+
+// ═══ PREDATORY HUNTER GATE THRESHOLDS (2026 Strategy) ═══
+// The DGE remains LOCKED until all four gates are open.
+const PREDATOR_HURST_MIN = 0.60;        // Gate 1: Persistent regime only
+const PREDATOR_EFFICIENCY_MIN = 3.5;     // Gate 2: Vacuum (liquidity hole = institutional displacement)
+const PREDATOR_OFI_RATIO_LONG = 3.0;    // Gate 3 LONG: Whale imbalance (OFI ratio >= 3.0)
+const PREDATOR_OFI_RATIO_SHORT = 0.30;  // Gate 3 SHORT: Whale imbalance (OFI ratio <= 0.30)
+const PREDATOR_WEIGHTING_MIN = 50;      // Gate 4: Buy/Sell weighting > 50%
+const PREDATOR_RULE_OF_3 = 3;           // All gates must hold for 3 consecutive ticks
+const PREDATOR_VPIN_MIN = 0.45;         // VPIN validation: must be >= 0.45 for institutional participation
+const PREDATOR_VPIN_GHOST_MAX = 0.20;   // VPIN < 0.20 = "Ghost Move" = retail-driven, block
+const PREDATOR_KM_DRIFT_MIN = 0.50;     // KM Drift minimum: no escape velocity = stay flat
+const PREDATOR_WALL_OFFSET_PIPS = 0.3;  // Stop-Limit placed 0.3 pips BEYOND the wall
+// Exit Protocol:
+const PREDATOR_EXIT_HURST_MIN = 0.45;   // Close if Hurst drops below 0.45
+const PREDATOR_EXIT_WEIGHTING_THRESHOLD = 49; // Close if Buy/Sell weighting hits 49%
 
 // ─── Velocity Gating Constants ───────────────────────────
 const VELOCITY_TICK_THRESHOLD = 5;
@@ -654,6 +669,9 @@ interface ZScoreTracker {
   spreadHistory: number[];     // rolling spread values
   lastFireTs: number;
   firedDirection: string | null;
+  // ═══ PREDATORY HUNTER: Rule of 3 consecutive tick verification ═══
+  consecutivePassCount: number;  // How many consecutive ticks all 4 gates passed
+  lastPassDirection: string | null; // Direction of the consecutive passes
 }
 
 interface VelocityTracker {
@@ -923,7 +941,7 @@ Deno.serve(async (req) => {
 
     // Init z-score trackers per correlation group
     for (const g of correlationGroups) {
-      zScoreTrackers.set(g.name, { spreadHistory: [], lastFireTs: 0, firedDirection: null });
+      zScoreTrackers.set(g.name, { spreadHistory: [], lastFireTs: 0, firedDirection: null, consecutivePassCount: 0, lastPassDirection: null });
     }
     // Init velocity trackers
     for (const p of velocityPairs) {
@@ -1138,11 +1156,79 @@ Deno.serve(async (req) => {
               }
             }
 
+            // ═══ PREDATORY HUNTER: AUTONOMOUS EXIT AUTHORITY ═══
+            // Tick-speed exit scans every 2s. Three exit triggers:
+            // 1. Regime Exit: Close if Hurst drops below 0.45
+            // 2. Flow Exit: Close if Buy/Sell Weighting hits 49%
+            // 3. VWAP Trail: (simulated via drift reversal — no VWAP feed available)
+            if (tickTs - lastExitScanTs >= EXIT_SCAN_INTERVAL_MS) {
+              lastExitScanTs = tickTs;
+              const openTrade = exitTradeMap.get(instrument);
+              if (openTrade && openTrade.oanda_trade_id) {
+                const exitTracker = getOrCreateOfi(instrument);
+                if (exitTracker.tickCount >= 10) {
+                  let exitReason: string | null = null;
+
+                  // ─── REGIME EXIT: Hurst < 0.45 → whales are done ───
+                  if (exitTracker.hurst < PREDATOR_EXIT_HURST_MIN) {
+                    exitReason = `REGIME_EXIT: H=${exitTracker.hurst.toFixed(3)} < ${PREDATOR_EXIT_HURST_MIN} — persistence collapsed`;
+                  }
+
+                  // ─── FLOW EXIT: Weighting hits 49% (directional consensus lost) ───
+                  if (!exitReason) {
+                    const isLong = openTrade.direction === "long";
+                    const relevantWeighting = isLong
+                      ? Math.round(exitTracker.ewmaBuyPct * 100)
+                      : Math.round(exitTracker.ewmaSellPct * 100);
+                    if (relevantWeighting <= PREDATOR_EXIT_WEIGHTING_THRESHOLD) {
+                      exitReason = `FLOW_EXIT: ${isLong ? "Buy" : "Sell"}%=${relevantWeighting}% <= ${PREDATOR_EXIT_WEIGHTING_THRESHOLD}% — directional consensus lost`;
+                    }
+                  }
+
+                  // ─── DRIFT REVERSAL EXIT (VWAP proxy): KM Drift flips against position ───
+                  if (!exitReason) {
+                    const sqD2 = Math.sqrt(Math.abs(exitTracker.D2));
+                    const dNorm = sqD2 > 1e-10 ? exitTracker.D1 / sqD2 : 0;
+                    const isLong = openTrade.direction === "long";
+                    // If drift has flipped against us by > 1.0, exit
+                    if ((isLong && dNorm < -1.0) || (!isLong && dNorm > 1.0)) {
+                      exitReason = `DRIFT_EXIT: D1_norm=${dNorm.toFixed(2)} — drift reversed against ${openTrade.direction}`;
+                    }
+                  }
+
+                  if (exitReason && LIVE_ENABLED === "true") {
+                    console.log(`[PREDATOR_EXIT] 🚪 ${instrument} ${openTrade.direction} trade ${openTrade.oanda_trade_id}: ${exitReason}`);
+                    try {
+                      const closeRes = await fetch(
+                        `${OANDA_API}/accounts/${OANDA_ACCOUNT}/trades/${openTrade.oanda_trade_id}/close`,
+                        { method: "PUT", headers: { Authorization: `Bearer ${OANDA_TOKEN}`, "Content-Type": "application/json" } },
+                      );
+                      if (closeRes.ok) {
+                        const closeData = await closeRes.json();
+                        const exitPrice = parseFloat(closeData.orderFillTransaction?.price || "0");
+                        autonomousExits.push(`${instrument}:${exitReason}`);
+                        // Update DB
+                        await supabase.from("oanda_orders").update({
+                          exit_price: exitPrice,
+                          status: "closed",
+                          closed_at: new Date().toISOString(),
+                          health_governance_action: exitReason,
+                        }).eq("id", openTrade.id);
+                        exitTradeMap.delete(instrument);
+                        console.log(`[PREDATOR_EXIT] ✅ CLOSED ${instrument} @ ${exitPrice} — ${exitReason}`);
+                      }
+                    } catch (err) {
+                      console.error(`[PREDATOR_EXIT] ❌ Failed to close ${instrument}:`, err);
+                    }
+                  }
+                }
+              }
+            }
+
             // ═══════════════════════════════════════════════
-            // STRATEGY 1: Z-SCORE STRIKE
-            // No triggers. No arming. No AI. Pure statistics.
-            // Compute rolling z-score on the "spread" between correlated pairs.
-            // Fire when z > threshold + momentum burst on the lagging pair.
+            // STRATEGY 1: PREDATORY HUNTER (formerly Z-Score Strike)
+            // The Gate & Strike: 4-gate institutional filter + Rule of 3
+            // Entry on the Vacuum. Exit on the Fair Value.
             // ═══════════════════════════════════════════════
             for (const group of correlationGroups) {
               const priceA = prices.get(group.pairA);
@@ -1193,19 +1279,17 @@ Deno.serve(async (req) => {
 
               if (blockedPairs.includes(tradePair)) continue;
 
-              // ═══ LEAN 6 ZERO-LAG PIPELINE ═══
-              // Gate 1 (SIGNAL / Z-Score) already passed above — kills 99% of ticks.
+              // ═══ PREDATORY HUNTER GATE PIPELINE (2026 Strategy) ═══
+              // Gate 0 (Z-Score divergence) already passed above — kills 99% of ticks.
+              // Now: 4-gate institutional filter + Rule of 3 + VPIN + KM Drift
 
-              // ─── GATE 2: LIQUIDITY (Tick Density — is it safe to trade?) ───
-              // Cost: Low (Map lookup). Kills: Illiquid pairs or bad sessions.
+              // ─── PRE-GATE: LIQUIDITY (Tick Density — is it safe to trade?) ───
               const densityCheck = isTickDensitySufficient(tradePair);
-              if (!densityCheck.ok) continue;
+              if (!densityCheck.ok) { tracker.consecutivePassCount = 0; continue; }
 
-              // ─── READ PHYSICS (already computed at line 1029 for all instruments) ───
-              // DO NOT call processOfiTick again — double-updating corrupts recursive state
-              // (dt≈0 → Infinity velocity → NaN cascade). Read from tracker directly.
+              // ─── READ PHYSICS (already computed — O(1) read from tracker) ───
               const tradeTracker = getOrCreateOfi(tradePair);
-              if (tradeTracker.tickCount < 10) continue; // not enough data
+              if (tradeTracker.tickCount < 10) { tracker.consecutivePassCount = 0; continue; }
               const sqrtD2Trade = Math.sqrt(Math.abs(tradeTracker.D2));
               const driftNormTrade = sqrtD2Trade > 1e-10 ? tradeTracker.D1 / sqrtD2Trade : 0;
               const absD1Trade = Math.abs(tradeTracker.D1);
@@ -1218,8 +1302,14 @@ Deno.serve(async (req) => {
               const hurstRegimeTrade = tradeTracker.hurst > HURST_PERSISTENCE_THRESHOLD ? "PERSISTENT" :
                 tradeTracker.hurst < HURST_MEANREV_THRESHOLD ? "MEAN_REVERTING" : "RANDOM_WALK";
               const ofiNormTrade = Math.tanh(tradeTracker.ofiRecursive / 100);
+
+              // OFI Ratio for Gate 3: buy/sell ratio from running counts
+              const totalOfiTicks = tradeTracker.runningBuys + tradeTracker.runningSells;
+              const ofiRatioTrade = totalOfiTicks > 0 ? tradeTracker.runningBuys / Math.max(1, tradeTracker.runningSells) : 1.0;
+
               const tradeOfi = {
-                ofiRatio: 0, ofiRaw: 0,
+                ofiRatio: Math.round(ofiRatioTrade * 1000) / 1000,
+                ofiRaw: 0,
                 ofiWeighted: Math.round(ofiNormTrade * 1000) / 1000,
                 vpin: Math.round(tradeTracker.vpinRecursive * 1000) / 1000,
                 buyPressure: Math.round(tradeTracker.ewmaBuyPct * 100),
@@ -1242,52 +1332,76 @@ Deno.serve(async (req) => {
                 hurstRegime: hurstRegimeTrade,
               };
 
-              // ─── GATE 3: REGIME (Hurst — will the ripple travel?) ───
-              // Cost: Zero (reading computed float). The "Weather Report" — don't sail in a storm.
-              if (tradeOfi.hurst < 0.45) {
-                console.log(`[LEAN6] 🔬 HURST REJECT: ${tradePair} H=${tradeOfi.hurst} < 0.45 — mean-reverting, skip`);
+              // ═══ PREDATORY HUNTER: 4-GATE INSTITUTIONAL FILTER ═══
+
+              // ─── GATE 1: HURST ≥ 0.60 (Persistent regime — the tsunami must travel) ───
+              if (tradeOfi.hurst < PREDATOR_HURST_MIN) {
+                tracker.consecutivePassCount = 0;
                 continue;
               }
 
-              // ─── GATE 4: FORCE (Z-OFI — is this move statistically abnormal for NOW?) ───
-              // Cost: Zero (reading computed float). Kills: "Normal" noise that coincidentally had a Z-score.
-              // ALWAYS enforce — no warm-up bypass. Early ticks with low Z-OFI = noise.
-              if (Math.abs(tradeOfi.zOfi) < Z_OFI_FIRE_THRESHOLD) {
+              // ─── GATE 2: EFFICIENCY ≥ 3.5 (Vacuum — liquidity hole = institutional displacement) ───
+              if (tradeOfi.efficiency < PREDATOR_EFFICIENCY_MIN) {
+                tracker.consecutivePassCount = 0;
                 continue;
               }
 
-              // ─── GATE 5: VELOCITY (KM Drift — is price actually moving?) ───
-              // Cost: Zero (replaces O(N) momentum array scan). Kills: high-force moves fighting gravity.
-              // driftNormalized = D1/√D2 (signal-to-noise ratio). Typical forex values: 1-20.
-              // Threshold 2.0 ensures meaningful directional velocity above noise.
-              if (Math.abs(tradeOfi.km.driftNormalized) < 2.0) {
+              // ─── GATE 3: OFI RATIO (Whale Imbalance) ───
+              // LONG: OFI Ratio ≥ 3.0 (buys vastly outnumber sells)
+              // SHORT: OFI Ratio ≤ 0.30 (sells vastly outnumber buys)
+              const ofiGatePassed = tradeDirection === "long"
+                ? ofiRatioTrade >= PREDATOR_OFI_RATIO_LONG
+                : ofiRatioTrade <= PREDATOR_OFI_RATIO_SHORT;
+              if (!ofiGatePassed) {
+                tracker.consecutivePassCount = 0;
                 continue;
               }
 
-              // ─── GATE 6: STRUCTURE (Efficiency — the "Final Boss") ───
-              // Cost: Zero (reading computed float). Kills: Hidden Limit Players / Icebergs.
-              if (tradeOfi.hiddenPlayer.detected && tradeOfi.hiddenPlayer.recommendation === "FADE") {
-                console.log(`[LEAN6] 🕵️ EFFICIENCY REJECT: ${tradePair} ${tradeOfi.hiddenPlayer.type} | E=${tradeOfi.efficiency} ${tradeOfi.marketState}`);
+              // ─── GATE 4: WEIGHTING (Buy > 50% for LONG, Sell > 50% for SHORT) ───
+              const weightingPassed = tradeDirection === "long"
+                ? tradeOfi.buyPressure > PREDATOR_WEIGHTING_MIN
+                : tradeOfi.sellPressure > PREDATOR_WEIGHTING_MIN;
+              if (!weightingPassed) {
+                tracker.consecutivePassCount = 0;
                 continue;
               }
 
-              // ─── GATE 7: G17 DISPLACEMENT EFFICIENCY (Institutional Footprint) ───
-              // FM-created gate: only fire if the move has institutional displacement signature.
-              // Uses |DriftNormalized| as tick-level proxy for candle body/range ratio.
-              // High drift-to-noise = displacement = institutional. Low = retail noise.
-              if (g17Active) {
-                const absDriftNorm = Math.abs(tradeOfi.km.driftNormalized);
-                // Map drift-normalized to 0-1 scale: values 0-10 → 0-1
-                // driftNorm of 2.0 already passed Gate 5; G17 demands higher conviction
-                const displacementScore = Math.min(1, absDriftNorm / 10);
-                if (displacementScore < g17Threshold) {
-                  console.log(`[G17_DISPLACEMENT] ❌ ${tradePair}: DE_proxy=${displacementScore.toFixed(3)} (|D1n|=${absDriftNorm.toFixed(2)}) < ${g17Threshold} — RETAIL NOISE, skip`);
-                  continue;
-                }
-                console.log(`[G17_DISPLACEMENT] ✅ ${tradePair}: DE_proxy=${displacementScore.toFixed(3)} >= ${g17Threshold} — INSTITUTIONAL DISPLACEMENT`);
+              // ─── SENIOR OPS: KM DRIFT MINIMUM (No escape velocity = Stay Flat) ───
+              if (Math.abs(tradeOfi.km.driftNormalized) < PREDATOR_KM_DRIFT_MIN) {
+                tracker.consecutivePassCount = 0;
+                continue;
               }
 
-              // ═══ ALL GATES PASSED — FIRE ═══
+              // ─── SENIOR OPS: VPIN VALIDATION ───
+              // VPIN < 0.20 = "Ghost Move" (retail-driven, highly unstable) — BLOCK
+              if (tradeOfi.vpin < PREDATOR_VPIN_GHOST_MAX) {
+                console.log(`[PREDATOR] 👻 GHOST MOVE: ${tradePair} VPIN=${tradeOfi.vpin} < ${PREDATOR_VPIN_GHOST_MAX} — retail-driven, BLOCKED`);
+                tracker.consecutivePassCount = 0;
+                continue;
+              }
+              // VPIN must be ≥ 0.45 to confirm institutional participation
+              if (tradeOfi.vpin < PREDATOR_VPIN_MIN) {
+                tracker.consecutivePassCount = 0;
+                continue;
+              }
+
+              // ═══ RULE OF 3: All gates must hold for 3 consecutive ticks ═══
+              // Filters out high-frequency "Flash Signals" that lead to immediate whipsaws.
+              if (tracker.lastPassDirection === tradeDirection) {
+                tracker.consecutivePassCount++;
+              } else {
+                // Direction changed — reset counter
+                tracker.consecutivePassCount = 1;
+                tracker.lastPassDirection = tradeDirection;
+              }
+
+              if (tracker.consecutivePassCount < PREDATOR_RULE_OF_3) {
+                console.log(`[PREDATOR] ⏳ RULE OF 3: ${tradePair} ${tradeDirection} pass ${tracker.consecutivePassCount}/${PREDATOR_RULE_OF_3} — waiting for confirmation`);
+                continue;
+              }
+
+              // ═══ ALL GATES PASSED + RULE OF 3 CONFIRMED — FIRE ═══
+              tracker.consecutivePassCount = 0; // Reset for next trade
 
               const tradePrice = prices.get(tradePair);
               if (!tradePrice) continue;
@@ -1295,31 +1409,67 @@ Deno.serve(async (req) => {
               tracker.lastFireTs = tickTs;
               tracker.firedDirection = tradeDirection;
 
+              // ─── ENTRY: Stop-Limit 0.3 pips BEYOND the wall ───
+              // Identify the Wall: closest cluster of resting limit orders
+              // For LONGS: Find Sell Wall above price → place Stop-Limit 0.3p above it
+              // For SHORTS: Find Buy Wall below price → place Stop-Limit 0.3p below it
+              let wallPrice: number | null = null;
+              const wallOffset = fromPips(PREDATOR_WALL_OFFSET_PIPS, tradePair);
+              for (const [price, info] of tradeTracker.priceLevels.entries()) {
+                if (info.hits < 3) continue;
+                const priceNum = +price;
+                const distPips = Math.abs(toPips(priceNum - mid, tradePair));
+                if (distPips < 1 || distPips > 30) continue;
 
+                if (tradeDirection === "long" && info.sells >= 2 && priceNum > mid) {
+                  // Sell Wall above price — resistance to punch through
+                  if (!wallPrice || priceNum < wallPrice) wallPrice = priceNum;
+                }
+                if (tradeDirection === "short" && info.buys >= 2 && priceNum < mid) {
+                  // Buy Wall below price — support to break through
+                  if (!wallPrice || priceNum > wallPrice) wallPrice = priceNum;
+                }
+              }
 
-              console.log(`[LEAN6] 🎯 FIRE: ${tradeDirection.toUpperCase()} ${baseUnits} ${tradePair} | z=${z.toFixed(2)} | Z_OFI=${tradeOfi.zOfi.toFixed(2)} H=${tradeOfi.hurst} ${tradeOfi.hurstRegime} | D1_norm=${tradeOfi.km.driftNormalized} | E=${tradeOfi.efficiency} ${tradeOfi.marketState} | KM_α=${tradeOfi.km.alphaAdaptive} | group=${group.name} | tps=${densityCheck.tps.toFixed(1)} | tick #${tickCount}`);
+              const orderType: "MARKET" | "LIMIT" = wallPrice ? "LIMIT" : "MARKET";
+              const limitEntryPrice = wallPrice
+                ? (tradeDirection === "long" ? wallPrice + wallOffset : wallPrice - wallOffset)
+                : undefined;
 
-              // Conviction: combine z-score + OFI alignment + KM + Hurst
+              console.log(`[PREDATOR] 🎯 FIRE: ${tradeDirection.toUpperCase()} ${baseUnits} ${tradePair} | z=${z.toFixed(2)} | H=${tradeOfi.hurst} E=${tradeOfi.efficiency} OFI_R=${ofiRatioTrade.toFixed(2)} VPIN=${tradeOfi.vpin} | Buy%=${tradeOfi.buyPressure} Sell%=${tradeOfi.sellPressure} | |D1n|=${Math.abs(tradeOfi.km.driftNormalized).toFixed(2)} | Wall=${wallPrice?.toFixed(tradePair.includes("JPY") ? 3 : 5) ?? "NONE"} → ${orderType} | group=${group.name} | tick #${tickCount}`);
+
+              // Conviction: combine Hurst + Efficiency + OFI alignment + VPIN
+              const hurstConviction = Math.min(0.3, (tradeOfi.hurst - 0.5) * 3);
+              const effConviction = Math.min(0.3, (tradeOfi.efficiency - 3.0) * 0.1);
+              const vpinConviction = Math.min(0.2, (tradeOfi.vpin - 0.4) * 2);
               const ofiAligned = (tradeDirection === "long" && tradeOfi.bias === "BUY") ||
                                  (tradeDirection === "short" && tradeOfi.bias === "SELL");
-              const ofiConfidenceBoost = ofiAligned ? Math.abs(tradeOfi.ofiWeighted) * 0.2 : 0;
-              const kmAligned = (tradeDirection === "long" && tradeOfi.km.driftNormalized > 0.1) ||
-                                (tradeDirection === "short" && tradeOfi.km.driftNormalized < -0.1);
-              const kmBoost = kmAligned ? Math.min(Math.abs(tradeOfi.km.driftNormalized) * 0.1, 0.15) : 0;
-              const hurstBoost = tradeOfi.hurst > 0.6 ? 0.1 : 0; // extra confidence in strong trend
+              const ofiConviction = ofiAligned ? 0.2 : 0;
 
               const result = await executeOrder(
                 tradePair, tradeDirection, baseUnits,
-                baseSlPips, baseTpPips, "zscore-strike",
+                baseSlPips, baseTpPips, "predatory-hunter",
                 {
+                  strategy: "predatory-hunter-2026",
                   zScore: z, mean, std,
                   group: group.name,
                   pairA: group.pairA, pairB: group.pairB,
                   tickNumber: tickCount,
                   ticksPerSecond: densityCheck.tps,
                   streamLatencyMs: Date.now() - startTime,
-                  confidence: Math.min(1, (Math.abs(z) / 3) + ofiConfidenceBoost + kmBoost + hurstBoost),
-                  engine: "zscore-strike-v6-lean6",
+                  confidence: Math.min(1, hurstConviction + effConviction + vpinConviction + ofiConviction),
+                  engine: "predatory-hunter-v1",
+                  predatorGates: {
+                    hurst: tradeOfi.hurst,
+                    efficiency: tradeOfi.efficiency,
+                    ofiRatio: ofiRatioTrade,
+                    buyPct: tradeOfi.buyPressure,
+                    sellPct: tradeOfi.sellPressure,
+                    vpin: tradeOfi.vpin,
+                    kmDrift: tradeOfi.km.driftNormalized,
+                    ruleOf3: true,
+                  },
+                  wall: wallPrice ? { price: wallPrice, offset: PREDATOR_WALL_OFFSET_PIPS } : null,
                   ofi: {
                     ratio: tradeOfi.ofiRatio, weighted: tradeOfi.ofiWeighted,
                     vpin: tradeOfi.vpin, bias: tradeOfi.bias,
@@ -1332,6 +1482,8 @@ Deno.serve(async (req) => {
                   resistanceLevels: tradeOfi.resistanceLevels,
                 },
                 tradePrice,
+                orderType,
+                limitEntryPrice,
               );
 
               if (result.success) {
@@ -1339,17 +1491,21 @@ Deno.serve(async (req) => {
 
                 // Audit log
                 await supabase.from("gate_bypasses").insert({
-                  gate_id: `ZSCORE_FIRE:${group.name}:${tradePair}`,
+                  gate_id: `PREDATOR_FIRE:${group.name}:${tradePair}`,
                   reason: JSON.stringify({
+                    strategy: "predatory-hunter-2026",
                     group: group.name, pair: tradePair,
                     direction: tradeDirection, zScore: z,
-                    mean, std, threshold: zScoreThreshold,
+                    hurst: tradeOfi.hurst, efficiency: tradeOfi.efficiency,
+                    ofiRatio: ofiRatioTrade, vpin: tradeOfi.vpin,
+                    buyPct: tradeOfi.buyPressure, sellPct: tradeOfi.sellPressure,
+                    wall: wallPrice, orderType,
                     fillPrice: result.fillPrice,
                     slippage: result.slippage,
                     tickNumber: tickCount,
                   }),
                   expires_at: new Date(Date.now() + 3600_000).toISOString(),
-                  created_by: "zscore-strike-engine",
+                  created_by: "predatory-hunter-engine",
                 });
               }
             }
@@ -1706,7 +1862,7 @@ Deno.serve(async (req) => {
         memory_type: "ofi_synthetic_book",
         memory_key: "latest_snapshot",
         payload: {
-          version: "v6-lean6-zero-lag",
+          version: "v8-predatory-hunter",
           pairs: ofiSnapshot,
           pairsCount: Object.keys(ofiSnapshot).length,
           hiddenPlayerAlerts,
@@ -1715,53 +1871,59 @@ Deno.serve(async (req) => {
           ticksProcessed: tickCount,
           streamDurationMs: Date.now() - startTime,
           timestamp: new Date().toISOString(),
-          architecture: "O(1)_recursive_welford_hurst",
+          architecture: "O(1)_recursive_predatory_hunter",
           decayFactors: { kmAlphaRange: [KM_ALPHA_MIN, KM_ALPHA_MAX], ofiGamma: OFI_GAMMA_DEFAULT },
-          gates: ["1:SIGNAL(Z-Score)", "2:LIQUIDITY(Density)", "3:REGIME(Hurst)", "4:FORCE(Z-OFI)", "5:VELOCITY(KM_Drift)", "6:STRUCTURE(Efficiency)"],
+          gates: ["0:SIGNAL(Z-Score)", "1:HURST≥0.60", "2:EFFICIENCY≥3.5", "3:OFI_RATIO(Whale)", "4:WEIGHTING>50%", "VPIN≥0.45", "KM_DRIFT≥0.50", "RULE_OF_3"],
           capabilities: [
+            "predatory_hunter_2026", "rule_of_3_verification",
             "adaptive_km_gear_shift", "welford_z_ofi", "hall_wood_hurst",
             "recursive_kramers_moyal", "recursive_velocity_displacement_ofi",
             "recursive_vpin_ewma", "efficiency_ratio_E", "market_state_classification",
             "hidden_limit_detection", "price_level_persistence", "tick_density_sr",
-            "lean_6_pipeline",
+            "autonomous_exit_authority", "wall_stop_limit_entry",
           ],
         },
         relevance_score: hiddenPlayerAlerts > 0 ? 1.0 : 0.8,
-        created_by: "ripple-stream-ofi-v4-senior-ops",
+        created_by: "ripple-stream-predatory-hunter-v1",
       }, { onConflict: "memory_type,memory_key" });
     }
 
     const totalMs = Date.now() - startTime;
-    const creditMode = creditExhausted ? " | 🔋 CREDIT EXHAUSTION: Z-Score + Ghost Vacuum" : "";
-    console.log(`[LEAN6] 📊 Session: ${totalMs}ms, ${tickCount} ticks | Z-Score: ${zScoreFires.length} | Ghost: ${ghostVacuumFires.length} | Velocity: ${velocityFires.length} | Snap-Back: ${snapbackFires.length} | OFI: ${Object.keys(ofiSnapshot).length} pairs | Hidden: ${hiddenPlayerAlerts} | Absorbing: ${absorbingPairs} | Slipping: ${slippingPairs}${creditMode}`);
+    const creditMode = creditExhausted ? " | 🔋 CREDIT EXHAUSTION: Predatory Hunter + Ghost Vacuum" : "";
+    console.log(`[PREDATOR] 📊 Session: ${totalMs}ms, ${tickCount} ticks | Hunter: ${zScoreFires.length} | Ghost: ${ghostVacuumFires.length} | Exits: ${autonomousExits.length} | Velocity: ${velocityFires.length} | Snap-Back: ${snapbackFires.length} | OFI: ${Object.keys(ofiSnapshot).length} pairs | Hidden: ${hiddenPlayerAlerts} | Absorbing: ${absorbingPairs} | Slipping: ${slippingPairs}${creditMode}`);
 
     return new Response(
       JSON.stringify({
         success: true,
-        version: "v7-autonomous-ghost",
+        version: "v8-predatory-hunter",
         creditExhausted,
         activeStrategies: creditExhausted
-          ? ["zscore-strike", "ghost-vacuum"]
-          : ["zscore-strike", "ghost-vacuum", "velocity-gating", "snapback-sniper"],
+          ? ["predatory-hunter", "ghost-vacuum"]
+          : ["predatory-hunter", "ghost-vacuum", "velocity-gating", "snapback-sniper"],
         streamDurationMs: totalMs,
         ticksProcessed: tickCount,
-        zscore: { fired: zScoreFires.length, pairs: zScoreFires, groups: correlationGroups.length, threshold: zScoreThreshold },
+        predatoryHunter: {
+          fired: zScoreFires.length, pairs: zScoreFires,
+          groups: correlationGroups.length, threshold: zScoreThreshold,
+          gates: { hurst: PREDATOR_HURST_MIN, efficiency: PREDATOR_EFFICIENCY_MIN, ofiRatioLong: PREDATOR_OFI_RATIO_LONG, ofiRatioShort: PREDATOR_OFI_RATIO_SHORT, weighting: PREDATOR_WEIGHTING_MIN, vpinMin: PREDATOR_VPIN_MIN, kmDriftMin: PREDATOR_KM_DRIFT_MIN, ruleOf3: PREDATOR_RULE_OF_3 },
+          strategy: "predatory-hunter-2026",
+        },
+        autonomousExits: { count: autonomousExits.length, trades: autonomousExits },
         ghostVacuum: { fired: ghostVacuumFires.length, pairs: ghostVacuumFires, strategy: "autonomous-ghost-lean6" },
         velocity: { fired: velocityFires.length, pairs: velocityFires, monitored: velocityPairs.length },
         snapback: { fired: snapbackFires.length, pairs: snapbackFires, monitored: snapbackPairs.length },
         syntheticBook: {
-          version: "v6-lean6-zero-lag",
-          architecture: "O(1)_100pct_recursive",
+          version: "v8-predatory-hunter",
+          architecture: "O(1)_recursive_predatory_hunter",
           pairsTracked: Object.keys(ofiSnapshot).length,
           hiddenPlayerAlerts,
           absorbingPairs,
           slippingPairs,
-          gates: ["1:SIGNAL", "2:LIQUIDITY", "3:REGIME", "4:FORCE", "5:VELOCITY", "6:STRUCTURE"],
+          gates: ["0:SIGNAL", "1:HURST≥0.60", "2:EFFICIENCY≥3.5", "3:OFI_RATIO", "4:WEIGHTING>50%", "VPIN≥0.45", "KM_DRIFT≥0.50", "RULE_OF_3"],
           capabilities: [
+            "predatory_hunter_2026", "rule_of_3_verification",
             "adaptive_km_gear_shift", "welford_z_ofi", "hall_wood_hurst",
-            "recursive_kramers_moyal", "recursive_velocity_displacement_ofi",
-            "recursive_vpin_ewma", "efficiency_ratio_E", "market_state_classification",
-            "hidden_limit_detection", "price_level_persistence", "lean_6_pipeline",
+            "autonomous_exit_authority", "wall_stop_limit_entry",
           ],
           snapshot: ofiSnapshot,
         },
@@ -1771,7 +1933,7 @@ Deno.serve(async (req) => {
       { headers: { ...corsHeaders, "Content-Type": "application/json" } },
     );
   } catch (err) {
-    console.error("[STRIKE-v4] Error:", err);
+    console.error("[PREDATOR] Error:", err);
     return new Response(
       JSON.stringify({ success: false, error: (err as Error).message }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
