@@ -84,10 +84,17 @@ function PairCard({ pair, data }: { pair: string; data: any }) {
         <div className="flex items-center gap-2">
           <span className={cn('font-mono text-xs font-bold', biasColor)}>{p.bias}</span>
           {p.hiddenPlayer && (
-            <Badge variant="destructive" className="text-[8px] gap-0.5">
-              <AlertTriangle className="w-2.5 h-2.5" />
-              {p.hiddenPlayer.type === 'HIDDEN_LIMIT_SELLER' ? '🐋 LIMIT SELL' : p.hiddenPlayer.type === 'HIDDEN_LIMIT_BUYER' ? '🐋 LIMIT BUY' : p.hiddenPlayer.type}
-            </Badge>
+            (p.hiddenPlayer.type as string) === 'LIQUIDITY_HOLE' ? (
+              <Badge className="text-[8px] gap-0.5 bg-orange-500/20 text-orange-400 border border-orange-500/30">
+                <Waves className="w-2.5 h-2.5" />
+                ⚡ LIQ HOLE
+              </Badge>
+            ) : (
+              <Badge variant="destructive" className="text-[8px] gap-0.5">
+                <AlertTriangle className="w-2.5 h-2.5" />
+                {p.hiddenPlayer.type === 'HIDDEN_LIMIT_SELLER' ? '🐋 LIMIT SELL' : '🐋 LIMIT BUY'}
+              </Badge>
+            )
           )}
         </div>
       </div>

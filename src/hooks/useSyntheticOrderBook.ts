@@ -26,7 +26,7 @@ export interface PairPhysics {
   efficiency: number;
   marketState: 'LIQUID' | 'ABSORBING' | 'SLIPPING' | 'NEUTRAL';
   hiddenPlayer: {
-    type: string;
+    type: 'HIDDEN_LIMIT_SELLER' | 'HIDDEN_LIMIT_BUYER' | 'LIQUIDITY_HOLE' | string;
     force: number;
     velocity: number;
     divergence: number;
