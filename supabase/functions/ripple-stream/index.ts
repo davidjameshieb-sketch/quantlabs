@@ -301,10 +301,13 @@ function detectHiddenLimitPlayer(
     }
   }
 
-  // SLIPPING = low force, high velocity → liquidity hole, wait
-  if (marketState === "SLIPPING") {
+  // SLIPPING = low force, high velocity → liquidity hole / gap risk.
+  // This is NOT a hidden limit player (no iceberg) — it's thin liquidity.
+  // Only flag if drift is meaningful (|D1| signal above noise floor) to avoid false alerts
+  // on near-zero drift pairs where E is technically high but market is just quiet.
+  if (marketState === "SLIPPING" && Math.abs(kmDrift) > 1e-6) {
     return {
-      detected: true, type: ofiForce > 0 ? "HIDDEN_LIMIT_SELLER" : "HIDDEN_LIMIT_BUYER",
+      detected: true, type: "LIQUIDITY_HOLE",
       force: ofiForce, velocity: kmDrift,
       divergence: Math.abs(kmDrift) - Math.abs(ofiForce),
       efficiency, marketState,
