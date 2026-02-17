@@ -337,8 +337,14 @@ async function executeTier4(supabase: any, lovableApiKey: string, dataPayload: a
   if (!aiResponse.ok) {
     const errText = await aiResponse.text();
     console.error("❌ Tier 4 AI error:", aiResponse.status, errText);
+    if (aiResponse.status === 402) {
+      creditExhausted = true;
+      console.log("🔋 Tier 4: Credits exhausted — falling back to DGE-T4");
+      return await deterministicTier4(supabase);
+    }
     return { error: `Tier 4 AI error: ${aiResponse.status}` };
   }
+  creditExhausted = false; // AI call succeeded — clear flag
 
   const aiData = await aiResponse.json();
   const llmResponse = aiData.choices[0].message.content;
@@ -1025,6 +1031,289 @@ async function commitRule(supabase: any, action: any): Promise<void> {
   console.log(`✅ L0 Rule committed: ${ruleKey} (expires: ${expiresAt || "never"})`);
 }
 
+// ═══════════════════════════════════════════════════════════════
+// DETERMINISTIC GOVERNANCE ENGINE (DGE)
+// Replaces AI Tier 2-3 and Tier 4 when credits are exhausted (402).
+// Rule-based state machine using synthetic book physics, regime
+// forecasts, and recent performance to make governance decisions.
+// ═══════════════════════════════════════════════════════════════
+
+let creditExhausted = false; // sticky flag — set on first 402, cleared on successful AI call
+
+async function deterministicGovernance(supabase: any, dataPayload: any): Promise<{ actions: any[]; assessment: string; score: number }> {
+  const actions: any[] = [];
+  const notes: string[] = [];
+  console.log("🤖 DGE: Deterministic Governance Engine activated (zero AI cost)");
+
+  // ─── 1. Parse Synthetic Book Physics ───
+  const syntheticBookMem = (dataPayload.sovereignMemory || []).find(
+    (m: any) => m.memory_key === "latest_snapshot" && m.memory_type === "ofi_synthetic_book"
+  );
+  const syntheticBook = syntheticBookMem?.payload?.pairs || {};
+  const bookPairs = Object.keys(syntheticBook);
+
+  // ─── 2. Parse Regime Forecasts ───
+  const forecastMem = (dataPayload.sovereignMemory || []).find(
+    (m: any) => m.memory_key === "latest_predictions" && m.memory_type === "regime_forecast"
+  );
+  const forecasts: any[] = forecastMem?.payload?.predictions || [];
+
+  // ─── 3. Get Open Trades from OANDA ───
+  let openTrades: any[] = [];
+  try {
+    const oandaEnv = Deno.env.get("OANDA_ENV") || "live";
+    const apiToken = oandaEnv === "live"
+      ? (Deno.env.get("OANDA_LIVE_API_TOKEN") || Deno.env.get("OANDA_API_TOKEN"))
+      : Deno.env.get("OANDA_API_TOKEN");
+    const accountId = oandaEnv === "live"
+      ? (Deno.env.get("OANDA_LIVE_ACCOUNT_ID") || Deno.env.get("OANDA_ACCOUNT_ID"))
+      : Deno.env.get("OANDA_ACCOUNT_ID");
+    const host = oandaEnv === "live" ? "https://api-fxtrade.oanda.com" : "https://api-fxpractice.oanda.com";
+
+    if (apiToken && accountId) {
+      const res = await fetch(`${host}/v3/accounts/${accountId}/openTrades`, {
+        headers: { Authorization: `Bearer ${apiToken}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        openTrades = data.trades || [];
+      }
+    }
+  } catch (err) {
+    console.warn("⚠️ DGE: Failed to fetch open trades from OANDA:", err);
+  }
+
+  // ─── 4. Open Trade Management (Physics-Based Exit Rules) ───
+  for (const trade of openTrades) {
+    const pair = trade.instrument;
+    const physics = syntheticBook[pair];
+    const tradeId = trade.id;
+    const unrealizedPL = parseFloat(trade.unrealizedPL || "0");
+    const isJpy = pair.includes("JPY");
+    const mult = isJpy ? 100 : 10000;
+    const currentPrice = parseFloat(trade.price || "0");
+    const openPrice = parseFloat(trade.price || "0");
+
+    // Rule A: VPIN Toxicity — close if flow is poisonous
+    if (physics?.vpin > 0.8) {
+      actions.push({
+        type: "close_trade",
+        oanda_trade_id: tradeId,
+        reason: `DGE: VPIN=${physics.vpin.toFixed(2)} > 0.8 — toxic flow detected on ${pair}`,
+      });
+      notes.push(`CLOSE ${pair}: VPIN toxicity ${physics.vpin.toFixed(2)}`);
+      continue; // don't process further rules for this trade
+    }
+
+    // Rule B: Hurst Chop — close if regime is mean-reverting and trade is losing
+    if (physics?.hurst?.H < 0.35 && unrealizedPL < 0) {
+      actions.push({
+        type: "close_trade",
+        oanda_trade_id: tradeId,
+        reason: `DGE: Hurst=${physics.hurst.H.toFixed(2)} < 0.35 + losing — chop regime on ${pair}`,
+      });
+      notes.push(`CLOSE ${pair}: Hurst chop ${physics.hurst.H.toFixed(2)} + losing`);
+      continue;
+    }
+
+    // Rule C: Hidden Player (Iceberg Absorption) — tighten SL
+    if (physics?.marketState === "ABSORBING" && physics?.hiddenPlayer?.force > 0.5) {
+      const direction = parseInt(trade.currentUnits) > 0 ? "long" : "short";
+      const hpType = physics.hiddenPlayer.type;
+      // If hidden player is absorbing AGAINST our direction, close
+      if (
+        (direction === "long" && hpType === "SELLER") ||
+        (direction === "short" && hpType === "BUYER")
+      ) {
+        actions.push({
+          type: "close_trade",
+          oanda_trade_id: tradeId,
+          reason: `DGE: Hidden ${hpType} absorbing against ${direction} on ${pair} (force=${physics.hiddenPlayer.force.toFixed(2)})`,
+        });
+        notes.push(`CLOSE ${pair}: Hidden ${hpType} vs ${direction}`);
+        continue;
+      }
+    }
+
+    // Rule D: Efficiency Hole (Slipping) — close if liquidity has evaporated
+    if (physics?.efficiency > 3.0 && physics?.marketState === "SLIPPING") {
+      actions.push({
+        type: "close_trade",
+        oanda_trade_id: tradeId,
+        reason: `DGE: Efficiency=${physics.efficiency.toFixed(1)} SLIPPING — liquidity hole on ${pair}`,
+      });
+      notes.push(`CLOSE ${pair}: Liquidity hole E=${physics.efficiency.toFixed(1)}`);
+      continue;
+    }
+
+    // Rule E: Time decay — if trade open > 2h with negative P&L, cut
+    const tradeOpenTime = new Date(trade.openTime).getTime();
+    const tradeAgeMs = Date.now() - tradeOpenTime;
+    if (tradeAgeMs > 2 * 60 * 60 * 1000 && unrealizedPL < -2) {
+      actions.push({
+        type: "close_trade",
+        oanda_trade_id: tradeId,
+        reason: `DGE: Trade age ${(tradeAgeMs / 3600000).toFixed(1)}h + negative P&L=$${unrealizedPL.toFixed(2)} on ${pair}`,
+      });
+      notes.push(`CLOSE ${pair}: Stale ${(tradeAgeMs / 3600000).toFixed(1)}h + losing`);
+      continue;
+    }
+
+    // Rule F: Profit protection — if unrealized > $3, trail with tight mental stop
+    // (No direct SL modification here — just log for awareness)
+    if (unrealizedPL > 3) {
+      notes.push(`MONITOR ${pair}: +$${unrealizedPL.toFixed(2)} — profit protection zone`);
+    }
+  }
+
+  // ─── 5. Regime-Based Pair Blocking ───
+  for (const forecast of forecasts) {
+    // Block choppy pairs
+    if (forecast.predictedRegime === "choppy" && forecast.confidence >= 0.6) {
+      actions.push({
+        type: "add_blacklist",
+        pair: forecast.pair,
+        duration_hours: 1,
+        reason: `DGE: Choppy regime ${Math.round(forecast.confidence * 100)}% on ${forecast.pair}`,
+      });
+      notes.push(`BLOCK ${forecast.pair}: choppy ${Math.round(forecast.confidence * 100)}%`);
+    }
+  }
+
+  // Block pairs with poor physics from synthetic book
+  for (const pair of bookPairs) {
+    const p = syntheticBook[pair];
+    if (!p) continue;
+
+    // Block if Hurst < 0.3 (strong mean reversion = death for trend strategies)
+    if (p.hurst?.H < 0.3 && p.vpin > 0.6) {
+      actions.push({
+        type: "add_blacklist",
+        pair,
+        duration_hours: 1,
+        reason: `DGE: H=${p.hurst.H.toFixed(2)} + VPIN=${p.vpin.toFixed(2)} — unfavorable microstructure`,
+      });
+      notes.push(`BLOCK ${pair}: H=${p.hurst.H.toFixed(2)} VPIN=${p.vpin.toFixed(2)}`);
+    }
+  }
+
+  // ─── 6. Performance-Based Sizing ───
+  try {
+    const { data: recentTrades } = await supabase
+      .from("oanda_orders")
+      .select("r_pips")
+      .eq("baseline_excluded", false)
+      .not("closed_at", "is", null)
+      .order("closed_at", { ascending: false })
+      .limit(20);
+
+    if (recentTrades && recentTrades.length >= 5) {
+      const wins = recentTrades.filter((t: any) => (t.r_pips || 0) > 0).length;
+      const wr = wins / recentTrades.length;
+      const avgPips = recentTrades.reduce((s: number, t: any) => s + (t.r_pips || 0), 0) / recentTrades.length;
+
+      if (wr < 0.3) {
+        actions.push({
+          type: "adjust_position_sizing",
+          scope: "global",
+          multiplier: 0.3,
+          sizing: 0.3,
+          reason: `DGE: WR ${(wr * 100).toFixed(0)}% < 30% — defensive 0.3x sizing`,
+          expires_at: new Date(Date.now() + 2 * 3600_000).toISOString(),
+        });
+        notes.push(`SIZING: 0.3x (WR ${(wr * 100).toFixed(0)}%)`);
+      } else if (wr > 0.55 && avgPips > 2) {
+        actions.push({
+          type: "adjust_position_sizing",
+          scope: "global",
+          multiplier: 1.3,
+          sizing: 1.3,
+          reason: `DGE: WR ${(wr * 100).toFixed(0)}% + avg ${avgPips.toFixed(1)}p — press 1.3x`,
+          expires_at: new Date(Date.now() + 2 * 3600_000).toISOString(),
+        });
+        notes.push(`SIZING: 1.3x (WR ${(wr * 100).toFixed(0)}%, avg ${avgPips.toFixed(1)}p)`);
+      }
+    }
+  } catch (err) {
+    console.warn("⚠️ DGE: Performance sizing error:", err);
+  }
+
+  // ─── 7. Set global posture ───
+  const posture = openTrades.length === 0 ? "SENTINEL" : (actions.some(a => a.type === "close_trade") ? "DEFENSIVE" : "HOLDING");
+  actions.push({
+    type: "set_global_posture",
+    posture,
+    reason: `DGE: ${openTrades.length} open trades, ${actions.filter(a => a.type === "close_trade").length} exits queued`,
+  });
+
+  const assessment = `DGE_ACTIVE: ${openTrades.length} open, ${notes.length} decisions: ${notes.join(" | ")}`;
+  const score = Math.max(40, 80 - actions.filter(a => a.type === "close_trade").length * 10);
+
+  console.log(`🤖 DGE: ${actions.length} actions generated | ${assessment}`);
+  return { actions, assessment, score };
+}
+
+// ─── Deterministic Tier 4 Fallback ───
+async function deterministicTier4(supabase: any): Promise<any> {
+  console.log("🧬 DGE-T4: Deterministic Tier 4 (zero AI cost)");
+
+  // Just run regime forecasting (already deterministic) and update sizing
+  const regimeData = await buildRegimeForecastPayload(supabase);
+
+  // Performance-based Kelly sizing (deterministic)
+  const fortyEightHoursAgo = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+  const { data: trades } = await supabase
+    .from("oanda_orders")
+    .select("r_pips")
+    .eq("baseline_excluded", false)
+    .not("closed_at", "is", null)
+    .gte("closed_at", fortyEightHoursAgo)
+    .order("closed_at", { ascending: false });
+
+  let kellyAction: any = null;
+  if (trades && trades.length >= 5) {
+    const pips = trades.map((t: any) => t.r_pips || 0);
+    const mean = pips.reduce((a: number, b: number) => a + b, 0) / pips.length;
+    const variance = pips.reduce((a: number, b: number) => a + (b - mean) ** 2, 0) / pips.length;
+    const kelly = variance > 0 ? mean / variance : 0;
+    const sizingCap = Math.max(0.2, Math.min(2.0, Math.abs(kelly) * 10));
+
+    kellyAction = {
+      type: "adjust_position_sizing",
+      scope: "global",
+      kelly_fraction: +kelly.toFixed(4),
+      sizing_cap: +sizingCap.toFixed(1),
+      multiplier: +sizingCap.toFixed(1),
+      sizing: +sizingCap.toFixed(1),
+      edge: +mean.toFixed(2),
+      variance: +variance.toFixed(2),
+      reason: `DGE-T4: Kelly=${kelly.toFixed(4)}, Edge=${mean.toFixed(2)}, Var=${variance.toFixed(2)}`,
+      expires_at: new Date(Date.now() + 2 * 3600_000).toISOString(),
+    };
+  }
+
+  // Execute Kelly sizing
+  if (kellyAction) {
+    try { await executeAction(kellyAction, supabase); } catch (e) { console.error("DGE-T4 Kelly error:", e); }
+  }
+
+  // Record T4 run
+  await supabase.from("sovereign_memory").upsert({
+    memory_key: "TIER4_LAST_RUN",
+    memory_type: "system",
+    payload: {
+      timestamp: new Date().toISOString(),
+      actions: kellyAction ? 1 : 0,
+      mode: "deterministic",
+      regimeForecasts: regimeData?.count || 0,
+    },
+    updated_at: new Date().toISOString(),
+    created_by: "sovereign-loop-dge",
+  }, { onConflict: "memory_key,memory_type" });
+
+  return { mode: "deterministic", regimeForecasts: regimeData?.count || 0, kellyApplied: !!kellyAction };
+}
+
 // ─── Circuit Breaker Check ───
 async function checkCircuitBreaker(supabase: any): Promise<boolean> {
   try {
@@ -1247,17 +1536,22 @@ Deno.serve(async (req) => {
     let tier4Result: any = null;
     if (tier4Check.shouldRun) {
       console.log(`🧬 TIER 4 TRIGGERED: ${tier4Check.reason}`);
-      // Tier 4 needs data — fetch minimal payload
-      const [smartG8Res, econCalRes, sovereignMemoryRes] = await Promise.all([
-        fetchSmartG8Directive(supabase),
-        fetchEconCalendarData(supabase),
-        fetchSovereignMemory(supabase),
-      ]);
-      tier4Result = await executeTier4(supabase, lovableApiKey, {
-        smartG8Directive: smartG8Res,
-        econCalendarData: econCalRes,
-        sovereignMemory: sovereignMemoryRes,
-      });
+      if (creditExhausted) {
+        console.log("🔋 Tier 4: Credits exhausted — using DGE-T4");
+        tier4Result = await deterministicTier4(supabase);
+      } else {
+        // Tier 4 needs data — fetch minimal payload
+        const [smartG8Res, econCalRes, sovereignMemoryRes] = await Promise.all([
+          fetchSmartG8Directive(supabase),
+          fetchEconCalendarData(supabase),
+          fetchSovereignMemory(supabase),
+        ]);
+        tier4Result = await executeTier4(supabase, lovableApiKey, {
+          smartG8Directive: smartG8Res,
+          econCalendarData: econCalRes,
+          sovereignMemory: sovereignMemoryRes,
+        });
+      }
     } else {
       console.log(`⏭️ Tier 4 skipped: ${tier4Check.reason}`);
     }
@@ -1358,35 +1652,57 @@ Deno.serve(async (req) => {
       l0ActiveReflexes: l0Context,
     };
 
-    // ─── 5. Call AI ───
-    console.log("🧠 Invoking Sovereign Intelligence (gemini-2.5-flash-lite)...");
-    const aiResponse = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${lovableApiKey}` },
-      body: JSON.stringify({
-        model: "google/gemini-2.5-flash-lite",
-        messages: [
-          { role: "system", content: SOVEREIGN_AUTONOMOUS_PROMPT },
-          { role: "user", content: `CYCLE DATA:\n${JSON.stringify(dataPayload)}` },
-        ],
-        temperature: 0.7,
-        max_tokens: 800,
-      }),
-    });
+    // ─── 5. Call AI (with DGE fallback on credit exhaustion) ───
+    let llmResponse = "";
+    let actions: any[] = [];
+    const errors: any[] = [];
+    let usedDGE = false;
 
-    if (!aiResponse.ok) {
-      throw new Error(`AI gateway error: ${aiResponse.status} ${aiResponse.statusText}`);
+    if (creditExhausted) {
+      console.log("🔋 Credits exhausted (cached flag) — using DGE directly");
+      const dge = await deterministicGovernance(supabase, dataPayload);
+      actions = dge.actions;
+      llmResponse = dge.assessment;
+      usedDGE = true;
+    } else {
+      console.log("🧠 Invoking Sovereign Intelligence (gemini-2.5-flash-lite)...");
+      const aiResponse = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${lovableApiKey}` },
+        body: JSON.stringify({
+          model: "google/gemini-2.5-flash-lite",
+          messages: [
+            { role: "system", content: SOVEREIGN_AUTONOMOUS_PROMPT },
+            { role: "user", content: `CYCLE DATA:\n${JSON.stringify(dataPayload)}` },
+          ],
+          temperature: 0.7,
+          max_tokens: 800,
+        }),
+      });
+
+      if (!aiResponse.ok) {
+        if (aiResponse.status === 402) {
+          creditExhausted = true;
+          console.log("🔋 Tier 2-3: Credits exhausted (402) — falling back to DGE");
+          const dge = await deterministicGovernance(supabase, dataPayload);
+          actions = dge.actions;
+          llmResponse = dge.assessment;
+          usedDGE = true;
+        } else {
+          throw new Error(`AI gateway error: ${aiResponse.status} ${aiResponse.statusText}`);
+        }
+      } else {
+        creditExhausted = false; // AI succeeded — clear exhaustion flag
+        const aiData = await aiResponse.json();
+        llmResponse = aiData.choices[0].message.content;
+        console.log("📝 LLM Response:", llmResponse);
+        actions = parseActions(llmResponse);
+      }
     }
 
-    const aiData = await aiResponse.json();
-    const llmResponse = aiData.choices[0].message.content;
-    console.log("📝 LLM Response:", llmResponse);
-
-    const actions = parseActions(llmResponse);
-    console.log(`🎯 Parsed ${actions.length} actions`);
+    console.log(`🎯 Parsed ${actions.length} actions${usedDGE ? " (DGE)" : ""}`);
 
     const actionsToExecute = actions.slice(0, MAX_ACTIONS_PER_CYCLE);
-    const errors: any[] = [];
     for (const action of actionsToExecute) {
       try { await executeAction(action, supabase); }
       catch (err) { errors.push({ action, error: String(err) }); }
@@ -1418,13 +1734,20 @@ Deno.serve(async (req) => {
     }
 
     // ─── Metrics ───
-    const actionsTakenMatch = llmResponse.match(/ACTIONS_TAKEN:\s*\[?(\d+)\]?/i);
-    const cycleAssessmentMatch = llmResponse.match(/CYCLE_ASSESSMENT:\s*\[?([^\]]+)\]?/i);
-    const sovereigntyScoreMatch = llmResponse.match(/SOVEREIGNTY_SCORE:\s*\[?(\d+)\]?/i);
+    let actionsTaken: number, cycleAssessment: string, sovereigntyScore: number;
 
-    const actionsTaken = actionsTakenMatch ? parseInt(actionsTakenMatch[1], 10) : actionsToExecute.length;
-    const cycleAssessment = cycleAssessmentMatch ? cycleAssessmentMatch[1].trim() : "N/A";
-    const sovereigntyScore = sovereigntyScoreMatch ? parseInt(sovereigntyScoreMatch[1], 10) : 0;
+    if (usedDGE) {
+      actionsTaken = actionsToExecute.length;
+      cycleAssessment = llmResponse; // DGE sets this to its assessment string
+      sovereigntyScore = 60; // DGE baseline score
+    } else {
+      const actionsTakenMatch = llmResponse.match(/ACTIONS_TAKEN:\s*\[?(\d+)\]?/i);
+      const cycleAssessmentMatch = llmResponse.match(/CYCLE_ASSESSMENT:\s*\[?([^\]]+)\]?/i);
+      const sovereigntyScoreMatch = llmResponse.match(/SOVEREIGNTY_SCORE:\s*\[?(\d+)\]?/i);
+      actionsTaken = actionsTakenMatch ? parseInt(actionsTakenMatch[1], 10) : actionsToExecute.length;
+      cycleAssessment = cycleAssessmentMatch ? cycleAssessmentMatch[1].trim() : "N/A";
+      sovereigntyScore = sovereigntyScoreMatch ? parseInt(sovereigntyScoreMatch[1], 10) : 0;
+    }
 
     // ─── Update State ───
     loopState.lastRunTs = now;
@@ -1435,14 +1758,15 @@ Deno.serve(async (req) => {
 
     await logCycleResult(supabase, {
       actionsTaken, cycleAssessment, sovereigntyScore,
-      llmResponse, tier: "T2-T3", errors,
+      llmResponse, tier: usedDGE ? "DGE" : "T2-T3", errors,
     });
 
     console.log("✅ Sovereign Loop: Cycle complete.");
     return new Response(
       JSON.stringify({
         status: "success",
-        tier: "T2-T3",
+        tier: usedDGE ? "DGE" : "T2-T3",
+        creditExhausted,
         deskStatus,
         actionsTaken, cycleAssessment, sovereigntyScore, errors,
         regimeAlerts, flashCrashStatus,
