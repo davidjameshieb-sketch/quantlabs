@@ -130,7 +130,7 @@ const Z_OFI_FIRE_THRESHOLD = 2.0; // Welford Z-score: "only fire if |Z| > 2.0"
 // Hurst Exponent thresholds
 const HURST_PERSISTENCE_THRESHOLD = 0.55; // H > 0.55 = trending (ripple travels)
 const HURST_MEANREV_THRESHOLD = 0.45;     // H < 0.45 = mean-reverting (snap back)
-const HURST_SCALE = 40;                   // Window for Hall-Wood estimator (was 128 — too high for 110s sessions)
+const HURST_SCALE = 20;                   // Window for Hall-Wood estimator (was 40 — need 2+ updates per pair per 110s session)
 
 // Efficiency ratio thresholds for market state classification
 const EFFICIENCY_ABSORBING_THRESHOLD = 0.3; // E < 0.3 = hidden limit player
@@ -406,10 +406,14 @@ function processOfiTick(
   tracker.hurstN++;
 
   if (tracker.hurstN >= HURST_SCALE && tracker.sumD1Abs > 1e-15) {
-    // H = log2(S2 / S1) — but clamped to [0, 1]
+    // Hall-Wood estimator: H = log2(S2 / S1)
+    // For pure random walk: S2/S1 = sqrt(2), so log2(sqrt(2)) = 0.5 ✓
+    // For trending: S2 > sqrt(2)*S1, so H > 0.5
+    // For mean-reverting: S2 < sqrt(2)*S1, so H < 0.5
     const ratio = tracker.sumD2Abs / tracker.sumD1Abs;
     const rawH = Math.log2(Math.max(ratio, 1e-10));
-    tracker.hurst = Math.max(0, Math.min(1, rawH));
+    // EWMA smoothing to avoid single-window noise spikes
+    tracker.hurst = 0.3 * Math.max(0, Math.min(1, rawH)) + 0.7 * tracker.hurst;
     // Reset accumulators for next window
     tracker.sumD1Abs = 0;
     tracker.sumD2Abs = 0;
@@ -450,11 +454,14 @@ function processOfiTick(
   // Track buy/sell volume SEPARATELY, then compute imbalance ratio.
   // VPIN = |ewmaBuy - ewmaSell| / (ewmaBuy + ewmaSell)
   // 0 = balanced flow, 1 = all informed (one-directional)
-  const tradeVol = Math.abs(dxPips * tickVelocity); // Volume proxy: displacement × velocity
+  // Use a FASTER decay (0.05) so VPIN responds within ~20 ticks, not 200.
+  // gamma=0.95 is too slow for 110s sessions with ~70 ticks/pair.
+  const vpinDecay = 0.92; // ~12-tick half-life (vs gamma=0.95 → ~20-tick half-life)
+  const tradeVol = Math.max(Math.abs(dxPips * tickVelocity), 0.001); // Volume proxy with floor
   const buyInc = side === 1 ? tradeVol : 0;
   const sellInc = side === -1 ? tradeVol : 0;
-  tracker.ewmaBuyVol = gamma * tracker.ewmaBuyVol + (1 - gamma) * buyInc;
-  tracker.ewmaSellVol = gamma * tracker.ewmaSellVol + (1 - gamma) * sellInc;
+  tracker.ewmaBuyVol = vpinDecay * tracker.ewmaBuyVol + (1 - vpinDecay) * buyInc;
+  tracker.ewmaSellVol = vpinDecay * tracker.ewmaSellVol + (1 - vpinDecay) * sellInc;
   const totalVol = tracker.ewmaBuyVol + tracker.ewmaSellVol;
   tracker.vpinRecursive = totalVol > 1e-9
     ? Math.abs(tracker.ewmaBuyVol - tracker.ewmaSellVol) / totalVol
@@ -1156,7 +1163,8 @@ Deno.serve(async (req) => {
 
               // ─── GATE 4: FORCE (Z-OFI — is this move statistically abnormal for NOW?) ───
               // Cost: Zero (reading computed float). Kills: "Normal" noise that coincidentally had a Z-score.
-              if (Math.abs(tradeOfi.zOfi) < Z_OFI_FIRE_THRESHOLD && tradeOfi.ticksInWindow > 50) {
+              // ALWAYS enforce — no warm-up bypass. Early ticks with low Z-OFI = noise.
+              if (Math.abs(tradeOfi.zOfi) < Z_OFI_FIRE_THRESHOLD) {
                 continue;
               }
 
