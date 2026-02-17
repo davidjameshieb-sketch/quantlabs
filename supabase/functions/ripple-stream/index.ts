@@ -842,20 +842,20 @@ Deno.serve(async (req) => {
     // Natural hedge: Z-Score profits in trends, Ghost profits in ranges.
     const GHOST_CLUSTER_MIN_HITS = 3;      // Minimum hits on a price level to qualify as cluster
     const GHOST_CLUSTER_MIN_SELLS = 2;     // Minimum sell-side activity (retail stops are sells)
-    const GHOST_HURST_CANCEL = 0.6;        // Cancel limit if H > 0.6 (strong trend = steamroller)
-    const GHOST_DRIFT_CANCEL = 2.0;        // Cancel limit if |DriftNorm| > 2.0 (high velocity)
-    const GHOST_EFFICIENCY_MAX = 0.3;      // Only fill if E < 0.3 (absorption = safe to provide liquidity)
     const GHOST_COOLDOWN_MS = 300_000;     // 5-minute cooldown per pair
-    const GHOST_SL_PIPS = 8;
-    const GHOST_TP_PIPS = 30;              // 3.75:1 R:R
+    const GHOST_SL_PIPS_DEFAULT = 8;
+    const GHOST_TP_PIPS_DEFAULT = 30;              // 3.75:1 R:R
     const GHOST_UNITS_DEFAULT = 1000;
     const ghostLastFireTs = new Map<string, number>();
 
-    // Load ghost vacuum config from sovereign memory
+    // Load ghost vacuum config from sovereign memory (DGE can tune these dynamically)
     let ghostUnits = GHOST_UNITS_DEFAULT;
-    let ghostSlPips = GHOST_SL_PIPS;
-    let ghostTpPips = GHOST_TP_PIPS;
+    let ghostSlPips = GHOST_SL_PIPS_DEFAULT;
+    let ghostTpPips = GHOST_TP_PIPS_DEFAULT;
     let ghostBlockedPairs: string[] = [];
+    let GHOST_HURST_CANCEL = 0.6;        // Cancel limit if H > threshold (steamroller)
+    let GHOST_DRIFT_CANCEL = 2.0;        // Cancel limit if |DriftNorm| > threshold (high velocity)
+    let GHOST_EFFICIENCY_MAX = 0.3;      // Only fill if E < threshold (absorption = safe)
     try {
       const { data: ghostConfig } = await supabase
         .from("sovereign_memory")
@@ -865,9 +865,13 @@ Deno.serve(async (req) => {
       if (ghostConfig?.payload) {
         const gc = ghostConfig.payload as Record<string, unknown>;
         ghostUnits = (gc.units as number) || GHOST_UNITS_DEFAULT;
-        ghostSlPips = (gc.slPips as number) || GHOST_SL_PIPS;
-        ghostTpPips = (gc.tpPips as number) || GHOST_TP_PIPS;
+        ghostSlPips = (gc.slPips as number) || GHOST_SL_PIPS_DEFAULT;
+        ghostTpPips = (gc.tpPips as number) || GHOST_TP_PIPS_DEFAULT;
         ghostBlockedPairs = (gc.blockedPairs as string[]) || [];
+        // Dynamic thresholds — DGE can tune these during credit exhaustion
+        GHOST_HURST_CANCEL = (gc.hurstCancel as number) || 0.6;
+        GHOST_DRIFT_CANCEL = (gc.driftCancel as number) || 2.0;
+        GHOST_EFFICIENCY_MAX = (gc.efficiencyMax as number) || 0.3;
       }
     } catch { /* use defaults */ }
 
