@@ -585,53 +585,311 @@ function parseActions(text: string): any[] {
   return actions;
 }
 
+// ─── OANDA Direct API Helper (for FM trade actions) ───
+async function fmOandaRequest(path: string, method: string, body?: Record<string, unknown>): Promise<any> {
+  const oandaEnv = Deno.env.get("OANDA_ENV") || "live";
+  const apiToken = oandaEnv === "live"
+    ? (Deno.env.get("OANDA_LIVE_API_TOKEN") || Deno.env.get("OANDA_API_TOKEN"))
+    : Deno.env.get("OANDA_API_TOKEN");
+  const accountId = oandaEnv === "live"
+    ? (Deno.env.get("OANDA_LIVE_ACCOUNT_ID") || Deno.env.get("OANDA_ACCOUNT_ID"))
+    : Deno.env.get("OANDA_ACCOUNT_ID");
+
+  if (!apiToken || !accountId) throw new Error("OANDA credentials not configured");
+
+  const host = oandaEnv === "live" ? "https://api-fxtrade.oanda.com" : "https://api-fxpractice.oanda.com";
+  const url = `${host}${path.replace("{accountId}", accountId)}`;
+  console.log(`[FM-OANDA] ${method} ${url}`);
+
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${apiToken}`,
+    "Content-Type": "application/json",
+    Accept: "application/json",
+  };
+  const opts: RequestInit = { method, headers };
+  if (body) opts.body = JSON.stringify(body);
+
+  const res = await fetch(url, opts);
+  const data = await res.json();
+  if (!res.ok) {
+    console.error(`[FM-OANDA] Error ${res.status}:`, JSON.stringify(data));
+    throw new Error(data.errorMessage || data.rejectReason || `OANDA ${res.status}`);
+  }
+  return data;
+}
+
 // ─── Execute Action ───
 async function executeAction(action: any, supabase: any): Promise<void> {
-  console.log(`🔧 Executing action: ${action.type}`, action);
+  console.log(`🔧 Executing action: ${action.type}`, JSON.stringify(action).slice(0, 500));
   try {
     switch (action.type) {
-      case "place_trade": await supabase.functions.invoke("oanda-place-trade", { body: action }); break;
-      case "close_trade": await supabase.functions.invoke("oanda-close-trade", { body: action }); break;
-      case "update_sl_tp": await supabase.functions.invoke("oanda-update-sl-tp", { body: action }); break;
-      case "bypass_gate": case "revoke_bypass": case "adjust_gate_threshold": case "create_gate": case "remove_gate":
-        await supabase.functions.invoke("gate-manager", { body: action }); break;
-      case "suspend_agent": case "reinstate_agent": case "mutate_agent_dna":
-        await supabase.functions.invoke("agent-manager", { body: action }); break;
-      case "adjust_position_sizing": await supabase.functions.invoke("position-sizing-manager", { body: action }); break;
-      case "add_blacklist": case "remove_blacklist":
-        await supabase.functions.invoke("blacklist-manager", { body: action }); break;
-      case "activate_circuit_breaker": case "deactivate_circuit_breaker":
-        await supabase.functions.invoke("circuit-breaker-manager", { body: action }); break;
-      case "adjust_evolution_param": await supabase.functions.invoke("evolution-manager", { body: action }); break;
-      case "lead_lag_scan": await supabase.functions.invoke("lead-lag-scanner", { body: action }); break;
-      case "liquidity_heatmap": await supabase.functions.invoke("liquidity-heatmap", { body: action }); break;
-      case "get_account_summary": await supabase.functions.invoke("oanda-account-summary", { body: action }); break;
-      case "get_open_trades": await supabase.functions.invoke("oanda-open-trades", { body: action }); break;
-      case "execute_liquidity_vacuum": await supabase.functions.invoke("liquidity-vacuum", { body: action }); break;
-      case "arm_correlation_trigger": case "disarm_correlation_trigger":
-        await supabase.functions.invoke("correlation-trigger-manager", { body: action }); break;
-      case "set_global_posture": await supabase.functions.invoke("global-posture-manager", { body: action }); break;
-      case "discover_physics": await supabase.functions.invoke("physics-discovery", { body: action }); break;
-      case "write_memory": await writeSovereignMemory(supabase, action.key || action.memory_key, action.value || action.payload, action.metadata); break;
-      case "modify_directive": await supabase.functions.invoke("directive-modifier", { body: action }); break;
-      case "define_macro": case "execute_macro": await supabase.functions.invoke("macro-manager", { body: action }); break;
-      case "db_write": case "db_query": await supabase.functions.invoke("db-executor", { body: action }); break;
-      case "execute_sql": await supabase.functions.invoke("sql-executor", { body: action }); break;
-      case "deploy_function": await supabase.functions.invoke("function-deployer", { body: action }); break;
-      case "http_request": await supabase.functions.invoke("http-requester", { body: action }); break;
-      case "eval_indicator": await supabase.functions.invoke("indicator-evaluator", { body: action }); break;
-      case "call_edge_function": await supabase.functions.invoke(action.function_name, { body: action.params }); break;
-      case "manage_storage": await supabase.functions.invoke("storage-manager", { body: action }); break;
-      case "manage_auth": await supabase.functions.invoke("auth-manager", { body: action }); break;
-      case "commit_rule": await commitRule(supabase, action); break;
+
+      // ═══ TRADE EXECUTION — Direct OANDA API (no intermediary edge function) ═══
+
+      case "place_trade": {
+        const pair = (action.pair || action.currency_pair || "").replace("/", "_");
+        const dir = action.direction || "long";
+        const units = action.units || 1000;
+        const signedUnits = dir === "short" ? -Math.abs(units) : Math.abs(units);
+        const oandaEnv = Deno.env.get("OANDA_ENV") || "live";
+
+        const orderBody = {
+          order: {
+            type: "MARKET",
+            instrument: pair,
+            units: signedUnits.toString(),
+            timeInForce: "FOK",
+            positionFill: "DEFAULT",
+            ...(action.stopLossPrice ? { stopLossOnFill: { price: Number(action.stopLossPrice).toFixed(5), timeInForce: "GTC" } } : {}),
+            ...(action.takeProfitPrice ? { takeProfitOnFill: { price: Number(action.takeProfitPrice).toFixed(5), timeInForce: "GTC" } } : {}),
+          },
+        };
+
+        const result = await fmOandaRequest("/v3/accounts/{accountId}/orders", "POST", orderBody);
+        console.log(`[FM-OANDA] Order result:`, JSON.stringify(result).slice(0, 500));
+
+        // Persist to oanda_orders
+        const oandaOrderId = result.orderCreateTransaction?.id || result.orderFillTransaction?.orderID || null;
+        const oandaTradeId = result.orderFillTransaction?.tradeOpened?.tradeID || null;
+        const filledPrice = result.orderFillTransaction?.price ? parseFloat(result.orderFillTransaction.price) : null;
+
+        // Find a valid user_id from existing orders (FM uses service role, not a user JWT)
+        const { data: anyOrder } = await supabase.from("oanda_orders").select("user_id").limit(1).single();
+        const userId = anyOrder?.user_id || "00000000-0000-0000-0000-000000000000";
+
+        await supabase.from("oanda_orders").insert({
+          user_id: userId,
+          signal_id: action.signal_id || `fm-${Date.now()}`,
+          currency_pair: pair,
+          direction: dir,
+          units: Math.abs(units),
+          entry_price: filledPrice,
+          oanda_order_id: oandaOrderId,
+          oanda_trade_id: oandaTradeId,
+          status: oandaTradeId ? "filled" : "submitted",
+          agent_id: action.agent_id || "sovereign-fm",
+          environment: oandaEnv,
+          sovereign_override_tag: action.reason || "FM direct",
+          sovereign_override_status: "executed",
+          confidence_score: action.confidence || null,
+        });
+        console.log(`✅ FM trade placed: ${pair} ${dir} ${units}u → trade ${oandaTradeId}`);
+        break;
+      }
+
+      case "close_trade": {
+        const tradeId = action.oanda_trade_id || action.tradeId || action.trade_id;
+        if (!tradeId) { console.warn("⚠️ close_trade: no trade ID"); break; }
+        const result = await fmOandaRequest(`/v3/accounts/{accountId}/trades/${tradeId}/close`, "PUT", {});
+        const closePrice = result.orderFillTransaction?.price ? parseFloat(result.orderFillTransaction.price) : null;
+        await supabase.from("oanda_orders").update({
+          status: "closed",
+          exit_price: closePrice,
+          closed_at: new Date().toISOString(),
+          sovereign_override_tag: action.reason || "FM close",
+        }).eq("oanda_trade_id", tradeId);
+        console.log(`✅ FM closed trade ${tradeId} @ ${closePrice}`);
+        break;
+      }
+
+      case "update_sl_tp": {
+        const tradeId = action.oanda_trade_id || action.tradeId || action.trade_id;
+        if (!tradeId) { console.warn("⚠️ update_sl_tp: no trade ID"); break; }
+        const orderUpdate: Record<string, unknown> = {};
+        if (action.stopLossPrice != null) {
+          orderUpdate.stopLoss = { price: Number(action.stopLossPrice).toFixed(5), timeInForce: "GTC" };
+        }
+        if (action.takeProfitPrice != null) {
+          orderUpdate.takeProfit = { price: Number(action.takeProfitPrice).toFixed(5), timeInForce: "GTC" };
+        }
+        if (Object.keys(orderUpdate).length === 0) { console.warn("⚠️ update_sl_tp: no SL/TP values"); break; }
+        await fmOandaRequest(`/v3/accounts/{accountId}/trades/${tradeId}/orders`, "PUT", orderUpdate);
+        console.log(`✅ FM updated SL/TP on trade ${tradeId}`);
+        break;
+      }
+
+      case "get_account_summary": {
+        const summary = await fmOandaRequest("/v3/accounts/{accountId}/summary", "GET");
+        console.log(`✅ Account NAV: ${summary.account?.NAV}, Balance: ${summary.account?.balance}`);
+        break;
+      }
+
+      case "get_open_trades": {
+        const trades = await fmOandaRequest("/v3/accounts/{accountId}/openTrades", "GET");
+        console.log(`✅ Open trades: ${(trades.trades || []).length}`);
+        break;
+      }
+
+      // ═══ GOVERNANCE — Direct DB writes (no intermediary edge function) ═══
+
+      case "bypass_gate": {
+        await supabase.from("gate_bypasses").insert({
+          gate_id: action.gate_id || action.gateId,
+          reason: action.reason || "FM override",
+          expires_at: action.expires_at || new Date(Date.now() + 4 * 3600_000).toISOString(),
+          pair: action.pair || null,
+          created_by: "sovereign-fm",
+        });
+        break;
+      }
+
+      case "revoke_bypass": {
+        await supabase.from("gate_bypasses").update({ revoked: true })
+          .eq("gate_id", action.gate_id || action.gateId).eq("revoked", false);
+        break;
+      }
+
+      case "adjust_gate_threshold": {
+        await supabase.from("gate_bypasses").insert({
+          gate_id: `GATE_THRESHOLD:${action.gate_id || action.gateId}`,
+          reason: `Threshold → ${action.new_value}: ${action.reason || "FM calibration"}`,
+          expires_at: action.expires_at || new Date(Date.now() + 8 * 3600_000).toISOString(),
+          created_by: "sovereign-fm",
+        });
+        break;
+      }
+
+      case "create_gate": {
+        await supabase.from("gate_bypasses").insert({
+          gate_id: `DYNAMIC_GATE:${action.gate_id || action.name}`,
+          reason: action.reason || action.description || "FM dynamic gate",
+          expires_at: action.expires_at || new Date(Date.now() + 24 * 3600_000).toISOString(),
+          created_by: "sovereign-fm",
+        });
+        break;
+      }
+
+      case "remove_gate": {
+        await supabase.from("gate_bypasses").update({ revoked: true })
+          .like("gate_id", `DYNAMIC_GATE:${action.gate_id || action.name}%`).eq("revoked", false);
+        break;
+      }
+
+      case "suspend_agent": {
+        await supabase.from("gate_bypasses").insert({
+          gate_id: `AGENT_SUSPEND:${action.agent_id}`,
+          reason: action.reason || "FM suspension",
+          expires_at: action.expires_at || new Date(Date.now() + 8 * 3600_000).toISOString(),
+          created_by: "sovereign-fm",
+        });
+        break;
+      }
+
+      case "reinstate_agent": {
+        await supabase.from("gate_bypasses").update({ revoked: true })
+          .eq("gate_id", `AGENT_SUSPEND:${action.agent_id}`).eq("revoked", false);
+        break;
+      }
+
+      case "mutate_agent_dna": {
+        await writeSovereignMemory(supabase, `agent_dna:${action.agent_id}`, action.dna || action.mutations, { source: "tier4-evolution" });
+        break;
+      }
+
+      case "adjust_position_sizing": {
+        await supabase.from("gate_bypasses").insert({
+          gate_id: `SIZING_OVERRIDE:${action.scope || "global"}`,
+          reason: `${action.multiplier || action.sizing}x: ${action.reason || "FM sizing"}`,
+          expires_at: action.expires_at || new Date(Date.now() + 4 * 3600_000).toISOString(),
+          created_by: "sovereign-fm",
+        });
+        break;
+      }
+
+      case "add_blacklist": {
+        await supabase.from("gate_bypasses").insert({
+          gate_id: `SESSION_BLACKLIST:${action.session || action.pair || "unknown"}`,
+          reason: action.reason || "FM blacklist",
+          expires_at: action.expires_at || new Date(Date.now() + 12 * 3600_000).toISOString(),
+          pair: action.pair || null,
+          created_by: "sovereign-fm",
+        });
+        break;
+      }
+
+      case "remove_blacklist": {
+        await supabase.from("gate_bypasses").update({ revoked: true })
+          .like("gate_id", `SESSION_BLACKLIST:${action.session || action.pair || ""}%`).eq("revoked", false);
+        break;
+      }
+
+      case "activate_circuit_breaker": {
+        await supabase.from("gate_bypasses").insert({
+          gate_id: `CIRCUIT_BREAKER:${action.scope || "fm_manual"}`,
+          reason: action.reason || "FM circuit breaker",
+          expires_at: action.expires_at || new Date(Date.now() + 4 * 3600_000).toISOString(),
+          created_by: "sovereign-fm",
+        });
+        break;
+      }
+
+      case "deactivate_circuit_breaker": {
+        await supabase.from("gate_bypasses").update({ revoked: true })
+          .like("gate_id", "CIRCUIT_BREAKER:%").eq("revoked", false);
+        break;
+      }
+
+      case "adjust_evolution_param": {
+        await supabase.from("gate_bypasses").insert({
+          gate_id: `EVOLUTION_PARAM:${action.param || action.name}`,
+          reason: `${action.value}: ${action.reason || "FM evolution"}`,
+          expires_at: action.expires_at || new Date(Date.now() + 24 * 3600_000).toISOString(),
+          created_by: "sovereign-fm",
+        });
+        break;
+      }
+
+      case "set_global_posture": {
+        await writeSovereignMemory(supabase, "global_posture", {
+          posture: action.posture,
+          reason: action.reason,
+          set_at: new Date().toISOString(),
+        });
+        break;
+      }
+
+      // ═══ SELF-MODIFICATION — Direct implementations ═══
+
+      case "write_memory":
+        await writeSovereignMemory(supabase, action.key || action.memory_key, action.value || action.payload, action.metadata);
+        break;
+
+      case "commit_rule":
+        await commitRule(supabase, action);
+        break;
+
       case "configure_zscore_engine":
-        // Write all zscore/velocity/snapback/correlation configs
         if (action.zscore_config) await writeSovereignMemory(supabase, "zscore_strike_config", action.zscore_config);
         if (action.correlation_groups) await writeSovereignMemory(supabase, "correlation_groups_config", { groups: action.correlation_groups });
         if (action.velocity_config) await writeSovereignMemory(supabase, "velocity_gating_config", action.velocity_config);
         if (action.snapback_config) await writeSovereignMemory(supabase, "snapback_sniper_config", action.snapback_config);
         break;
-      default: console.warn(`⚠️ Unknown action type: ${action.type}`);
+
+      // ═══ GENERIC EDGE FUNCTION CALL (for any that actually exist) ═══
+
+      case "call_edge_function":
+        await supabase.functions.invoke(action.function_name, { body: action.params });
+        break;
+
+      case "discover_physics":
+        await writeSovereignMemory(supabase, `physics_discovery:${action.pair || "global"}`, action);
+        break;
+
+      case "lead_lag_scan":
+        await writeSovereignMemory(supabase, "lead_lag_scan_request", action);
+        break;
+
+      case "liquidity_heatmap":
+        await writeSovereignMemory(supabase, "liquidity_heatmap_request", action);
+        break;
+
+      case "execute_liquidity_vacuum":
+        await writeSovereignMemory(supabase, "liquidity_vacuum_request", action);
+        break;
+
+      default:
+        console.warn(`⚠️ Unknown action type: ${action.type} — persisting to memory`);
+        await writeSovereignMemory(supabase, `fm_action:${action.type}`, action);
     }
     console.log(`✅ Action executed: ${action.type}`);
   } catch (err) {
