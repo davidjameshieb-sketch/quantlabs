@@ -2714,6 +2714,25 @@ Deno.serve(async (req) => {
     return new Response("ok", { headers: corsHeaders });
   }
 
+  // ═══════════════════════════════════════════════════════════════
+  // MASTER KILL-SWITCH: L1 AGENTS PERMANENTLY DEACTIVATED
+  // All trade execution now flows exclusively through the Predatory Layer
+  // (ripple-stream: Z-Score Strike, Velocity Gating, Snap-Back Sniper).
+  // L1 agents are NOT to be used for ANY purpose — not even sentiment.
+  // Directive: FM confirmed — predatory-only execution mode.
+  // ═══════════════════════════════════════════════════════════════
+  console.log(`[L1-KILL] ═══ L1 AGENT ENGINE DEACTIVATED — Predatory Layer Only ═══`);
+  console.log(`[L1-KILL] All trade authority delegated to ripple-stream. L1 agents blocked.`);
+  return new Response(
+    JSON.stringify({
+      success: true,
+      mode: "l1-deactivated",
+      reason: "L1 agents permanently deactivated. All execution routed through Predatory Layer (ripple-stream) only. FM directive confirmed.",
+      timestamp: new Date().toISOString(),
+    }),
+    { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+  );
+
   const startTime = Date.now();
   const execConfig = getExecutionConfig();
   const session = detectSession();
