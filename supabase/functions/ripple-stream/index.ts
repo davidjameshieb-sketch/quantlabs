@@ -693,6 +693,10 @@ function getOrResetVwap(pair: string, mid: number): number {
 }
 
 // Track last applied SL per trade to enforce unidirectional moves
+// BUG FIX: This map is hydrated from OANDA live trades on every session boot.
+// Previously initialized empty, causing cold-start amnesia: after a ripple-stream restart
+// prevSL=undefined triggered the 2-pip fallback guard which could WIDEN the stop
+// if the best wall shifted down. Now we seed from the actual broker SL price.
 const lastAppliedSL = new Map<string, number>();
 
 // ─── Velocity Gating Constants ───────────────────────────
@@ -786,6 +790,27 @@ Deno.serve(async (req) => {
   }
 
   const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+
+  // ─── COLD-START SL HYDRATION: Seed lastAppliedSL from OANDA live trade state ───
+  // CRITICAL FIX: Without this, a stream restart causes prevSL=undefined for every
+  // open trade. The fallback guard (newSL > entryPrice - 2 pips) could widen the
+  // stop if the best wall shifted further away. We seed from the live OANDA stopLoss.
+  try {
+    const slHydrationRes = await fetch(
+      `${OANDA_API}/accounts/${OANDA_ACCOUNT}/openTrades`,
+      { headers: { Authorization: `Bearer ${OANDA_TOKEN}` } },
+    );
+    if (slHydrationRes.ok) {
+      const slHydrationData = await slHydrationRes.json();
+      for (const t of (slHydrationData.trades || [])) {
+        const slPrice = t.stopLossOrder?.price ? parseFloat(t.stopLossOrder.price) : null;
+        if (t.id && slPrice != null) {
+          lastAppliedSL.set(t.id, slPrice);
+        }
+      }
+      console.log(`[STRIKE-v3] 🛡️ SL hydration: seeded ${lastAppliedSL.size} trades from OANDA live state`);
+    }
+  } catch (e) { console.warn("[STRIKE-v3] ⚠️ SL hydration failed (non-critical):", e); }
 
   // ─── Credit Exhaustion Check: Only Z-Score Strike survives AI blackout ───
   let creditExhausted = false;
@@ -1631,11 +1656,17 @@ Deno.serve(async (req) => {
               }
 
               // ═══ RULE OF 3 ═══
+              // BUG FIX: A direction flip was resetting consecutivePassCount to 1, treating the
+              // direction-change tick as a partial pass. A direction change means we lost
+              // consecutive conviction — reset to 0 and start fresh from next tick.
               if (pState.lastPassDirection === tradeDirection) {
                 pState.consecutivePassCount++;
               } else {
-                pState.consecutivePassCount = 1;
+                // Direction changed — this is NOT a pass, start over
+                pState.consecutivePassCount = 0;
                 pState.lastPassDirection = tradeDirection;
+                gateDiag.ruleOf3++;
+                continue;
               }
               if (pState.consecutivePassCount < PREDATOR_RULE_OF_3) {
                 console.log(`[PREDATOR] ⏳ RULE OF 3: ${tradePair} ${tradeDirection} pass ${pState.consecutivePassCount}/${PREDATOR_RULE_OF_3} | H=${tradeOfi.hurst} E=${tradeOfi.efficiency} R=${shortWindowRatio.toFixed(2)} VPIN=${tradeOfi.vpin}`);
