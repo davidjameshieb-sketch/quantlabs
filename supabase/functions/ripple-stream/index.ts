@@ -628,8 +628,8 @@ const ZSCORE_COOLDOWN_MS = 300_000; // 5 MINUTES between fires on same group (wa
 // The DGE remains LOCKED until all four gates are open.
 const PREDATOR_HURST_MIN = 0.60;        // Gate 1: Persistent regime only
 const PREDATOR_EFFICIENCY_MIN = 3.5;     // Gate 2: Vacuum (liquidity hole = institutional displacement)
-const PREDATOR_OFI_RATIO_LONG = 3.0;    // Gate 3 LONG: Whale imbalance (OFI ratio >= 3.0)
-const PREDATOR_OFI_RATIO_SHORT = 0.30;  // Gate 3 SHORT: Whale imbalance (OFI ratio <= 0.30)
+const PREDATOR_OFI_RATIO_LONG = 2.0;    // Gate 3 LONG: Whale imbalance (OFI ratio >= 2.0 in 20-tick window)
+const PREDATOR_OFI_RATIO_SHORT = 0.50;  // Gate 3 SHORT: Whale imbalance (OFI ratio <= 0.50 in 20-tick window)
 const PREDATOR_WEIGHTING_MIN = 50;      // Gate 4: Buy/Sell weighting > 50%
 const PREDATOR_RULE_OF_3 = 3;           // All gates must hold for 3 consecutive ticks
 const PREDATOR_VPIN_MIN = 0.45;         // VPIN validation: must be >= 0.45 for institutional participation
@@ -876,6 +876,17 @@ Deno.serve(async (req) => {
     const velocityFires: string[] = [];
     const snapbackFires: string[] = [];
     const ghostVacuumFires: string[] = [];
+
+    // ═══ PREDATORY HUNTER: Per-Instrument State ═══
+    const predatorState = new Map<string, {
+      consecutivePassCount: number;
+      lastPassDirection: string | null;
+      lastFireTs: number;
+    }>();
+
+    // ═══ GATE DIAGNOSTICS: Track which gates kill signals ═══
+    const gateDiag = { total: 0, density: 0, warmup: 0, hurst: 0, efficiency: 0, ofiRatio: 0, weighting: 0, kmDrift: 0, vpinGhost: 0, vpinMin: 0, ruleOf3: 0, passed: 0 };
+    let lastDiagTs = 0;
     const autonomousExits: string[] = [];
     const startTime = Date.now();
     let tickCount = 0;
@@ -1257,10 +1268,11 @@ Deno.serve(async (req) => {
                       const dist = Math.abs(levelPrice - mid);
                       if (dist > rangePx) continue; // outside 3-pip scan radius
 
+                      const levelNet = info.buys - info.sells;
                       if (isLong) {
                         // 🟢 SHIELD: Buy Walls BELOW price (support shields)
-                        if (levelPrice < mid && info.buys >= 2 && info.net > 0) {
-                          const strength = info.net * info.hits;
+                        if (levelPrice < mid && info.buys >= 2 && levelNet > 0) {
+                          const strength = levelNet * info.hits;
                           if (strength > bestWallStrength) {
                             bestWallStrength = strength;
                             bestWallPrice = levelPrice;
@@ -1268,8 +1280,8 @@ Deno.serve(async (req) => {
                         }
                       } else {
                         // 🔴 CEILING: Sell Walls ABOVE price (resistance shields)
-                        if (levelPrice > mid && info.sells >= 2 && info.net < 0) {
-                          const strength = Math.abs(info.net) * info.hits;
+                        if (levelPrice > mid && info.sells >= 2 && levelNet < 0) {
+                          const strength = Math.abs(levelNet) * info.hits;
                           if (strength > bestWallStrength) {
                             bestWallStrength = strength;
                             bestWallPrice = levelPrice;
@@ -1376,70 +1388,60 @@ Deno.serve(async (req) => {
             }
 
             // ═══════════════════════════════════════════════
-            // STRATEGY 1: PREDATORY HUNTER (formerly Z-Score Strike)
-            // The Gate & Strike: 4-gate institutional filter + Rule of 3
-            // Entry on the Vacuum. Exit on the Fair Value.
+            // PREDATORY HUNTER v2: INDEPENDENT INSTRUMENT SCAN
+            // No longer trapped behind Z-Score pair divergence.
+            // Scans ALL instruments for institutional flow setups.
+            // Direction determined by order flow, not cross-pair mean reversion.
             // ═══════════════════════════════════════════════
-            for (const group of correlationGroups) {
-              const priceA = prices.get(group.pairA);
-              const priceB = prices.get(group.pairB);
-              if (!priceA || !priceB) continue;
 
-              // Correlation spread = normalized difference between pair mids
-              // For JPY pairs, normalize to comparable pip scale
-              const normA = priceA.mid * pipMultiplier(group.pairA);
-              const normB = priceB.mid * pipMultiplier(group.pairB);
-              const corrSpread = normA - normB;
-
-              const tracker = zScoreTrackers.get(group.name)!;
-              tracker.spreadHistory.push(corrSpread);
-              if (tracker.spreadHistory.length > ZSCORE_WINDOW) {
-                tracker.spreadHistory.shift();
+            // ─── GATE DIAGNOSTICS: Log every 30s ───
+            if (tickTs - lastDiagTs > 30_000) {
+              lastDiagTs = tickTs;
+              if (gateDiag.total > 0) {
+                console.log(`[PREDATOR_DIAG] 📊 Scans=${gateDiag.total} | Density=${gateDiag.density} Warmup=${gateDiag.warmup} Hurst=${gateDiag.hurst} Eff=${gateDiag.efficiency} OFI_R=${gateDiag.ofiRatio} Weight=${gateDiag.weighting} KM=${gateDiag.kmDrift} VPIN_G=${gateDiag.vpinGhost} VPIN_M=${gateDiag.vpinMin} R3=${gateDiag.ruleOf3} | PASSED=${gateDiag.passed}`);
               }
+            }
 
-              // Need enough history
-              if (tracker.spreadHistory.length < 30) continue;
+            for (const tradePair of instruments) {
+              if (blockedPairs.includes(tradePair)) continue;
+              gateDiag.total++;
 
-              const { z, mean, std } = computeZScore(tracker.spreadHistory);
+              // Per-instrument state
+              if (!predatorState.has(tradePair)) {
+                predatorState.set(tradePair, { consecutivePassCount: 0, lastPassDirection: null, lastFireTs: 0 });
+              }
+              const pState = predatorState.get(tradePair)!;
 
-              // Cooldown check
-              if (tickTs - tracker.lastFireTs < ZSCORE_COOLDOWN_MS) continue;
+              // Cooldown: 5 minutes between fires on same pair
+              if (tickTs - pState.lastFireTs < ZSCORE_COOLDOWN_MS) continue;
 
-              // ─── GATE 1: Z-Score threshold (the only "committee" is math) ───
-              if (Math.abs(z) < zScoreThreshold) continue;
+              // ─── PRE-GATE: LIQUIDITY (Tick Density) ───
+              const densityCheck = isTickDensitySufficient(tradePair);
+              if (!densityCheck.ok) { pState.consecutivePassCount = 0; gateDiag.density++; continue; }
 
-              // z > 2: pairA is expensive relative to pairB → SHORT pairA or LONG pairB
-              // z < -2: pairA is cheap relative to pairB → LONG pairA or SHORT pairB
-              // We trade the LAGGING pair (the one that hasn't moved yet)
-              const aMovePips = prevPrice ? Math.abs(toPips(priceA.mid - (prices.get(group.pairA)?.mid || priceA.mid), group.pairA)) : 0;
-              
-              let tradePair: string;
-              let tradeDirection: string;
-              
-              if (z > zScoreThreshold) {
-                // pairA overextended up relative to pairB → pairB should catch up (long) OR pairA should revert (short)
-                // Trade the quieter pair in the catch-up direction
-                tradePair = group.pairB;
+              // ─── READ PHYSICS ───
+              const tradeTracker = getOrCreateOfi(tradePair);
+              if (tradeTracker.tickCount < 30) { pState.consecutivePassCount = 0; gateDiag.warmup++; continue; }
+
+              // ─── DETERMINE DIRECTION FROM FLOW ───
+              // Use last ~20 ticks from velocity tracker for responsive OFI ratio
+              const vt = velocityTrackers.get(tradePair);
+              const recentDirTicks = vt?.ticks || [];
+              const recentBuys = recentDirTicks.filter(t => t.direction === 1).length;
+              const recentSells = recentDirTicks.filter(t => t.direction === -1).length;
+              const shortWindowRatio = recentSells > 0
+                ? recentBuys / recentSells
+                : (recentBuys > 0 ? 10.0 : 1.0);
+
+              let tradeDirection: string | null = null;
+              if (shortWindowRatio >= PREDATOR_OFI_RATIO_LONG) {
                 tradeDirection = "long";
-              } else {
-                // z < -threshold: pairA underextended → pairB should drop OR pairA should rise
-                tradePair = group.pairB;
+              } else if (shortWindowRatio <= PREDATOR_OFI_RATIO_SHORT) {
                 tradeDirection = "short";
               }
+              if (!tradeDirection) { pState.consecutivePassCount = 0; gateDiag.ofiRatio++; continue; }
 
-              if (blockedPairs.includes(tradePair)) continue;
-
-              // ═══ PREDATORY HUNTER GATE PIPELINE (2026 Strategy) ═══
-              // Gate 0 (Z-Score divergence) already passed above — kills 99% of ticks.
-              // Now: 4-gate institutional filter + Rule of 3 + VPIN + KM Drift
-
-              // ─── PRE-GATE: LIQUIDITY (Tick Density — is it safe to trade?) ───
-              const densityCheck = isTickDensitySufficient(tradePair);
-              if (!densityCheck.ok) { tracker.consecutivePassCount = 0; continue; }
-
-              // ─── READ PHYSICS (already computed — O(1) read from tracker) ───
-              const tradeTracker = getOrCreateOfi(tradePair);
-              if (tradeTracker.tickCount < 10) { tracker.consecutivePassCount = 0; continue; }
+              // ─── COMPUTE PHYSICS METRICS ───
               const sqrtD2Trade = Math.sqrt(Math.abs(tradeTracker.D2));
               const driftNormTrade = sqrtD2Trade > 1e-10 ? tradeTracker.D1 / sqrtD2Trade : 0;
               const absD1Trade = Math.abs(tradeTracker.D1);
@@ -1447,122 +1449,95 @@ Deno.serve(async (req) => {
               const pipMultTrade = tradePair.includes("JPY") ? 100 : 10000;
               const ofiScaledTrade = absOfiTrade / (pipMultTrade * 10);
               const efficiencyTrade = ofiScaledTrade / (absD1Trade + EFFICIENCY_EPSILON);
-              const marketStateTrade = classifyMarketState(efficiencyTrade);
-              const hiddenPlayerTrade = detectHiddenLimitPlayer(tradeTracker.ofiRecursive, tradeTracker.D1, efficiencyTrade, marketStateTrade);
-              const hurstRegimeTrade = tradeTracker.hurst > HURST_PERSISTENCE_THRESHOLD ? "PERSISTENT" :
-                tradeTracker.hurst < HURST_MEANREV_THRESHOLD ? "MEAN_REVERTING" : "RANDOM_WALK";
               const ofiNormTrade = Math.tanh(tradeTracker.ofiRecursive / 100);
 
-              // OFI Ratio for Gate 3: buy/sell ratio from running counts
-              const totalOfiTicks = tradeTracker.runningBuys + tradeTracker.runningSells;
-              const ofiRatioTrade = totalOfiTicks > 0 ? tradeTracker.runningBuys / Math.max(1, tradeTracker.runningSells) : 1.0;
-
               const tradeOfi = {
-                ofiRatio: Math.round(ofiRatioTrade * 1000) / 1000,
-                ofiRaw: 0,
-                ofiWeighted: Math.round(ofiNormTrade * 1000) / 1000,
+                hurst: Math.round(tradeTracker.hurst * 1000) / 1000,
+                efficiency: Math.round(efficiencyTrade * 1000) / 1000,
                 vpin: Math.round(tradeTracker.vpinRecursive * 1000) / 1000,
                 buyPressure: Math.round(tradeTracker.ewmaBuyPct * 100),
                 sellPressure: Math.round(tradeTracker.ewmaSellPct * 100),
-                ticksInWindow: tradeTracker.tickCount,
-                bias: (ofiNormTrade > OFI_IMBALANCE_THRESHOLD ? "BUY" : ofiNormTrade < -OFI_IMBALANCE_THRESHOLD ? "SELL" : "NEUTRAL") as "BUY" | "SELL" | "NEUTRAL",
-                syntheticDepth: [] as any[],
                 km: {
                   D1: tradeTracker.D1, D2: tradeTracker.D2,
                   driftNormalized: Math.round(driftNormTrade * 1000) / 1000,
                   sampleSize: tradeTracker.tickCount,
                   alphaAdaptive: Math.round(tradeTracker.alpha * 10000) / 10000,
                 },
-                hiddenPlayer: hiddenPlayerTrade,
-                resistanceLevels: [] as any[],
-                efficiency: Math.round(efficiencyTrade * 1000) / 1000,
-                marketState: marketStateTrade,
                 zOfi: Math.round(tradeTracker.zOfi * 1000) / 1000,
-                hurst: Math.round(tradeTracker.hurst * 1000) / 1000,
-                hurstRegime: hurstRegimeTrade,
+                bias: (ofiNormTrade > OFI_IMBALANCE_THRESHOLD ? "BUY" : ofiNormTrade < -OFI_IMBALANCE_THRESHOLD ? "SELL" : "NEUTRAL") as "BUY" | "SELL" | "NEUTRAL",
               };
 
-              // ═══ PREDATORY HUNTER: 4-GATE INSTITUTIONAL FILTER ═══
+              // ═══ 4-GATE INSTITUTIONAL FILTER ═══
 
-              // ─── GATE 1: HURST ≥ 0.60 (Persistent regime — the tsunami must travel) ───
+              // ─── GATE 1: HURST ≥ 0.60 ───
               if (tradeOfi.hurst < PREDATOR_HURST_MIN) {
-                tracker.consecutivePassCount = 0;
+                pState.consecutivePassCount = 0;
+                gateDiag.hurst++;
                 continue;
               }
 
-              // ─── GATE 2: EFFICIENCY ≥ 3.5 (Vacuum — liquidity hole = institutional displacement) ───
+              // ─── GATE 2: EFFICIENCY ≥ 3.5 ───
               if (tradeOfi.efficiency < PREDATOR_EFFICIENCY_MIN) {
-                tracker.consecutivePassCount = 0;
+                pState.consecutivePassCount = 0;
+                gateDiag.efficiency++;
                 continue;
               }
 
-              // ─── GATE 3: OFI RATIO (Whale Imbalance) ───
-              // LONG: OFI Ratio ≥ 3.0 (buys vastly outnumber sells)
-              // SHORT: OFI Ratio ≤ 0.30 (sells vastly outnumber buys)
-              const ofiGatePassed = tradeDirection === "long"
-                ? ofiRatioTrade >= PREDATOR_OFI_RATIO_LONG
-                : ofiRatioTrade <= PREDATOR_OFI_RATIO_SHORT;
-              if (!ofiGatePassed) {
-                tracker.consecutivePassCount = 0;
-                continue;
-              }
+              // Gate 3 (OFI Ratio) already passed via direction determination above
 
-              // ─── GATE 4: WEIGHTING (Buy > 50% for LONG, Sell > 50% for SHORT) ───
+              // ─── GATE 4: WEIGHTING > 50% ───
               const weightingPassed = tradeDirection === "long"
                 ? tradeOfi.buyPressure > PREDATOR_WEIGHTING_MIN
                 : tradeOfi.sellPressure > PREDATOR_WEIGHTING_MIN;
               if (!weightingPassed) {
-                tracker.consecutivePassCount = 0;
+                pState.consecutivePassCount = 0;
+                gateDiag.weighting++;
                 continue;
               }
 
-              // ─── SENIOR OPS: KM DRIFT MINIMUM (No escape velocity = Stay Flat) ───
+              // ─── KM DRIFT MINIMUM ───
               if (Math.abs(tradeOfi.km.driftNormalized) < PREDATOR_KM_DRIFT_MIN) {
-                tracker.consecutivePassCount = 0;
+                pState.consecutivePassCount = 0;
+                gateDiag.kmDrift++;
                 continue;
               }
 
-              // ─── SENIOR OPS: VPIN VALIDATION ───
-              // VPIN < 0.20 = "Ghost Move" (retail-driven, highly unstable) — BLOCK
+              // ─── VPIN VALIDATION ───
               if (tradeOfi.vpin < PREDATOR_VPIN_GHOST_MAX) {
-                console.log(`[PREDATOR] 👻 GHOST MOVE: ${tradePair} VPIN=${tradeOfi.vpin} < ${PREDATOR_VPIN_GHOST_MAX} — retail-driven, BLOCKED`);
-                tracker.consecutivePassCount = 0;
+                console.log(`[PREDATOR] 👻 GHOST MOVE: ${tradePair} VPIN=${tradeOfi.vpin} < ${PREDATOR_VPIN_GHOST_MAX} — BLOCKED`);
+                pState.consecutivePassCount = 0;
+                gateDiag.vpinGhost++;
                 continue;
               }
-              // VPIN must be ≥ 0.45 to confirm institutional participation
               if (tradeOfi.vpin < PREDATOR_VPIN_MIN) {
-                tracker.consecutivePassCount = 0;
+                pState.consecutivePassCount = 0;
+                gateDiag.vpinMin++;
                 continue;
               }
 
-              // ═══ RULE OF 3: All gates must hold for 3 consecutive ticks ═══
-              // Filters out high-frequency "Flash Signals" that lead to immediate whipsaws.
-              if (tracker.lastPassDirection === tradeDirection) {
-                tracker.consecutivePassCount++;
+              // ═══ RULE OF 3 ═══
+              if (pState.lastPassDirection === tradeDirection) {
+                pState.consecutivePassCount++;
               } else {
-                // Direction changed — reset counter
-                tracker.consecutivePassCount = 1;
-                tracker.lastPassDirection = tradeDirection;
+                pState.consecutivePassCount = 1;
+                pState.lastPassDirection = tradeDirection;
               }
-
-              if (tracker.consecutivePassCount < PREDATOR_RULE_OF_3) {
-                console.log(`[PREDATOR] ⏳ RULE OF 3: ${tradePair} ${tradeDirection} pass ${tracker.consecutivePassCount}/${PREDATOR_RULE_OF_3} — waiting for confirmation`);
+              if (pState.consecutivePassCount < PREDATOR_RULE_OF_3) {
+                console.log(`[PREDATOR] ⏳ RULE OF 3: ${tradePair} ${tradeDirection} pass ${pState.consecutivePassCount}/${PREDATOR_RULE_OF_3} | H=${tradeOfi.hurst} E=${tradeOfi.efficiency} R=${shortWindowRatio.toFixed(2)} VPIN=${tradeOfi.vpin}`);
+                gateDiag.ruleOf3++;
                 continue;
               }
 
-              // ═══ ALL GATES PASSED + RULE OF 3 CONFIRMED — FIRE ═══
-              tracker.consecutivePassCount = 0; // Reset for next trade
+              // ═══ ALL GATES PASSED — FIRE ═══
+              pState.consecutivePassCount = 0;
+              gateDiag.passed++;
 
               const tradePrice = prices.get(tradePair);
               if (!tradePrice) continue;
 
-              tracker.lastFireTs = tickTs;
-              tracker.firedDirection = tradeDirection;
+              pState.lastFireTs = tickTs;
 
-              // ─── ENTRY: Stop-Limit 0.3 pips BEYOND the wall ───
-              // Identify the Wall: closest cluster of resting limit orders
-              // For LONGS: Find Sell Wall above price → place Stop-Limit 0.3p above it
-              // For SHORTS: Find Buy Wall below price → place Stop-Limit 0.3p below it
+              // ─── ENTRY: Wall detection ───
               let wallPrice: number | null = null;
               const wallOffset = fromPips(PREDATOR_WALL_OFFSET_PIPS, tradePair);
               for (const [price, info] of tradeTracker.priceLevels.entries()) {
@@ -1570,21 +1545,15 @@ Deno.serve(async (req) => {
                 const priceNum = +price;
                 const distPips = Math.abs(toPips(priceNum - tradePrice.mid, tradePair));
                 if (distPips < 1 || distPips > 30) continue;
-
                 if (tradeDirection === "long" && info.sells >= 2 && priceNum > tradePrice.mid) {
-                  // Sell Wall above price — resistance to punch through
                   if (!wallPrice || priceNum < wallPrice) wallPrice = priceNum;
                 }
                 if (tradeDirection === "short" && info.buys >= 2 && priceNum < tradePrice.mid) {
-                  // Buy Wall below price — support to break through
                   if (!wallPrice || priceNum > wallPrice) wallPrice = priceNum;
                 }
               }
 
               // ─── MARKET ORDER MATRIX: Entry Protocol ───
-              // DEFAULT: Stop-Limit 0.3p beyond the wall (avoid negative slippage in Slipping regime)
-              // OVERRIDE: Raw Market Order ONLY if Efficiency > 7.0 AND VPIN > 0.65
-              //           → Tsunami confirmed: if you don't "slap the ask" now, you miss the entire move
               const tsunamiOverride = tradeOfi.efficiency > PREDATOR_MARKET_OVERRIDE_EFFICIENCY
                 && tradeOfi.vpin > PREDATOR_MARKET_OVERRIDE_VPIN;
               const orderType: "MARKET" | "LIMIT" = tsunamiOverride ? "MARKET" : (wallPrice ? "LIMIT" : "MARKET");
@@ -1592,12 +1561,11 @@ Deno.serve(async (req) => {
                 ? (tradeDirection === "long" ? wallPrice + wallOffset : wallPrice - wallOffset)
                 : undefined;
               if (tsunamiOverride) {
-                console.log(`[PREDATOR] 🌊 TSUNAMI OVERRIDE: ${tradePair} E=${tradeOfi.efficiency.toFixed(1)} VPIN=${tradeOfi.vpin} → MARKET ORDER (slap the ask)`);
+                console.log(`[PREDATOR] 🌊 TSUNAMI OVERRIDE: ${tradePair} E=${tradeOfi.efficiency} VPIN=${tradeOfi.vpin} → MARKET`);
               }
 
-              console.log(`[PREDATOR] 🎯 FIRE: ${tradeDirection.toUpperCase()} ${baseUnits} ${tradePair} | z=${z.toFixed(2)} | H=${tradeOfi.hurst} E=${tradeOfi.efficiency} OFI_R=${ofiRatioTrade.toFixed(2)} VPIN=${tradeOfi.vpin} | Buy%=${tradeOfi.buyPressure} Sell%=${tradeOfi.sellPressure} | |D1n|=${Math.abs(tradeOfi.km.driftNormalized).toFixed(2)} | Wall=${wallPrice?.toFixed(tradePair.includes("JPY") ? 3 : 5) ?? "NONE"} → ${orderType} | group=${group.name} | tick #${tickCount}`);
+              console.log(`[PREDATOR] 🎯 FIRE: ${tradeDirection.toUpperCase()} ${baseUnits} ${tradePair} | H=${tradeOfi.hurst} E=${tradeOfi.efficiency} EWMA_R=${shortWindowRatio.toFixed(2)} VPIN=${tradeOfi.vpin} | Buy%=${tradeOfi.buyPressure} Sell%=${tradeOfi.sellPressure} | |D1n|=${Math.abs(tradeOfi.km.driftNormalized).toFixed(2)} | Wall=${wallPrice?.toFixed(tradePair.includes("JPY") ? 3 : 5) ?? "NONE"} → ${orderType} | tick #${tickCount}`);
 
-              // Conviction: combine Hurst + Efficiency + OFI alignment + VPIN
               const hurstConviction = Math.min(0.3, (tradeOfi.hurst - 0.5) * 3);
               const effConviction = Math.min(0.3, (tradeOfi.efficiency - 3.0) * 0.1);
               const vpinConviction = Math.min(0.2, (tradeOfi.vpin - 0.4) * 2);
@@ -1609,19 +1577,16 @@ Deno.serve(async (req) => {
                 tradePair, tradeDirection, baseUnits,
                 baseSlPips, baseTpPips, "predatory-hunter",
                 {
-                  strategy: "predatory-hunter-2026",
-                  zScore: z, mean, std,
-                  group: group.name,
-                  pairA: group.pairA, pairB: group.pairB,
+                  strategy: "predatory-hunter-2026-v2",
                   tickNumber: tickCount,
                   ticksPerSecond: densityCheck.tps,
                   streamLatencyMs: Date.now() - startTime,
                   confidence: Math.min(1, hurstConviction + effConviction + vpinConviction + ofiConviction),
-                  engine: "predatory-hunter-v1",
+                  engine: "predatory-hunter-v2-independent",
                   predatorGates: {
                     hurst: tradeOfi.hurst,
                     efficiency: tradeOfi.efficiency,
-                    ofiRatio: ofiRatioTrade,
+                    ewmaRatio: shortWindowRatio,
                     buyPct: tradeOfi.buyPressure,
                     sellPct: tradeOfi.sellPressure,
                     vpin: tradeOfi.vpin,
@@ -1630,15 +1595,13 @@ Deno.serve(async (req) => {
                   },
                   wall: wallPrice ? { price: wallPrice, offset: PREDATOR_WALL_OFFSET_PIPS } : null,
                   ofi: {
-                    ratio: tradeOfi.ofiRatio, weighted: tradeOfi.ofiWeighted,
+                    weighted: Math.round(ofiNormTrade * 1000) / 1000,
                     vpin: tradeOfi.vpin, bias: tradeOfi.bias,
                     buyPct: tradeOfi.buyPressure, sellPct: tradeOfi.sellPressure,
                     zOfi: tradeOfi.zOfi,
                   },
                   kramersMoyal: tradeOfi.km,
-                  hurst: { H: tradeOfi.hurst, regime: tradeOfi.hurstRegime },
-                  hiddenPlayer: tradeOfi.hiddenPlayer.detected ? tradeOfi.hiddenPlayer : null,
-                  resistanceLevels: tradeOfi.resistanceLevels,
+                  hurst: { H: tradeOfi.hurst },
                 },
                 tradePrice,
                 orderType,
@@ -1646,17 +1609,16 @@ Deno.serve(async (req) => {
               );
 
               if (result.success) {
-                zScoreFires.push(`${group.name}:${tradePair}`);
+                zScoreFires.push(`predator:${tradePair}`);
 
                 // Audit log
                 await supabase.from("gate_bypasses").insert({
-                  gate_id: `PREDATOR_FIRE:${group.name}:${tradePair}`,
+                  gate_id: `PREDATOR_FIRE:${tradePair}`,
                   reason: JSON.stringify({
-                    strategy: "predatory-hunter-2026",
-                    group: group.name, pair: tradePair,
-                    direction: tradeDirection, zScore: z,
+                    strategy: "predatory-hunter-2026-v2",
+                    pair: tradePair, direction: tradeDirection,
                     hurst: tradeOfi.hurst, efficiency: tradeOfi.efficiency,
-                    ofiRatio: ofiRatioTrade, vpin: tradeOfi.vpin,
+                    ewmaRatio: shortWindowRatio, vpin: tradeOfi.vpin,
                     buyPct: tradeOfi.buyPressure, sellPct: tradeOfi.sellPressure,
                     wall: wallPrice, orderType,
                     fillPrice: result.fillPrice,
@@ -1669,17 +1631,8 @@ Deno.serve(async (req) => {
               }
             }
 
-            // ═══ STRATEGY 2: VELOCITY GATING — DEACTIVATED ═══
-            // Predatory Hunter is the ONLY active strategy in the DGE.
-            // Velocity Gating disabled by CRO directive.
-
-            // ═══ STRATEGY 3: SNAP-BACK SNIPER — DEACTIVATED ═══
-            // Predatory Hunter is the ONLY active strategy in the DGE.
-            // Snap-Back Sniper disabled by CRO directive.
-
-            // ═══ STRATEGY 4: AUTONOMOUS GHOST — DEACTIVATED ═══
-            // Predatory Hunter is the ONLY active strategy in the DGE.
-            // Ghost Vacuum disabled by CRO directive.
+            // ═══ DEACTIVATED STRATEGIES ═══
+            // Predatory Hunter v2 is the ONLY active strategy.
 
           } catch { /* skip malformed tick */ }
         }
@@ -1826,7 +1779,8 @@ Deno.serve(async (req) => {
     }
 
     const totalMs = Date.now() - startTime;
-    console.log(`[PREDATOR] 📊 Session: ${totalMs}ms, ${tickCount} ticks | Hunter: ${zScoreFires.length} | Exits: ${autonomousExits.length} | OFI: ${Object.keys(ofiSnapshot).length} pairs | Hidden: ${hiddenPlayerAlerts} | Absorbing: ${absorbingPairs} | Slipping: ${slippingPairs} | SOLE STRATEGY: Predatory Hunter`);
+    console.log(`[PREDATOR] 📊 Session: ${totalMs}ms, ${tickCount} ticks | Hunter: ${zScoreFires.length} | Exits: ${autonomousExits.length} | OFI: ${Object.keys(ofiSnapshot).length} pairs | Hidden: ${hiddenPlayerAlerts} | Absorbing: ${absorbingPairs} | Slipping: ${slippingPairs} | SOLE STRATEGY: Predatory Hunter v2`);
+    console.log(`[PREDATOR_DIAG] 📊 FINAL: Scans=${gateDiag.total} | Blocked→ Density=${gateDiag.density} Warmup=${gateDiag.warmup} Hurst=${gateDiag.hurst} Eff=${gateDiag.efficiency} OFI_R=${gateDiag.ofiRatio} Weight=${gateDiag.weighting} KM=${gateDiag.kmDrift} VPIN_G=${gateDiag.vpinGhost} VPIN_M=${gateDiag.vpinMin} R3=${gateDiag.ruleOf3} | PASSED=${gateDiag.passed}`);
 
     return new Response(
       JSON.stringify({
