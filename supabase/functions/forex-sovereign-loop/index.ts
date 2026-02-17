@@ -865,7 +865,13 @@ async function executeAction(action: any, supabase: any): Promise<void> {
         break;
 
       case "configure_zscore_engine":
-        if (action.zscore_config) await writeSovereignMemory(supabase, "zscore_strike_config", action.zscore_config);
+        // Use engine_config memory_type to match existing records (NOT writeSovereignMemory which defaults to strategic_note)
+        if (action.zscore_config) {
+          await supabase.from("sovereign_memory").upsert({
+            memory_type: "engine_config", memory_key: "zscore_strike_config",
+            payload: action.zscore_config, relevance_score: 1.0, created_by: "sovereign-intelligence",
+          }, { onConflict: "memory_type,memory_key" });
+        }
         if (action.correlation_groups) await writeSovereignMemory(supabase, "correlation_groups_config", { groups: action.correlation_groups });
         if (action.velocity_config) await writeSovereignMemory(supabase, "velocity_gating_config", action.velocity_config);
         if (action.snapback_config) await writeSovereignMemory(supabase, "snapback_sniper_config", action.snapback_config);
@@ -1596,6 +1602,63 @@ async function deterministicGovernance(supabase: any, dataPayload: any): Promise
     }
   } catch (err) {
     console.warn("⚠️ DGE: Performance sizing error:", err);
+  }
+
+  // ─── 6b. CRITICAL: Propagate DGE decisions to zscore_strike_config ───
+  // Without this, ripple-stream never sees DGE sizing/blocking decisions
+  // because it reads from sovereign_memory, NOT gate_bypasses.
+  try {
+    const { data: currentConfig } = await supabase
+      .from("sovereign_memory")
+      .select("payload, memory_type")
+      .eq("memory_key", "zscore_strike_config")
+      .maybeSingle();
+
+    const existingMemoryType = currentConfig?.memory_type || "engine_config";
+    const existing = (currentConfig?.payload as Record<string, unknown>) || {};
+    const existingBlockedPairs: string[] = (existing.blockedPairs as string[]) || [];
+    const existingUnits: number = (existing.units as number) || 1000;
+
+    // Merge DGE blacklisted pairs into zscore_strike_config.blockedPairs
+    const dgeBlocked = actions
+      .filter((a: any) => a.type === "add_blacklist" && a.pair)
+      .map((a: any) => a.pair);
+    const dgeUnblocked = actions
+      .filter((a: any) => a.type === "remove_blacklist" && a.pair)
+      .map((a: any) => a.pair);
+    
+    const mergedBlocked = Array.from(new Set([
+      ...existingBlockedPairs.filter((p: string) => !dgeUnblocked.includes(p)),
+      ...dgeBlocked,
+    ]));
+
+    // Apply DGE sizing multiplier to units
+    const sizingAction = actions.find((a: any) => a.type === "adjust_position_sizing");
+    let newUnits = existingUnits;
+    if (sizingAction?.multiplier) {
+      newUnits = Math.max(500, Math.min(2000, Math.round(existingUnits * sizingAction.multiplier)));
+    }
+
+    const updatedConfig = {
+      ...existing,
+      units: newUnits,
+      blockedPairs: mergedBlocked,
+      dge_last_update: new Date().toISOString(),
+      dge_sizing_multiplier: sizingAction?.multiplier || 1.0,
+    };
+
+    // Use the SAME memory_type as the existing record to match the upsert conflict key
+    await supabase.from("sovereign_memory").upsert({
+      memory_type: existingMemoryType,
+      memory_key: "zscore_strike_config",
+      payload: updatedConfig,
+      relevance_score: 1.0,
+      created_by: "dge-config-sync",
+    }, { onConflict: "memory_type,memory_key" });
+
+    console.log(`🤖 DGE → Z-Score Config: units=${newUnits} blocked=[${mergedBlocked.join(",")}] sizing=${sizingAction?.multiplier || "unchanged"}`);
+  } catch (err) {
+    console.warn("⚠️ DGE: Failed to propagate config to zscore_strike_config:", err);
   }
 
   // ─── 7. Persist Lead-Indicator state to sovereign memory ───
