@@ -62,10 +62,10 @@ export const useMarketChat = () => {
           Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
         },
         body: JSON.stringify({
-          messages: [...messages, userMessage].map((m, i, arr) => ({
+          messages: [...messages, userMessage].slice(-40).map((m, i, arr) => ({
             role: m.role,
-            content: m.role === 'assistant' && m.content.length > 6000 && i < arr.length - 2
-              ? m.content.slice(0, 3000) + '\n...[truncated]...\n' + m.content.slice(-1500)
+            content: m.role === 'assistant' && m.content.length > 4000 && i < arr.length - 2
+              ? m.content.slice(0, 2000) + '\n...[truncated]...\n' + m.content.slice(-1000)
               : m.content,
           })),
         }),
