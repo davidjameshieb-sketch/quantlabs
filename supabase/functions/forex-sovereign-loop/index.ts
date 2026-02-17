@@ -1604,9 +1604,18 @@ async function deterministicGovernance(supabase: any, dataPayload: any): Promise
     console.warn("⚠️ DGE: Performance sizing error:", err);
   }
 
-  // ─── 6b. CRITICAL: Propagate DGE decisions to zscore_strike_config ───
+  // ─── 6b. CRITICAL: Propagate DGE decisions to zscore_strike_config + ghost_vacuum_config ───
   // Without this, ripple-stream never sees DGE sizing/blocking decisions
   // because it reads from sovereign_memory, NOT gate_bypasses.
+  // Pre-compute DGE actions (shared between Z-Score and Ghost propagation)
+  const dgeBlocked = actions
+    .filter((a: any) => a.type === "add_blacklist" && a.pair)
+    .map((a: any) => a.pair);
+  const dgeUnblocked = actions
+    .filter((a: any) => a.type === "remove_blacklist" && a.pair)
+    .map((a: any) => a.pair);
+  const sizingAction = actions.find((a: any) => a.type === "adjust_position_sizing");
+
   try {
     const { data: currentConfig } = await supabase
       .from("sovereign_memory")
@@ -1620,20 +1629,12 @@ async function deterministicGovernance(supabase: any, dataPayload: any): Promise
     const existingUnits: number = (existing.units as number) || 1000;
 
     // Merge DGE blacklisted pairs into zscore_strike_config.blockedPairs
-    const dgeBlocked = actions
-      .filter((a: any) => a.type === "add_blacklist" && a.pair)
-      .map((a: any) => a.pair);
-    const dgeUnblocked = actions
-      .filter((a: any) => a.type === "remove_blacklist" && a.pair)
-      .map((a: any) => a.pair);
-    
     const mergedBlocked = Array.from(new Set([
       ...existingBlockedPairs.filter((p: string) => !dgeUnblocked.includes(p)),
       ...dgeBlocked,
     ]));
 
     // Apply DGE sizing multiplier to units
-    const sizingAction = actions.find((a: any) => a.type === "adjust_position_sizing");
     let newUnits = existingUnits;
     if (sizingAction?.multiplier) {
       newUnits = Math.max(500, Math.min(2000, Math.round(existingUnits * sizingAction.multiplier)));
@@ -1659,6 +1660,52 @@ async function deterministicGovernance(supabase: any, dataPayload: any): Promise
     console.log(`🤖 DGE → Z-Score Config: units=${newUnits} blocked=[${mergedBlocked.join(",")}] sizing=${sizingAction?.multiplier || "unchanged"}`);
   } catch (err) {
     console.warn("⚠️ DGE: Failed to propagate config to zscore_strike_config:", err);
+  }
+
+  // ─── 6c. CRITICAL: Propagate DGE decisions to ghost_vacuum_config ───
+  // The Autonomous Ghost also needs DGE sizing/blocking during credit exhaustion.
+  try {
+    const { data: currentGhostConfig } = await supabase
+      .from("sovereign_memory")
+      .select("payload, memory_type")
+      .eq("memory_key", "ghost_vacuum_config")
+      .maybeSingle();
+
+    const ghostMemType = currentGhostConfig?.memory_type || "engine_config";
+    const ghostExisting = (currentGhostConfig?.payload as Record<string, unknown>) || {
+      units: 1000, slPips: 8, tpPips: 30, blockedPairs: [],
+    };
+    const ghostExistingBlocked: string[] = (ghostExisting.blockedPairs as string[]) || [];
+    const ghostExistingUnits: number = (ghostExisting.units as number) || 1000;
+
+    // Same DGE actions apply to Ghost
+    const ghostMergedBlocked = Array.from(new Set([
+      ...ghostExistingBlocked.filter((p: string) => !dgeUnblocked.includes(p)),
+      ...dgeBlocked,
+    ]));
+
+    let ghostNewUnits = ghostExistingUnits;
+    if (sizingAction?.multiplier) {
+      ghostNewUnits = Math.max(500, Math.min(2000, Math.round(ghostExistingUnits * sizingAction.multiplier)));
+    }
+
+    await supabase.from("sovereign_memory").upsert({
+      memory_type: ghostMemType,
+      memory_key: "ghost_vacuum_config",
+      payload: {
+        ...ghostExisting,
+        units: ghostNewUnits,
+        blockedPairs: ghostMergedBlocked,
+        dge_last_update: new Date().toISOString(),
+        dge_sizing_multiplier: sizingAction?.multiplier || 1.0,
+      },
+      relevance_score: 1.0,
+      created_by: "dge-config-sync",
+    }, { onConflict: "memory_type,memory_key" });
+
+    console.log(`🤖 DGE → Ghost Config: units=${ghostNewUnits} blocked=[${ghostMergedBlocked.join(",")}]`);
+  } catch (err) {
+    console.warn("⚠️ DGE: Failed to propagate config to ghost_vacuum_config:", err);
   }
 
   // ─── 7. Persist Lead-Indicator state to sovereign memory ───
