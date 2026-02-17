@@ -153,14 +153,17 @@ async function updateTrailingStop(
   tradeId: string,
   newStopLossPrice: number,
   environment = "live",
+  pair = "",
 ): Promise<OrderModificationResult> {
+  // FIX: JPY pairs require 3 decimal places — .toFixed(5) causes PRICE_PRECISION_EXCEEDED rejections
+  const slPrecision = pair.includes("JPY") ? 3 : 5;
   try {
     const result = await oandaRequest(
       `/v3/accounts/{accountId}/trades/${tradeId}/orders`,
       "PUT",
       {
         stopLoss: {
-          price: newStopLossPrice.toFixed(5),
+          price: newStopLossPrice.toFixed(slPrecision),
           timeInForce: "GTC",
         },
       },
@@ -1028,7 +1031,7 @@ Deno.serve(async (req) => {
           
           if (adjustedR < MAE_KILL_THRESHOLD) {
             console.log(`[STOP-HUNT-SHIELD] ${order.currency_pair} ${order.direction}: SL@${currentSLPrice.toFixed(5)} is ${nearestClusterDist.toFixed(1)}p from retail cluster — moving to ${adjustedSL.toFixed(5)} (deep liquidity)`);
-            const huntResult = await updateTrailingStop(order.oanda_trade_id, adjustedSL, order.environment || "live");
+            const huntResult = await updateTrailingStop(order.oanda_trade_id, adjustedSL, order.environment || "live", order.currency_pair);
             if (huntResult.success) {
               console.log(`[STOP-HUNT-SHIELD] ✅ SL relocated for ${order.currency_pair} — protected from stop hunt`);
             }
@@ -1053,7 +1056,10 @@ Deno.serve(async (req) => {
       }
 
       // ─── Hook 2: Profit Capture Decay — MFE Retracement Kill ───
-      if (decision.action === "hold" && currentMfeR >= 0.8 && ueRValue < 0.15 && ueRValue > -0.1) {
+      // BUG FIX: Was `ueRValue > -0.1` — triggered on fresh trades where UE starts near 0 (no profit yet).
+      // A new trade with MFE=0.8R from noise and UE=0.02R would fire immediately (false decay exit).
+      // Changed to `ueRValue > 0.1` — trade must be meaningfully in profit before decay logic can fire.
+      if (decision.action === "hold" && currentMfeR >= 0.8 && ueRValue < 0.15 && ueRValue > 0.1) {
         console.log(`[AUTO-EXIT] ${order.currency_pair} ${order.direction}: Profit capture decay — MFE=${currentMfeR.toFixed(2)}R but UE retraced to ${ueRValue}R — AUTONOMOUS EXIT`);
         decision.action = "profit-decay-exit" as typeof decision.action;
         decision.reason = `AUTONOMOUS EXIT: MFE=${currentMfeR.toFixed(2)}R achieved but retraced to ${ueRValue}R — profit capture decay`;
@@ -1139,7 +1145,7 @@ Deno.serve(async (req) => {
               : targetSlPrice < dynamicSl.slPrice;
 
             if (isTighter) {
-              const modResult = await updateTrailingStop(oandaTradeId, targetSlPrice, env);
+              const modResult = await updateTrailingStop(oandaTradeId, targetSlPrice, env, order.currency_pair);
               if (modResult.success) {
                 console.log(`[FLOOR-MANAGER] ${order.currency_pair} ${order.direction}: SL pushed to OANDA → ${targetSlPrice.toFixed(5)} (${slReason})`);
               }
@@ -1269,32 +1275,17 @@ Deno.serve(async (req) => {
 
             const order = orderDetail.order;
             if (!order) {
-              // Order not found — check if it was filled as a trade
-              try {
-                // Search recent transactions for this order
-                const txns = await oandaRequest(
-                  `/v3/accounts/{accountId}/orders/${po.oanda_order_id}`,
-                  "GET", undefined, env
-                );
-                // If order doesn't exist, it was likely filled or cancelled
-                // Mark as cancelled to clean up
-                const { error: upErr1 } = await supabase.from("oanda_orders").update({
-                  status: "cancelled",
-                  error_message: "OANDA order not found — likely expired or cancelled",
-                  closed_at: new Date().toISOString(),
-                }).eq("id", po.id);
-                if (upErr1) console.error(`[PENDING-RECON] DB update failed for ${po.id}:`, upErr1.message);
-                pendingReconciled++;
-                console.log(`[PENDING-RECON] ${po.currency_pair}: Order ${po.oanda_order_id} not found — marked cancelled`);
-              } catch {
-                const { error: upErr2 } = await supabase.from("oanda_orders").update({
-                  status: "cancelled",
-                  error_message: "OANDA order not found",
-                  closed_at: new Date().toISOString(),
-                }).eq("id", po.id);
-                if (upErr2) console.error(`[PENDING-RECON] DB update failed for ${po.id}:`, upErr2.message);
-                pendingReconciled++;
-              }
+              // BUG FIX: Was calling the exact same OANDA endpoint twice — the inner try/catch
+              // called `/orders/${po.oanda_order_id}` again which returned the same null result.
+              // Fix: directly mark as cancelled on first null — no second API call needed.
+              const { error: upErr1 } = await supabase.from("oanda_orders").update({
+                status: "cancelled",
+                error_message: "OANDA order not found — likely expired or cancelled",
+                closed_at: new Date().toISOString(),
+              }).eq("id", po.id);
+              if (upErr1) console.error(`[PENDING-RECON] DB update failed for ${po.id}:`, upErr1.message);
+              pendingReconciled++;
+              console.log(`[PENDING-RECON] ${po.currency_pair}: Order ${po.oanda_order_id} not found — marked cancelled`);
               continue;
             }
 

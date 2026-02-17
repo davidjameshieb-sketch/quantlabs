@@ -1088,9 +1088,11 @@ Deno.serve(async (req) => {
         return { success: false };
       }
 
-      // ─── L0 HARD GATE 2: Late-NY / Rollover session block (20:00-23:59 UTC) ───
+      // ─── L0 HARD GATE 2: Late-NY / Rollover session block (20:00-23:59 UTC and 00:00 UTC rollover) ───
+      // BUG FIX: `utcHour < 0` was unreachable (getUTCHours returns 0-23). Changed to `utcHour < 1`
+      // so the midnight rollover hour (00:00-00:59 UTC) is also blocked as intended.
       const utcHour = new Date().getUTCHours();
-      if (utcHour >= 20 || utcHour < 0) {
+      if (utcHour >= 20 || utcHour < 1) {
         console.log(`[STRIKE-v3] 🛡 SESSION GATE: UTC ${utcHour}h — late-NY/rollover blocked`);
         return { success: false };
       }
