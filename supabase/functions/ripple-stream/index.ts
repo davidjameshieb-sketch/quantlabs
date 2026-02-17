@@ -279,7 +279,9 @@ function detectHiddenLimitPlayer(
   ofiForce: number, kmDrift: number, efficiency: number, marketState: MarketState
 ): HiddenSellerSignal {
   // ABSORBING = high force, low velocity → hidden limit player
-  if (marketState === "ABSORBING" && Math.abs(ofiForce) > 0.01) {
+  // Threshold calibrated to ofiRecursive typical range (0.1–3.0). 0.01 fired on every single tick.
+  // Use 0.3 as the minimum meaningful force signal (roughly 1/3 of a normal imbalance reading).
+  if (marketState === "ABSORBING" && Math.abs(ofiForce) > 0.3) {
     if (ofiForce > 0) {
       return {
         detected: true, type: "HIDDEN_LIMIT_SELLER",
@@ -427,17 +429,19 @@ function processOfiTick(
     tracker.hurst > HURST_PERSISTENCE_THRESHOLD ? "PERSISTENT" :
     tracker.hurst < HURST_MEANREV_THRESHOLD ? "MEAN_REVERTING" : "RANDOM_WALK";
 
-  // ─── EFFICIENCY RATIO (The Alpha) — pure OFI / D1 with matching units ───
-  // BUG FIX: ofiNormalized (÷100000 → ~1e-3) divided by D1 in price/sec (EUR_USD ~1e-6 → ~1e-3 px/ms).
-  // Dividing dimensionless by price/sec gives efficiency in sec/price — NOT a meaningful ratio.
-  // CORRECT: use raw ofiRecursive (force units = pips·tps) and raw |D1| (drift in price/sec).
-  // Scale ofiRecursive by pipMult to convert to consistent pip-velocity units.
+  // ─── EFFICIENCY RATIO (The Alpha) — dimensionless OFI / |D1| ───
+  // UNIT FIX: ofiRecursive uses units of (pips · ticks/sec) from ofiContribution = side * dxPips * tickVelocity.
+  // D1 is in price/sec (e.g. EUR/USD ~1e-6 price/sec). To make E dimensionless:
+  //   ofiRecursive (pip·tps) / pipMult → price·tps (same price units as D1·time)
+  //   E = (absOfi / pipMult) / (absD1 + ε)
+  // This gives E ≈ 1 for "normal" market (OFI ≈ D1 in price-velocity space),
+  // E << 1 for ABSORBING (OFI crushed by hidden limit), E >> 1 for SLIPPING.
+  // Previously: ofiNormalized / d1PipVel = (absOfi/pipMult) / (absD1*pipMult)
+  // = absOfi / (pipMult² * absD1) — off by pipMult² (1e8 for non-JPY!) → always near zero → always ABSORBING.
   const absD1 = Math.abs(tracker.D1);
   const absOfi = Math.abs(tracker.ofiRecursive);
-  // Scale OFI to pip-velocity (divide by pip multiplier to normalize across JPY/non-JPY)
-  const ofiNormalized = absOfi / pipMult;  // pip-velocity units → same dimension as |D1|*pipMult
-  const d1PipVel = absD1 * pipMult;        // convert D1 from price/sec to pips/sec
-  const efficiency = ofiNormalized / (d1PipVel + EFFICIENCY_EPSILON);
+  const ofiInPriceVel = absOfi / pipMult;   // convert pip·tps → price·tps (price-velocity units)
+  const efficiency = ofiInPriceVel / (absD1 + EFFICIENCY_EPSILON);
   const marketState = classifyMarketState(efficiency);
 
   // ─── Update state for next tick ───
@@ -1811,13 +1815,13 @@ Deno.serve(async (req) => {
       const totalTicks = tracker.runningBuys + tracker.runningSells;
       const ofiRatio = totalTicks > 0 ? (tracker.runningBuys - tracker.runningSells) / totalTicks : 0;
 
-      // Efficiency ratio — pip-velocity units match (consistent with predator gate)
+      // Efficiency ratio — same fix as processOfiTick: E = (absOfi/pipMult) / (absD1 + ε)
+      // Dimensionless ratio in price-velocity space. Previously used pipMult² scaling → always ~0 → always ABSORBING.
       const absD1 = Math.abs(tracker.D1);
       const absOfi = Math.abs(tracker.ofiRecursive);
       const snapPipMult = pair.includes("JPY") ? 100 : 10000;
-      const ofiScaled = absOfi / snapPipMult;    // pip-velocity units
-      const d1PipVel = absD1 * snapPipMult;      // D1 in pips/sec
-      const efficiency = ofiScaled / (d1PipVel + EFFICIENCY_EPSILON);
+      const ofiInPriceVel = absOfi / snapPipMult;   // price·tps units
+      const efficiency = ofiInPriceVel / (absD1 + EFFICIENCY_EPSILON);
       const marketState = classifyMarketState(efficiency);
 
       if (marketState === "ABSORBING") absorbingPairs++;
@@ -1910,7 +1914,7 @@ Deno.serve(async (req) => {
           timestamp: new Date().toISOString(),
           architecture: "O(1)_recursive_predatory_hunter",
           decayFactors: { kmAlphaRange: [KM_ALPHA_MIN, KM_ALPHA_MAX], ofiGamma: OFI_GAMMA_DEFAULT },
-          gates: ["0:SIGNAL(Z-Score)", "1:HURST≥0.60", "2:EFFICIENCY≥3.5", "3:OFI_RATIO(Whale)", "4:WEIGHTING>50%", "VPIN≥0.45", "KM_DRIFT≥0.50", "RULE_OF_3"],
+          gates: ["0:SIGNAL(Z-Score)", "1:HURST≥0.62", "2:EFFICIENCY≥2.0", "3:OFI_RATIO(Whale)", "4:WEIGHTING≥50%", "VPIN≥0.40", "KM_DRIFT≥0.12", "RULE_OF_3"],
           capabilities: [
             "predatory_hunter_2026", "rule_of_3_verification",
             "adaptive_km_gear_shift", "welford_z_ofi", "hall_wood_hurst",
