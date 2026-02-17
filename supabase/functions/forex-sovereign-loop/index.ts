@@ -1040,6 +1040,264 @@ async function commitRule(supabase: any, action: any): Promise<void> {
 
 let creditExhausted = false; // sticky flag — set on first 402, cleared on successful AI call
 
+// ─── Lead-Indicator Matrix: Regime → Data Priority ───
+// Without this, a deterministic engine is "blind" to which data actually matters right now.
+const LEAD_INDICATOR_MATRIX: Record<string, { priority: string[]; description: string }> = {
+  compression: {
+    priority: ["orderBook", "swingConvergence", "insideBars"],
+    description: "Mean reversion — order book imbalance and structural squeeze dominate",
+  },
+  compression_building: {
+    priority: ["orderBook", "swingConvergence", "insideBars"],
+    description: "Coiling phase — prioritize structural squeeze signals",
+  },
+  expansion_imminent: {
+    priority: ["tickVelocity", "displacementEfficiency", "hurst"],
+    description: "Breakout loading — tick speed and DE will confirm the freight train",
+  },
+  expansion: {
+    priority: ["tickVelocity", "cot", "hurst", "zOfi"],
+    description: "Momentum — tick velocity and institutional flow confirm continuation",
+  },
+  trending: {
+    priority: ["tickVelocity", "cot", "zOfi", "kmDrift"],
+    description: "Strong trend — institutional flow (COT) and velocity dominate",
+  },
+  choppy: {
+    priority: ["spreadStability", "vpin", "efficiency"],
+    description: "No edge — protect capital, spread and toxicity gate everything",
+  },
+  flat: {
+    priority: ["spreadStability", "vpin"],
+    description: "Dead market — spread stability is the only thing that matters",
+  },
+};
+
+function getLeadIndicators(regime: string): { priority: string[]; description: string } {
+  return LEAD_INDICATOR_MATRIX[regime] || LEAD_INDICATOR_MATRIX["flat"];
+}
+
+// ─── Ghost-Order Decay: DE-based limit order auto-cancel ───
+// A static limit order in a high-DE environment (Freight Train) is just an expensive mistake.
+async function ghostOrderDecay(supabase: any, forecasts: any[], syntheticBook: Record<string, any>): Promise<any[]> {
+  const actions: any[] = [];
+
+  // Fetch pending limit orders from DB
+  const { data: pendingOrders } = await supabase
+    .from("oanda_orders")
+    .select("id, currency_pair, oanda_order_id, created_at, status")
+    .eq("status", "pending")
+    .not("oanda_order_id", "is", null)
+    .order("created_at", { ascending: false })
+    .limit(20);
+
+  if (!pendingOrders || pendingOrders.length === 0) return actions;
+
+  for (const order of pendingOrders) {
+    const pair = order.currency_pair;
+    const forecast = forecasts.find((f: any) => f.pair === pair);
+    const physics = syntheticBook[pair];
+
+    // Check Displacement Efficiency from forecasts
+    const de = forecast?.displacementEfficiency || 0;
+
+    // DE > 0.8 = "Freight Train" — price is moving with conviction, cancel limit orders
+    if (de > 0.8) {
+      // Cancel on OANDA
+      try {
+        await fmOandaRequest(`/v3/accounts/{accountId}/orders/${order.oanda_order_id}/cancel`, "PUT");
+        await supabase.from("oanda_orders").update({
+          status: "cancelled",
+          error_message: `DGE: Ghost-Order Decay — DE=${de.toFixed(2)} > 0.8 (Freight Train on ${pair})`,
+          closed_at: new Date().toISOString(),
+        }).eq("id", order.id);
+        actions.push({
+          type: "ghost_order_cancelled",
+          pair,
+          oanda_order_id: order.oanda_order_id,
+          reason: `DE=${de.toFixed(2)} > 0.8 — Freight Train, static limit is an expensive mistake`,
+        });
+        console.log(`🚂 GHOST-DECAY: Cancelled limit on ${pair} — DE=${de.toFixed(2)} (Freight Train)`);
+      } catch (err) {
+        console.warn(`⚠️ GHOST-DECAY: Failed to cancel ${order.oanda_order_id}:`, err);
+      }
+      continue;
+    }
+
+    // Also cancel if VPIN is toxic (flow is poisonous — limit will fill into toxicity)
+    if (physics?.vpin > 0.75) {
+      try {
+        await fmOandaRequest(`/v3/accounts/{accountId}/orders/${order.oanda_order_id}/cancel`, "PUT");
+        await supabase.from("oanda_orders").update({
+          status: "cancelled",
+          error_message: `DGE: Ghost-Order Decay — VPIN=${physics.vpin.toFixed(2)} > 0.75 (toxic flow on ${pair})`,
+          closed_at: new Date().toISOString(),
+        }).eq("id", order.id);
+        actions.push({
+          type: "ghost_order_cancelled",
+          pair,
+          oanda_order_id: order.oanda_order_id,
+          reason: `VPIN=${physics.vpin.toFixed(2)} > 0.75 — toxic flow, limit fill would bleed`,
+        });
+        console.log(`☠️ GHOST-DECAY: Cancelled limit on ${pair} — VPIN=${physics.vpin.toFixed(2)} (toxic)`);
+      } catch (err) {
+        console.warn(`⚠️ GHOST-DECAY: Failed to cancel ${order.oanda_order_id}:`, err);
+      }
+      continue;
+    }
+
+    // TTL decay: cancel orders older than 10 minutes in choppy regimes
+    const orderAgeMs = Date.now() - new Date(order.created_at).getTime();
+    const regime = forecast?.predictedRegime || "flat";
+    if (orderAgeMs > 10 * 60 * 1000 && (regime === "choppy" || regime === "flat")) {
+      try {
+        await fmOandaRequest(`/v3/accounts/{accountId}/orders/${order.oanda_order_id}/cancel`, "PUT");
+        await supabase.from("oanda_orders").update({
+          status: "cancelled",
+          error_message: `DGE: Ghost-Order TTL — ${(orderAgeMs / 60000).toFixed(0)}min in ${regime} regime`,
+          closed_at: new Date().toISOString(),
+        }).eq("id", order.id);
+        actions.push({
+          type: "ghost_order_cancelled",
+          pair,
+          oanda_order_id: order.oanda_order_id,
+          reason: `TTL expired: ${(orderAgeMs / 60000).toFixed(0)}min in ${regime} regime`,
+        });
+        console.log(`⏰ GHOST-DECAY: TTL cancel on ${pair} — ${(orderAgeMs / 60000).toFixed(0)}min in ${regime}`);
+      } catch (err) {
+        console.warn(`⚠️ GHOST-DECAY: Failed to cancel ${order.oanda_order_id}:`, err);
+      }
+    }
+  }
+
+  return actions;
+}
+
+// ─── Recursive Self-Audit: Profit Capture Ratio → auto-tighten stops ───
+// "Is what I'm doing actually working?" — Sovereign self-correction without a brain.
+async function recursiveSelfAudit(supabase: any, openTrades: any[]): Promise<{ actions: any[]; notes: string[]; pcrAlert: boolean }> {
+  const actions: any[] = [];
+  const notes: string[] = [];
+  let pcrAlert = false;
+
+  // Fetch last 5 closed trades with MFE data
+  const { data: recentClosed } = await supabase
+    .from("oanda_orders")
+    .select("r_pips, mfe_r, mfe_price, entry_price, exit_price, currency_pair, direction, oanda_trade_id")
+    .eq("baseline_excluded", false)
+    .not("closed_at", "is", null)
+    .not("mfe_r", "is", null)
+    .order("closed_at", { ascending: false })
+    .limit(5);
+
+  if (!recentClosed || recentClosed.length < 5) {
+    notes.push("SELF-AUDIT: Insufficient MFE data (<5 trades) — skipping");
+    return { actions, notes, pcrAlert };
+  }
+
+  // Calculate Profit Capture Ratio: Realized P&L / MFE
+  // If you captured 2 pips but MFE was 15 pips → PCR = 13% = terrible exit timing
+  let totalRealized = 0;
+  let totalMFE = 0;
+
+  for (const t of recentClosed) {
+    const realized = t.r_pips || 0;
+    const mfe = t.mfe_r || 0;
+
+    // Only count trades where MFE was positive (had a chance to profit)
+    if (mfe > 0) {
+      totalRealized += Math.max(0, realized); // don't let losses count negative
+      totalMFE += mfe;
+    }
+  }
+
+  const pcr = totalMFE > 0 ? (totalRealized / totalMFE) * 100 : 100;
+  console.log(`🔬 SELF-AUDIT: PCR = ${pcr.toFixed(1)}% (Realized ${totalRealized.toFixed(1)}R / MFE ${totalMFE.toFixed(1)}R over ${recentClosed.length} trades)`);
+
+  // PCR < 20% = hemorrhaging profits — exits are too late or too early
+  if (pcr < 20) {
+    pcrAlert = true;
+    notes.push(`SELF-AUDIT: PCR=${pcr.toFixed(1)}% < 20% — SOVEREIGN TIGHTENING ACTIVATED`);
+    console.log(`🚨 SELF-AUDIT: PCR ${pcr.toFixed(1)}% CRITICAL — tightening all trailing stops by 50%`);
+
+    // Tighten all open trade trailing stops by 50%
+    for (const trade of openTrades) {
+      const tradeId = trade.id;
+      const currentSL = trade.stopLossOrder?.price ? parseFloat(trade.stopLossOrder.price) : null;
+      const currentPrice = parseFloat(trade.price || "0");
+      const units = parseInt(trade.currentUnits || "0");
+      const isLong = units > 0;
+
+      if (!currentSL || !currentPrice) continue;
+
+      // Tighten SL by 50% of the distance between current price and current SL
+      const slDistance = isLong ? (currentPrice - currentSL) : (currentSL - currentPrice);
+      if (slDistance <= 0) continue; // SL already tighter than price (shouldn't happen)
+
+      const tightenedDistance = slDistance * 0.5; // cut the leash in half
+      const newSL = isLong
+        ? currentPrice - tightenedDistance
+        : currentPrice + tightenedDistance;
+
+      actions.push({
+        type: "update_sl_tp",
+        oanda_trade_id: tradeId,
+        stopLossPrice: newSL,
+        reason: `SELF-AUDIT: PCR=${pcr.toFixed(1)}% < 20% — tightened SL from ${currentSL.toFixed(5)} to ${newSL.toFixed(5)} (50% tighter)`,
+      });
+      notes.push(`TIGHTEN ${trade.instrument}: SL ${currentSL.toFixed(5)} → ${newSL.toFixed(5)}`);
+    }
+
+    // Also reduce sizing for next trades
+    actions.push({
+      type: "adjust_position_sizing",
+      scope: "global",
+      multiplier: 0.5,
+      sizing: 0.5,
+      reason: `SELF-AUDIT: PCR=${pcr.toFixed(1)}% < 20% over 5 trades — defensive 0.5x sizing until exits improve`,
+      expires_at: new Date(Date.now() + 2 * 3600_000).toISOString(),
+    });
+    notes.push(`SIZING: 0.5x (PCR ${pcr.toFixed(1)}%)`);
+
+    // Persist self-audit result
+    await supabase.from("sovereign_memory").upsert({
+      memory_type: "self_audit",
+      memory_key: "profit_capture_ratio",
+      payload: {
+        pcr: +pcr.toFixed(1),
+        totalRealized: +totalRealized.toFixed(2),
+        totalMFE: +totalMFE.toFixed(2),
+        tradesAnalyzed: recentClosed.length,
+        alert: true,
+        tightenedTrades: openTrades.length,
+        auditedAt: new Date().toISOString(),
+      },
+      relevance_score: 1.0,
+      created_by: "dge-self-audit",
+    }, { onConflict: "memory_type,memory_key" });
+  } else {
+    notes.push(`SELF-AUDIT: PCR=${pcr.toFixed(1)}% — exits healthy`);
+
+    // Persist healthy audit
+    await supabase.from("sovereign_memory").upsert({
+      memory_type: "self_audit",
+      memory_key: "profit_capture_ratio",
+      payload: {
+        pcr: +pcr.toFixed(1),
+        totalRealized: +totalRealized.toFixed(2),
+        totalMFE: +totalMFE.toFixed(2),
+        tradesAnalyzed: recentClosed.length,
+        alert: false,
+        auditedAt: new Date().toISOString(),
+      },
+      relevance_score: 0.5,
+      created_by: "dge-self-audit",
+    }, { onConflict: "memory_type,memory_key" });
+  }
+
+  return { actions, notes, pcrAlert };
+}
+
 async function deterministicGovernance(supabase: any, dataPayload: any): Promise<{ actions: any[]; assessment: string; score: number }> {
   const actions: any[] = [];
   const notes: string[] = [];
@@ -1057,6 +1315,24 @@ async function deterministicGovernance(supabase: any, dataPayload: any): Promise
     (m: any) => m.memory_key === "latest_predictions" && m.memory_type === "regime_forecast"
   );
   const forecasts: any[] = forecastMem?.payload?.predictions || [];
+
+  // ─── 2b. Lead-Indicator Matrix (NEW) ───
+  // Route DGE attention to the RIGHT data based on regime
+  const pairPriorities: Record<string, { regime: string; priority: string[]; description: string }> = {};
+  for (const forecast of forecasts) {
+    const lead = getLeadIndicators(forecast.predictedRegime);
+    pairPriorities[forecast.pair] = {
+      regime: forecast.predictedRegime,
+      ...lead,
+    };
+  }
+  if (Object.keys(pairPriorities).length > 0) {
+    const regimeSummary = Object.entries(pairPriorities)
+      .map(([pair, p]) => `${pair}:${p.regime}→[${p.priority.slice(0, 2).join(",")}]`)
+      .join(" | ");
+    notes.push(`LEAD-IND: ${regimeSummary}`);
+    console.log(`🧭 LEAD-INDICATOR MATRIX: ${regimeSummary}`);
+  }
 
   // ─── 3. Get Open Trades from OANDA ───
   let openTrades: any[] = [];
@@ -1084,43 +1360,44 @@ async function deterministicGovernance(supabase: any, dataPayload: any): Promise
   }
 
   // ─── 4. Open Trade Management (Physics-Based Exit Rules) ───
+  // Now uses Lead-Indicator Matrix to weight decisions per pair
   for (const trade of openTrades) {
     const pair = trade.instrument;
     const physics = syntheticBook[pair];
     const tradeId = trade.id;
     const unrealizedPL = parseFloat(trade.unrealizedPL || "0");
-    const isJpy = pair.includes("JPY");
-    const mult = isJpy ? 100 : 10000;
-    const currentPrice = parseFloat(trade.price || "0");
-    const openPrice = parseFloat(trade.price || "0");
+    const pairLead = pairPriorities[pair];
 
     // Rule A: VPIN Toxicity — close if flow is poisonous
-    if (physics?.vpin > 0.8) {
+    // Weighted higher when Lead-Indicator says spreadStability/vpin is priority
+    const vpinThreshold = pairLead?.priority?.includes("vpin") ? 0.7 : 0.8;
+    if (physics?.vpin > vpinThreshold) {
       actions.push({
         type: "close_trade",
         oanda_trade_id: tradeId,
-        reason: `DGE: VPIN=${physics.vpin.toFixed(2)} > 0.8 — toxic flow detected on ${pair}`,
+        reason: `DGE: VPIN=${physics.vpin.toFixed(2)} > ${vpinThreshold} — toxic flow on ${pair} [Lead: ${pairLead?.regime || "unknown"}]`,
       });
       notes.push(`CLOSE ${pair}: VPIN toxicity ${physics.vpin.toFixed(2)}`);
-      continue; // don't process further rules for this trade
+      continue;
     }
 
     // Rule B: Hurst Chop — close if regime is mean-reverting and trade is losing
-    if (physics?.hurst?.H < 0.35 && unrealizedPL < 0) {
+    // Weighted higher when Lead-Indicator says hurst is priority
+    const hurstThreshold = pairLead?.priority?.includes("hurst") ? 0.40 : 0.35;
+    if (physics?.hurst?.H < hurstThreshold && unrealizedPL < 0) {
       actions.push({
         type: "close_trade",
         oanda_trade_id: tradeId,
-        reason: `DGE: Hurst=${physics.hurst.H.toFixed(2)} < 0.35 + losing — chop regime on ${pair}`,
+        reason: `DGE: Hurst=${physics.hurst.H.toFixed(2)} < ${hurstThreshold} + losing — chop on ${pair} [Lead: ${pairLead?.regime || "unknown"}]`,
       });
       notes.push(`CLOSE ${pair}: Hurst chop ${physics.hurst.H.toFixed(2)} + losing`);
       continue;
     }
 
-    // Rule C: Hidden Player (Iceberg Absorption) — tighten SL
+    // Rule C: Hidden Player (Iceberg Absorption) — close if against us
     if (physics?.marketState === "ABSORBING" && physics?.hiddenPlayer?.force > 0.5) {
       const direction = parseInt(trade.currentUnits) > 0 ? "long" : "short";
       const hpType = physics.hiddenPlayer.type;
-      // If hidden player is absorbing AGAINST our direction, close
       if (
         (direction === "long" && hpType === "SELLER") ||
         (direction === "short" && hpType === "BUYER")
@@ -1135,7 +1412,7 @@ async function deterministicGovernance(supabase: any, dataPayload: any): Promise
       }
     }
 
-    // Rule D: Efficiency Hole (Slipping) — close if liquidity has evaporated
+    // Rule D: Efficiency Hole (Slipping) — close if liquidity evaporated
     if (physics?.efficiency > 3.0 && physics?.marketState === "SLIPPING") {
       actions.push({
         type: "close_trade",
@@ -1146,7 +1423,7 @@ async function deterministicGovernance(supabase: any, dataPayload: any): Promise
       continue;
     }
 
-    // Rule E: Time decay — if trade open > 2h with negative P&L, cut
+    // Rule E: Time decay — trade open > 2h with negative P&L
     const tradeOpenTime = new Date(trade.openTime).getTime();
     const tradeAgeMs = Date.now() - tradeOpenTime;
     if (tradeAgeMs > 2 * 60 * 60 * 1000 && unrealizedPL < -2) {
@@ -1159,16 +1436,37 @@ async function deterministicGovernance(supabase: any, dataPayload: any): Promise
       continue;
     }
 
-    // Rule F: Profit protection — if unrealized > $3, trail with tight mental stop
-    // (No direct SL modification here — just log for awareness)
+    // Rule F: Profit protection awareness
     if (unrealizedPL > 3) {
       notes.push(`MONITOR ${pair}: +$${unrealizedPL.toFixed(2)} — profit protection zone`);
     }
   }
 
+  // ─── 4b. Ghost-Order Decay (NEW) ───
+  try {
+    const ghostActions = await ghostOrderDecay(supabase, forecasts, syntheticBook);
+    actions.push(...ghostActions);
+    if (ghostActions.length > 0) {
+      notes.push(`GHOST-DECAY: ${ghostActions.length} limit orders cancelled`);
+    }
+  } catch (err) {
+    console.warn("⚠️ DGE: Ghost-Order Decay error:", err);
+  }
+
+  // ─── 4c. Recursive Self-Audit (NEW) ───
+  try {
+    const audit = await recursiveSelfAudit(supabase, openTrades);
+    actions.push(...audit.actions);
+    notes.push(...audit.notes);
+    if (audit.pcrAlert) {
+      console.log("🚨 DGE: Self-Audit triggered sovereign tightening");
+    }
+  } catch (err) {
+    console.warn("⚠️ DGE: Self-Audit error:", err);
+  }
+
   // ─── 5. Regime-Based Pair Blocking ───
   for (const forecast of forecasts) {
-    // Block choppy pairs
     if (forecast.predictedRegime === "choppy" && forecast.confidence >= 0.6) {
       actions.push({
         type: "add_blacklist",
@@ -1184,8 +1482,6 @@ async function deterministicGovernance(supabase: any, dataPayload: any): Promise
   for (const pair of bookPairs) {
     const p = syntheticBook[pair];
     if (!p) continue;
-
-    // Block if Hurst < 0.3 (strong mean reversion = death for trend strategies)
     if (p.hurst?.H < 0.3 && p.vpin > 0.6) {
       actions.push({
         type: "add_blacklist",
@@ -1238,15 +1534,30 @@ async function deterministicGovernance(supabase: any, dataPayload: any): Promise
     console.warn("⚠️ DGE: Performance sizing error:", err);
   }
 
-  // ─── 7. Set global posture ───
+  // ─── 7. Persist Lead-Indicator state to sovereign memory ───
+  if (Object.keys(pairPriorities).length > 0) {
+    await supabase.from("sovereign_memory").upsert({
+      memory_type: "dge_state",
+      memory_key: "lead_indicator_matrix",
+      payload: {
+        pairPriorities,
+        updatedAt: new Date().toISOString(),
+        pairsRouted: Object.keys(pairPriorities).length,
+      },
+      relevance_score: 0.7,
+      created_by: "dge-lead-indicator",
+    }, { onConflict: "memory_type,memory_key" });
+  }
+
+  // ─── 8. Set global posture ───
   const posture = openTrades.length === 0 ? "SENTINEL" : (actions.some(a => a.type === "close_trade") ? "DEFENSIVE" : "HOLDING");
   actions.push({
     type: "set_global_posture",
     posture,
-    reason: `DGE: ${openTrades.length} open trades, ${actions.filter(a => a.type === "close_trade").length} exits queued`,
+    reason: `DGE: ${openTrades.length} open, ${actions.filter(a => a.type === "close_trade").length} exits, ${actions.filter(a => a.type === "ghost_order_cancelled").length} ghost-decayed`,
   });
 
-  const assessment = `DGE_ACTIVE: ${openTrades.length} open, ${notes.length} decisions: ${notes.join(" | ")}`;
+  const assessment = `DGE_SOVEREIGN: ${openTrades.length} open, ${notes.length} decisions: ${notes.join(" | ")}`;
   const score = Math.max(40, 80 - actions.filter(a => a.type === "close_trade").length * 10);
 
   console.log(`🤖 DGE: ${actions.length} actions generated | ${assessment}`);
