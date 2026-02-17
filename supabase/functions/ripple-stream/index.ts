@@ -637,22 +637,26 @@ const ZSCORE_COOLDOWN_MS = 300_000; // 5 MINUTES between fires on same group (wa
 
 // ═══ PREDATORY HUNTER GATE THRESHOLDS (2026 Strategy) ═══
 // The DGE remains LOCKED until all four gates are open.
-const PREDATOR_HURST_MIN = 0.57;        // Gate 1: Persistent regime (was 0.60 — unreachable with cold-start + EWMA)
+const PREDATOR_HURST_MIN = 0.62;        // Gate 1: Persistent regime — raised from 0.57 to ensure proper buffer above 0.45 EXIT threshold
 const PREDATOR_EFFICIENCY_MIN = 2.0;     // Gate 2: Strong momentum (was 3.5 — 0 scans ever reached it)
-const PREDATOR_OFI_RATIO_LONG = 1.6;    // Gate 3 LONG: Whale imbalance (was 2.0 — needed 14/7 in 20 ticks, blocked 96%)
-const PREDATOR_OFI_RATIO_SHORT = 0.625; // Gate 3 SHORT: Whale imbalance (was 0.50 — reciprocal of 1.6)
-const PREDATOR_WEIGHTING_MIN = 52;      // Gate 4: Buy/Sell weighting > 52% (tighter than 50 to compensate looser OFI)
+const PREDATOR_OFI_RATIO_LONG = 1.6;    // Gate 3 LONG: Whale imbalance
+const PREDATOR_OFI_RATIO_SHORT = 0.625; // Gate 3 SHORT: Whale imbalance (reciprocal of 1.6)
+const PREDATOR_WEIGHTING_MIN = 55;      // Gate 4: Buy/Sell weighting > 55% — raised from 52 to enforce stronger directional conviction at entry
 const PREDATOR_RULE_OF_3 = 3;           // All gates must hold for 3 consecutive ticks
-const PREDATOR_VPIN_MIN = 0.40;         // VPIN validation: >= 0.40 for institutional participation (was 0.45)
-const PREDATOR_VPIN_GHOST_MAX = 0.15;   // VPIN < 0.15 = "Ghost Move" = retail-driven, block (was 0.20)
-const PREDATOR_KM_DRIFT_MIN = 0.12;     // KM Drift minimum (was 0.30→0.12 — D1/√D2 is numerically unstable early; 43 scans died at 0.30)
+const PREDATOR_VPIN_MIN = 0.40;         // VPIN validation: >= 0.40 for institutional participation
+const PREDATOR_VPIN_GHOST_MAX = 0.15;   // VPIN < 0.15 = "Ghost Move" = retail-driven, block
+const PREDATOR_KM_DRIFT_MIN = 0.12;     // KM Drift minimum
 const PREDATOR_WALL_OFFSET_PIPS = 0.3;  // Stop-Limit placed 0.3 pips BEYOND the wall
 // Market Order Override: Only slap the ask if the Tsunami is confirmed beyond doubt
 const PREDATOR_MARKET_OVERRIDE_EFFICIENCY = 7.0;  // E > 7.0 = extreme vacuum
 const PREDATOR_MARKET_OVERRIDE_VPIN = 0.65;        // VPIN > 0.65 = heavy institutional flow
 // Exit Protocol:
-const PREDATOR_EXIT_HURST_MIN = 0.45;   // Close if Hurst drops below 0.45
-const PREDATOR_EXIT_WEIGHTING_THRESHOLD = 49; // Close if Buy/Sell weighting hits 49%
+// CRITICAL: EXIT thresholds must be well BELOW entry thresholds to prevent instant close.
+// Entry: H >= 0.62, Weight >= 55%. Exit: H < 0.45, Weight <= 40%.
+// Buffer zones: Hurst buffer = 0.17, Weighting buffer = 15%.
+const PREDATOR_EXIT_HURST_MIN = 0.45;          // Close if Hurst drops below 0.45 (0.17 buffer below 0.62 entry)
+const PREDATOR_EXIT_WEIGHTING_THRESHOLD = 40;  // Close if weighting hits 40% — lowered from 49% (was firing within 3 ticks of 52% entry)
+const PREDATOR_MIN_HOLD_MS = 90_000;           // 90s minimum hold — no exits before this (prevents instant close on EWMA convergence lag)
 // Whale-Shadow Trail: stop tucked 0.3 pips behind the largest resting wall within 3 pips
 const WHALE_SHADOW_RANGE_PIPS = 3.0;    // scan radius for nearby walls
 const WHALE_SHADOW_OFFSET_PIPS = 0.3;   // tuck stop 0.3 pips behind the wall
@@ -1268,37 +1272,48 @@ Deno.serve(async (req) => {
               const openTrade = exitTradeMap.get(instrument);
               if (openTrade && openTrade.oanda_trade_id) {
                 const exitTracker = getOrCreateOfi(instrument);
-                if (exitTracker.tickCount >= 10) {
-                  let exitReason: string | null = null;
+                  if (exitTracker.tickCount >= 10) {
+                    let exitReason: string | null = null;
 
-                  // ─── REGIME EXIT: Hurst < 0.45 → whales are done ───
-                  if (exitTracker.hurst < PREDATOR_EXIT_HURST_MIN) {
-                    exitReason = `REGIME_EXIT: H=${exitTracker.hurst.toFixed(3)} < ${PREDATOR_EXIT_HURST_MIN} — persistence collapsed`;
-                  }
+                  // ─── MINIMUM HOLD TIME: Never exit before 90s ───
+                  // Prevents instant close caused by EWMA convergence lag immediately after fill.
+                  // ewmaBuyPct/hurst need ~20 ticks to stabilize after fresh session state.
+                  const tradeAgeMs = openTrade.created_at
+                    ? Date.now() - new Date(openTrade.created_at).getTime()
+                    : PREDATOR_MIN_HOLD_MS + 1; // default: allow exits if no timestamp
+                  const holdBlocked = tradeAgeMs < PREDATOR_MIN_HOLD_MS;
 
-                  // ─── FLOW EXIT: Weighting hits 49% (directional consensus lost) ───
-                  if (!exitReason) {
-                    const isLong = openTrade.direction === "long";
-                    const relevantWeighting = isLong
-                      ? Math.round(exitTracker.ewmaBuyPct * 100)
-                      : Math.round(exitTracker.ewmaSellPct * 100);
-                    if (relevantWeighting <= PREDATOR_EXIT_WEIGHTING_THRESHOLD) {
-                      exitReason = `FLOW_EXIT: ${isLong ? "Buy" : "Sell"}%=${relevantWeighting}% <= ${PREDATOR_EXIT_WEIGHTING_THRESHOLD}% — directional consensus lost`;
+                  if (!holdBlocked) {
+                    // ─── REGIME EXIT: Hurst < 0.45 → whales are done ───
+                    if (exitTracker.hurst < PREDATOR_EXIT_HURST_MIN) {
+                      exitReason = `REGIME_EXIT: H=${exitTracker.hurst.toFixed(3)} < ${PREDATOR_EXIT_HURST_MIN} — persistence collapsed`;
                     }
-                  }
 
-                  // ─── Z-OFI SLAM EXIT: Abnormal counter-flow = "House on Fire" ───
-                  // If Z-OFI spikes hard AGAINST the trade direction, exit immediately.
-                  // Long + Z-OFI < -2.5 = massive sell pressure slam
-                  // Short + Z-OFI > 2.5 = massive buy pressure slam
-                  if (!exitReason) {
-                    const isLong = openTrade.direction === "long";
-                    const zOfiSlam = isLong
-                      ? exitTracker.zOfi < -2.5
-                      : exitTracker.zOfi > 2.5;
-                    if (zOfiSlam) {
-                      exitReason = `ZOFI_SLAM_EXIT: Z-OFI=${exitTracker.zOfi.toFixed(2)} — massive counter-flow detected, house on fire`;
+                    // ─── FLOW EXIT: Weighting hits 40% (directional consensus firmly lost) ───
+                    if (!exitReason) {
+                      const isLong = openTrade.direction === "long";
+                      const relevantWeighting = isLong
+                        ? Math.round(exitTracker.ewmaBuyPct * 100)
+                        : Math.round(exitTracker.ewmaSellPct * 100);
+                      if (relevantWeighting <= PREDATOR_EXIT_WEIGHTING_THRESHOLD) {
+                        exitReason = `FLOW_EXIT: ${isLong ? "Buy" : "Sell"}%=${relevantWeighting}% <= ${PREDATOR_EXIT_WEIGHTING_THRESHOLD}% — directional consensus lost`;
+                      }
                     }
+
+                    // ─── Z-OFI SLAM EXIT: Abnormal counter-flow = "House on Fire" ───
+                    // Tightened from 2.5 → 3.5 to prevent premature exits from normal noise spikes.
+                    // Only fire when Z-OFI is a 3.5σ event — a true institutional reversal.
+                    if (!exitReason) {
+                      const isLong = openTrade.direction === "long";
+                      const zOfiSlam = isLong
+                        ? exitTracker.zOfi < -3.5
+                        : exitTracker.zOfi > 3.5;
+                      if (zOfiSlam) {
+                        exitReason = `ZOFI_SLAM_EXIT: Z-OFI=${exitTracker.zOfi.toFixed(2)} — 3.5σ counter-flow, house on fire`;
+                      }
+                    }
+                  } else {
+                    console.log(`[PREDATOR_EXIT] 🛡️ MIN_HOLD: ${instrument} ${openTrade.direction} trade age=${Math.round(tradeAgeMs/1000)}s < ${PREDATOR_MIN_HOLD_MS/1000}s — exit suppressed`);
                   }
                   // ═══ WHALE-SHADOW TRAIL v2: 3-Tier Stop Strategy ═══
                   //
