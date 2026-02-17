@@ -539,6 +539,27 @@ function evaluateExit(
         currentPnlPips, progressToTp, tradeAgeMinutes,
       };
     }
+  } else if (mfeR >= 1.7) {
+    // ═══ FIX #3: PHASE 1.5 TRAILING GAP — MFE >= 1.7R: lock in 1.2R ═══
+    // Previously there was a dead zone between 1.5R and 2.0R where no trail update fired
+    // and trades gave back 0.8R. Now at 1.7R MFE we lock in entry+1.2R — a pulse-ratchet
+    // step that captures more of the move before Phase 2 ATR-trail kicks in at 2.0R MFE.
+    const lockR = 1.2 * effectiveRPips * pipMult;
+    const phase15SlPrice = direction === "long"
+      ? entryPrice + lockR * healthTrailingFactor
+      : entryPrice - lockR * healthTrailingFactor;
+
+    const phase15Hit = direction === "long"
+      ? currentPrice <= phase15SlPrice
+      : currentPrice >= phase15SlPrice;
+
+    if (phase15Hit) {
+      return {
+        action: "close-trailing",
+        reason: `Phase-1.5 trail: ${currentPnlPips.toFixed(1)}p (${currentR.toFixed(2)}R) | MFE=${mfeR.toFixed(2)}R reached 1.7R — locking 1.2R (pulse-ratchet step)`,
+        currentPnlPips, progressToTp, tradeAgeMinutes,
+      };
+    }
   } else if (mfeR >= 1.2) {
     // ═══ ACTIVE HARVEST RULE — MFE >= 1.2R: lock in 0.5R profit ═══
     // Pattern 5 fix: Stop "hoping for home runs" — bank doubles.
@@ -998,11 +1019,17 @@ Deno.serve(async (req) => {
         .eq("id", order.id);
 
       // ═══ MAE-BASED KILL SWITCH (0.65R) ═══
+      // FIX #1: Guard with MFE < 0.15R — only kill if trade has NOT shown meaningful
+      // favorable movement. If MFE >= 0.15R, the trade found its edge and the adverse
+      // move is a snapback/retrace, not invalidation. Prevents killing valid trend entries
+      // that dip before the move accelerates.
       const MAE_KILL_THRESHOLD = 0.65;
-      if (maeRValue >= MAE_KILL_THRESHOLD && decision.action === "hold") {
-        console.log(`[MAE-KILL] ${order.currency_pair} ${order.direction}: MAE=${maeRValue}R >= ${MAE_KILL_THRESHOLD}R — KILLING trade at market (edge gone)`);
+      if (maeRValue >= MAE_KILL_THRESHOLD && decision.action === "hold" && currentMfeR < 0.15) {
+        console.log(`[MAE-KILL] ${order.currency_pair} ${order.direction}: MAE=${maeRValue}R >= ${MAE_KILL_THRESHOLD}R AND MFE=${currentMfeR.toFixed(2)}R < 0.15R — KILLING trade (no edge shown, pure adverse)`);
         decision.action = "mae-kill" as typeof decision.action;
-        decision.reason = `MAE kill switch: ${maeRValue}R adverse excursion exceeds ${MAE_KILL_THRESHOLD}R threshold — edge invalidated`;
+        decision.reason = `MAE kill switch: ${maeRValue}R adverse + MFE=${currentMfeR.toFixed(2)}R < 0.15R — edge never materialised`;
+      } else if (maeRValue >= MAE_KILL_THRESHOLD && decision.action === "hold" && currentMfeR >= 0.15) {
+        console.log(`[MAE-KILL] ${order.currency_pair} ${order.direction}: MAE=${maeRValue}R but MFE=${currentMfeR.toFixed(2)}R >= 0.15R — SNAPBACK GUARD active, not killing`);
       }
 
       // ═══ SOVEREIGN STOP-HUNT PROTECTION ═══
@@ -1062,16 +1089,37 @@ Deno.serve(async (req) => {
       }
 
       // ─── Hook 2: Profit Capture Decay — MFE Retracement Kill ───
-      // BUG FIX: Was `ueRValue > -0.1` — triggered on fresh trades where UE starts near 0 (no profit yet).
-      // A new trade with MFE=0.8R from noise and UE=0.02R would fire immediately (false decay exit).
-      // Changed to `ueRValue > 0.1` — trade must be meaningfully in profit before decay logic can fire.
-      // BUG FIX: Previous window was ueRValue > 0.10 && < 0.15 — a 0.05R band = ~0.4 pips on 8R risk.
-      // So narrow it functionally never fired (trade blinks through and exits the window in one cycle).
-      // Changed to ueRValue > 0.15 && < 0.30 — meaningful 0.15R retracement from MFE to still-profitable.
-      if (decision.action === "hold" && currentMfeR >= 0.8 && ueRValue < 0.30 && ueRValue > 0.15) {
-        console.log(`[AUTO-EXIT] ${order.currency_pair} ${order.direction}: Profit capture decay — MFE=${currentMfeR.toFixed(2)}R but UE retraced to ${ueRValue}R — AUTONOMOUS EXIT`);
-        decision.action = "profit-decay-exit" as typeof decision.action;
-        decision.reason = `AUTONOMOUS EXIT: MFE=${currentMfeR.toFixed(2)}R achieved but retraced to ${ueRValue}R — profit capture decay`;
+      // FIX #2: Widened band to 0.10–0.40R. Previous 0.15–0.30R band was too narrow —
+      // a single cycle blinked straight through it without triggering. Also add 2-cycle
+      // confirmation: only fire if we've been in the decay zone for 2+ consecutive monitor
+      // cycles (tracked via profit_decay_cycles counter in governance_payload).
+      // This eliminates false exits from momentary retraces that resume the trend.
+      const DECAY_MFE_THRESHOLD = 0.8;    // MFE must reach this to enable decay tracking
+      const DECAY_UE_LOWER = 0.10;        // UE must be above this (still profitable)
+      const DECAY_UE_UPPER = 0.40;        // UE must be below this (significant give-back)
+      const decayGovPayload = (typeof order.governance_payload === 'object' && order.governance_payload)
+        ? order.governance_payload as Record<string, unknown>
+        : {};
+      const prevDecayCycles = (decayGovPayload.profitDecayCycles as number) ?? 0;
+
+      if (decision.action === "hold" && currentMfeR >= DECAY_MFE_THRESHOLD && ueRValue < DECAY_UE_UPPER && ueRValue > DECAY_UE_LOWER) {
+        const newDecayCycles = prevDecayCycles + 1;
+        if (newDecayCycles >= 2) {
+          console.log(`[AUTO-EXIT] ${order.currency_pair} ${order.direction}: Profit decay confirmed (${newDecayCycles} cycles) — MFE=${currentMfeR.toFixed(2)}R retraced to UE=${ueRValue}R — AUTONOMOUS EXIT`);
+          decision.action = "profit-decay-exit" as typeof decision.action;
+          decision.reason = `AUTONOMOUS EXIT: MFE=${currentMfeR.toFixed(2)}R retraced to ${ueRValue}R for ${newDecayCycles} consecutive cycles — profit decay confirmed`;
+        } else {
+          console.log(`[AUTO-EXIT] ${order.currency_pair} ${order.direction}: Profit decay cycle ${newDecayCycles}/2 — watching (MFE=${currentMfeR.toFixed(2)}R UE=${ueRValue}R)`);
+          // Persist decay cycle count in governance_payload
+          await supabase.from("oanda_orders").update({
+            governance_payload: { ...decayGovPayload, profitDecayCycles: newDecayCycles },
+          }).eq("id", order.id);
+        }
+      } else if (prevDecayCycles > 0 && (currentMfeR < DECAY_MFE_THRESHOLD || ueRValue >= DECAY_UE_UPPER || ueRValue <= DECAY_UE_LOWER)) {
+        // Reset cycle count if trade exits the decay zone (resumed trend or stopped out separately)
+        await supabase.from("oanda_orders").update({
+          governance_payload: { ...decayGovPayload, profitDecayCycles: 0 },
+        }).eq("id", order.id);
       }
 
       // ─── Hook 3: Rolling WR Trailing Override ───
@@ -1118,6 +1166,13 @@ Deno.serve(async (req) => {
               ? updatedMfePrice - trailDist
               : updatedMfePrice + trailDist;
             slReason = `ATR-trail@MFE-0.75×ATR×${healthResult.trailingTightenFactor.toFixed(2)}`;
+          } else if (currentMfeR >= 1.7) {
+            // FIX #3 (SL push): Phase 1.5 ratchet — lock entry+1.2R (gap-fill between 1.5R and 2.0R)
+            const lockR12 = 1.2 * effectiveRPips * pipMultSl;
+            targetSlPrice = order.direction === "long"
+              ? entryPrice + lockR12 * healthResult.trailingTightenFactor
+              : entryPrice - lockR12 * healthResult.trailingTightenFactor;
+            slReason = `phase1.5-ratchet@entry+1.2R×${healthResult.trailingTightenFactor.toFixed(2)}`;
           } else if (currentMfeR >= 1.5) {
             // Phase 1: lock entry+1R × healthFactor
             const oneR = effectiveRPips * pipMultSl;
