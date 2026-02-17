@@ -646,8 +646,10 @@ async function executeAction(action: any, supabase: any): Promise<void> {
             units: signedUnits.toString(),
             timeInForce: "FOK",
             positionFill: "DEFAULT",
-            ...(action.stopLossPrice ? { stopLossOnFill: { price: Number(action.stopLossPrice).toFixed(5), timeInForce: "GTC" } } : {}),
-            ...(action.takeProfitPrice ? { takeProfitOnFill: { price: Number(action.takeProfitPrice).toFixed(5), timeInForce: "GTC" } } : {}),
+            // FIX: JPY pairs require 3 decimal places, all others 5. Using toFixed(5) for JPY
+            // causes PRICE_PRECISION_EXCEEDED rejections from OANDA broker.
+            ...(action.stopLossPrice ? { stopLossOnFill: { price: Number(action.stopLossPrice).toFixed(pair.includes("JPY") ? 3 : 5), timeInForce: "GTC" } } : {}),
+            ...(action.takeProfitPrice ? { takeProfitOnFill: { price: Number(action.takeProfitPrice).toFixed(pair.includes("JPY") ? 3 : 5), timeInForce: "GTC" } } : {}),
           },
         };
 
@@ -793,12 +795,36 @@ async function executeAction(action: any, supabase: any): Promise<void> {
       }
 
       case "adjust_position_sizing": {
+        // Write to gate_bypasses for audit trail
         await supabase.from("gate_bypasses").insert({
           gate_id: `SIZING_OVERRIDE:${action.scope || "global"}`,
-          reason: `${action.multiplier || action.sizing}x: ${action.reason || "FM sizing"}`,
+          reason: `${action.multiplier || action.sizing || action.sizing_cap}x: ${action.reason || "FM sizing"}`,
           expires_at: action.expires_at || new Date(Date.now() + 4 * 3600_000).toISOString(),
           created_by: "sovereign-fm",
         });
+        // CRITICAL FIX: Also propagate sizing to zscore_strike_config — the key that
+        // ripple-stream actually reads for units. Previously DGE wrote only to gate_bypasses
+        // which ripple-stream never reads, making Kelly-derived sizing completely ignored.
+        if (action.sizing_cap != null || action.multiplier != null || action.units != null) {
+          const sizingMultiplier = action.sizing_cap ?? action.multiplier ?? 1.0;
+          const { data: currentConfig } = await supabase
+            .from("sovereign_memory")
+            .select("payload")
+            .eq("memory_key", "zscore_strike_config")
+            .maybeSingle();
+          const currentPayload = (currentConfig?.payload as Record<string, unknown>) || {};
+          const baseUnits = (currentPayload.units as number) || 1000;
+          // Apply multiplier but never go below 500 or above 2000 units
+          const newUnits = Math.max(500, Math.min(2000, Math.round(baseUnits * Math.max(0.2, sizingMultiplier))));
+          await supabase.from("sovereign_memory").upsert({
+            memory_type: "engine_config",
+            memory_key: "zscore_strike_config",
+            payload: { ...currentPayload, units: newUnits, dge_sizing_multiplier: sizingMultiplier, dge_last_update: new Date().toISOString() },
+            relevance_score: 1.0,
+            created_by: "sovereign-intelligence",
+          }, { onConflict: "memory_type,memory_key" });
+          console.log(`✅ DGE sizing propagated to ripple-stream: ${baseUnits}u → ${newUnits}u (${sizingMultiplier}x)`);
+        }
         break;
       }
 
