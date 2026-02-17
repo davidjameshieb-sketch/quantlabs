@@ -1510,239 +1510,17 @@ Deno.serve(async (req) => {
               }
             }
 
-            // ═══════════════════════════════════════════════
-            // STRATEGY 2: VELOCITY GATING (unchanged — already L0)
-            // 5+ same-direction ticks in 2s = impulse fire
-            // ⚠️ DISABLED during credit exhaustion — only Z-Score Strike survives
-            // ═══════════════════════════════════════════════
-            if (!creditExhausted && vt && prevPrice && velocityPairs.includes(instrument)) {
-              if (vt.ticks.length >= VELOCITY_TICK_THRESHOLD && (tickTs - vt.lastFireTs) > VELOCITY_COOLDOWN_MS) {
-                const recentVTicks = vt.ticks.slice(-VELOCITY_TICK_THRESHOLD);
-                const windowAge = tickTs - recentVTicks[0].ts;
-                const allSameDir = recentVTicks.every(t => t.direction === recentVTicks[0].direction);
+            // ═══ STRATEGY 2: VELOCITY GATING — DEACTIVATED ═══
+            // Predatory Hunter is the ONLY active strategy in the DGE.
+            // Velocity Gating disabled by CRO directive.
 
-                if (allSameDir && windowAge <= VELOCITY_MAX_AGE_MS) {
-                  const direction = recentVTicks[0].direction === 1 ? "long" : "short";
-                  const movePips = Math.abs(toPips(recentVTicks[recentVTicks.length - 1].mid - recentVTicks[0].mid, instrument));
-                  const avgTickInterval = Math.round(windowAge / (recentVTicks.length - 1));
+            // ═══ STRATEGY 3: SNAP-BACK SNIPER — DEACTIVATED ═══
+            // Predatory Hunter is the ONLY active strategy in the DGE.
+            // Snap-Back Sniper disabled by CRO directive.
 
-                  if (movePips >= 1.0) {
-                    vt.lastFireTs = tickTs;
-                    console.log(`[STRIKE-v3] ⚡ VELOCITY: ${instrument} ${recentVTicks.length} ticks ${direction} in ${windowAge}ms | ${movePips.toFixed(1)}p`);
-
-                    const result = await executeOrder(
-                      instrument, direction, velocityUnits,
-                      velocitySlPips, velocityTpPips, "velocity-gating",
-                      {
-                        ticksInWindow: recentVTicks.length,
-                        windowAgeMs: windowAge, avgTickIntervalMs: avgTickInterval,
-                        movePips, tickNumber: tickCount,
-                        streamLatencyMs: Date.now() - startTime,
-                        confidence: Math.min(1, movePips / 3),
-                        engine: "velocity-gating-v3",
-                      },
-                      { mid, spreadPips },
-                    );
-
-                    if (result.success) {
-                      velocityFires.push(instrument);
-                      await supabase.from("gate_bypasses").insert({
-                        gate_id: `VELOCITY_FIRE:${instrument}`,
-                        reason: JSON.stringify({
-                          pair: instrument, direction, movePips,
-                          ticksInWindow: recentVTicks.length,
-                          windowAgeMs: windowAge, fillPrice: result.fillPrice,
-                          slippage: result.slippage, tickNumber: tickCount,
-                        }),
-                        expires_at: new Date(Date.now() + 3600_000).toISOString(),
-                        created_by: "velocity-gating-engine",
-                      });
-                    }
-                    vt.ticks = [];
-                  }
-                }
-              }
-            }
-
-            // ═══════════════════════════════════════════════
-            // STRATEGY 3: SNAP-BACK SNIPER (unchanged — already L0)
-            // ⚠️ DISABLED during credit exhaustion — only Z-Score Strike survives
-            // ═══════════════════════════════════════════════
-            const sb = !creditExhausted ? snapbackTrackers.get(instrument) : undefined;
-            if (sb && prevPrice) {
-              const delta = mid - prevPrice.mid;
-              const deltaPips = toPips(delta, instrument);
-              sb.recentTicks.push({ ts: tickTs, mid, delta: deltaPips });
-
-              if (sb.recentTicks.length > SNAPBACK_VOLUME_WINDOW) sb.recentTicks.shift();
-
-              if (sb.recentTicks.length >= SNAPBACK_VOLUME_WINDOW && (tickTs - sb.lastFireTs) > 5000) {
-                const ticks = sb.recentTicks;
-                const totalMovePips = Math.abs(ticks[ticks.length - 1].mid - ticks[0].mid) * pipMultiplier(instrument);
-                const lastFewTicks = ticks.slice(-3);
-                const mainWindowTicks = ticks.slice(0, -3);
-
-                if (mainWindowTicks.length >= 5) {
-                  const mainDownRatio = mainWindowTicks.filter(t => t.delta < 0).length / mainWindowTicks.length;
-                  const mainUpRatio = mainWindowTicks.filter(t => t.delta > 0).length / mainWindowTicks.length;
-                  const lastFewDirection = lastFewTicks.reduce((sum, t) => sum + t.delta, 0);
-
-                  // Down-flush → snap-back up
-                  if (mainDownRatio >= SNAPBACK_EXHAUSTION_RATIO && lastFewDirection > 0 && totalMovePips >= SNAPBACK_MIN_SPIKE_PIPS) {
-                    sb.lastFireTs = tickTs;
-                    console.log(`[STRIKE-v3] 🎯 SNAP-BACK: ${instrument} down-flush → reversal | ${totalMovePips.toFixed(1)}p`);
-
-                    const result = await executeOrder(
-                      instrument, "long", snapbackUnits,
-                      snapbackSlPips, snapbackTpPips, "snapback-sniper",
-                      { huntDirection: "down", exhaustionRatio: mainDownRatio, spikePips: totalMovePips, tickNumber: tickCount, confidence: Math.min(1, totalMovePips / 5), engine: "snapback-sniper-v3" },
-                      { mid, spreadPips },
-                    );
-                    if (result.success) {
-                      snapbackFires.push(instrument);
-                      await supabase.from("gate_bypasses").insert({
-                        gate_id: `SNAPBACK_FIRE:${instrument}`,
-                        reason: JSON.stringify({ pair: instrument, direction: "long", exhaustionRatio: mainDownRatio, spikePips: totalMovePips, tickNumber: tickCount }),
-                        expires_at: new Date(Date.now() + 3600_000).toISOString(),
-                        created_by: "snapback-sniper-engine",
-                      });
-                    }
-                    sb.recentTicks = [];
-                  }
-
-                  // Up-flush → snap-back down
-                  if (mainUpRatio >= SNAPBACK_EXHAUSTION_RATIO && lastFewDirection < 0 && totalMovePips >= SNAPBACK_MIN_SPIKE_PIPS) {
-                    sb.lastFireTs = tickTs;
-                    console.log(`[STRIKE-v3] 🎯 SNAP-BACK: ${instrument} up-flush → reversal | ${totalMovePips.toFixed(1)}p`);
-
-                    const result = await executeOrder(
-                      instrument, "short", snapbackUnits,
-                      snapbackSlPips, snapbackTpPips, "snapback-sniper",
-                      { huntDirection: "up", exhaustionRatio: mainUpRatio, spikePips: totalMovePips, tickNumber: tickCount, confidence: Math.min(1, totalMovePips / 5), engine: "snapback-sniper-v3" },
-                      { mid, spreadPips },
-                    );
-                    if (result.success) {
-                      snapbackFires.push(instrument);
-                      await supabase.from("gate_bypasses").insert({
-                        gate_id: `SNAPBACK_FIRE:${instrument}`,
-                        reason: JSON.stringify({ pair: instrument, direction: "short", exhaustionRatio: mainUpRatio, spikePips: totalMovePips, tickNumber: tickCount }),
-                        expires_at: new Date(Date.now() + 3600_000).toISOString(),
-                        created_by: "snapback-sniper-engine",
-                      });
-                    }
-                    sb.recentTicks = [];
-                  }
-                }
-              }
-              sb.lastMid = mid;
-            }
-
-            // ═══════════════════════════════════════════════
-            // STRATEGY 4: AUTONOMOUS GHOST (Lean 6 Vacuum)
-            // The Defender. Provides liquidity at retail stop clusters.
-            // 100% deterministic — immune to credit exhaustion.
-            // Natural hedge to Z-Score: profits in RANGING markets.
-            //
-            // Logic: Scan price-level persistence for clusters →
-            //   Safety: Hurst < 0.6 AND |DriftNorm| < 2.0 →
-            //   Confirm: Efficiency < 0.3 (ABSORBING) →
-            //   Execute: PREDATORY_LIMIT at cluster price
-            // ═══════════════════════════════════════════════
-            {
-              const ghostTracker = getOrCreateOfi(instrument);
-              if (ghostTracker.tickCount >= 20 && !blockedPairs.includes(instrument) && !ghostBlockedPairs.includes(instrument)) {
-                const lastGhostFire = ghostLastFireTs.get(instrument) || 0;
-                if (tickTs - lastGhostFire > GHOST_COOLDOWN_MS) {
-                  // Read Lean 6 physics (already computed — O(1) read)
-                  const gSqrtD2 = Math.sqrt(Math.abs(ghostTracker.D2));
-                  const gDriftNorm = gSqrtD2 > 1e-10 ? ghostTracker.D1 / gSqrtD2 : 0;
-                  const gAbsD1 = Math.abs(ghostTracker.D1);
-                  const gAbsOfi = Math.abs(ghostTracker.ofiRecursive);
-                  const gPipMult = instrument.includes("JPY") ? 100 : 10000;
-                  const gOfiScaled = gAbsOfi / (gPipMult * 10);
-                  const gEfficiency = gOfiScaled / (gAbsD1 + EFFICIENCY_EPSILON);
-
-                  // ─── GHOST SAFETY SWITCH: Lean 6 Gate 3 (Hurst) + Gate 5 (Velocity) ───
-                  // If trending or high velocity → DO NOT provide liquidity (steamroller risk)
-                  const hurstSafe = ghostTracker.hurst < GHOST_HURST_CANCEL;
-                  const driftSafe = Math.abs(gDriftNorm) < GHOST_DRIFT_CANCEL;
-
-                  if (hurstSafe && driftSafe) {
-                    // ─── GHOST GATE 6: Efficiency (Structure) — is someone absorbing? ───
-                    // E < 0.3 = ABSORBING = hidden limit player eating flow = safe to join
-                    if (gEfficiency < GHOST_EFFICIENCY_MAX) {
-                      // Scan price-level persistence for retail stop clusters
-                      const clusters: { price: number; sells: number; hits: number; direction: "long" | "short" }[] = [];
-                      for (const [price, info] of ghostTracker.priceLevels.entries()) {
-                        if (info.hits < GHOST_CLUSTER_MIN_HITS) continue;
-                        const priceNum = +price;
-                        const distancePips = Math.abs(toPips(priceNum - mid, instrument));
-
-                        // Only target clusters within 5-40 pips of current price
-                        if (distancePips < 5 || distancePips > 40) continue;
-
-                        // Sell-heavy clusters below price = retail stop-losses = buy opportunity
-                        if (info.sells >= GHOST_CLUSTER_MIN_SELLS && priceNum < mid) {
-                          clusters.push({ price: priceNum, sells: info.sells, hits: info.hits, direction: "long" });
-                        }
-                        // Buy-heavy clusters above price = retail take-profits = sell opportunity
-                        if (info.buys >= GHOST_CLUSTER_MIN_SELLS && priceNum > mid) {
-                          clusters.push({ price: priceNum, sells: info.buys, hits: info.hits, direction: "short" });
-                        }
-                      }
-
-                      // Sort by strongest cluster (most hits × sells)
-                      clusters.sort((a, b) => (b.hits * b.sells) - (a.hits * a.sells));
-
-                      if (clusters.length > 0) {
-                        const target = clusters[0];
-                        ghostLastFireTs.set(instrument, tickTs);
-
-                        console.log(`[GHOST] 👻 VACUUM: ${target.direction.toUpperCase()} ${ghostUnits} ${instrument} @ ${target.price.toFixed(instrument.includes("JPY") ? 3 : 5)} | cluster=${target.hits}hits/${target.sells}sells | H=${ghostTracker.hurst.toFixed(3)} E=${gEfficiency.toFixed(3)} |D1n|=${Math.abs(gDriftNorm).toFixed(2)} | tick #${tickCount}`);
-
-                        const result = await executeOrder(
-                          instrument, target.direction, ghostUnits,
-                          ghostSlPips, ghostTpPips, "ghost-vacuum",
-                          {
-                            clusterPrice: target.price,
-                            clusterHits: target.hits,
-                            clusterSells: target.sells,
-                            hurst: ghostTracker.hurst,
-                            efficiency: gEfficiency,
-                            driftNormalized: gDriftNorm,
-                            vpin: ghostTracker.vpinRecursive,
-                            marketState: classifyMarketState(gEfficiency),
-                            tickNumber: tickCount,
-                            confidence: Math.min(1, (target.hits * target.sells) / 20),
-                            engine: "ghost-vacuum-v1-lean6",
-                            strategy: "autonomous-ghost",
-                          },
-                          { mid, spreadPips },
-                          "LIMIT", // Ghost Limit Order — provide liquidity
-                          target.price, // ← CRITICAL: Place at cluster price, NOT mid
-                        );
-
-                        if (result.success) {
-                          ghostVacuumFires.push(instrument);
-                          await supabase.from("gate_bypasses").insert({
-                            gate_id: `GHOST_VACUUM_FIRE:${instrument}`,
-                            reason: JSON.stringify({
-                              pair: instrument, direction: target.direction,
-                              clusterPrice: target.price, hits: target.hits,
-                              sells: target.sells, hurst: ghostTracker.hurst,
-                              efficiency: gEfficiency, driftNorm: gDriftNorm,
-                              tickNumber: tickCount,
-                            }),
-                            expires_at: new Date(Date.now() + 3600_000).toISOString(),
-                            created_by: "ghost-vacuum-engine",
-                          });
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            }
+            // ═══ STRATEGY 4: AUTONOMOUS GHOST — DEACTIVATED ═══
+            // Predatory Hunter is the ONLY active strategy in the DGE.
+            // Ghost Vacuum disabled by CRO directive.
 
           } catch { /* skip malformed tick */ }
         }
@@ -1889,17 +1667,14 @@ Deno.serve(async (req) => {
     }
 
     const totalMs = Date.now() - startTime;
-    const creditMode = creditExhausted ? " | 🔋 CREDIT EXHAUSTION: Predatory Hunter + Ghost Vacuum" : "";
-    console.log(`[PREDATOR] 📊 Session: ${totalMs}ms, ${tickCount} ticks | Hunter: ${zScoreFires.length} | Ghost: ${ghostVacuumFires.length} | Exits: ${autonomousExits.length} | Velocity: ${velocityFires.length} | Snap-Back: ${snapbackFires.length} | OFI: ${Object.keys(ofiSnapshot).length} pairs | Hidden: ${hiddenPlayerAlerts} | Absorbing: ${absorbingPairs} | Slipping: ${slippingPairs}${creditMode}`);
+    console.log(`[PREDATOR] 📊 Session: ${totalMs}ms, ${tickCount} ticks | Hunter: ${zScoreFires.length} | Exits: ${autonomousExits.length} | OFI: ${Object.keys(ofiSnapshot).length} pairs | Hidden: ${hiddenPlayerAlerts} | Absorbing: ${absorbingPairs} | Slipping: ${slippingPairs} | SOLE STRATEGY: Predatory Hunter`);
 
     return new Response(
       JSON.stringify({
         success: true,
         version: "v8-predatory-hunter",
         creditExhausted,
-        activeStrategies: creditExhausted
-          ? ["predatory-hunter", "ghost-vacuum"]
-          : ["predatory-hunter", "ghost-vacuum", "velocity-gating", "snapback-sniper"],
+        activeStrategies: ["predatory-hunter"],
         streamDurationMs: totalMs,
         ticksProcessed: tickCount,
         predatoryHunter: {
@@ -1909,9 +1684,7 @@ Deno.serve(async (req) => {
           strategy: "predatory-hunter-2026",
         },
         autonomousExits: { count: autonomousExits.length, trades: autonomousExits },
-        ghostVacuum: { fired: ghostVacuumFires.length, pairs: ghostVacuumFires, strategy: "autonomous-ghost-lean6" },
-        velocity: { fired: velocityFires.length, pairs: velocityFires, monitored: velocityPairs.length },
-        snapback: { fired: snapbackFires.length, pairs: snapbackFires, monitored: snapbackPairs.length },
+        deactivated: ["ghost-vacuum", "velocity-gating", "snapback-sniper"],
         syntheticBook: {
           version: "v8-predatory-hunter",
           architecture: "O(1)_recursive_predatory_hunter",
