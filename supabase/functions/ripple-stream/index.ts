@@ -743,7 +743,7 @@ Deno.serve(async (req) => {
       .maybeSingle();
     if (ceState?.payload?.exhausted === true) {
       creditExhausted = true;
-      console.log("[STRIKE-v3] 🔋 CREDIT EXHAUSTION ACTIVE — Z-Score Strike + Autonomous Ghost will fire. Velocity + Snap-Back DISABLED.");
+      console.log("[STRIKE-v3] 🔋 CREDIT EXHAUSTION ACTIVE — Predatory Hunter is sole strategy. DGE fallback engaged.");
     }
   } catch { /* non-critical — default to all strategies enabled */ }
 
@@ -1418,14 +1418,14 @@ Deno.serve(async (req) => {
               for (const [price, info] of tradeTracker.priceLevels.entries()) {
                 if (info.hits < 3) continue;
                 const priceNum = +price;
-                const distPips = Math.abs(toPips(priceNum - mid, tradePair));
+                const distPips = Math.abs(toPips(priceNum - tradePrice.mid, tradePair));
                 if (distPips < 1 || distPips > 30) continue;
 
-                if (tradeDirection === "long" && info.sells >= 2 && priceNum > mid) {
+                if (tradeDirection === "long" && info.sells >= 2 && priceNum > tradePrice.mid) {
                   // Sell Wall above price — resistance to punch through
                   if (!wallPrice || priceNum < wallPrice) wallPrice = priceNum;
                 }
-                if (tradeDirection === "short" && info.buys >= 2 && priceNum < mid) {
+                if (tradeDirection === "short" && info.buys >= 2 && priceNum < tradePrice.mid) {
                   // Buy Wall below price — support to break through
                   if (!wallPrice || priceNum > wallPrice) wallPrice = priceNum;
                 }
