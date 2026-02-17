@@ -643,6 +643,30 @@ const PREDATOR_EXIT_WEIGHTING_THRESHOLD = 49; // Close if Buy/Sell weighting hit
 const WHALE_SHADOW_RANGE_PIPS = 3.0;    // scan radius for nearby walls
 const WHALE_SHADOW_OFFSET_PIPS = 0.3;   // tuck stop 0.3 pips behind the wall
 const WHALE_SHADOW_MIN_HITS = 3;        // wall must have ≥3 hits to qualify
+// Emergency Exit: If a massive Buy Wall appears below price during a SHORT → OFI flip = "dam hit"
+const WHALE_SHADOW_EMERGENCY_OFI_FLIP = 2.5; // OFI ratio >= 2.5 while short = absorption emergency
+
+// ─── Daily VWAP Tracker (tick-weighted volume price) ───
+// Used as failsafe anchor when no institutional wall is within 3 pips.
+// Since OANDA stream doesn't provide volume, we use tick-weighted average (TWAP ≈ VWAP proxy).
+const vwapTrackers = new Map<string, { sumPriceVol: number; sumVol: number; dayStart: number }>();
+function getOrResetVwap(pair: string, mid: number): number {
+  const now = Date.now();
+  const dayMs = 24 * 60 * 60 * 1000;
+  let vt = vwapTrackers.get(pair);
+  // Reset at UTC midnight
+  if (!vt || (now - vt.dayStart) > dayMs) {
+    vt = { sumPriceVol: mid, sumVol: 1, dayStart: now - (now % dayMs) };
+    vwapTrackers.set(pair, vt);
+  }
+  // Each tick contributes equally (tick-weighted VWAP)
+  vt.sumPriceVol += mid;
+  vt.sumVol += 1;
+  return vt.sumPriceVol / vt.sumVol;
+}
+
+// Track last applied SL per trade to enforce unidirectional moves
+const lastAppliedSL = new Map<string, number>();
 
 // ─── Velocity Gating Constants ───────────────────────────
 const VELOCITY_TICK_THRESHOLD = 5;
@@ -1189,16 +1213,28 @@ Deno.serve(async (req) => {
                     }
                   }
 
-                  // ─── WHALE-SHADOW TRAIL: Tuck SL behind largest resting wall within 3 pips ───
-                  // Instead of drift reversal, we use the whales as a physical shield.
-                  // For LONG: find the biggest Buy Wall below price → SL = wall - 0.3 pips
-                  // For SHORT: find the biggest Sell Wall above price → SL = wall + 0.3 pips
+                  // ═══ WHALE-SHADOW TRAIL v2: 3-Tier Stop Strategy ═══
+                  //
+                  // 🟢 LONG "Shield": Find largest Net×Hits buy-limit cluster between price and -3 pips.
+                  //    SL = 0.3 pips BELOW that wall. Guard: if wall consumed, re-scan for next wall.
+                  //
+                  // 🔴 SHORT "Ceiling": Find largest Net×Hits sell-limit cluster between price and +3 pips.
+                  //    SL = 0.3 pips ABOVE that wall. Guard: if massive Buy Wall appears below price
+                  //    (OFI Ratio flip ≥ 2.5), trigger Emergency Exit — the "Tsunami hit a dam."
+                  //
+                  // 📡 "Out-of-Range" Failsafe: If no wall within 3 pips (common in Vacuum moves),
+                  //    default SL to Daily VWAP + 0.3 pip offset — never be "naked" without structural anchor.
                   if (!exitReason) {
                     const isLong = openTrade.direction === "long";
                     const rangePx = fromPips(WHALE_SHADOW_RANGE_PIPS, instrument);
                     const offsetPx = fromPips(WHALE_SHADOW_OFFSET_PIPS, instrument);
+                    const entryPrice = openTrade.entry_price || 0;
+                    const tradeId = openTrade.oanda_trade_id;
+                    const pricePrecision = instrument.includes("JPY") ? 3 : 5;
+
+                    // ─── SCAN: Find the strongest wall within 3-pip radius ───
                     let bestWallPrice: number | null = null;
-                    let bestWallStrength = 0; // measured by |net| order flow at the level
+                    let bestWallStrength = 0;
 
                     for (const [levelPrice, info] of exitTracker.priceLevels.entries()) {
                       if (info.hits < WHALE_SHADOW_MIN_HITS) continue;
@@ -1206,16 +1242,16 @@ Deno.serve(async (req) => {
                       if (dist > rangePx) continue; // outside 3-pip scan radius
 
                       if (isLong) {
-                        // Buy Walls BELOW price (support shields)
+                        // 🟢 SHIELD: Buy Walls BELOW price (support shields)
                         if (levelPrice < mid && info.buys >= 2 && info.net > 0) {
-                          const strength = info.net * info.hits; // compound: net flow × persistence
+                          const strength = info.net * info.hits;
                           if (strength > bestWallStrength) {
                             bestWallStrength = strength;
                             bestWallPrice = levelPrice;
                           }
                         }
                       } else {
-                        // Sell Walls ABOVE price (resistance shields)
+                        // 🔴 CEILING: Sell Walls ABOVE price (resistance shields)
                         if (levelPrice > mid && info.sells >= 2 && info.net < 0) {
                           const strength = Math.abs(info.net) * info.hits;
                           if (strength > bestWallStrength) {
@@ -1226,24 +1262,50 @@ Deno.serve(async (req) => {
                       }
                     }
 
+                    // ─── 🔴 SHORT GUARD: Emergency Exit on OFI Ratio Flip (Absorption) ───
+                    // If we're SHORT and a massive Buy Wall suddenly appears below price,
+                    // the OFI Ratio will spike (buys >> sells) → the "Tsunami hit a dam."
+                    if (!isLong && !exitReason) {
+                      const totalTicks = exitTracker.runningBuys + exitTracker.runningSells;
+                      const currentOfiRatio = totalTicks > 0
+                        ? exitTracker.runningBuys / Math.max(1, exitTracker.runningSells)
+                        : 1.0;
+                      if (currentOfiRatio >= WHALE_SHADOW_EMERGENCY_OFI_FLIP) {
+                        exitReason = `EMERGENCY_EXIT: SHORT OFI_RATIO=${currentOfiRatio.toFixed(2)} >= ${WHALE_SHADOW_EMERGENCY_OFI_FLIP} — massive Buy Wall absorption detected (dam hit)`;
+                      }
+                    }
+
+                    // ─── DETERMINE NEW SL ───
+                    let newSL: number | null = null;
+                    let slSource = "";
+
                     if (bestWallPrice !== null) {
-                      // Calculate new SL: 0.3 pips behind the wall
-                      const newSL = isLong
+                      // Primary: 0.3 pips behind the wall
+                      newSL = isLong
                         ? bestWallPrice - offsetPx   // below the buy wall
                         : bestWallPrice + offsetPx;  // above the sell wall
+                      slSource = `WALL@${bestWallPrice.toFixed(pricePrecision)} str=${bestWallStrength}`;
+                    } else {
+                      // 📡 OUT-OF-RANGE FAILSAFE: No wall within 3 pips → use Daily VWAP
+                      const vwap = getOrResetVwap(instrument, mid);
+                      newSL = isLong
+                        ? vwap - offsetPx   // VWAP - 0.3 pips
+                        : vwap + offsetPx;  // VWAP + 0.3 pips
+                      slSource = `VWAP@${vwap.toFixed(pricePrecision)} (no wall in ${WHALE_SHADOW_RANGE_PIPS}p range)`;
+                    }
 
-                      // Only move SL in the profitable direction (never widen)
-                      const entryPrice = openTrade.entry_price || 0;
-                      const currentSLImproves = isLong
-                        ? newSL > entryPrice * 0.998  // SL is above ~0.2% below entry (reasonable floor)
-                        : newSL < entryPrice * 1.002;
+                    // ─── ENFORCE UNIDIRECTIONAL MOVE (never widen SL) ───
+                    if (newSL !== null && !exitReason) {
+                      const prevSL = lastAppliedSL.get(tradeId);
+                      const slImproves = isLong
+                        ? (prevSL == null ? newSL > entryPrice - fromPips(2, instrument) : newSL > prevSL)
+                        : (prevSL == null ? newSL < entryPrice + fromPips(2, instrument) : newSL < prevSL);
 
-                      if (currentSLImproves) {
-                        // Move the stop-loss on OANDA via trade order modification
+                      if (slImproves) {
                         try {
-                          const slStr = newSL.toFixed(instrument.includes("JPY") ? 3 : 5);
+                          const slStr = newSL.toFixed(pricePrecision);
                           const updateRes = await fetch(
-                            `${OANDA_API}/accounts/${OANDA_ACCOUNT}/trades/${openTrade.oanda_trade_id}/orders`,
+                            `${OANDA_API}/accounts/${OANDA_ACCOUNT}/trades/${tradeId}/orders`,
                             {
                               method: "PUT",
                               headers: { Authorization: `Bearer ${OANDA_TOKEN}`, "Content-Type": "application/json" },
@@ -1251,13 +1313,14 @@ Deno.serve(async (req) => {
                             },
                           );
                           if (updateRes.ok) {
-                            console.log(`[WHALE_SHADOW] 🐋 ${instrument} ${isLong ? "LONG" : "SHORT"} — SL moved to ${slStr} (wall@${bestWallPrice.toFixed(5)}, strength=${bestWallStrength})`);
+                            lastAppliedSL.set(tradeId, newSL);
+                            console.log(`[WHALE_SHADOW] 🐋 ${instrument} ${isLong ? "SHIELD" : "CEILING"} — SL→${slStr} | ${slSource}`);
                           } else {
                             const errData = await updateRes.json();
-                            console.warn(`[WHALE_SHADOW] ⚠️ SL update failed for ${instrument}: ${JSON.stringify(errData)}`);
+                            console.warn(`[WHALE_SHADOW] ⚠️ SL update failed ${instrument}: ${JSON.stringify(errData)}`);
                           }
                         } catch (err) {
-                          console.error(`[WHALE_SHADOW] ❌ SL update error for ${instrument}:`, err);
+                          console.error(`[WHALE_SHADOW] ❌ SL error ${instrument}:`, err);
                         }
                       }
                     }
