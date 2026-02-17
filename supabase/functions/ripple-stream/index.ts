@@ -1416,18 +1416,24 @@ Deno.serve(async (req) => {
                       }
                     }
 
-                    // ─── 🔴 SHORT GUARD: Emergency Exit on OFI Ratio Flip (Absorption) ───
+                    // ─── EMERGENCY EXIT: OFI Ratio Flip (Absorption / Tsunami Dam) ───
                     // BUG FIX: Use windowed velocity tracker (last 20 ticks) instead of cumulative
                     // session counts, which caused false exits from early-session imbalance.
-                    if (!isLong && !exitReason) {
+                    // Previously only guarded SHORTS. Added symmetric LONG guard:
+                    //   SHORT guard: massive BUY absorption appearing BELOW price (dam vs short)
+                    //   LONG guard:  massive SELL absorption appearing ABOVE price (dam vs long)
+                    if (!exitReason) {
                       const exitVt = velocityTrackers.get(instrument);
                       const exitRecentTicks = exitVt?.ticks || [];
                       if (exitRecentTicks.length >= 8) {
                         const exitBuys = exitRecentTicks.filter(t => t.direction === 1).length;
                         const exitSells = exitRecentTicks.filter(t => t.direction === -1).length;
                         const windowedOfiRatio = exitSells > 0 ? exitBuys / exitSells : (exitBuys > 0 ? 10.0 : 1.0);
-                        if (windowedOfiRatio >= WHALE_SHADOW_EMERGENCY_OFI_FLIP) {
+                        if (!isLong && windowedOfiRatio >= WHALE_SHADOW_EMERGENCY_OFI_FLIP) {
                           exitReason = `EMERGENCY_EXIT: SHORT OFI_RATIO=${windowedOfiRatio.toFixed(2)} >= ${WHALE_SHADOW_EMERGENCY_OFI_FLIP} — massive Buy Wall absorption (windowed 20-tick)`;
+                        } else if (isLong && windowedOfiRatio <= (1 / WHALE_SHADOW_EMERGENCY_OFI_FLIP)) {
+                          // Reciprocal: OFI <= 0.4 = sell-side absorption overwhelming buy flow
+                          exitReason = `EMERGENCY_EXIT: LONG OFI_RATIO=${windowedOfiRatio.toFixed(2)} <= ${(1 / WHALE_SHADOW_EMERGENCY_OFI_FLIP).toFixed(2)} — massive Sell Wall absorption, tsunami hit a dam`;
                         }
                       }
                     }
@@ -1691,6 +1697,12 @@ Deno.serve(async (req) => {
               pState.lastFireTs = tickTs;
 
               // ─── ENTRY: Wall detection ───
+              // LONG: Find nearest SELL wall ABOVE price → place Stop-Limit 0.3 pips ABOVE it
+              //        (piggyback retail stop-hunt above resistance)
+              // SHORT: Find nearest SELL wall ABOVE price → place Stop-Limit 0.3 pips BELOW it
+              //        (BUG FIX: was scanning for buy walls BELOW price — wrong type/direction.
+              //         For short entry we still want to anchor against the nearest SELL wall above
+              //         to place a stop-limit just below it, capturing the breakdown entry.)
               let wallPrice: number | null = null;
               const wallOffset = fromPips(PREDATOR_WALL_OFFSET_PIPS, tradePair);
               for (const [price, info] of tradeTracker.priceLevels.entries()) {
@@ -1699,10 +1711,14 @@ Deno.serve(async (req) => {
                 const distPips = Math.abs(toPips(priceNum - tradePrice.mid, tradePair));
                 if (distPips < 1 || distPips > 30) continue;
                 if (tradeDirection === "long" && info.sells >= 2 && priceNum > tradePrice.mid) {
+                  // Nearest sell wall above → stop-limit just above it
                   if (!wallPrice || priceNum < wallPrice) wallPrice = priceNum;
                 }
-                if (tradeDirection === "short" && info.buys >= 2 && priceNum < tradePrice.mid) {
-                  if (!wallPrice || priceNum > wallPrice) wallPrice = priceNum;
+                if (tradeDirection === "short" && info.sells >= 2 && priceNum > tradePrice.mid) {
+                  // BUG FIX: Also anchor short entries to nearest sell wall above price.
+                  // Place stop-limit BELOW it (limit sell = wall price - offset).
+                  // Old code scanned buy walls below price → never found the right cluster.
+                  if (!wallPrice || priceNum < wallPrice) wallPrice = priceNum;
                 }
               }
 
