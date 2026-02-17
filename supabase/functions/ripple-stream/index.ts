@@ -725,7 +725,7 @@ Deno.serve(async (req) => {
       .maybeSingle();
     if (ceState?.payload?.exhausted === true) {
       creditExhausted = true;
-      console.log("[STRIKE-v3] 🔋 CREDIT EXHAUSTION ACTIVE — Only Z-Score Strike Engine will fire. Velocity + Snap-Back DISABLED.");
+      console.log("[STRIKE-v3] 🔋 CREDIT EXHAUSTION ACTIVE — Z-Score Strike + Autonomous Ghost will fire. Velocity + Snap-Back DISABLED.");
     }
   } catch { /* non-critical — default to all strategies enabled */ }
 
@@ -826,11 +826,50 @@ Deno.serve(async (req) => {
     const zScoreFires: string[] = [];
     const velocityFires: string[] = [];
     const snapbackFires: string[] = [];
+    const ghostVacuumFires: string[] = [];
     const autonomousExits: string[] = [];
     const startTime = Date.now();
     let tickCount = 0;
     let lastExitScanTs = 0;
     const EXIT_SCAN_INTERVAL_MS = 2000; // Scan open trades every 2s on tick data
+
+    // ═══ STRATEGY 4: AUTONOMOUS GHOST (Lean 6 Vacuum) ═══
+    // Immune to credit exhaustion — runs on pure Lean 6 physics.
+    // 1. Scans price-level persistence for retail stop clusters
+    // 2. Places Ghost Limit Orders at cluster prices
+    // 3. Safety: cancels if Hurst > 0.6 (trending) OR |DriftNorm| > 2.0 (high velocity)
+    // 4. Only fills if Efficiency < 0.3 (ABSORBING — hidden player eating flow)
+    // Natural hedge: Z-Score profits in trends, Ghost profits in ranges.
+    const GHOST_CLUSTER_MIN_HITS = 3;      // Minimum hits on a price level to qualify as cluster
+    const GHOST_CLUSTER_MIN_SELLS = 2;     // Minimum sell-side activity (retail stops are sells)
+    const GHOST_HURST_CANCEL = 0.6;        // Cancel limit if H > 0.6 (strong trend = steamroller)
+    const GHOST_DRIFT_CANCEL = 2.0;        // Cancel limit if |DriftNorm| > 2.0 (high velocity)
+    const GHOST_EFFICIENCY_MAX = 0.3;      // Only fill if E < 0.3 (absorption = safe to provide liquidity)
+    const GHOST_COOLDOWN_MS = 300_000;     // 5-minute cooldown per pair
+    const GHOST_SL_PIPS = 8;
+    const GHOST_TP_PIPS = 30;              // 3.75:1 R:R
+    const GHOST_UNITS_DEFAULT = 1000;
+    const ghostLastFireTs = new Map<string, number>();
+
+    // Load ghost vacuum config from sovereign memory
+    let ghostUnits = GHOST_UNITS_DEFAULT;
+    let ghostSlPips = GHOST_SL_PIPS;
+    let ghostTpPips = GHOST_TP_PIPS;
+    let ghostBlockedPairs: string[] = [];
+    try {
+      const { data: ghostConfig } = await supabase
+        .from("sovereign_memory")
+        .select("payload")
+        .eq("memory_key", "ghost_vacuum_config")
+        .maybeSingle();
+      if (ghostConfig?.payload) {
+        const gc = ghostConfig.payload as Record<string, unknown>;
+        ghostUnits = (gc.units as number) || GHOST_UNITS_DEFAULT;
+        ghostSlPips = (gc.slPips as number) || GHOST_SL_PIPS;
+        ghostTpPips = (gc.tpPips as number) || GHOST_TP_PIPS;
+        ghostBlockedPairs = (gc.blockedPairs as string[]) || [];
+      }
+    } catch { /* use defaults */ }
 
     // ═══ IMPROVEMENT #2: AUTONOMOUS EXIT AUTHORITY ═══
     // L0 soldiers now manage exits at tick speed instead of waiting
@@ -1395,6 +1434,113 @@ Deno.serve(async (req) => {
               }
               sb.lastMid = mid;
             }
+
+            // ═══════════════════════════════════════════════
+            // STRATEGY 4: AUTONOMOUS GHOST (Lean 6 Vacuum)
+            // The Defender. Provides liquidity at retail stop clusters.
+            // 100% deterministic — immune to credit exhaustion.
+            // Natural hedge to Z-Score: profits in RANGING markets.
+            //
+            // Logic: Scan price-level persistence for clusters →
+            //   Safety: Hurst < 0.6 AND |DriftNorm| < 2.0 →
+            //   Confirm: Efficiency < 0.3 (ABSORBING) →
+            //   Execute: PREDATORY_LIMIT at cluster price
+            // ═══════════════════════════════════════════════
+            {
+              const ghostTracker = getOrCreateOfi(instrument);
+              if (ghostTracker.tickCount >= 20 && !blockedPairs.includes(instrument) && !ghostBlockedPairs.includes(instrument)) {
+                const lastGhostFire = ghostLastFireTs.get(instrument) || 0;
+                if (tickTs - lastGhostFire > GHOST_COOLDOWN_MS) {
+                  // Read Lean 6 physics (already computed — O(1) read)
+                  const gSqrtD2 = Math.sqrt(Math.abs(ghostTracker.D2));
+                  const gDriftNorm = gSqrtD2 > 1e-10 ? ghostTracker.D1 / gSqrtD2 : 0;
+                  const gAbsD1 = Math.abs(ghostTracker.D1);
+                  const gAbsOfi = Math.abs(ghostTracker.ofiRecursive);
+                  const gPipMult = instrument.includes("JPY") ? 100 : 10000;
+                  const gOfiScaled = gAbsOfi / (gPipMult * 10);
+                  const gEfficiency = gOfiScaled / (gAbsD1 + EFFICIENCY_EPSILON);
+
+                  // ─── GHOST SAFETY SWITCH: Lean 6 Gate 3 (Hurst) + Gate 5 (Velocity) ───
+                  // If trending or high velocity → DO NOT provide liquidity (steamroller risk)
+                  const hurstSafe = ghostTracker.hurst < GHOST_HURST_CANCEL;
+                  const driftSafe = Math.abs(gDriftNorm) < GHOST_DRIFT_CANCEL;
+
+                  if (hurstSafe && driftSafe) {
+                    // ─── GHOST GATE 6: Efficiency (Structure) — is someone absorbing? ───
+                    // E < 0.3 = ABSORBING = hidden limit player eating flow = safe to join
+                    if (gEfficiency < GHOST_EFFICIENCY_MAX) {
+                      // Scan price-level persistence for retail stop clusters
+                      const clusters: { price: number; sells: number; hits: number; direction: "long" | "short" }[] = [];
+                      for (const [price, info] of ghostTracker.priceLevels.entries()) {
+                        if (info.hits < GHOST_CLUSTER_MIN_HITS) continue;
+                        const priceNum = +price;
+                        const distancePips = Math.abs(toPips(priceNum - mid, instrument));
+
+                        // Only target clusters within 5-40 pips of current price
+                        if (distancePips < 5 || distancePips > 40) continue;
+
+                        // Sell-heavy clusters below price = retail stop-losses = buy opportunity
+                        if (info.sells >= GHOST_CLUSTER_MIN_SELLS && priceNum < mid) {
+                          clusters.push({ price: priceNum, sells: info.sells, hits: info.hits, direction: "long" });
+                        }
+                        // Buy-heavy clusters above price = retail take-profits = sell opportunity
+                        if (info.buys >= GHOST_CLUSTER_MIN_SELLS && priceNum > mid) {
+                          clusters.push({ price: priceNum, sells: info.buys, hits: info.hits, direction: "short" });
+                        }
+                      }
+
+                      // Sort by strongest cluster (most hits × sells)
+                      clusters.sort((a, b) => (b.hits * b.sells) - (a.hits * a.sells));
+
+                      if (clusters.length > 0) {
+                        const target = clusters[0];
+                        ghostLastFireTs.set(instrument, tickTs);
+
+                        console.log(`[GHOST] 👻 VACUUM: ${target.direction.toUpperCase()} ${ghostUnits} ${instrument} @ ${target.price.toFixed(instrument.includes("JPY") ? 3 : 5)} | cluster=${target.hits}hits/${target.sells}sells | H=${ghostTracker.hurst.toFixed(3)} E=${gEfficiency.toFixed(3)} |D1n|=${Math.abs(gDriftNorm).toFixed(2)} | tick #${tickCount}`);
+
+                        const result = await executeOrder(
+                          instrument, target.direction, ghostUnits,
+                          ghostSlPips, ghostTpPips, "ghost-vacuum",
+                          {
+                            clusterPrice: target.price,
+                            clusterHits: target.hits,
+                            clusterSells: target.sells,
+                            hurst: ghostTracker.hurst,
+                            efficiency: gEfficiency,
+                            driftNormalized: gDriftNorm,
+                            vpin: ghostTracker.vpinRecursive,
+                            marketState: classifyMarketState(gEfficiency),
+                            tickNumber: tickCount,
+                            confidence: Math.min(1, (target.hits * target.sells) / 20),
+                            engine: "ghost-vacuum-v1-lean6",
+                            strategy: "autonomous-ghost",
+                          },
+                          { mid, spreadPips },
+                          "LIMIT", // Ghost Limit Order — provide liquidity
+                        );
+
+                        if (result.success) {
+                          ghostVacuumFires.push(instrument);
+                          await supabase.from("gate_bypasses").insert({
+                            gate_id: `GHOST_VACUUM_FIRE:${instrument}`,
+                            reason: JSON.stringify({
+                              pair: instrument, direction: target.direction,
+                              clusterPrice: target.price, hits: target.hits,
+                              sells: target.sells, hurst: ghostTracker.hurst,
+                              efficiency: gEfficiency, driftNorm: gDriftNorm,
+                              tickNumber: tickCount,
+                            }),
+                            expires_at: new Date(Date.now() + 3600_000).toISOString(),
+                            created_by: "ghost-vacuum-engine",
+                          });
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+
           } catch { /* skip malformed tick */ }
         }
       }
@@ -1539,18 +1685,21 @@ Deno.serve(async (req) => {
     }
 
     const totalMs = Date.now() - startTime;
-    const creditMode = creditExhausted ? " | 🔋 CREDIT EXHAUSTION: Z-Score ONLY" : "";
-    console.log(`[LEAN6] 📊 Session: ${totalMs}ms, ${tickCount} ticks | Z-Score: ${zScoreFires.length} | Velocity: ${velocityFires.length} | Snap-Back: ${snapbackFires.length} | OFI: ${Object.keys(ofiSnapshot).length} pairs | Hidden: ${hiddenPlayerAlerts} | Absorbing: ${absorbingPairs} | Slipping: ${slippingPairs}${creditMode}`);
+    const creditMode = creditExhausted ? " | 🔋 CREDIT EXHAUSTION: Z-Score + Ghost Vacuum" : "";
+    console.log(`[LEAN6] 📊 Session: ${totalMs}ms, ${tickCount} ticks | Z-Score: ${zScoreFires.length} | Ghost: ${ghostVacuumFires.length} | Velocity: ${velocityFires.length} | Snap-Back: ${snapbackFires.length} | OFI: ${Object.keys(ofiSnapshot).length} pairs | Hidden: ${hiddenPlayerAlerts} | Absorbing: ${absorbingPairs} | Slipping: ${slippingPairs}${creditMode}`);
 
     return new Response(
       JSON.stringify({
         success: true,
-        version: "v6-lean6-zero-lag",
+        version: "v7-autonomous-ghost",
         creditExhausted,
-        activeStrategies: creditExhausted ? ["zscore-strike"] : ["zscore-strike", "velocity-gating", "snapback-sniper"],
+        activeStrategies: creditExhausted
+          ? ["zscore-strike", "ghost-vacuum"]
+          : ["zscore-strike", "ghost-vacuum", "velocity-gating", "snapback-sniper"],
         streamDurationMs: totalMs,
         ticksProcessed: tickCount,
         zscore: { fired: zScoreFires.length, pairs: zScoreFires, groups: correlationGroups.length, threshold: zScoreThreshold },
+        ghostVacuum: { fired: ghostVacuumFires.length, pairs: ghostVacuumFires, strategy: "autonomous-ghost-lean6" },
         velocity: { fired: velocityFires.length, pairs: velocityFires, monitored: velocityPairs.length },
         snapback: { fired: snapbackFires.length, pairs: snapbackFires, monitored: snapbackPairs.length },
         syntheticBook: {
