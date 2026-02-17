@@ -37,8 +37,8 @@ function GatePipeline({ gates }: { gates: string[] }) {
 }
 
 // ─── Physics Gauge ───
-function PhysicsGauge({ label, value, unit, min, max, warn, danger }: {
-  label: string; value: number; unit?: string; min: number; max: number; warn?: number; danger?: number;
+function PhysicsGauge({ label, value, unit, min, max, warn, danger, decimals = 3 }: {
+  label: string; value: number; unit?: string; min: number; max: number; warn?: number; danger?: number; decimals?: number;
 }) {
   const pct = Math.max(0, Math.min(100, ((value - min) / (max - min)) * 100));
   const color = danger != null && value >= danger ? 'bg-red-500'
@@ -49,7 +49,7 @@ function PhysicsGauge({ label, value, unit, min, max, warn, danger }: {
     <div className="space-y-1">
       <div className="flex items-center justify-between">
         <span className="text-[10px] text-muted-foreground font-mono uppercase">{label}</span>
-        <span className="text-[11px] font-mono font-bold">{value.toFixed(3)}{unit || ''}</span>
+        <span className="text-[11px] font-mono font-bold">{value.toFixed(decimals)}{unit || ''}</span>
       </div>
       <div className="h-1.5 bg-muted/50 rounded-full overflow-hidden">
         <div className={cn('h-full rounded-full transition-all duration-500', color)} style={{ width: `${pct}%` }} />
@@ -86,35 +86,43 @@ function PairCard({ pair, data }: { pair: string; data: any }) {
           {p.hiddenPlayer && (
             <Badge variant="destructive" className="text-[8px] gap-0.5">
               <AlertTriangle className="w-2.5 h-2.5" />
-              {p.hiddenPlayer.type}
+              {p.hiddenPlayer.type === 'HIDDEN_LIMIT_SELLER' ? '🐋 LIMIT SELL' : p.hiddenPlayer.type === 'HIDDEN_LIMIT_BUYER' ? '🐋 LIMIT BUY' : p.hiddenPlayer.type}
             </Badge>
           )}
         </div>
       </div>
 
-      {/* Physics Gauges */}
+      {/* Physics Gauges — Efficiency is unbounded (real values 1–200+), use log scale */}
       <div className="grid grid-cols-2 gap-2">
         <PhysicsGauge label="Z-OFI" value={p.zOfi} min={-5} max={5} warn={2} danger={3} />
-        <PhysicsGauge label="Hurst (H)" value={p.hurst?.H ?? 0.5} min={0} max={1} />
-        <PhysicsGauge label="KM Drift" value={Math.abs(p.kramersMoyal?.driftNormalized ?? 0)} min={0} max={2} />
-        <PhysicsGauge label="Efficiency" value={p.efficiency} min={0} max={2} warn={0.8} danger={1.5} />
-        <PhysicsGauge label="VPIN" value={p.vpin} min={0} max={1} warn={0.6} danger={0.8} />
-        <PhysicsGauge label="OFI Ratio" value={Math.abs(p.ofiRatio)} min={0} max={1} />
+        <PhysicsGauge label="Hurst (H)" value={p.hurst?.H ?? 0.5} min={0} max={1} decimals={3} />
+        <PhysicsGauge label="KM Drift" value={Math.abs(p.kramersMoyal?.driftNormalized ?? 0)} min={0} max={3} warn={1} danger={2} decimals={3} />
+        <PhysicsGauge label="Efficiency" value={Math.min(p.efficiency, 50)} min={0} max={50} warn={2} danger={10} decimals={1} />
+        <PhysicsGauge label="VPIN" value={p.vpin} min={0} max={1} warn={0.4} danger={0.6} decimals={3} />
+        <PhysicsGauge label="OFI Ratio" value={Math.abs(p.ofiRatio)} min={0} max={0.5} decimals={3} />
       </div>
 
       {/* Detail Row */}
-      <div className="grid grid-cols-3 gap-2 text-[10px] font-mono">
+      <div className="grid grid-cols-4 gap-2 text-[10px] font-mono">
         <div className="space-y-0.5">
           <span className="text-muted-foreground">Hurst</span>
-          <div className={cn('font-bold', hurstColor)}>{p.hurst?.H?.toFixed(3)} {p.hurst?.regime}</div>
+          <div className={cn('font-bold', hurstColor)}>{p.hurst?.H?.toFixed(3)}</div>
+          <div className="text-[9px] text-muted-foreground">{p.hurst?.regime?.replace('_', ' ')}</div>
+        </div>
+        <div className="space-y-0.5">
+          <span className="text-muted-foreground">Eff (E=F/v)</span>
+          <div className={cn('font-bold', p.efficiency >= 2 ? 'text-amber-400' : 'text-foreground')}>{p.efficiency?.toFixed(1)}</div>
+          <div className="text-[9px] text-muted-foreground">{p.efficiency >= 2 ? 'ICEBERG' : 'NORMAL'}</div>
         </div>
         <div className="space-y-0.5">
           <span className="text-muted-foreground">KM α</span>
           <div className="font-bold">{p.kramersMoyal?.alphaAdaptive?.toFixed(4)}</div>
+          <div className="text-[9px] text-muted-foreground">D1={p.kramersMoyal?.D1?.toExponential(2)}</div>
         </div>
         <div className="space-y-0.5">
           <span className="text-muted-foreground">Ticks</span>
           <div className="font-bold">{p.ticksAnalyzed?.toLocaleString()}</div>
+          <div className="text-[9px] text-muted-foreground">sample</div>
         </div>
       </div>
 
