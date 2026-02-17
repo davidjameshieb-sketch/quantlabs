@@ -1095,34 +1095,41 @@ Deno.serve(async (req) => {
 
               if (blockedPairs.includes(tradePair)) continue;
 
-              // ═══ LEAN 6 ZERO-LAG GATES (all O(1) float comparisons) ═══
-              // Gate 1 (Signal/Z-Score) already passed above
+              // ═══ LEAN 6 ZERO-LAG PIPELINE ═══
+              // Gate 1 (SIGNAL / Z-Score) already passed above — kills 99% of ticks.
 
-              // ─── GATE 2: LIQUIDITY (Tick Density — is it safe to enter?) ───
+              // ─── GATE 2: LIQUIDITY (Tick Density — is it safe to trade?) ───
+              // Cost: Low (Map lookup). Kills: Illiquid pairs or bad sessions.
               const densityCheck = isTickDensitySufficient(tradePair);
               if (!densityCheck.ok) continue;
 
-              // Get O(1) physics state for trade pair
+              // ─── STOP. COMPUTE PHYSICS ───
+              // Only the <1% of ticks surviving Gates 1 & 2 reach here.
+              // processOfiTick is O(1) recursive — but we still gate it to save the function call overhead.
               const tradeOfi = processOfiTick(tradePair, prices.get(tradePair)!.mid, prices.get(tradePair)!.bid, prices.get(tradePair)!.ask, prices.get(tradePair)!.spreadPips, tickTs);
 
-              // ─── GATE 3: REGIME (Hurst — will the move travel or snap back?) ───
+              // ─── GATE 3: REGIME (Hurst — will the ripple travel?) ───
+              // Cost: Zero (reading computed float). The "Weather Report" — don't sail in a storm.
               if (tradeOfi.hurst < 0.45) {
                 console.log(`[LEAN6] 🔬 HURST REJECT: ${tradePair} H=${tradeOfi.hurst} < 0.45 — mean-reverting, skip`);
                 continue;
               }
 
-              // ─── GATE 4: FORCE (Z-OFI — is buying pressure statistically abnormal?) ───
+              // ─── GATE 4: FORCE (Z-OFI — is this move statistically abnormal for NOW?) ───
+              // Cost: Zero (reading computed float). Kills: "Normal" noise that coincidentally had a Z-score.
               if (Math.abs(tradeOfi.zOfi) < Z_OFI_FIRE_THRESHOLD && tradeOfi.ticksInWindow > 50) {
                 continue;
               }
 
-              // ─── GATE 5: VELOCITY (KM Drift — replaces O(N) momentum array) ───
-              // |driftNormalized| > 0.1 = price is actually moving fast enough
+              // ─── GATE 5: VELOCITY (KM Drift — is price actually moving?) ───
+              // Cost: Zero (replaces O(N) momentum array scan). Kills: high-force moves fighting gravity.
+              // Confirms "Force" is translating into "Motion".
               if (Math.abs(tradeOfi.km.driftNormalized) < 0.1) {
                 continue;
               }
 
-              // ─── GATE 6: STRUCTURE (Efficiency — are we hitting an iceberg wall?) ───
+              // ─── GATE 6: STRUCTURE (Efficiency — the "Final Boss") ───
+              // Cost: Zero (reading computed float). Kills: Hidden Limit Players / Icebergs.
               if (tradeOfi.hiddenPlayer.detected && tradeOfi.hiddenPlayer.recommendation === "FADE") {
                 console.log(`[LEAN6] 🕵️ EFFICIENCY REJECT: ${tradePair} ${tradeOfi.hiddenPlayer.type} | E=${tradeOfi.efficiency} ${tradeOfi.marketState}`);
                 continue;
