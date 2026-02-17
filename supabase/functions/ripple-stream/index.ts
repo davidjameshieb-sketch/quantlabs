@@ -714,6 +714,21 @@ Deno.serve(async (req) => {
 
   const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
+  // ─── Credit Exhaustion Check: Only Z-Score Strike survives AI blackout ───
+  let creditExhausted = false;
+  try {
+    const { data: ceState } = await supabase
+      .from("sovereign_memory")
+      .select("payload")
+      .eq("memory_key", "credit_exhaustion_state")
+      .eq("memory_type", "system")
+      .maybeSingle();
+    if (ceState?.payload?.exhausted === true) {
+      creditExhausted = true;
+      console.log("[STRIKE-v3] 🔋 CREDIT EXHAUSTION ACTIVE — Only Z-Score Strike Engine will fire. Velocity + Snap-Back DISABLED.");
+    }
+  } catch { /* non-critical — default to all strategies enabled */ }
+
   try {
     const now = new Date();
 
@@ -1257,8 +1272,9 @@ Deno.serve(async (req) => {
             // ═══════════════════════════════════════════════
             // STRATEGY 2: VELOCITY GATING (unchanged — already L0)
             // 5+ same-direction ticks in 2s = impulse fire
+            // ⚠️ DISABLED during credit exhaustion — only Z-Score Strike survives
             // ═══════════════════════════════════════════════
-            if (vt && prevPrice && velocityPairs.includes(instrument)) {
+            if (!creditExhausted && vt && prevPrice && velocityPairs.includes(instrument)) {
               if (vt.ticks.length >= VELOCITY_TICK_THRESHOLD && (tickTs - vt.lastFireTs) > VELOCITY_COOLDOWN_MS) {
                 const recentVTicks = vt.ticks.slice(-VELOCITY_TICK_THRESHOLD);
                 const windowAge = tickTs - recentVTicks[0].ts;
@@ -1309,8 +1325,9 @@ Deno.serve(async (req) => {
 
             // ═══════════════════════════════════════════════
             // STRATEGY 3: SNAP-BACK SNIPER (unchanged — already L0)
+            // ⚠️ DISABLED during credit exhaustion — only Z-Score Strike survives
             // ═══════════════════════════════════════════════
-            const sb = snapbackTrackers.get(instrument);
+            const sb = !creditExhausted ? snapbackTrackers.get(instrument) : undefined;
             if (sb && prevPrice) {
               const delta = mid - prevPrice.mid;
               const deltaPips = toPips(delta, instrument);
@@ -1522,12 +1539,15 @@ Deno.serve(async (req) => {
     }
 
     const totalMs = Date.now() - startTime;
-    console.log(`[LEAN6] 📊 Session: ${totalMs}ms, ${tickCount} ticks | Z-Score: ${zScoreFires.length} | Velocity: ${velocityFires.length} | Snap-Back: ${snapbackFires.length} | OFI: ${Object.keys(ofiSnapshot).length} pairs | Hidden: ${hiddenPlayerAlerts} | Absorbing: ${absorbingPairs} | Slipping: ${slippingPairs}`);
+    const creditMode = creditExhausted ? " | 🔋 CREDIT EXHAUSTION: Z-Score ONLY" : "";
+    console.log(`[LEAN6] 📊 Session: ${totalMs}ms, ${tickCount} ticks | Z-Score: ${zScoreFires.length} | Velocity: ${velocityFires.length} | Snap-Back: ${snapbackFires.length} | OFI: ${Object.keys(ofiSnapshot).length} pairs | Hidden: ${hiddenPlayerAlerts} | Absorbing: ${absorbingPairs} | Slipping: ${slippingPairs}${creditMode}`);
 
     return new Response(
       JSON.stringify({
         success: true,
         version: "v6-lean6-zero-lag",
+        creditExhausted,
+        activeStrategies: creditExhausted ? ["zscore-strike"] : ["zscore-strike", "velocity-gating", "snapback-sniper"],
         streamDurationMs: totalMs,
         ticksProcessed: tickCount,
         zscore: { fired: zScoreFires.length, pairs: zScoreFires, groups: correlationGroups.length, threshold: zScoreThreshold },
