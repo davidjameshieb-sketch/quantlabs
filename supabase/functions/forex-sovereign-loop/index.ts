@@ -2078,7 +2078,8 @@ Deno.serve(async (req) => {
     if (!needsAI) {
       loopState.lastRunTs = now;
       loopState.consecutiveErrors = 0;
-      await supabase.from("sovereign_loop_state").upsert({ id: "global", ...loopState });
+      // BUG FIX: sovereign_loop_state table may not exist — wrap to prevent crash
+      try { await supabase.from("sovereign_loop_state").upsert({ id: "global", ...loopState }); } catch { /* non-critical — state lives in memory */ }
 
       await logCycleResult(supabase, {
         actionsTaken: 0,
@@ -2272,7 +2273,8 @@ Deno.serve(async (req) => {
     loopState.totalActionsThisHour += actionsTaken;
     loopState.consecutiveErrors = errors.length > 0 ? loopState.consecutiveErrors + 1 : 0;
 
-    await supabase.from("sovereign_loop_state").upsert({ id: "global", ...loopState });
+    // BUG FIX: sovereign_loop_state table may not exist in schema — wrap to prevent crash
+    try { await supabase.from("sovereign_loop_state").upsert({ id: "global", ...loopState }); } catch { /* non-critical — state survives in memory for the session */ }
 
     await logCycleResult(supabase, {
       actionsTaken, cycleAssessment, sovereigntyScore,

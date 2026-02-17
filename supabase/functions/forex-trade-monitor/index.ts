@@ -182,20 +182,23 @@ async function updateTakeProfit(
   tradeId: string,
   newTakeProfitPrice: number,
   environment = "live",
+  pair = "",
 ): Promise<OrderModificationResult> {
+  // FIX: JPY pairs require 3 decimal places — .toFixed(5) causes PRICE_PRECISION_EXCEEDED
+  const tpPrecision = pair.includes("JPY") ? 3 : 5;
   try {
     const result = await oandaRequest(
       `/v3/accounts/{accountId}/trades/${tradeId}/orders`,
       "PUT",
       {
         takeProfit: {
-          price: newTakeProfitPrice.toFixed(5),
+          price: newTakeProfitPrice.toFixed(tpPrecision),
           timeInForce: "GTC",
         },
       },
       environment,
     );
-    console.log(`[FLOOR-MANAGER] ✅ TP updated on trade ${tradeId} → ${newTakeProfitPrice.toFixed(5)}`);
+    console.log(`[FLOOR-MANAGER] ✅ TP updated on trade ${tradeId} → ${newTakeProfitPrice.toFixed(tpPrecision)}`);
     return { success: true, tradeId, action: "updateTakeProfit", newTakeProfit: newTakeProfitPrice };
   } catch (err) {
     const msg = (err as Error).message;
@@ -209,13 +212,16 @@ async function updateTradeOrders(
   stopLossPrice?: number,
   takeProfitPrice?: number,
   environment = "live",
+  pair = "",
 ): Promise<OrderModificationResult> {
+  // FIX: JPY pairs require 3 decimal places — .toFixed(5) causes PRICE_PRECISION_EXCEEDED
+  const pricePrecision = pair.includes("JPY") ? 3 : 5;
   const body: Record<string, unknown> = {};
   if (stopLossPrice != null) {
-    body.stopLoss = { price: stopLossPrice.toFixed(5), timeInForce: "GTC" };
+    body.stopLoss = { price: stopLossPrice.toFixed(pricePrecision), timeInForce: "GTC" };
   }
   if (takeProfitPrice != null) {
-    body.takeProfit = { price: takeProfitPrice.toFixed(5), timeInForce: "GTC" };
+    body.takeProfit = { price: takeProfitPrice.toFixed(pricePrecision), timeInForce: "GTC" };
   }
   if (Object.keys(body).length === 0) {
     return { success: false, tradeId, action: "updateTradeOrders", error: "No modifications specified" };
@@ -227,7 +233,7 @@ async function updateTradeOrders(
       body,
       environment,
     );
-    console.log(`[FLOOR-MANAGER] ✅ Trade ${tradeId} orders updated: SL=${stopLossPrice?.toFixed(5) || 'unchanged'} TP=${takeProfitPrice?.toFixed(5) || 'unchanged'}`);
+    console.log(`[FLOOR-MANAGER] ✅ Trade ${tradeId} orders updated: SL=${stopLossPrice?.toFixed(pricePrecision) || 'unchanged'} TP=${takeProfitPrice?.toFixed(pricePrecision) || 'unchanged'}`);
     return { success: true, tradeId, action: "updateTradeOrders", newStopLoss: stopLossPrice, newTakeProfit: takeProfitPrice };
   } catch (err) {
     const msg = (err as Error).message;
@@ -1059,7 +1065,10 @@ Deno.serve(async (req) => {
       // BUG FIX: Was `ueRValue > -0.1` — triggered on fresh trades where UE starts near 0 (no profit yet).
       // A new trade with MFE=0.8R from noise and UE=0.02R would fire immediately (false decay exit).
       // Changed to `ueRValue > 0.1` — trade must be meaningfully in profit before decay logic can fire.
-      if (decision.action === "hold" && currentMfeR >= 0.8 && ueRValue < 0.15 && ueRValue > 0.1) {
+      // BUG FIX: Previous window was ueRValue > 0.10 && < 0.15 — a 0.05R band = ~0.4 pips on 8R risk.
+      // So narrow it functionally never fired (trade blinks through and exits the window in one cycle).
+      // Changed to ueRValue > 0.15 && < 0.30 — meaningful 0.15R retracement from MFE to still-profitable.
+      if (decision.action === "hold" && currentMfeR >= 0.8 && ueRValue < 0.30 && ueRValue > 0.15) {
         console.log(`[AUTO-EXIT] ${order.currency_pair} ${order.direction}: Profit capture decay — MFE=${currentMfeR.toFixed(2)}R but UE retraced to ${ueRValue}R — AUTONOMOUS EXIT`);
         decision.action = "profit-decay-exit" as typeof decision.action;
         decision.reason = `AUTONOMOUS EXIT: MFE=${currentMfeR.toFixed(2)}R achieved but retraced to ${ueRValue}R — profit capture decay`;
