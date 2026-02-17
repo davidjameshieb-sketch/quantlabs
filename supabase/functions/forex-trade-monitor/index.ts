@@ -169,7 +169,7 @@ async function updateTrailingStop(
       },
       environment,
     );
-    console.log(`[FLOOR-MANAGER] ✅ SL updated on trade ${tradeId} → ${newStopLossPrice.toFixed(5)}`);
+    console.log(`[FLOOR-MANAGER] ✅ SL updated on trade ${tradeId} → ${newStopLossPrice.toFixed(slPrecision)}`);
     return { success: true, tradeId, action: "updateTrailingStop", newStopLoss: newStopLossPrice };
   } catch (err) {
     const msg = (err as Error).message;

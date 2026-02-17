@@ -1880,7 +1880,7 @@ async function logCycleResult(supabase: any, cycleData: any): Promise<void> {
 // This saves ~95% of AI credits during idle/calm periods.
 // ═══════════════════════════════════════════════════════════════
 
-async function checkDeskIsHot(supabase: any): Promise<{ isHot: boolean; reason: string; openTradeCount: number }> {
+async function checkDeskIsHot(supabase: any): Promise<{ isHot: boolean; reason: string; openTradeCount: number; regimeAlerts: string[] }> {
   try {
     // Check for open trades
     const { data: openTrades, error } = await supabase
@@ -1892,7 +1892,7 @@ async function checkDeskIsHot(supabase: any): Promise<{ isHot: boolean; reason: 
 
     const openCount = openTrades?.length || 0;
     if (openCount > 0) {
-      return { isHot: true, reason: `${openCount} open trades`, openTradeCount: openCount };
+      return { isHot: true, reason: `${openCount} open trades`, openTradeCount: openCount, regimeAlerts: [] };
     }
 
     // Check for recent losses (last 30 min)
@@ -1906,19 +1906,45 @@ async function checkDeskIsHot(supabase: any): Promise<{ isHot: boolean; reason: 
       .limit(3);
 
     if (recentLosses && recentLosses.length >= 2) {
-      return { isHot: true, reason: `${recentLosses.length} recent losses in 30min`, openTradeCount: 0 };
+      return { isHot: true, reason: `${recentLosses.length} recent losses in 30min`, openTradeCount: 0, regimeAlerts: [] };
+    }
+
+    // BUG FIX: Check regime forecasts INSIDE checkDeskIsHot so needsAI reflects them.
+    // Previously, regimeAlerts were fetched AFTER needsAI was set — the General Staff
+    // would sleep through "Expansion Imminent" pre-breakout coils because needsAI=false
+    // was already committed. Now a high-confidence expansion forecast wakes the AI tier.
+    let regimeAlerts: string[] = [];
+    try {
+      const { data: forecast } = await supabase
+        .from("sovereign_memory")
+        .select("payload")
+        .eq("memory_key", "latest_predictions")
+        .eq("memory_type", "regime_forecast")
+        .maybeSingle();
+
+      if (forecast?.payload?.predictions) {
+        const preds = forecast.payload.predictions as any[];
+        regimeAlerts = preds
+          .filter((p: any) => p.predictedRegime === "expansion_imminent" && p.confidence >= 0.7)
+          .map((p: any) => `${p.pair}: ${p.predictedRegime} (${Math.round(p.confidence * 100)}%)`);
+      }
+    } catch { /* non-critical */ }
+
+    if (regimeAlerts.length > 0) {
+      console.log(`🔮 REGIME ALERT (pre-breakout coil detected): ${regimeAlerts.join(", ")} — waking General Staff`);
+      return { isHot: true, reason: `REGIME_FORECAST: ${regimeAlerts.join(", ")}`, openTradeCount: 0, regimeAlerts };
     }
 
     // Check for active circuit breaker (need AI to evaluate deactivation)
     const cbActive = await checkCircuitBreaker(supabase);
     if (cbActive) {
-      return { isHot: false, reason: "Circuit breaker active — L0 only", openTradeCount: 0 };
+      return { isHot: false, reason: "Circuit breaker active — L0 only", openTradeCount: 0, regimeAlerts: [] };
     }
 
-    return { isHot: false, reason: "Desk idle — L0 sentinel", openTradeCount: 0 };
+    return { isHot: false, reason: "Desk idle — L0 sentinel", openTradeCount: 0, regimeAlerts: [] };
   } catch (err) {
     console.error("❌ checkDeskIsHot error:", err);
-    return { isHot: true, reason: "Error checking — defaulting to hot", openTradeCount: 0 };
+    return { isHot: true, reason: "Error checking — defaulting to hot", openTradeCount: 0, regimeAlerts: [] };
   }
 }
 
@@ -2005,33 +2031,17 @@ Deno.serve(async (req) => {
     const l0Result = await evaluateL0Rules(supabase);
 
     // ─── 3c. IMPROVEMENT #1: Check if desk is "hot" (needs AI) ───
+    // BUG FIX: checkDeskIsHot now includes regime forecast check internally.
+    // Previously regimeAlerts were fetched AFTER needsAI was committed, meaning
+    // "Expansion Imminent" forecasts never actually triggered AI governance.
     const deskStatus = await checkDeskIsHot(supabase);
     const needsAI = deskStatus.isHot && !l0Result.skipAI;
+    const regimeAlerts = deskStatus.regimeAlerts || [];
 
     console.log(`📊 Desk status: ${deskStatus.reason} | needsAI=${needsAI}`);
-
-    // ─── 3d. Regime Forecasting (L0 — runs every cycle, zero AI) ───
-    // Quick regime forecast check from cached predictions
-    let regimeAlerts: string[] = [];
-    try {
-      const { data: forecast } = await supabase
-        .from("sovereign_memory")
-        .select("payload")
-        .eq("memory_key", "latest_predictions")
-        .eq("memory_type", "regime_forecast")
-        .maybeSingle();
-
-      if (forecast?.payload?.predictions) {
-        const preds = forecast.payload.predictions as any[];
-        regimeAlerts = preds
-          .filter((p: any) => p.predictedRegime === "expansion_imminent" && p.confidence >= 0.7)
-          .map((p: any) => `${p.pair}: ${p.predictedRegime} (${Math.round(p.confidence * 100)}%)`);
-
-        if (regimeAlerts.length > 0) {
-          console.log(`🔮 REGIME ALERT: ${regimeAlerts.join(", ")}`);
-        }
-      }
-    } catch { /* non-critical */ }
+    if (regimeAlerts.length > 0) {
+      console.log(`🔮 REGIME ALERT (already factored into needsAI): ${regimeAlerts.join(", ")}`);
+    }
 
     // ─── 3e. Flash-Crash Status Check (L0 — zero cost) ───
     let flashCrashStatus = "CLEAR";
