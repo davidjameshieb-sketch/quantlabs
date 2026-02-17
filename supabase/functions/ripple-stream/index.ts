@@ -875,6 +875,30 @@ Deno.serve(async (req) => {
       }
     } catch { /* use defaults */ }
 
+    // ═══ G17 DISPLACEMENT EFFICIENCY GATE ═══
+    // Loads the FM-created G17 gate from gate_bypasses.
+    // If active, requires displacement signature before any trade fires.
+    // In ripple-stream context: displacement = |D1/√D2| (drift-to-noise ratio)
+    let g17Active = false;
+    let g17Threshold = 0.7;
+    try {
+      const { data: g17Gates } = await supabase
+        .from("gate_bypasses")
+        .select("reason, expires_at")
+        .eq("gate_id", "DYNAMIC_GATE:G17_DISPLACEMENT_EFFICIENCY")
+        .eq("revoked", false)
+        .gte("expires_at", now.toISOString())
+        .limit(1);
+      if (g17Gates && g17Gates.length > 0) {
+        g17Active = true;
+        try {
+          const meta = JSON.parse(g17Gates[0].reason);
+          g17Threshold = meta.threshold ?? 0.7;
+        } catch { /* use default */ }
+        console.log(`[STRIKE-v3] 🎯 G17 DISPLACEMENT GATE ACTIVE — threshold=${g17Threshold}`);
+      }
+    } catch { /* non-critical */ }
+
     // ═══ IMPROVEMENT #2: AUTONOMOUS EXIT AUTHORITY ═══
     // L0 soldiers now manage exits at tick speed instead of waiting
     // for the 60s trade-monitor cycle. Three exit triggers:
@@ -1247,7 +1271,23 @@ Deno.serve(async (req) => {
                 continue;
               }
 
-              // ═══ ALL 6 GATES PASSED — FIRE ═══
+              // ─── GATE 7: G17 DISPLACEMENT EFFICIENCY (Institutional Footprint) ───
+              // FM-created gate: only fire if the move has institutional displacement signature.
+              // Uses |DriftNormalized| as tick-level proxy for candle body/range ratio.
+              // High drift-to-noise = displacement = institutional. Low = retail noise.
+              if (g17Active) {
+                const absDriftNorm = Math.abs(tradeOfi.km.driftNormalized);
+                // Map drift-normalized to 0-1 scale: values 0-10 → 0-1
+                // driftNorm of 2.0 already passed Gate 5; G17 demands higher conviction
+                const displacementScore = Math.min(1, absDriftNorm / 10);
+                if (displacementScore < g17Threshold) {
+                  console.log(`[G17_DISPLACEMENT] ❌ ${tradePair}: DE_proxy=${displacementScore.toFixed(3)} (|D1n|=${absDriftNorm.toFixed(2)}) < ${g17Threshold} — RETAIL NOISE, skip`);
+                  continue;
+                }
+                console.log(`[G17_DISPLACEMENT] ✅ ${tradePair}: DE_proxy=${displacementScore.toFixed(3)} >= ${g17Threshold} — INSTITUTIONAL DISPLACEMENT`);
+              }
+
+              // ═══ ALL GATES PASSED — FIRE ═══
 
               const tradePrice = prices.get(tradePair);
               if (!tradePrice) continue;

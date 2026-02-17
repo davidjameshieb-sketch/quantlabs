@@ -1953,16 +1953,38 @@ function getG21GodSignalMultiplier(pair: string, direction: string): { multiplie
 }
 
 // ─── Dynamic Gate Check (Sovereign-created G13+ gates) ───
-function isDynamicGateBlocking(pair: string): { blocked: boolean; gateId: string; reason: string } | null {
+// G17_DISPLACEMENT_EFFICIENCY is special: it requires physics data evaluation, not blanket block.
+// Other DYNAMIC_GATE:* records are blanket blockers (the FM creates them with specific intent).
+function isDynamicGateBlocking(pair: string, physicsContext?: { displacementEfficiency?: number }): { blocked: boolean; gateId: string; reason: string } | null {
   const now = new Date().toISOString();
   for (const bp of _serverBypasses) {
     if (bp.expires_at < now) continue;
     if (!bp.gate_id.startsWith("DYNAMIC_GATE:")) continue;
-    // Check pair-specific or global
     if (bp.pair && bp.pair !== pair) continue;
     try {
       const meta = JSON.parse(bp.reason);
       const gateId = bp.gate_id.replace("DYNAMIC_GATE:", "");
+
+      // ─── G17 DISPLACEMENT EFFICIENCY: Evaluate against physics data ───
+      if (gateId === "G17_DISPLACEMENT_EFFICIENCY") {
+        const threshold = meta.threshold ?? 0.7;
+        const de = physicsContext?.displacementEfficiency;
+        if (de == null) {
+          // No physics data available — log but allow (avoid blanket-blocking everything)
+          console.log(`[G17_DISPLACEMENT] ${pair}: No displacement data available — ALLOWING (no physics feed)`);
+          continue;
+        }
+        if (de >= threshold) {
+          // Displacement IS institutional — trade allowed
+          console.log(`[G17_DISPLACEMENT] ${pair}: DE=${de.toFixed(3)} >= ${threshold} — INSTITUTIONAL DISPLACEMENT ✅`);
+          continue;
+        }
+        // Below threshold — block as retail noise
+        console.log(`[G17_DISPLACEMENT] ${pair}: DE=${de.toFixed(3)} < ${threshold} — RETAIL NOISE BLOCKED ❌`);
+        return { blocked: true, gateId, reason: `Displacement ${de.toFixed(3)} < ${threshold} — retail noise, not institutional` };
+      }
+
+      // All other dynamic gates: blanket block as designed
       console.log(`[SOVEREIGN-GATE] ${gateId} ACTIVE${bp.pair ? ` for ${pair}` : ""} — ${meta.description}`);
       return { blocked: true, gateId, reason: meta.description || bp.reason };
     } catch {
@@ -2154,6 +2176,15 @@ function canPlaceLiveOrder(
     if (g17Gravity?.blocked) {
       console.log(`[G17_GRAVITY_GATE] pair=${tradeIntent.pair} direction=${tradeIntent.direction} — HARD BLOCKED: ${g17Gravity.reason}`);
       return { allowed: false, reason_code: "G17_GRAVITY_GATE", metadata: { pair: tradeIntent.pair, direction: tradeIntent.direction, reason: g17Gravity.reason } };
+    }
+  }
+
+  // ─── DYNAMIC GATES (FM-synthesized G13+) — includes G17 Displacement ───
+  {
+    const dynamicBlock = isDynamicGateBlocking(tradeIntent.pair);
+    if (dynamicBlock?.blocked) {
+      console.log(`[DYNAMIC_GATE_BLOCK] ${tradeIntent.pair} ${tradeIntent.direction}: ${dynamicBlock.gateId} — ${dynamicBlock.reason}`);
+      return { allowed: false, reason_code: `DYNAMIC_GATE_${dynamicBlock.gateId}`, metadata: { gateId: dynamicBlock.gateId, reason: dynamicBlock.reason } };
     }
   }
 
