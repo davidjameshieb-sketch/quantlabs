@@ -1,5 +1,5 @@
 // Dark-Room Command Center — Single-screen unified view
-// God Signal + Lead-Lag Radar + Trade Execution + System Health
+// God Signal + Lead-Lag Radar + Trade Execution + System Health + Trade Health
 
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { motion } from 'framer-motion';
@@ -8,6 +8,7 @@ import {
   Crown, GitBranch, Activity, Shield, Zap, Target,
   TrendingUp, TrendingDown, Radio, Eye, EyeOff, AlertTriangle,
   CheckCircle2, XCircle, Minus, Clock, Server, Wifi, WifiOff,
+  HeartPulse, ShieldCheck, ShieldAlert, Skull, Gauge, Brain,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
@@ -17,6 +18,11 @@ import type { OandaAccountSummary } from '@/hooks/useOandaExecution';
 import type { RealExecutionMetrics, RealOrder } from '@/hooks/useOandaPerformance';
 import type { TradeAnalyticsResult } from '@/hooks/useTradeAnalytics';
 import { SonarRipplePanel } from '@/components/forex/SonarRipplePanel';
+import { computeTradeHealth, type TradeHealthResult, type HealthBand } from '@/lib/forex/tradeHealthEngine';
+import {
+  computeLiveExpectancy, setTradeBuffer, orderToClosedTradeRecord,
+  type LiveExpectancy, type ExpectancyBand,
+} from '@/lib/forex/thsExpectancyEngine';
 
 // ─── Helpers ─────────────────────────────────────────────
 
@@ -370,7 +376,52 @@ function SystemHealthPanel() {
   );
 }
 
-// ─── Trade Execution Panel ───────────────────────────────
+// ─── THS Config ──────────────────────────────────────────
+
+const BAND_CONFIG: Record<HealthBand, { icon: typeof HeartPulse; color: string; bg: string; border: string; label: string }> = {
+  healthy: { icon: ShieldCheck, color: 'text-emerald-400', bg: 'bg-emerald-500/10', border: 'border-emerald-500/30', label: 'HEALTHY' },
+  caution: { icon: ShieldAlert, color: 'text-amber-400', bg: 'bg-amber-500/10', border: 'border-amber-500/30', label: 'CAUTION' },
+  sick: { icon: AlertTriangle, color: 'text-orange-400', bg: 'bg-orange-500/10', border: 'border-orange-500/30', label: 'SICK' },
+  critical: { icon: Skull, color: 'text-red-400', bg: 'bg-red-500/10', border: 'border-red-500/30', label: 'CRITICAL' },
+};
+
+const EXP_BAND_COLORS: Record<ExpectancyBand, { text: string; bg: string; border: string }> = {
+  Elite:   { text: 'text-cyan-300',    bg: 'bg-cyan-500/10',    border: 'border-cyan-500/30' },
+  Strong:  { text: 'text-emerald-400', bg: 'bg-emerald-500/10', border: 'border-emerald-500/30' },
+  Viable:  { text: 'text-amber-400',   bg: 'bg-amber-500/10',   border: 'border-amber-500/30' },
+  Weak:    { text: 'text-orange-400',  bg: 'bg-orange-500/10',  border: 'border-orange-500/30' },
+  Fragile: { text: 'text-red-400',     bg: 'bg-red-500/10',     border: 'border-red-500/30' },
+};
+
+function THSGauge({ score, band }: { score: number; band: HealthBand }) {
+  const cfg = BAND_CONFIG[band];
+  return (
+    <div className="relative w-10 h-10">
+      <svg className="w-10 h-10 -rotate-90" viewBox="0 0 36 36">
+        <circle cx="18" cy="18" r="14" fill="none" stroke="currentColor" className="text-muted/20" strokeWidth="3" />
+        <circle cx="18" cy="18" r="14" fill="none" className={cfg.color.replace('text-', 'stroke-')} strokeWidth="3" strokeDasharray={`${score * 0.88} 100`} strokeLinecap="round" />
+      </svg>
+      <span className={cn("absolute inset-0 flex items-center justify-center text-[10px] font-mono font-bold", cfg.color)}>{score}</span>
+    </div>
+  );
+}
+
+function THSComponentBar({ label, value }: { label: string; value: number }) {
+  const color = value >= 70 ? 'bg-emerald-500' : value >= 45 ? 'bg-amber-500' : value >= 30 ? 'bg-orange-500' : 'bg-red-500';
+  return (
+    <div className="space-y-0.5">
+      <div className="flex justify-between text-[8px] text-muted-foreground">
+        <span>{label}</span>
+        <span className="font-mono">{value}/100</span>
+      </div>
+      <div className="h-1 rounded-full bg-muted/30 overflow-hidden">
+        <div className={cn("h-full rounded-full transition-all", color)} style={{ width: `${Math.min(value, 100)}%` }} />
+      </div>
+    </div>
+  );
+}
+
+// ─── Trade Execution + Health Panel ──────────────────────
 
 function TradeExecutionPanel({ account, metrics, analytics, brokerOpenTradeIds }: {
   account: OandaAccountSummary | null;
@@ -378,11 +429,12 @@ function TradeExecutionPanel({ account, metrics, analytics, brokerOpenTradeIds }
   analytics: TradeAnalyticsResult;
   brokerOpenTradeIds?: string[];
 }) {
+  const [livePrices, setLivePrices] = useState<Record<string, number>>({});
+
   const openPositions = useMemo(() => {
     if (!metrics?.recentOrders) return [];
     return metrics.recentOrders.filter(o => {
       if (o.status !== 'filled' || o.entry_price == null || o.exit_price || !o.oanda_trade_id) return false;
-      // If we have broker open trade IDs, only show trades confirmed open on broker
       if (brokerOpenTradeIds && brokerOpenTradeIds.length > 0) {
         return brokerOpenTradeIds.includes(o.oanda_trade_id);
       }
@@ -406,13 +458,111 @@ function TradeExecutionPanel({ account, metrics, analytics, brokerOpenTradeIds }
       .slice(0, 10);
   }, [metrics]);
 
+  // Load closed trades into expectancy engine
+  useEffect(() => {
+    if (!metrics?.recentOrders) return;
+    const closedOrders = metrics.recentOrders
+      .filter(o => (o.status === 'closed' || o.status === 'filled') && o.entry_price != null && o.exit_price != null);
+    const records = closedOrders.map(o => orderToClosedTradeRecord(o as any)).filter(Boolean) as any[];
+    if (records.length > 0) setTradeBuffer(records);
+  }, [metrics?.recentOrders]);
+
+  // Fetch live prices for open positions
+  useEffect(() => {
+    if (openPositions.length === 0) return;
+    let mounted = true;
+    const instruments = [...new Set(openPositions.map(o => o.currency_pair))];
+    const fetchPrices = async () => {
+      try {
+        const { data } = await supabase.functions.invoke('oanda-pricing', { body: { instruments } });
+        if (!mounted || !data?.prices) return;
+        const prices: Record<string, number> = {};
+        for (const [key, val] of Object.entries(data.prices)) {
+          const v = val as { mid?: number };
+          if (v?.mid) prices[key.replace('/', '_')] = v.mid;
+        }
+        setLivePrices(prices);
+      } catch { /* silent */ }
+    };
+    fetchPrices();
+    const iv = setInterval(fetchPrices, 15000);
+    return () => { mounted = false; clearInterval(iv); };
+  }, [openPositions.length]);
+
+  // Compute health for each open position
+  const healthResults = useMemo(() => {
+    return openPositions.map(order => {
+      const livePrice = livePrices[order.currency_pair] ?? null;
+      const entryPrice = order.entry_price!;
+      const pipMult = getPipMult(order.currency_pair);
+      const gov = order.governance_payload as Record<string, unknown> | null;
+
+      let initialSlPrice: number;
+      if (gov?.dynamicSlPrice && typeof gov.dynamicSlPrice === 'number') {
+        initialSlPrice = gov.dynamicSlPrice;
+      } else {
+        initialSlPrice = order.direction === 'long' ? entryPrice - 8 / pipMult : entryPrice + 8 / pipMult;
+      }
+
+      const mfePriceEstimate = livePrice != null
+        ? (order.direction === 'long' ? Math.max(livePrice, entryPrice) : Math.min(livePrice, entryPrice))
+        : entryPrice;
+
+      const barsSinceEntry = Math.max(1, Math.round((Date.now() - new Date(order.created_at).getTime()) / 60000));
+      const regimeConfirmed = gov?.regimeConfirmed === true || (!gov?.regimeEarlyWarning && !gov?.regimeDiverging);
+      const regimeEarlyWarning = gov?.regimeEarlyWarning === true;
+      const regimeDiverging = gov?.regimeDiverging === true;
+
+      const health = computeTradeHealth({
+        currentPrice: livePrice ?? entryPrice,
+        entryPrice, initialSlPrice,
+        direction: order.direction as 'long' | 'short',
+        pair: order.currency_pair, barsSinceEntry,
+        mfePrice: mfePriceEstimate,
+        regimeConfirmed, regimeEarlyWarning, regimeDiverging,
+        persistenceNow: (gov?.persistenceNow as number) ?? 50,
+        persistenceAtEntry: (gov?.persistenceAtEntry as number) ?? 50,
+        volAccNow: (gov?.volAccNow as number) ?? 50,
+        volAccAtEntry: (gov?.volAccAtEntry as number) ?? 50,
+        volatilityScore: (gov?.volatilityScore as number) ?? 50,
+      });
+
+      const persistenceDelta = ((gov?.persistenceNow as number) ?? 50) - ((gov?.persistenceAtEntry as number) ?? 50);
+      const regimeStability = regimeConfirmed ? 85 : regimeEarlyWarning ? 40 : regimeDiverging ? 15 : 50;
+      const accelDelta = ((gov?.volAccNow as number) ?? 50) - ((gov?.volAccAtEntry as number) ?? 50);
+      const entryThs = (order as any).entry_ths ?? health.tradeHealthScore;
+      const thsSlope = barsSinceEntry > 1 ? (health.tradeHealthScore - entryThs) / barsSinceEntry : 0;
+
+      const expectancy = computeLiveExpectancy(
+        health.tradeHealthScore, thsSlope, persistenceDelta, regimeStability, accelDelta,
+        order.currency_pair, (order.regime_label as string) ?? 'unknown', (order.session_label as string) ?? 'unknown',
+      );
+
+      const unrealizedPips = (livePrice != null && entryPrice != null)
+        ? Math.round((order.direction === 'long' ? (livePrice - entryPrice) : (entryPrice - livePrice)) * pipMult * 10) / 10
+        : null;
+
+      return { order, health, livePrice, expectancy, unrealizedPips };
+    });
+  }, [openPositions, livePrices]);
+
+  // Fleet summary
+  const fleetSummary = useMemo(() => {
+    if (healthResults.length === 0) return null;
+    const avg = Math.round(healthResults.reduce((s, h) => s + h.health.tradeHealthScore, 0) / healthResults.length);
+    const bands = { healthy: 0, caution: 0, sick: 0, critical: 0 };
+    healthResults.forEach(h => bands[h.health.healthBand]++);
+    const progressFails = healthResults.filter(h => h.health.progressFail).length;
+    return { avg, bands, progressFails, total: healthResults.length };
+  }, [healthResults]);
+
   const totalTrades = (metrics?.winCount ?? 0) + (metrics?.lossCount ?? 0);
   const winRate = totalTrades > 0 ? (metrics?.winCount ?? 0) / totalTrades * 100 : 0;
   const pnl = analytics.totalPnlPips;
   const nav = account ? parseFloat(account.nav) : 0;
 
   return (
-    <Section title="Trade Execution" icon={Activity} accent="text-primary" className="row-span-2">
+    <Section title="Live Trades + Health" icon={HeartPulse} accent="text-primary" className="row-span-2">
       <div className="space-y-3 h-full">
         {/* NAV + Stats bar */}
         <div className="grid grid-cols-5 gap-2 pb-2 border-b border-border/20">
@@ -423,56 +573,156 @@ function TradeExecutionPanel({ account, metrics, analytics, brokerOpenTradeIds }
           <Chip label="Trades" value={totalTrades} />
         </div>
 
-        {/* Open positions */}
-        {openPositions.length > 0 && (
-          <div className="space-y-1">
+        {/* Fleet Health Summary */}
+        {fleetSummary && (
+          <div className="grid grid-cols-5 gap-1.5">
+            <div className="p-1.5 rounded border border-border/20 bg-card/50 text-center">
+              <p className="text-[8px] text-muted-foreground uppercase font-bold">Avg THS</p>
+              <p className={cn("text-sm font-mono font-bold",
+                fleetSummary.avg >= 70 ? 'text-emerald-400' : fleetSummary.avg >= 45 ? 'text-amber-400' : fleetSummary.avg >= 30 ? 'text-orange-400' : 'text-red-400'
+              )}>{fleetSummary.avg}</p>
+            </div>
+            <div className="p-1.5 rounded border border-emerald-500/20 bg-emerald-500/5 text-center">
+              <p className="text-[8px] text-muted-foreground uppercase font-bold">Healthy</p>
+              <p className="text-sm font-mono font-bold text-emerald-400">{fleetSummary.bands.healthy}</p>
+            </div>
+            <div className="p-1.5 rounded border border-amber-500/20 bg-amber-500/5 text-center">
+              <p className="text-[8px] text-muted-foreground uppercase font-bold">Caution</p>
+              <p className="text-sm font-mono font-bold text-amber-400">{fleetSummary.bands.caution}</p>
+            </div>
+            <div className="p-1.5 rounded border border-orange-500/20 bg-orange-500/5 text-center">
+              <p className="text-[8px] text-muted-foreground uppercase font-bold">Sick</p>
+              <p className="text-sm font-mono font-bold text-orange-400">{fleetSummary.bands.sick}</p>
+            </div>
+            <div className="p-1.5 rounded border border-red-500/20 bg-red-500/5 text-center">
+              <p className="text-[8px] text-muted-foreground uppercase font-bold">Critical</p>
+              <p className="text-sm font-mono font-bold text-red-400">{fleetSummary.bands.critical}</p>
+            </div>
+          </div>
+        )}
+
+        {/* Progress Fail Alert */}
+        {fleetSummary && fleetSummary.progressFails > 0 && (
+          <div className="flex items-center gap-2 p-2 rounded-lg border border-red-500/30 bg-red-500/5">
+            <AlertTriangle className="w-3.5 h-3.5 text-red-400 shrink-0" />
+            <span className="text-[10px] text-red-400">
+              <strong>{fleetSummary.progressFails}</strong> position{fleetSummary.progressFails > 1 ? 's' : ''} failed progress — MFE &lt; 0.25R
+            </span>
+          </div>
+        )}
+
+        {/* Open positions with THS health cards */}
+        {openPositions.length > 0 ? (
+          <div className="space-y-2">
             <span className="text-[9px] text-primary uppercase tracking-wider font-bold flex items-center gap-1">
               <span className="relative flex h-2 w-2"><span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-primary opacity-75" /><span className="relative inline-flex rounded-full h-2 w-2 bg-primary" /></span>
-              Open ({openPositions.length})
+              Live Positions ({openPositions.length})
             </span>
-            {openPositions.map((o) => {
+            {healthResults.map((r) => {
+              const { order: o, health, expectancy, unrealizedPips } = r;
+              const band = BAND_CONFIG[health.healthBand];
+              const BandIcon = band.icon;
+              const ageMin = Math.round((Date.now() - new Date(o.created_at).getTime()) / 60000);
               const gov = o.governance_payload as Record<string, any> | undefined;
               const cotPower = gov?.cotPower ?? gov?.godSignalPower ?? null;
-              const engine = o.direction_engine || 'auto-governance';
-              const overrideTag = o.sovereign_override_tag;
-              const confidence = o.confidence_score ? Math.round(o.confidence_score * 100) : null;
-              const ageMin = Math.round((Date.now() - new Date(o.created_at).getTime()) / 60000);
+              const expColors = EXP_BAND_COLORS[expectancy.band];
 
               return (
-                <div key={o.id} className="bg-primary/5 border border-primary/20 rounded-lg px-3 py-2 space-y-1.5">
-                  {/* Row 1: Pair + Direction + Entry */}
-                  <div className="flex items-center gap-2 text-[10px]">
-                    <span className="font-mono font-bold text-foreground text-xs">{o.currency_pair.replace('_','/')}</span>
-                    <Badge variant="outline" className={cn("text-[8px] h-3.5 px-1", o.direction === 'long' ? "text-emerald-400 border-emerald-500/30" : "text-red-400 border-red-500/30")}>
-                      {o.direction.toUpperCase()}
+                <motion.div key={o.id} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }}
+                  className={cn("border rounded-lg p-3 space-y-2.5", band.border, band.bg)}
+                >
+                  {/* Row 1: Pair + Direction + THS Gauge */}
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <BandIcon className={cn("w-4 h-4", band.color)} />
+                      <span className="font-mono font-bold text-sm text-foreground">{o.currency_pair.replace('_','/')}</span>
+                      <Badge variant="outline" className={cn("text-[9px] px-1.5", o.direction === 'long' ? "text-emerald-400 border-emerald-500/30" : "text-red-400 border-red-500/30")}>
+                        {o.direction.toUpperCase()}
+                      </Badge>
+                      <span className="text-[10px] text-muted-foreground">{ageMin < 60 ? `${ageMin}m` : `${Math.round(ageMin/60)}h`}</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <THSGauge score={health.tradeHealthScore} band={health.healthBand} />
+                      <Badge className={cn("text-[9px] px-1.5", band.bg, band.color, "border", band.border)}>
+                        {band.label}
+                      </Badge>
+                    </div>
+                  </div>
+
+                  {/* Row 2: Key metrics */}
+                  <div className="grid grid-cols-6 gap-1.5 text-center">
+                    <div>
+                      <p className="text-[8px] text-muted-foreground uppercase">Entry</p>
+                      <p className="text-[10px] font-mono font-bold text-foreground">{o.entry_price?.toFixed(o.currency_pair.includes('JPY') ? 3 : 5)}</p>
+                    </div>
+                    <div>
+                      <p className="text-[8px] text-muted-foreground uppercase">P&L</p>
+                      <p className={cn("text-[10px] font-mono font-bold",
+                        unrealizedPips != null && unrealizedPips > 0 ? 'text-emerald-400' :
+                        unrealizedPips != null && unrealizedPips < 0 ? 'text-red-400' : 'text-foreground'
+                      )}>
+                        {unrealizedPips != null ? `${unrealizedPips >= 0 ? '+' : ''}${unrealizedPips.toFixed(1)}p` : '—'}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-[8px] text-muted-foreground uppercase">R-Risk</p>
+                      <p className="text-[10px] font-mono font-bold text-foreground">{health.rPips}p</p>
+                    </div>
+                    <div>
+                      <p className="text-[8px] text-muted-foreground uppercase">MFE(R)</p>
+                      <p className={cn("text-[10px] font-mono font-bold", health.mfeR > 0.5 ? 'text-emerald-400' : 'text-foreground')}>{health.mfeR.toFixed(2)}</p>
+                    </div>
+                    <div>
+                      <p className="text-[8px] text-muted-foreground uppercase">UE(R)</p>
+                      <p className={cn("text-[10px] font-mono font-bold", health.ueR >= 0 ? 'text-emerald-400' : 'text-red-400')}>{health.ueR >= 0 ? '+' : ''}{health.ueR.toFixed(2)}</p>
+                    </div>
+                    <div>
+                      <p className="text-[8px] text-muted-foreground uppercase">Units</p>
+                      <p className="text-[10px] font-mono font-bold text-foreground">{o.units}</p>
+                    </div>
+                  </div>
+
+                  {/* Row 3: THS Components (compact) */}
+                  <div className="grid grid-cols-2 gap-x-3 gap-y-1">
+                    <THSComponentBar label="Progress 28%" value={health.components.P} />
+                    <THSComponentBar label="Regime 22%" value={health.components.S_regime} />
+                    <THSComponentBar label="Persistence 16%" value={health.components.D_pers} />
+                    <THSComponentBar label="Acceleration 12%" value={health.components.D_acc} />
+                    <THSComponentBar label="Drift 12%" value={health.components.A_drift} />
+                    <THSComponentBar label="Time-to-MFE 10%" value={health.components.T_mfe ?? 50} />
+                  </div>
+
+                  {/* Row 4: Expectancy + Tactical */}
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <Badge variant="outline" className={cn("text-[8px] px-1.5", expColors.text, expColors.border)}>
+                      {expectancy.band} | {expectancy.expectedR >= 0 ? '+' : ''}{expectancy.expectedR.toFixed(2)}R | {(expectancy.probabilityHoldSuccess * 100).toFixed(0)}% hold
                     </Badge>
-                    {overrideTag && (
-                      <Badge variant="outline" className="text-[8px] h-3.5 px-1 text-amber-400 border-amber-500/30">
-                        {overrideTag}
+                    {cotPower != null && (
+                      <Badge variant="outline" className="text-[8px] px-1.5 text-amber-400 border-amber-500/30">
+                        <Crown className="w-3 h-3 mr-0.5" /> COT {Math.round(cotPower)}%
                       </Badge>
                     )}
-                    <span className="text-muted-foreground ml-auto font-mono">{o.entry_price?.toFixed(5)}</span>
-                    <span className="text-muted-foreground font-mono">{o.units}u</span>
-                  </div>
-                  {/* Row 2: Tactical Posture */}
-                  <div className="flex items-center gap-3 text-[9px] text-muted-foreground flex-wrap">
-                    {cotPower != null && (
-                      <span className="flex items-center gap-1">
-                        <Crown className="w-3 h-3 text-amber-400" />
-                        <span className="text-foreground font-bold">{Math.round(cotPower)}%</span> COT
-                      </span>
+                    {o.regime_label && (
+                      <span className="text-[9px] text-muted-foreground">Regime: <span className="text-foreground">{o.regime_label}</span></span>
                     )}
-                    {confidence != null && (
-                      <span>Conv: <span className={cn("font-bold", confidence >= 60 ? "text-emerald-400" : "text-foreground")}>{confidence}%</span></span>
-                    )}
-                    <span>Engine: <span className="text-foreground">{engine.replace('auto-','').replace('-',' ')}</span></span>
-                    <span>Age: <span className="text-foreground">{ageMin < 60 ? `${ageMin}m` : `${Math.round(ageMin/60)}h`}</span></span>
-                    {o.regime_label && <span>Regime: <span className="text-foreground">{o.regime_label}</span></span>}
-                    {o.session_label && <span>Session: <span className="text-foreground">{o.session_label}</span></span>}
                   </div>
-                </div>
+
+                  {/* Row 5: Governance action */}
+                  <div className={cn("flex items-center gap-2 p-1.5 rounded border text-[9px]", band.border, 'bg-background/30')}>
+                    <Gauge className={cn("w-3 h-3 shrink-0", band.color)} />
+                    <span className="text-muted-foreground">
+                      <strong className={band.color}>{health.governanceAction.type.toUpperCase()}</strong>
+                      {' — '}{health.governanceAction.reason}
+                    </span>
+                  </div>
+                </motion.div>
               );
             })}
+          </div>
+        ) : (
+          <div className="flex flex-col items-center py-6 text-center">
+            <HeartPulse className="w-6 h-6 text-muted-foreground/30 mb-2" />
+            <p className="text-[11px] text-muted-foreground">No open positions — THS activates when trades are live</p>
           </div>
         )}
 
@@ -508,9 +758,9 @@ function TradeExecutionPanel({ account, metrics, analytics, brokerOpenTradeIds }
         {/* Recent closed trades */}
         <div className="space-y-1">
           <span className="text-[9px] text-muted-foreground uppercase tracking-wider font-bold">Recent Closed</span>
-          <ScrollArea className="h-[200px]">
+          <ScrollArea className="h-[150px]">
             <div className="space-y-1">
-              {closedTrades.map((o, i) => {
+              {closedTrades.map((o) => {
                 const pips = calcPips(o);
                 const isWin = pips > 0;
                 const time = new Date(o.created_at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
