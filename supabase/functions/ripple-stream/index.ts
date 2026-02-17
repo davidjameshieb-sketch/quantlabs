@@ -929,6 +929,7 @@ Deno.serve(async (req) => {
       slPips: number, tpPips: number, engine: string,
       metadata: Record<string, unknown>, currentPrice: { mid: number; spreadPips: number },
       orderType: "MARKET" | "LIMIT" = "MARKET",
+      limitPrice?: number, // Optional explicit limit price (e.g., Ghost cluster price)
     ): Promise<{ success: boolean; tradeId?: string; fillPrice?: number; slippage?: number }> {
       if (LIVE_ENABLED !== "true") {
         console.log(`[STRIKE-v3] 🔇 ${engine} would fire ${direction} ${units} ${pair} — LIVE DISABLED`);
@@ -978,7 +979,7 @@ Deno.serve(async (req) => {
           timeInForce: orderType === "MARKET" ? "FOK" : "IOC",
           stopLossOnFill: { distance: slDistance.toFixed(pricePrecision), timeInForce: "GTC" },
           takeProfitOnFill: { distance: tpDistance.toFixed(pricePrecision), timeInForce: "GTC" },
-          ...(orderType === "LIMIT" ? { price: currentPrice.mid.toFixed(pricePrecision) } : {}),
+          ...(orderType === "LIMIT" ? { price: (limitPrice ?? currentPrice.mid).toFixed(pricePrecision) } : {}),
         },
       };
 
@@ -1517,6 +1518,7 @@ Deno.serve(async (req) => {
                           },
                           { mid, spreadPips },
                           "LIMIT", // Ghost Limit Order — provide liquidity
+                          target.price, // ← CRITICAL: Place at cluster price, NOT mid
                         );
 
                         if (result.success) {
