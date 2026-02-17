@@ -912,15 +912,19 @@ Deno.serve(async (req) => {
       const slDistance = fromPips(slPips, pair);
       const tpDistance = fromPips(tpPips, pair);
 
+      // OANDA requires correct price precision: JPY pairs use 3 decimals, others use 5
+      const isJPYPair = pair.includes("JPY");
+      const pricePrecision = isJPYPair ? 3 : 5;
+
       const orderBody: Record<string, unknown> = {
         order: {
           type: orderType,
           instrument: pair,
           units: String(dirUnits),
           timeInForce: orderType === "MARKET" ? "FOK" : "IOC",
-          stopLossOnFill: { distance: slDistance.toFixed(5), timeInForce: "GTC" },
-          takeProfitOnFill: { distance: tpDistance.toFixed(5), timeInForce: "GTC" },
-          ...(orderType === "LIMIT" ? { price: currentPrice.mid.toFixed(5) } : {}),
+          stopLossOnFill: { distance: slDistance.toFixed(pricePrecision), timeInForce: "GTC" },
+          takeProfitOnFill: { distance: tpDistance.toFixed(pricePrecision), timeInForce: "GTC" },
+          ...(orderType === "LIMIT" ? { price: currentPrice.mid.toFixed(pricePrecision) } : {}),
         },
       };
 
