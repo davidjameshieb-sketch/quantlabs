@@ -632,43 +632,80 @@ async function executeAction(
 
   if (action.type === "close_trade" && action.tradeId) {
     console.log(`[AI-DESK] Floor Manager closing trade ${action.tradeId}`);
-    const result = await oandaRequest(
-      `/v3/accounts/{accountId}/trades/${action.tradeId}/close`,
-      "PUT",
-      {},
-      environment
-    );
-    const closePrice = result.orderFillTransaction?.price ? parseFloat(result.orderFillTransaction.price) : null;
+    try {
+      const result = await oandaRequest(
+        `/v3/accounts/{accountId}/trades/${action.tradeId}/close`,
+        "PUT",
+        {},
+        environment
+      );
+      const closePrice = result.orderFillTransaction?.price ? parseFloat(result.orderFillTransaction.price) : null;
 
-    // Update DB
-    await sb
-      .from("oanda_orders")
-      .update({ status: "closed", exit_price: closePrice, closed_at: new Date().toISOString() })
-      .eq("oanda_trade_id", action.tradeId);
+      // Update DB
+      await sb
+        .from("oanda_orders")
+        .update({ status: "closed", exit_price: closePrice, closed_at: new Date().toISOString() })
+        .eq("oanda_trade_id", action.tradeId);
 
-    results.push({ action: "close_trade", success: true, detail: `Trade ${action.tradeId} closed at ${closePrice}`, data: result });
+      results.push({ action: "close_trade", success: true, detail: `Trade ${action.tradeId} closed at ${closePrice}`, data: result });
+    } catch (err) {
+      const msg = (err as Error).message || "";
+      if (msg.includes("does not exist") || msg.includes("TRADE_DOESNT_EXIST") || msg.includes("NO_SUCH_TRADE")) {
+        // Trade already closed on OANDA — reconcile DB
+        console.warn(`[AI-DESK] Trade ${action.tradeId} no longer exists on OANDA — marking closed in DB`);
+        await sb
+          .from("oanda_orders")
+          .update({ status: "closed", closed_at: new Date().toISOString() })
+          .eq("oanda_trade_id", action.tradeId)
+          .eq("status", "filled");
+        results.push({ action: "close_trade", success: true, detail: `Trade ${action.tradeId} already closed on broker — DB reconciled` });
+      } else {
+        throw err;
+      }
+    }
 
   } else if (action.type === "update_sl_tp" && action.tradeId) {
     console.log(`[AI-DESK] Floor Manager updating SL/TP on trade ${action.tradeId}`);
+
+    // Determine precision from the trade's pair
+    const { data: tradeRow } = await sb.from("oanda_orders").select("currency_pair").eq("oanda_trade_id", action.tradeId).maybeSingle();
+    const isJPY = tradeRow?.currency_pair?.includes("JPY");
+    const pricePrecision = isJPY ? 3 : 5;
+
     const orderUpdate: Record<string, unknown> = {};
     if (action.stopLossPrice != null) {
-      orderUpdate.stopLoss = { price: parseFloat(String(action.stopLossPrice)).toFixed(5), timeInForce: "GTC" };
+      orderUpdate.stopLoss = { price: parseFloat(String(action.stopLossPrice)).toFixed(pricePrecision), timeInForce: "GTC" };
     }
     if (action.takeProfitPrice != null) {
-      orderUpdate.takeProfit = { price: parseFloat(String(action.takeProfitPrice)).toFixed(5), timeInForce: "GTC" };
+      orderUpdate.takeProfit = { price: parseFloat(String(action.takeProfitPrice)).toFixed(pricePrecision), timeInForce: "GTC" };
     }
-    const result = await oandaRequest(
-      `/v3/accounts/{accountId}/trades/${action.tradeId}/orders`,
-      "PUT",
-      orderUpdate,
-      environment
-    );
-    results.push({
-      action: "update_sl_tp",
-      success: true,
-      detail: `Trade ${action.tradeId} SL=${action.stopLossPrice ?? 'unchanged'} TP=${action.takeProfitPrice ?? 'unchanged'}`,
-      data: result,
+    try {
+      const result = await oandaRequest(
+        `/v3/accounts/{accountId}/trades/${action.tradeId}/orders`,
+        "PUT",
+        orderUpdate,
+        environment
+      );
+      results.push({
+        action: "update_sl_tp",
+        success: true,
+        detail: `Trade ${action.tradeId} SL=${action.stopLossPrice ?? 'unchanged'} TP=${action.takeProfitPrice ?? 'unchanged'}`,
+        data: result,
     });
+    } catch (err) {
+      const msg = (err as Error).message || "";
+      if (msg.includes("does not exist") || msg.includes("TRADE_DOESNT_EXIST") || msg.includes("NO_SUCH_TRADE")) {
+        console.warn(`[AI-DESK] Trade ${action.tradeId} no longer exists on OANDA — skipping SL/TP update, reconciling DB`);
+        await sb
+          .from("oanda_orders")
+          .update({ status: "closed", closed_at: new Date().toISOString() })
+          .eq("oanda_trade_id", action.tradeId)
+          .eq("status", "filled");
+        results.push({ action: "update_sl_tp", success: false, detail: `Trade ${action.tradeId} no longer exists — DB reconciled` });
+      } else {
+        throw err;
+      }
+    }
 
   } else if (action.type === "place_trade" && action.pair && action.direction && action.units) {
     console.log(`[AI-DESK] Floor Manager placing trade: ${action.direction} ${action.units} ${action.pair}`);
