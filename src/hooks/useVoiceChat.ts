@@ -103,10 +103,10 @@ export const useVoiceChat = () => {
     try {
       abortRef.current = new AbortController();
       
-      // Truncate older assistant messages to avoid hitting server limits
-      const allMessages = [...messages, userMsg].map((m, i, arr) => {
-        if (m.role === 'assistant' && m.content.length > 6000 && i < arr.length - 2) {
-          return { ...m, content: m.content.slice(0, 3000) + '\n...[truncated]...\n' + m.content.slice(-1500) };
+      // Trim to last 40 messages and truncate long assistant content to stay under server limit
+      const allMessages = [...messages, userMsg].slice(-40).map((m, i, arr) => {
+        if (m.role === 'assistant' && m.content.length > 4000 && i < arr.length - 2) {
+          return { ...m, content: m.content.slice(0, 2000) + '\n...[truncated]...\n' + m.content.slice(-1000) };
         }
         return m;
       });
