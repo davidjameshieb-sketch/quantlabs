@@ -85,74 +85,100 @@ function getTickBufferSnapshot(pair?: string, lastMs = 500): TickBufferEntry[] {
   return tickBuffer.filter(t => t.ts >= cutoff && (!pair || t.pair === pair));
 }
 
-// ─── #2: ENHANCED SYNTHETIC ORDER BOOK (Senior Ops Grade) ───
-// Three improvements over basic tick-rule OFI:
-//   1. VELOCITY WEIGHTING: OFI += direction × (1/Δt) — fast ticks count more (Hawkes-like)
-//   2. DISPLACEMENT WEIGHTING: OFI += sign(ΔP) × |ΔP| — big moves count more
-//   3. PRICE-LEVEL PERSISTENCE: frequency map tracks hits/bounces per level → S/R from tick density
-// Plus: Kramers-Moyal drift (μ) and diffusion (σ²) from raw ticks → "velocity" signal
-// The Alpha: OFI = "Force", KM drift = "Velocity". Force without Velocity = Hidden Limit Seller.
+// ─── #2: ZERO-LAG SYNTHETIC ORDER BOOK (O(1) Recursive) ───
+// ALL computations are O(1) exponentially-weighted recursive updates.
+// No rolling windows. No array scans. Same cost at tick 10 or tick 10,000,000.
+//
+// RECURSIVE KM (Kramers-Moyal):
+//   D1(t) = α·(Δx/Δt) + (1-α)·D1(t-1)        ← Drift (velocity/directional force)
+//   D2(t) = α·(Δx - D1·Δt)²/Δt + (1-α)·D2(t-1) ← Diffusion (volatility/noise)
+//
+// RECURSIVE OFI (Velocity+Displacement weighted):
+//   OFI(t) = γ·OFI(t-1) + sgn(Δx)·|Δx|·(1/Δt)  ← Force (order flow pressure)
+//
+// EFFICIENCY RATIO (The Alpha):
+//   E = |OFI| / (|D1| + ε)
+//   E ≈ 1 → Liquid (orders moving price as expected)
+//   E ≪ 1 → Absorbing (Hidden Limit Seller/Buyer — fade the move)
+//   E ≫ 1 → Slipping (Liquidity Hole — gap risk)
+//
+// Price-level persistence still uses a map (inherently O(1) per tick).
 
-const OFI_WINDOW = 200;          // ticks for rolling OFI
-const VPIN_BUCKET_SIZE = 50;     // ticks per VPIN bucket
-const VPIN_BUCKETS = 10;         // number of VPIN buckets (500 ticks lookback)
+const VPIN_BUCKET_SIZE = 50;
+const VPIN_BUCKETS = 10;
 const OFI_IMBALANCE_THRESHOLD = 0.35;
 const VPIN_TOXIC_THRESHOLD = 0.7;
-const KM_WINDOW = 120;           // ticks for Kramers-Moyal estimation
-const PRICE_LEVEL_MEMORY = 500;  // max price levels tracked
-const HIDDEN_SELLER_FORCE_THRESHOLD = 0.4; // strong OFI force
-const HIDDEN_SELLER_DRIFT_THRESHOLD = 0.1; // but flat KM drift
+const PRICE_LEVEL_MEMORY = 500;
 
-interface OfiTick {
-  ts: number;
-  mid: number;
-  bid: number;
-  ask: number;
-  side: 1 | -1;
-  spreadPips: number;
-  velocityWeight: number;    // 1/Δt — speed weight
-  displacement: number;      // |ΔP| in pips
-  weightedContribution: number; // combined: side × (velocity + displacement)
-}
+// Recursive decay factors (evolvable by sovereign loop per session)
+const KM_ALPHA_DEFAULT = 0.05;     // KM smoothing — higher = faster adaptation
+const OFI_GAMMA_DEFAULT = 0.95;    // OFI memory — higher = longer memory
+const EFFICIENCY_EPSILON = 1e-10;  // prevent division by zero
+
+// Efficiency ratio thresholds for market state classification
+const EFFICIENCY_ABSORBING_THRESHOLD = 0.3; // E < 0.3 = hidden limit player
+const EFFICIENCY_SLIPPING_THRESHOLD = 3.0;  // E > 3.0 = liquidity hole
 
 interface PriceLevelInfo {
-  hits: number;              // how many times price visited this level
+  hits: number;
   buys: number;
   sells: number;
   lastTs: number;
-  bounces: number;           // price visited then reversed
+  bounces: number;
   lastDirection: 1 | -1;
-  broken: boolean;           // level was decisively broken through
+  broken: boolean;
+  consecutiveSameDir: number; // track consecutive same-direction hits for breakout
 }
 
+type MarketState = "LIQUID" | "ABSORBING" | "SLIPPING" | "NEUTRAL";
+
 interface KramersMoyalState {
-  drift: number;             // μ — first moment (directional bias)
-  diffusion: number;         // σ² — second moment (volatility/noise)
-  driftNormalized: number;   // drift / sqrt(diffusion) — signal-to-noise
+  D1: number;               // Recursive drift (velocity)
+  D2: number;               // Recursive diffusion (noise)
+  driftNormalized: number;   // D1 / sqrt(D2) — signal-to-noise
   sampleSize: number;
 }
 
 interface HiddenSellerSignal {
   detected: boolean;
   type: "HIDDEN_LIMIT_SELLER" | "HIDDEN_LIMIT_BUYER" | "NONE";
-  force: number;             // OFI force magnitude
-  velocity: number;          // KM drift magnitude
-  divergence: number;        // force - velocity gap
+  force: number;
+  velocity: number;
+  divergence: number;
+  efficiency: number;        // NEW: the E ratio
+  marketState: MarketState;  // NEW: classified state
   recommendation: "FADE" | "WAIT" | "NONE";
 }
 
 interface OfiTracker {
-  ticks: OfiTick[];
+  // ─── O(1) Recursive State (the only 4 vars that matter) ───
+  prevMid: number;
+  prevTs: number;
+  D1: number;                // Kramers-Moyal recursive drift
+  D2: number;                // Kramers-Moyal recursive diffusion
+  ofiRecursive: number;      // Recursive velocity+displacement weighted OFI
+  tickCount: number;         // total ticks processed (for warm-up)
+
+  // ─── Decay factors (evolvable per session) ───
+  alpha: number;             // KM decay rate
+  gamma: number;             // OFI memory factor
+
+  // ─── VPIN (still bucket-based — inherently O(1) per tick) ───
   vpinBuckets: { buys: number; sells: number }[];
   currentBucket: { buys: number; sells: number; count: number };
-  lastMid: number;
-  lastTs: number;
+
+  // ─── Lee-Ready state ───
   lastClassification: 1 | -1;
-  // Enhanced: Price-level persistence map
+
+  // ─── Price-level persistence (O(1) map lookup per tick) ───
   priceLevels: Map<number, PriceLevelInfo>;
-  // Kramers-Moyal state
-  kmReturns: number[];       // rolling log-returns for KM estimation
-  kmState: KramersMoyalState;
+
+  // ─── Running buy/sell counts for simple ratio (O(1) with running totals) ───
+  runningBuys: number;
+  runningSells: number;
+  // Exponentially weighted buy/sell for pressure %
+  ewmaBuyPct: number;
+  ewmaSellPct: number;
 }
 
 const ofiTrackers = new Map<string, OfiTracker>();
@@ -160,15 +186,22 @@ const ofiTrackers = new Map<string, OfiTracker>();
 function getOrCreateOfi(pair: string): OfiTracker {
   if (!ofiTrackers.has(pair)) {
     ofiTrackers.set(pair, {
-      ticks: [],
+      prevMid: 0,
+      prevTs: 0,
+      D1: 0,
+      D2: 0,
+      ofiRecursive: 0,
+      tickCount: 0,
+      alpha: KM_ALPHA_DEFAULT,
+      gamma: OFI_GAMMA_DEFAULT,
       vpinBuckets: [],
       currentBucket: { buys: 0, sells: 0, count: 0 },
-      lastMid: 0,
-      lastTs: 0,
       lastClassification: 1,
       priceLevels: new Map(),
-      kmReturns: [],
-      kmState: { drift: 0, diffusion: 0, driftNormalized: 0, sampleSize: 0 },
+      runningBuys: 0,
+      runningSells: 0,
+      ewmaBuyPct: 0.5,
+      ewmaSellPct: 0.5,
     });
   }
   return ofiTrackers.get(pair)!;
@@ -187,163 +220,189 @@ function classifyTick(
   return lastClass;
 }
 
-// Kramers-Moyal estimation from tick returns
-function computeKramersMoyal(returns: number[]): KramersMoyalState {
-  if (returns.length < 20) return { drift: 0, diffusion: 0, driftNormalized: 0, sampleSize: returns.length };
-  const n = returns.length;
-  // First moment: drift μ = E[ΔX]
-  const drift = returns.reduce((s, r) => s + r, 0) / n;
-  // Second moment: diffusion σ² = E[(ΔX - μ)²]
-  const diffusion = returns.reduce((s, r) => s + (r - drift) ** 2, 0) / n;
-  const sqrtDiff = Math.sqrt(diffusion);
-  const driftNormalized = sqrtDiff > 1e-10 ? drift / sqrtDiff : 0;
-  return { drift, diffusion, driftNormalized, sampleSize: n };
+// Classify market state from Efficiency Ratio
+function classifyMarketState(efficiency: number): MarketState {
+  if (efficiency < EFFICIENCY_ABSORBING_THRESHOLD) return "ABSORBING";
+  if (efficiency > EFFICIENCY_SLIPPING_THRESHOLD) return "SLIPPING";
+  if (efficiency >= 0.7 && efficiency <= 1.5) return "LIQUID";
+  return "NEUTRAL";
 }
 
-// Detect Hidden Limit Seller/Buyer: OFI Force ≠ KM Velocity
+// Detect Hidden Limit Player from Efficiency Ratio
 function detectHiddenLimitPlayer(
-  ofiForce: number, kmDrift: number
+  ofiForce: number, kmDrift: number, efficiency: number, marketState: MarketState
 ): HiddenSellerSignal {
-  const absForce = Math.abs(ofiForce);
-  const absDrift = Math.abs(kmDrift);
-  
-  // Strong OFI force but flat KM drift = absorption
-  if (absForce > HIDDEN_SELLER_FORCE_THRESHOLD && absDrift < HIDDEN_SELLER_DRIFT_THRESHOLD) {
-    const divergence = absForce - absDrift;
+  // ABSORBING = high force, low velocity → hidden limit player
+  if (marketState === "ABSORBING" && Math.abs(ofiForce) > 0.01) {
     if (ofiForce > 0) {
-      // Buying force but price not moving up → Hidden Limit Seller absorbing
       return {
-        detected: true,
-        type: "HIDDEN_LIMIT_SELLER",
-        force: ofiForce,
-        velocity: kmDrift,
-        divergence,
-        recommendation: "FADE", // fade the buy pressure — seller is absorbing
+        detected: true, type: "HIDDEN_LIMIT_SELLER",
+        force: ofiForce, velocity: kmDrift,
+        divergence: Math.abs(ofiForce) - Math.abs(kmDrift),
+        efficiency, marketState,
+        recommendation: "FADE",
       };
     } else {
-      // Selling force but price not dropping → Hidden Limit Buyer absorbing
       return {
-        detected: true,
-        type: "HIDDEN_LIMIT_BUYER",
-        force: ofiForce,
-        velocity: kmDrift,
-        divergence,
+        detected: true, type: "HIDDEN_LIMIT_BUYER",
+        force: ofiForce, velocity: kmDrift,
+        divergence: Math.abs(ofiForce) - Math.abs(kmDrift),
+        efficiency, marketState,
         recommendation: "FADE",
       };
     }
   }
-  
-  // Force and velocity aligned = genuine move, wait for entry
-  if (absForce > HIDDEN_SELLER_FORCE_THRESHOLD && absDrift > HIDDEN_SELLER_DRIFT_THRESHOLD) {
-    if (Math.sign(ofiForce) === Math.sign(kmDrift)) {
-      return { detected: false, type: "NONE", force: ofiForce, velocity: kmDrift, divergence: 0, recommendation: "NONE" };
-    }
-    // Force and velocity opposed = conflicted, wait
-    return { detected: true, type: ofiForce > 0 ? "HIDDEN_LIMIT_SELLER" : "HIDDEN_LIMIT_BUYER", force: ofiForce, velocity: kmDrift, divergence: absForce + absDrift, recommendation: "WAIT" };
+
+  // SLIPPING = low force, high velocity → liquidity hole, wait
+  if (marketState === "SLIPPING") {
+    return {
+      detected: true, type: ofiForce > 0 ? "HIDDEN_LIMIT_SELLER" : "HIDDEN_LIMIT_BUYER",
+      force: ofiForce, velocity: kmDrift,
+      divergence: Math.abs(kmDrift) - Math.abs(ofiForce),
+      efficiency, marketState,
+      recommendation: "WAIT",
+    };
   }
-  
-  return { detected: false, type: "NONE", force: ofiForce, velocity: kmDrift, divergence: 0, recommendation: "NONE" };
+
+  return {
+    detected: false, type: "NONE",
+    force: ofiForce, velocity: kmDrift, divergence: 0,
+    efficiency, marketState,
+    recommendation: "NONE",
+  };
 }
 
 function processOfiTick(
   pair: string, mid: number, bid: number, ask: number,
   spreadPips: number, ts: number
 ): {
-  ofiRatio: number;
-  ofiRaw: number;
-  ofiWeighted: number;       // NEW: velocity+displacement weighted OFI
+  ofiRatio: number;          // simple buy-sell ratio (backward compat)
+  ofiRaw: number;            // raw buy-sell count
+  ofiWeighted: number;       // RECURSIVE velocity+displacement OFI (the real signal)
   vpin: number;
   buyPressure: number;
   sellPressure: number;
   ticksInWindow: number;
   bias: "BUY" | "SELL" | "NEUTRAL";
   syntheticDepth: { price: number; buys: number; sells: number; net: number; hits: number; bounces: number; broken: boolean }[];
-  km: KramersMoyalState;     // NEW: Kramers-Moyal state
-  hiddenPlayer: HiddenSellerSignal; // NEW: hidden limit detection
+  km: KramersMoyalState;
+  hiddenPlayer: HiddenSellerSignal;
   resistanceLevels: { price: number; strength: number; type: "SUPPORT" | "RESISTANCE" }[];
+  efficiency: number;        // NEW: E ratio (Force/Velocity)
+  marketState: MarketState;  // NEW: classified market regime
 } {
   const tracker = getOrCreateOfi(pair);
   const isJpy = pair.includes("JPY");
   const pipMult = isJpy ? 100 : 10000;
-  
-  // Classify this tick
-  const side = tracker.lastMid > 0
-    ? classifyTick(mid, bid, ask, tracker.lastMid, tracker.lastClassification)
+
+  // Classify this tick (Lee-Ready)
+  const side = tracker.prevMid > 0
+    ? classifyTick(mid, bid, ask, tracker.prevMid, tracker.lastClassification)
     : 1;
-  
-  // ─── IMPROVEMENT 1: Velocity Weighting (1/Δt) ───
-  const deltaT = tracker.lastTs > 0 ? Math.max(ts - tracker.lastTs, 1) : 1000;
-  // Clamp velocity weight: 1/Δt scaled to [0, 10] — cap at 10ms intervals
-  const velocityWeight = Math.min(1000 / deltaT, 10);
-  
-  // ─── IMPROVEMENT 3: Displacement Weighting (|ΔP|) ───
-  const priceDisplacement = tracker.lastMid > 0
-    ? Math.abs(mid - tracker.lastMid) * pipMult
-    : 0;
-  // Combined contribution: direction × (velocity_component + displacement_component)
-  // Normalize displacement to similar scale as velocity
-  const displacementWeight = Math.min(priceDisplacement * 2, 10);
-  const weightedContribution = side * (velocityWeight + displacementWeight);
-  
   tracker.lastClassification = side;
-  tracker.lastMid = mid;
-  tracker.lastTs = ts;
-  
-  // Add to rolling window
-  const tick: OfiTick = { ts, mid, bid, ask, side, spreadPips, velocityWeight, displacement: priceDisplacement, weightedContribution };
-  tracker.ticks.push(tick);
-  while (tracker.ticks.length > OFI_WINDOW) tracker.ticks.shift();
-  
-  // ─── Kramers-Moyal: accumulate log-returns ───
-  if (tracker.ticks.length >= 2) {
-    const prevTick = tracker.ticks[tracker.ticks.length - 2];
-    if (prevTick.mid > 0) {
-      const logReturn = Math.log(mid / prevTick.mid);
-      tracker.kmReturns.push(logReturn);
-      if (tracker.kmReturns.length > KM_WINDOW) tracker.kmReturns.shift();
-    }
+
+  // ─── O(1) CORE: Compute Δx and Δt ───
+  const dx = tracker.prevMid > 0 ? mid - tracker.prevMid : 0;
+  const dt = tracker.prevTs > 0 ? Math.max(ts - tracker.prevTs, 1) : 1000; // ms
+  const dtSec = dt / 1000; // seconds for KM normalization
+
+  // ─── RECURSIVE KRAMERS-MOYAL (O(1)) ───
+  // D1(t) = α·(Δx/Δt) + (1-α)·D1(t-1)
+  // D2(t) = α·(Δx - D1·Δt)²/Δt + (1-α)·D2(t-1)
+  const alpha = tracker.alpha;
+  if (tracker.tickCount > 0 && dtSec > 0) {
+    const instantDrift = dx / dtSec;
+    tracker.D1 = alpha * instantDrift + (1 - alpha) * tracker.D1;
+
+    const residual = dx - tracker.D1 * dtSec;
+    const instantDiffusion = (residual * residual) / dtSec;
+    tracker.D2 = alpha * instantDiffusion + (1 - alpha) * tracker.D2;
   }
-  tracker.kmState = computeKramersMoyal(tracker.kmReturns);
-  
-  // VPIN bucket accumulation
+
+  // ─── RECURSIVE OFI (O(1)) ───
+  // OFI(t) = γ·OFI(t-1) + sgn(Δx)·|Δx|·(1/Δt)
+  const gamma = tracker.gamma;
+  const dxPips = Math.abs(dx) * pipMult;
+  const tickVelocity = 1000 / dt; // ticks per second equivalent
+  const ofiContribution = side * dxPips * tickVelocity;
+  tracker.ofiRecursive = gamma * tracker.ofiRecursive + ofiContribution;
+
+  // ─── EFFICIENCY RATIO (The Alpha) ───
+  // E = |OFI| / (|D1| + ε)
+  const absD1 = Math.abs(tracker.D1);
+  const absOfi = Math.abs(tracker.ofiRecursive);
+  // Normalize OFI to comparable scale as D1 (both in price-space per second)
+  const ofiNormalized = absOfi / (pipMult * 10); // scale down from pips²/s
+  const efficiency = ofiNormalized / (absD1 + EFFICIENCY_EPSILON);
+  const marketState = classifyMarketState(efficiency);
+
+  // ─── Update state for next tick ───
+  tracker.prevMid = mid;
+  tracker.prevTs = ts;
+  tracker.tickCount++;
+
+  // ─── Running buy/sell counts (O(1) with EWMA) ───
+  const buyDecay = 0.99;
+  if (side === 1) {
+    tracker.runningBuys++;
+    tracker.ewmaBuyPct = buyDecay * tracker.ewmaBuyPct + (1 - buyDecay) * 1;
+    tracker.ewmaSellPct = buyDecay * tracker.ewmaSellPct + (1 - buyDecay) * 0;
+  } else {
+    tracker.runningSells++;
+    tracker.ewmaBuyPct = buyDecay * tracker.ewmaBuyPct + (1 - buyDecay) * 0;
+    tracker.ewmaSellPct = buyDecay * tracker.ewmaSellPct + (1 - buyDecay) * 1;
+  }
+  const totalTicks = tracker.runningBuys + tracker.runningSells;
+  const ofiRatio = totalTicks > 0 ? (tracker.runningBuys - tracker.runningSells) / totalTicks : 0;
+
+  // ─── VPIN (O(1) bucket accumulation) ───
   tracker.currentBucket.count++;
   if (side === 1) tracker.currentBucket.buys++;
   else tracker.currentBucket.sells++;
-  
+
   if (tracker.currentBucket.count >= VPIN_BUCKET_SIZE) {
     tracker.vpinBuckets.push({ buys: tracker.currentBucket.buys, sells: tracker.currentBucket.sells });
     if (tracker.vpinBuckets.length > VPIN_BUCKETS) tracker.vpinBuckets.shift();
     tracker.currentBucket = { buys: 0, sells: 0, count: 0 };
   }
-  
-  // ─── IMPROVEMENT 2: Price-Level Persistence (frequency map) ───
-  const bucketSize = isJpy ? 0.1 : 0.001; // ~10 pips
+
+  let vpinSum = 0, vpinTotal = 0;
+  for (const bucket of tracker.vpinBuckets) {
+    const bTotal = bucket.buys + bucket.sells;
+    if (bTotal > 0) { vpinSum += Math.abs(bucket.buys - bucket.sells) / bTotal; vpinTotal++; }
+  }
+  const vpin = vpinTotal > 0 ? vpinSum / vpinTotal : 0;
+
+  // ─── Price-Level Persistence (O(1) map lookup) ───
+  const bucketSize = isJpy ? 0.1 : 0.001;
   const priceLevel = Math.round(mid / bucketSize) * bucketSize;
-  
+
   if (!tracker.priceLevels.has(priceLevel)) {
     tracker.priceLevels.set(priceLevel, {
       hits: 0, buys: 0, sells: 0, lastTs: ts,
       bounces: 0, lastDirection: side, broken: false,
+      consecutiveSameDir: 0,
     });
   }
   const level = tracker.priceLevels.get(priceLevel)!;
   level.hits++;
   if (side === 1) level.buys++;
   else level.sells++;
-  
-  // Bounce detection: direction changed at this level
-  if (level.lastDirection !== side && level.hits > 2) {
-    level.bounces++;
-    // If broken through (3+ consecutive same-direction at this level), mark broken
-    const recentAtLevel = tracker.ticks.filter(t => Math.round(t.mid / bucketSize) * bucketSize === priceLevel).slice(-4);
-    if (recentAtLevel.length >= 3 && recentAtLevel.every(t => t.side === side)) {
-      level.broken = true;
+
+  // O(1) bounce/breakout detection using consecutive counter
+  if (level.lastDirection === side) {
+    level.consecutiveSameDir++;
+    if (level.consecutiveSameDir >= 3 && level.hits > 2) {
+      level.broken = true; // broken through with force
     }
+  } else {
+    if (level.hits > 2) level.bounces++;
+    level.consecutiveSameDir = 1;
   }
   level.lastDirection = side;
   level.lastTs = ts;
-  
-  // Prune price levels to max
+
+  // Prune price levels (only when needed)
   if (tracker.priceLevels.size > PRICE_LEVEL_MEMORY) {
     const sorted = Array.from(tracker.priceLevels.entries())
       .sort((a, b) => Math.abs(b[0] - mid) - Math.abs(a[0] - mid));
@@ -351,78 +410,65 @@ function processOfiTick(
       tracker.priceLevels.delete(sorted[i][0]);
     }
   }
-  
-  // ─── Compute enhanced OFI metrics ───
-  const windowTicks = tracker.ticks;
-  const buys = windowTicks.filter(t => t.side === 1).length;
-  const sells = windowTicks.filter(t => t.side === -1).length;
-  const total = windowTicks.length;
-  const ofiRaw = buys - sells;
-  const ofiRatio = total > 0 ? ofiRaw / total : 0;
-  
-  // Weighted OFI: sum of velocity+displacement weighted contributions
-  const totalWeight = windowTicks.reduce((s, t) => s + Math.abs(t.weightedContribution), 0);
-  const weightedSum = windowTicks.reduce((s, t) => s + t.weightedContribution, 0);
-  const ofiWeighted = totalWeight > 0 ? weightedSum / totalWeight : 0;
-  
-  // VPIN
-  let vpinSum = 0, vpinTotal = 0;
-  for (const bucket of tracker.vpinBuckets) {
-    const bTotal = bucket.buys + bucket.sells;
-    if (bTotal > 0) { vpinSum += Math.abs(bucket.buys - bucket.sells) / bTotal; vpinTotal++; }
-  }
-  const vpin = vpinTotal > 0 ? vpinSum / vpinTotal : 0;
-  
-  // ─── Hidden Limit Player detection (Force vs Velocity) ───
-  const hiddenPlayer = detectHiddenLimitPlayer(ofiWeighted, tracker.kmState.driftNormalized);
-  
-  // ─── Build enhanced synthetic depth with persistence data ───
+
+  // ─── KM normalized drift (signal-to-noise) ───
+  const sqrtD2 = Math.sqrt(Math.abs(tracker.D2));
+  const driftNormalized = sqrtD2 > 1e-10 ? tracker.D1 / sqrtD2 : 0;
+
+  // ─── Hidden Limit Player detection via Efficiency Ratio ───
+  const hiddenPlayer = detectHiddenLimitPlayer(
+    tracker.ofiRecursive, tracker.D1, efficiency, marketState
+  );
+
+  // ─── Synthetic depth from persistence map ───
   const depthLevels = Array.from(tracker.priceLevels.entries())
-    .filter(([, info]) => info.hits >= 2) // only meaningful levels
+    .filter(([, info]) => info.hits >= 2)
     .map(([price, info]) => ({
       price: +price.toFixed(5),
-      buys: info.buys,
-      sells: info.sells,
+      buys: info.buys, sells: info.sells,
       net: info.buys - info.sells,
-      hits: info.hits,
-      bounces: info.bounces,
-      broken: info.broken,
+      hits: info.hits, bounces: info.bounces, broken: info.broken,
     }))
     .sort((a, b) => Math.abs(b.price - mid) - Math.abs(a.price - mid))
     .slice(0, 20);
-  
-  // ─── Identify S/R levels from tick-density persistence ───
+
+  // ─── S/R from tick-density persistence ───
   const srLevels: { price: number; strength: number; type: "SUPPORT" | "RESISTANCE" }[] = [];
   for (const [price, info] of tracker.priceLevels.entries()) {
     if (info.bounces >= 2 && !info.broken) {
-      const strength = info.bounces * info.hits;
-      const type = info.sells > info.buys ? "SUPPORT" : "RESISTANCE";
-      srLevels.push({ price: +price.toFixed(5), strength, type });
+      srLevels.push({
+        price: +price.toFixed(5),
+        strength: info.bounces * info.hits,
+        type: info.sells > info.buys ? "SUPPORT" : "RESISTANCE",
+      });
     }
   }
   srLevels.sort((a, b) => b.strength - a.strength);
-  
-  // Use weighted OFI for bias (more accurate than simple count)
-  const biasThreshold = OFI_IMBALANCE_THRESHOLD;
-  
+
+  // Normalize recursive OFI to [-1, 1] range for bias detection
+  // Use tanh to smoothly bound the unbounded recursive value
+  const ofiNorm = Math.tanh(tracker.ofiRecursive / 100);
+
   return {
     ofiRatio: Math.round(ofiRatio * 1000) / 1000,
-    ofiRaw,
-    ofiWeighted: Math.round(ofiWeighted * 1000) / 1000,
+    ofiRaw: tracker.runningBuys - tracker.runningSells,
+    ofiWeighted: Math.round(ofiNorm * 1000) / 1000,
     vpin: Math.round(vpin * 1000) / 1000,
-    buyPressure: total > 0 ? Math.round((buys / total) * 100) : 50,
-    sellPressure: total > 0 ? Math.round((sells / total) * 100) : 50,
-    ticksInWindow: total,
-    bias: ofiWeighted > biasThreshold ? "BUY" : ofiWeighted < -biasThreshold ? "SELL" : "NEUTRAL",
+    buyPressure: Math.round(tracker.ewmaBuyPct * 100),
+    sellPressure: Math.round(tracker.ewmaSellPct * 100),
+    ticksInWindow: tracker.tickCount,
+    bias: ofiNorm > OFI_IMBALANCE_THRESHOLD ? "BUY" : ofiNorm < -OFI_IMBALANCE_THRESHOLD ? "SELL" : "NEUTRAL",
     syntheticDepth: depthLevels,
     km: {
-      drift: Math.round(tracker.kmState.drift * 1e8) / 1e8,
-      diffusion: Math.round(tracker.kmState.diffusion * 1e12) / 1e12,
-      driftNormalized: Math.round(tracker.kmState.driftNormalized * 1000) / 1000,
-      sampleSize: tracker.kmState.sampleSize,
+      drift: Math.round(tracker.D1 * 1e8) / 1e8,
+      diffusion: Math.round(tracker.D2 * 1e12) / 1e12,
+      driftNormalized: Math.round(driftNormalized * 1000) / 1000,
+      sampleSize: tracker.tickCount,
     },
     hiddenPlayer,
     resistanceLevels: srLevels.slice(0, 5),
+    efficiency: Math.round(efficiency * 1000) / 1000,
+    marketState,
   };
 }
 
@@ -1202,22 +1248,32 @@ Deno.serve(async (req) => {
       };
     }
 
-    // ─── Enhanced OFI Session Snapshot: persist synthetic order book + KM + hidden players ───
+    // ─── O(1) Recursive Snapshot: read directly from tracker state (no recomputation) ───
     const ofiSnapshot: Record<string, unknown> = {};
     let hiddenPlayerAlerts = 0;
+    let absorbingPairs = 0;
+    let slippingPairs = 0;
     for (const [pair, tracker] of ofiTrackers.entries()) {
-      const ticks = tracker.ticks;
-      if (ticks.length < 10) continue;
-      const buys = ticks.filter(t => t.side === 1).length;
-      const sells = ticks.filter(t => t.side === -1).length;
-      const total = ticks.length;
-      const ofiRatio = total > 0 ? (buys - sells) / total : 0;
-      
-      // Weighted OFI
-      const totalWeight = ticks.reduce((s, t) => s + Math.abs(t.weightedContribution), 0);
-      const weightedSum = ticks.reduce((s, t) => s + t.weightedContribution, 0);
-      const ofiWeighted = totalWeight > 0 ? weightedSum / totalWeight : 0;
-      
+      if (tracker.tickCount < 10) continue;
+
+      // All values are already computed recursively — just read state
+      const ofiNorm = Math.tanh(tracker.ofiRecursive / 100);
+      const sqrtD2 = Math.sqrt(Math.abs(tracker.D2));
+      const driftNorm = sqrtD2 > 1e-10 ? tracker.D1 / sqrtD2 : 0;
+      const totalTicks = tracker.runningBuys + tracker.runningSells;
+      const ofiRatio = totalTicks > 0 ? (tracker.runningBuys - tracker.runningSells) / totalTicks : 0;
+
+      // Efficiency ratio
+      const absD1 = Math.abs(tracker.D1);
+      const absOfi = Math.abs(tracker.ofiRecursive);
+      const pipMult = pair.includes("JPY") ? 100 : 10000;
+      const ofiScaled = absOfi / (pipMult * 10);
+      const efficiency = ofiScaled / (absD1 + EFFICIENCY_EPSILON);
+      const marketState = classifyMarketState(efficiency);
+
+      if (marketState === "ABSORBING") absorbingPairs++;
+      if (marketState === "SLIPPING") slippingPairs++;
+
       // VPIN
       let vpinSum = 0, vpinCount = 0;
       for (const b of tracker.vpinBuckets) {
@@ -1225,15 +1281,12 @@ Deno.serve(async (req) => {
         if (bt > 0) { vpinSum += Math.abs(b.buys - b.sells) / bt; vpinCount++; }
       }
       const vpin = vpinCount > 0 ? vpinSum / vpinCount : 0;
-      
-      // KM state
-      const km = tracker.kmState;
-      
-      // Hidden player detection
-      const hidden = detectHiddenLimitPlayer(ofiWeighted, km.driftNormalized);
+
+      // Hidden player
+      const hidden = detectHiddenLimitPlayer(tracker.ofiRecursive, tracker.D1, efficiency, marketState);
       if (hidden.detected) hiddenPlayerAlerts++;
-      
-      // Enhanced depth with persistence
+
+      // Depth & S/R from persistence map
       const depth = Array.from(tracker.priceLevels.entries())
         .filter(([, info]) => info.hits >= 2)
         .map(([price, d]) => ({
@@ -1242,8 +1295,7 @@ Deno.serve(async (req) => {
         }))
         .sort((a, b) => Math.abs(b.net) - Math.abs(a.net))
         .slice(0, 10);
-      
-      // S/R levels from tick density
+
       const srLevels: { price: number; strength: number; type: string }[] = [];
       for (const [price, info] of tracker.priceLevels.entries()) {
         if (info.bounces >= 2 && !info.broken) {
@@ -1255,70 +1307,91 @@ Deno.serve(async (req) => {
         }
       }
       srLevels.sort((a, b) => b.strength - a.strength);
-      
+
       ofiSnapshot[pair.replace("_", "/")] = {
         ofiRatio: Math.round(ofiRatio * 1000) / 1000,
-        ofiWeighted: Math.round(ofiWeighted * 1000) / 1000,
+        ofiWeighted: Math.round(ofiNorm * 1000) / 1000,
+        ofiRawRecursive: Math.round(tracker.ofiRecursive * 100) / 100,
         vpin: Math.round(vpin * 1000) / 1000,
-        buyPct: total > 0 ? Math.round((buys / total) * 100) : 50,
-        sellPct: total > 0 ? Math.round((sells / total) * 100) : 50,
-        bias: ofiWeighted > OFI_IMBALANCE_THRESHOLD ? "BUY" : ofiWeighted < -OFI_IMBALANCE_THRESHOLD ? "SELL" : "NEUTRAL",
-        ticksAnalyzed: total,
+        buyPct: Math.round(tracker.ewmaBuyPct * 100),
+        sellPct: Math.round(tracker.ewmaSellPct * 100),
+        bias: ofiNorm > OFI_IMBALANCE_THRESHOLD ? "BUY" : ofiNorm < -OFI_IMBALANCE_THRESHOLD ? "SELL" : "NEUTRAL",
+        ticksAnalyzed: tracker.tickCount,
         syntheticDepth: depth,
         kramersMoyal: {
-          drift: Math.round(km.drift * 1e8) / 1e8,
-          diffusion: Math.round(km.diffusion * 1e12) / 1e12,
-          driftNormalized: Math.round(km.driftNormalized * 1000) / 1000,
-          sampleSize: km.sampleSize,
+          D1: Math.round(tracker.D1 * 1e8) / 1e8,
+          D2: Math.round(tracker.D2 * 1e12) / 1e12,
+          driftNormalized: Math.round(driftNorm * 1000) / 1000,
+          alpha: tracker.alpha,
+          sampleSize: tracker.tickCount,
         },
+        efficiency: Math.round(efficiency * 1000) / 1000,
+        marketState,
         hiddenPlayer: hidden.detected ? {
           type: hidden.type,
           force: hidden.force,
           velocity: hidden.velocity,
           divergence: hidden.divergence,
+          efficiency: hidden.efficiency,
+          marketState: hidden.marketState,
           recommendation: hidden.recommendation,
         } : null,
         resistanceLevels: srLevels.slice(0, 5),
       };
     }
 
-    // Persist enhanced synthetic book for dashboard & sovereign loop
+    // Persist O(1) recursive synthetic book
     if (Object.keys(ofiSnapshot).length > 0) {
       await supabase.from("sovereign_memory").upsert({
         memory_type: "ofi_synthetic_book",
         memory_key: "latest_snapshot",
         payload: {
-          version: "v2-senior-ops",
+          version: "v3-zero-lag-recursive",
           pairs: ofiSnapshot,
           pairsCount: Object.keys(ofiSnapshot).length,
           hiddenPlayerAlerts,
+          absorbingPairs,
+          slippingPairs,
           ticksProcessed: tickCount,
           streamDurationMs: Date.now() - startTime,
           timestamp: new Date().toISOString(),
-          capabilities: ["velocity_weighted_ofi", "displacement_weighted", "price_level_persistence", "kramers_moyal_drift", "hidden_limit_detection", "tick_density_sr"],
+          architecture: "O(1)_recursive_ewma",
+          decayFactors: { kmAlpha: KM_ALPHA_DEFAULT, ofiGamma: OFI_GAMMA_DEFAULT },
+          capabilities: [
+            "recursive_kramers_moyal", "recursive_velocity_displacement_ofi",
+            "efficiency_ratio_E", "market_state_classification",
+            "hidden_limit_detection", "price_level_persistence", "tick_density_sr",
+          ],
         },
         relevance_score: hiddenPlayerAlerts > 0 ? 1.0 : 0.8,
-        created_by: "ripple-stream-ofi-v2",
+        created_by: "ripple-stream-ofi-v3-recursive",
       }, { onConflict: "memory_type,memory_key" });
     }
 
     const totalMs = Date.now() - startTime;
-    console.log(`[STRIKE-v4] 📊 Session: ${totalMs}ms, ${tickCount} ticks | Z-Score: ${zScoreFires.length} | Velocity: ${velocityFires.length} | Snap-Back: ${snapbackFires.length} | OFI-v2: ${Object.keys(ofiSnapshot).length} pairs | Hidden Players: ${hiddenPlayerAlerts}`);
+    console.log(`[STRIKE-v4] 📊 Session: ${totalMs}ms, ${tickCount} ticks | Z-Score: ${zScoreFires.length} | Velocity: ${velocityFires.length} | Snap-Back: ${snapbackFires.length} | OFI-v3: ${Object.keys(ofiSnapshot).length} pairs | Hidden: ${hiddenPlayerAlerts} | Absorbing: ${absorbingPairs} | Slipping: ${slippingPairs}`);
 
     return new Response(
       JSON.stringify({
         success: true,
-        version: "v4-senior-ops-synthetic-book",
+        version: "v4-zero-lag-recursive-book",
         streamDurationMs: totalMs,
         ticksProcessed: tickCount,
         zscore: { fired: zScoreFires.length, pairs: zScoreFires, groups: correlationGroups.length, threshold: zScoreThreshold },
         velocity: { fired: velocityFires.length, pairs: velocityFires, monitored: velocityPairs.length },
         snapback: { fired: snapbackFires.length, pairs: snapbackFires, monitored: snapbackPairs.length },
         syntheticBook: {
-          version: "v2-senior-ops",
+          version: "v3-zero-lag-recursive",
+          architecture: "O(1)_recursive_ewma",
           pairsTracked: Object.keys(ofiSnapshot).length,
           hiddenPlayerAlerts,
-          capabilities: ["velocity_weighted_ofi", "displacement_weighted", "price_level_persistence", "kramers_moyal_drift", "hidden_limit_detection", "tick_density_sr"],
+          absorbingPairs,
+          slippingPairs,
+          capabilities: [
+            "recursive_kramers_moyal", "recursive_velocity_displacement_ofi",
+            "efficiency_ratio_E", "market_state_classification",
+            "hidden_limit_detection", "price_level_persistence",
+          ],
           snapshot: ofiSnapshot,
         },
         slippageAudit: slippageSummary,
@@ -1327,7 +1400,7 @@ Deno.serve(async (req) => {
       { headers: { ...corsHeaders, "Content-Type": "application/json" } },
     );
   } catch (err) {
-    console.error("[STRIKE-v3] Error:", err);
+    console.error("[STRIKE-v4] Error:", err);
     return new Response(
       JSON.stringify({ success: false, error: (err as Error).message }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
