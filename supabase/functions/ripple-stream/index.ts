@@ -636,6 +636,9 @@ const PREDATOR_VPIN_MIN = 0.45;         // VPIN validation: must be >= 0.45 for 
 const PREDATOR_VPIN_GHOST_MAX = 0.20;   // VPIN < 0.20 = "Ghost Move" = retail-driven, block
 const PREDATOR_KM_DRIFT_MIN = 0.50;     // KM Drift minimum: no escape velocity = stay flat
 const PREDATOR_WALL_OFFSET_PIPS = 0.3;  // Stop-Limit placed 0.3 pips BEYOND the wall
+// Market Order Override: Only slap the ask if the Tsunami is confirmed beyond doubt
+const PREDATOR_MARKET_OVERRIDE_EFFICIENCY = 7.0;  // E > 7.0 = extreme vacuum
+const PREDATOR_MARKET_OVERRIDE_VPIN = 0.65;        // VPIN > 0.65 = heavy institutional flow
 // Exit Protocol:
 const PREDATOR_EXIT_HURST_MIN = 0.45;   // Close if Hurst drops below 0.45
 const PREDATOR_EXIT_WEIGHTING_THRESHOLD = 49; // Close if Buy/Sell weighting hits 49%
@@ -1213,6 +1216,19 @@ Deno.serve(async (req) => {
                     }
                   }
 
+                  // ─── Z-OFI SLAM EXIT: Abnormal counter-flow = "House on Fire" ───
+                  // If Z-OFI spikes hard AGAINST the trade direction, exit immediately.
+                  // Long + Z-OFI < -2.5 = massive sell pressure slam
+                  // Short + Z-OFI > 2.5 = massive buy pressure slam
+                  if (!exitReason) {
+                    const isLong = openTrade.direction === "long";
+                    const zOfiSlam = isLong
+                      ? exitTracker.zOfi < -2.5
+                      : exitTracker.zOfi > 2.5;
+                    if (zOfiSlam) {
+                      exitReason = `ZOFI_SLAM_EXIT: Z-OFI=${exitTracker.zOfi.toFixed(2)} — massive counter-flow detected, house on fire`;
+                    }
+                  }
                   // ═══ WHALE-SHADOW TRAIL v2: 3-Tier Stop Strategy ═══
                   //
                   // 🟢 LONG "Shield": Find largest Net×Hits buy-limit cluster between price and -3 pips.
@@ -1326,8 +1342,13 @@ Deno.serve(async (req) => {
                     }
                   }
 
+                  // ─── MARKET ORDER MATRIX: Exit Protocol ───
+                  // ALL emergency exits use MARKET close (PUT /trades/{id}/close).
+                  // Senior Ops Protocol: NEVER use Limit Orders for exits.
+                  // In a "House on Fire" (Hurst collapse, Z-OFI Slam, Flow Exit),
+                  // you pay 0.1 pip slippage to guarantee you keep the other 5 pips of profit.
                   if (exitReason && LIVE_ENABLED === "true") {
-                    console.log(`[PREDATOR_EXIT] 🚪 ${instrument} ${openTrade.direction} trade ${openTrade.oanda_trade_id}: ${exitReason}`);
+                    console.log(`[PREDATOR_EXIT] 🚪 MARKET CLOSE: ${instrument} ${openTrade.direction} trade ${openTrade.oanda_trade_id}: ${exitReason}`);
                     try {
                       const closeRes = await fetch(
                         `${OANDA_API}/accounts/${OANDA_ACCOUNT}/trades/${openTrade.oanda_trade_id}/close`,
@@ -1560,10 +1581,19 @@ Deno.serve(async (req) => {
                 }
               }
 
-              const orderType: "MARKET" | "LIMIT" = wallPrice ? "LIMIT" : "MARKET";
-              const limitEntryPrice = wallPrice
+              // ─── MARKET ORDER MATRIX: Entry Protocol ───
+              // DEFAULT: Stop-Limit 0.3p beyond the wall (avoid negative slippage in Slipping regime)
+              // OVERRIDE: Raw Market Order ONLY if Efficiency > 7.0 AND VPIN > 0.65
+              //           → Tsunami confirmed: if you don't "slap the ask" now, you miss the entire move
+              const tsunamiOverride = tradeOfi.efficiency > PREDATOR_MARKET_OVERRIDE_EFFICIENCY
+                && tradeOfi.vpin > PREDATOR_MARKET_OVERRIDE_VPIN;
+              const orderType: "MARKET" | "LIMIT" = tsunamiOverride ? "MARKET" : (wallPrice ? "LIMIT" : "MARKET");
+              const limitEntryPrice = (!tsunamiOverride && wallPrice)
                 ? (tradeDirection === "long" ? wallPrice + wallOffset : wallPrice - wallOffset)
                 : undefined;
+              if (tsunamiOverride) {
+                console.log(`[PREDATOR] 🌊 TSUNAMI OVERRIDE: ${tradePair} E=${tradeOfi.efficiency.toFixed(1)} VPIN=${tradeOfi.vpin} → MARKET ORDER (slap the ask)`);
+              }
 
               console.log(`[PREDATOR] 🎯 FIRE: ${tradeDirection.toUpperCase()} ${baseUnits} ${tradePair} | z=${z.toFixed(2)} | H=${tradeOfi.hurst} E=${tradeOfi.efficiency} OFI_R=${ofiRatioTrade.toFixed(2)} VPIN=${tradeOfi.vpin} | Buy%=${tradeOfi.buyPressure} Sell%=${tradeOfi.sellPressure} | |D1n|=${Math.abs(tradeOfi.km.driftNormalized).toFixed(2)} | Wall=${wallPrice?.toFixed(tradePair.includes("JPY") ? 3 : 5) ?? "NONE"} → ${orderType} | group=${group.name} | tick #${tickCount}`);
 
