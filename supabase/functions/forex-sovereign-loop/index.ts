@@ -1495,19 +1495,21 @@ async function deterministicGovernance(supabase: any, dataPayload: any): Promise
     }
 
     // Rule C: Hidden Player (Iceberg Absorption) — close if against us
-    if (physics?.marketState === "ABSORBING" && physics?.hiddenPlayer?.force > 0.5) {
+    // BUG FIX: ripple-stream emits "HIDDEN_LIMIT_SELLER" / "HIDDEN_LIMIT_BUYER" (full string).
+    // Previous check for "SELLER" / "BUYER" (partial) never matched — iceberg exits never fired.
+    if (physics?.marketState === "ABSORBING" && Math.abs(physics?.hiddenPlayer?.force || 0) > 0.5) {
       const direction = parseInt(trade.currentUnits) > 0 ? "long" : "short";
-      const hpType = physics.hiddenPlayer.type;
+      const hpType: string = physics.hiddenPlayer?.type || "";
       if (
-        (direction === "long" && hpType === "SELLER") ||
-        (direction === "short" && hpType === "BUYER")
+        (direction === "long" && hpType === "HIDDEN_LIMIT_SELLER") ||
+        (direction === "short" && hpType === "HIDDEN_LIMIT_BUYER")
       ) {
         actions.push({
           type: "close_trade",
           oanda_trade_id: tradeId,
-          reason: `DGE: Hidden ${hpType} absorbing against ${direction} on ${pair} (force=${physics.hiddenPlayer.force.toFixed(2)})`,
+          reason: `DGE: ${hpType} absorbing against ${direction} on ${pair} (force=${physics.hiddenPlayer.force.toFixed(2)})`,
         });
-        notes.push(`CLOSE ${pair}: Hidden ${hpType} vs ${direction}`);
+        notes.push(`CLOSE ${pair}: ${hpType} vs ${direction}`);
         continue;
       }
     }
