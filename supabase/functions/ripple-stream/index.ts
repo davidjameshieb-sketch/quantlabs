@@ -649,22 +649,26 @@ const ZSCORE_EXIT_TARGET = 0.0;     // mean reversion target
 const ZSCORE_COOLDOWN_MS = 300_000; // 5 MINUTES between fires on same group (was 10s — caused triple-taps)
 
 // ═══ DAVID & ATLAS — TUNNEL GATE THRESHOLDS ═══
-// 4/4 GATES OPEN = Enter / Hold  (Tunnel is active, institutional consensus is absolute)
-// Any gate drops to 3/4 = Mandatory MarketClose() — Tunnel collapsed.
+// CLIMAX-ONLY ENTRY MODE: Trades only fire when the War Room card is in CLIMAX state.
+// CLIMAX = E ≥ 7.0 AND VPIN ≥ 0.65 — extreme institutional conviction.
+// This matches the War Room UI "glow" exactly — if the card isn't glowing gold, no trade fires.
 //
-// GATE 1: HURST   — H ≥ 0.62 (persistent regime — move will travel)
-// GATE 2: EFFICIENCY — E ≥ 2.0 (structural vacuum — price moving with minimal resistance)
-// GATE 3: Z-OFI   — |Z| ≥ 1.0σ + direction check (statistical abnormality confirmed)
-// GATE 4: VPIN    — VPIN ≥ 0.40 (informed institutional flow, not retail noise)
+// GATE 1: HURST      — H ≥ 0.62  (persistent regime — move will travel)
+// GATE 2: EFFICIENCY — E ≥ 7.0   (CLIMAX structural vacuum — was 2.0)
+// GATE 3: Z-OFI      — |Z| ≥ 1.0σ + direction check (statistical abnormality confirmed)
+// GATE 4: VPIN       — VPIN ≥ 0.65 (CLIMAX institutional conviction — was 0.40)
 //
 // DIRECTION: Z-OFI > 0 = LONG. Z-OFI < 0 = SHORT. No ambiguity.
-// NO STOP LOSS. NO TAKE PROFIT. The 3/4 gate drop IS the only exit authority.
+// EXIT: Standard 3/4 gate drop (E drops below 2.0 OR VPIN drops below 0.40) = tunnel collapsed.
 
-const DA_HURST_MIN = 0.62;          // Gate 1: Persistent regime
-const DA_EFFICIENCY_MIN = 2.0;       // Gate 2: Structural vacuum
-const DA_ZOFI_MIN = 1.0;             // Gate 3: |Z-OFI| ≥ 1.0σ (directional intent confirmed)
-const DA_VPIN_MIN = 0.40;            // Gate 4: Institutional flow (not ghost/retail)
-const DA_VPIN_GHOST_MAX = 0.15;      // Ghost move block: VPIN < 0.15 = retail-driven, never enter
+const DA_HURST_MIN = 0.62;          // Gate 1: Persistent regime (unchanged)
+const DA_EFFICIENCY_MIN = 7.0;       // Gate 2: CLIMAX entry — extreme vacuum (raised from 2.0)
+const DA_ZOFI_MIN = 1.0;             // Gate 3: |Z-OFI| ≥ 1.0σ (unchanged)
+const DA_VPIN_MIN = 0.65;            // Gate 4: CLIMAX entry — deep institutional flow (raised from 0.40)
+const DA_VPIN_GHOST_MAX = 0.15;      // Ghost move block: VPIN < 0.15 = retail noise, never enter
+// Exit gates: standard thresholds — tunnel collapses as soon as conviction fades
+const DA_EXIT_EFFICIENCY_MIN = 2.0;  // Exit: any efficiency fade below 2.0 = flush
+const DA_EXIT_VPIN_MIN = 0.40;       // Exit: any VPIN retreat below 0.40 = flush
 
 // Rule of 2: Require 2 consecutive 4/4-gate ticks before entry (anti-noise, anti-lag)
 const DA_RULE_OF_2 = 2;
@@ -877,7 +881,7 @@ Deno.serve(async (req) => {
       );
     }
 
-    console.log(`[DAVID-ATLAS] ⚡ Tunnel Engine v2 | ${instruments.size} pairs | Hurst≥${DA_HURST_MIN} Eff≥${DA_EFFICIENCY_MIN} |Z-OFI|≥${DA_ZOFI_MIN} VPIN≥${DA_VPIN_MIN} | Rule-of-2`);
+    console.log(`[DAVID-ATLAS] ⚡ Tunnel Engine v2 CLIMAX-ONLY | ${instruments.size} pairs | Hurst≥${DA_HURST_MIN} Eff≥${DA_EFFICIENCY_MIN}(entry)/≥${DA_EXIT_EFFICIENCY_MIN}(exit) |Z-OFI|≥${DA_ZOFI_MIN} VPIN≥${DA_VPIN_MIN}(entry)/≥${DA_EXIT_VPIN_MIN}(exit) | Rule-of-2`);
 
     // ─── 4. Open OANDA stream ───
     const instrumentList = Array.from(instruments).join(",");
@@ -1325,11 +1329,11 @@ Deno.serve(async (req) => {
                     // Determine direction-aligned Z-OFI gate
                       const zOfiAligned = isLong ? (zOfiExit >= DA_ZOFI_MIN) : (zOfiExit <= -DA_ZOFI_MIN);
 
-                      // Evaluate all 4 gates (same thresholds as entry)
+                      // Exit uses standard thresholds (not CLIMAX) — tunnel collapses as soon as conviction fades
                       const gate1Hurst = exitTracker.hurst >= DA_HURST_MIN;
-                      const gate2Efficiency = efficiencyExit >= DA_EFFICIENCY_MIN;
+                      const gate2Efficiency = efficiencyExit >= DA_EXIT_EFFICIENCY_MIN;  // 2.0 not 7.0
                       const gate3ZOfi = zOfiAligned;
-                      const gate4Vpin = exitTracker.vpinRecursive >= DA_VPIN_MIN;
+                      const gate4Vpin = exitTracker.vpinRecursive >= DA_EXIT_VPIN_MIN;   // 0.40 not 0.65
 
                       const gatesOpen = [gate1Hurst, gate2Efficiency, gate3ZOfi, gate4Vpin].filter(Boolean).length;
 
@@ -1337,9 +1341,9 @@ Deno.serve(async (req) => {
                         // TUNNEL COLLAPSED — mandatory MarketClose()
                         const failedGates = [
                           !gate1Hurst ? `HURST(${exitTracker.hurst.toFixed(3)}<${DA_HURST_MIN})` : null,
-                          !gate2Efficiency ? `EFF(${efficiencyExit.toFixed(2)}<${DA_EFFICIENCY_MIN})` : null,
+                          !gate2Efficiency ? `EFF(${efficiencyExit.toFixed(2)}<${DA_EXIT_EFFICIENCY_MIN})` : null,
                           !gate3ZOfi ? `ZOFI(${zOfiExit.toFixed(2)} not ${isLong ? "≥" : "≤"}${isLong ? DA_ZOFI_MIN : -DA_ZOFI_MIN})` : null,
-                          !gate4Vpin ? `VPIN(${exitTracker.vpinRecursive.toFixed(3)}<${DA_VPIN_MIN})` : null,
+                          !gate4Vpin ? `VPIN(${exitTracker.vpinRecursive.toFixed(3)}<${DA_EXIT_VPIN_MIN})` : null,
                         ].filter(Boolean).join(" | ");
 
                         const flushReason = `3/4_GATE_FLUSH: ${gatesOpen}/4 gates open. Failed: ${failedGates}`;
