@@ -952,6 +952,10 @@ Deno.serve(async (req) => {
     const startTime = Date.now();
     let tickCount = 0;
     let lastExitScanTs = 0;
+    // BUG FIX #5: exitTradeMap loaded once at session start — stale if another engine closes a trade.
+    // Track last refresh time and refresh from OANDA live trades every 30s to stay in sync.
+    let lastExitMapRefreshTs = Date.now();
+    const EXIT_MAP_REFRESH_INTERVAL_MS = 30_000; // refresh open-trade map from OANDA every 30s
     const EXIT_SCAN_INTERVAL_MS = 500; // Every 500ms — high-precision tunnel gate monitoring
 
     const reader = streamRes.body.getReader();
@@ -1118,6 +1122,10 @@ Deno.serve(async (req) => {
     ): Promise<void> {
       if (LIVE_ENABLED !== "true") return;
       // ─── Close In-Flight Guard: prevents TRADE_DOESNT_EXIST broker spam ───
+      // BUG FIX #2: closeInFlight was never cleared after a successful close.
+      // If OANDA re-uses a trade ID or another engine closes the trade and exitTradeMap
+      // becomes stale, the guard would permanently block any future flush of that ID.
+      // Fix: only add to closeInFlight BEFORE the request; remove on success or confirmed-missing failure.
       const tradeKey = openTrade.oanda_trade_id || openTrade.id;
       if (closeInFlight.has(tradeKey)) {
         console.log(`[DAVID-ATLAS] ⏭ CLOSE GUARD: ${instrument} close already in-flight (${tradeKey}) — skipping duplicate flush`);
@@ -1134,19 +1142,43 @@ Deno.serve(async (req) => {
           const closeData = await closeRes.json();
           const exitPrice = parseFloat(closeData.orderFillTransaction?.price || "0");
           tunnelExits.push(`${instrument}:${reason}`);
+          // BUG FIX #3: openTrade.id was seeded as the OANDA trade ID (daResult.tradeId)
+          // when registering in exitTradeMap on new entry — not the DB row UUID.
+          // Fix: update by oanda_trade_id (which is always correct) rather than id.
           await supabase.from("oanda_orders").update({
             exit_price: exitPrice,
             status: "closed",
             closed_at: new Date().toISOString(),
             health_governance_action: `TUNNEL_FLUSH: ${reason}`,
-          }).eq("id", openTrade.id);
+          }).eq("oanda_trade_id", openTrade.oanda_trade_id);
           exitTradeMap.delete(instrument);
+          // BUG FIX #2 cont: clear the in-flight lock after success so re-opens work
+          closeInFlight.delete(tradeKey);
           console.log(`[DAVID-ATLAS] ✅ TUNNEL CLOSED ${instrument} @ ${exitPrice} | ${reason}`);
         } else {
-          const err = await closeRes.json();
-          console.warn(`[DAVID-ATLAS] ⚠️ Close failed ${instrument}: ${JSON.stringify(err)}`);
+          const errData = await closeRes.json();
+          const rejectReason = errData?.orderRejectTransaction?.rejectReason || "";
+          // BUG FIX #5: If trade no longer exists on broker (closed externally), treat as already closed:
+          // remove from exitTradeMap and clear the in-flight guard so we don't loop forever.
+          if (rejectReason === "TRADE_DOESNT_EXIST") {
+            console.warn(`[DAVID-ATLAS] ⚠️ ${instrument} (${tradeKey}) no longer exists on OANDA — removing from exitTradeMap (closed externally)`);
+            exitTradeMap.delete(instrument);
+            closeInFlight.delete(tradeKey);
+            // Mark DB record closed with no exit price (unknown — was closed externally)
+            await supabase.from("oanda_orders").update({
+              status: "closed",
+              closed_at: new Date().toISOString(),
+              health_governance_action: `CLOSED_EXTERNALLY: ${reason}`,
+            }).eq("oanda_trade_id", openTrade.oanda_trade_id).eq("status", "filled");
+          } else {
+            // Other failure: release in-flight lock so next scan can retry
+            closeInFlight.delete(tradeKey);
+            console.warn(`[DAVID-ATLAS] ⚠️ Close failed ${instrument}: ${JSON.stringify(errData)}`);
+          }
         }
       } catch (err) {
+        // Network/runtime error: always release the in-flight lock so next scan retries
+        closeInFlight.delete(tradeKey);
         console.error(`[DAVID-ATLAS] ❌ Close error ${instrument}:`, err);
       }
     }
@@ -1211,6 +1243,41 @@ Deno.serve(async (req) => {
             // ═══════════════════════════════════════════════
             if (tickTs - lastExitScanTs >= EXIT_SCAN_INTERVAL_MS) {
               lastExitScanTs = tickTs;
+
+              // BUG FIX #5: Periodically re-sync exitTradeMap from OANDA live trades.
+              // Another engine (forex-trade-monitor, sovereign-loop) may have closed a trade externally.
+              // Without this refresh, exitTradeMap is stale for the entire 110s session → infinite
+              // TRADE_DOESNT_EXIST loops and the closeInFlight guard permanently locking that trade key.
+              if (tickTs - lastExitMapRefreshTs >= EXIT_MAP_REFRESH_INTERVAL_MS) {
+                lastExitMapRefreshTs = tickTs;
+                try {
+                  const liveTradesRes = await fetch(
+                    `${OANDA_API}/accounts/${OANDA_ACCOUNT}/openTrades`,
+                    { headers: { Authorization: `Bearer ${OANDA_TOKEN}` } },
+                  );
+                  if (liveTradesRes.ok) {
+                    const liveTradesData = await liveTradesRes.json();
+                    const liveOandaIds = new Set((liveTradesData.trades || []).map((t: any) => t.id));
+                    // Remove any exitTradeMap entry whose OANDA trade is no longer open
+                    for (const [pair, trade] of exitTradeMap.entries()) {
+                      if (trade.oanda_trade_id && !liveOandaIds.has(trade.oanda_trade_id)) {
+                        console.log(`[DAVID-ATLAS] 🔄 REFRESH: ${pair} (${trade.oanda_trade_id}) no longer open on OANDA — removing from exitTradeMap`);
+                        exitTradeMap.delete(pair);
+                        closeInFlight.delete(trade.oanda_trade_id);
+                        // Mark DB closed if still showing filled
+                        await supabase.from("oanda_orders").update({
+                          status: "closed",
+                          closed_at: new Date().toISOString(),
+                          health_governance_action: "CLOSED_EXTERNALLY:refresh_sync",
+                        }).eq("oanda_trade_id", trade.oanda_trade_id).eq("status", "filled");
+                      }
+                    }
+                  }
+                } catch (refreshErr) {
+                  console.warn(`[DAVID-ATLAS] ⚠️ exitTradeMap refresh failed (non-critical):`, refreshErr);
+                }
+              }
+
               const openTrade = exitTradeMap.get(instrument);
               if (openTrade && openTrade.oanda_trade_id) {
                 const exitTracker = getOrCreateOfi(instrument);
@@ -1223,9 +1290,11 @@ Deno.serve(async (req) => {
                   // ─── PRIORITY-0 INTERRUPT: Z-OFI Zero-Cross ───
                   // BYPASSES MIN_HOLD — fires immediately regardless of trade age.
                   // Institutional intent has FLIPPED. Tunnel collapsed. Mandatory P0 flush.
+                  // BUG FIX #4: z=0.000 is neutral noise, not a reversal.
+                  // Require meaningful cross: long flushes only if Z < -0.1, short only if Z > +0.1.
                   const zOfiExitP0 = exitTracker.zOfi;
                   const isLongP0 = openTrade.direction === "long";
-                  const zOfiZeroCrossP0 = isLongP0 ? (zOfiExitP0 <= 0) : (zOfiExitP0 >= 0);
+                  const zOfiZeroCrossP0 = isLongP0 ? (zOfiExitP0 < -0.1) : (zOfiExitP0 > 0.1);
                   if (zOfiZeroCrossP0 && exitTracker.tickCount >= 20) {
                     const p0Reason = `Z-OFI_ZERO_CROSS (P0): Z=${zOfiExitP0.toFixed(3)} crossed zero — institutional intent reversed. Mandatory P0 flush.`;
                     console.log(`[DAVID-ATLAS] ⚡ ZERO-CROSS P0 EXIT (bypassing MIN_HOLD): ${instrument} | ${p0Reason}`);
@@ -1319,12 +1388,14 @@ Deno.serve(async (req) => {
               }
 
               // ─── Compute physics ───
+              // BUG FIX #1: Entry scanner used d1PipVelDA = absD1DA * pipMultDA in denominator,
+              // making formula: ofiScaled / (absD1 * pipMult²) — off by pipMult² (1e8 for non-JPY!).
+              // Correct formula: E = (absOfi / pipMult) / (absD1 + ε) — same as exit scanner & processOfiTick.
               const pipMultDA = tradePair.includes("JPY") ? 100 : 10000;
               const absD1DA = Math.abs(daTracker.D1);
               const absOfiDA = Math.abs(daTracker.ofiRecursive);
-              const ofiScaledDA = absOfiDA / pipMultDA;
-              const d1PipVelDA = absD1DA * pipMultDA;
-              const efficiencyDA = ofiScaledDA / (d1PipVelDA + EFFICIENCY_EPSILON);
+              const ofiScaledDA = absOfiDA / pipMultDA;   // price·tps units (matches exit scanner)
+              const efficiencyDA = ofiScaledDA / (absD1DA + EFFICIENCY_EPSILON);
 
               // ─── GATE 1: HURST ≥ 0.62 ───
               if (daTracker.hurst < DA_HURST_MIN) {
