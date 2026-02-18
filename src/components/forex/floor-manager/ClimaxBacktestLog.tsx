@@ -221,6 +221,45 @@ function useClimaxEvents() {
   return { events, loading };
 }
 
+// ── Gate Legend ──────────────────────────────────────────────────────────────
+
+function GateLegend() {
+  return (
+    <div className="border border-border/30 rounded-md p-3 bg-muted/10 space-y-2">
+      <div className="flex items-center gap-2 text-[10px] font-semibold text-foreground">
+        <div className="w-2 h-2 rounded-full bg-yellow-400" />
+        Climax Protocol v2.0 — Entry requires ALL 4 gates:
+      </div>
+      <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[9px] font-mono">
+        <div className="flex items-center gap-1.5">
+          <div className="w-1.5 h-1.5 rounded-full bg-[hsl(var(--neural-green))]" />
+          <span className="text-muted-foreground">Efficiency</span>
+          <span className="text-foreground font-bold">≥ 7x</span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <div className="w-1.5 h-1.5 rounded-full bg-[hsl(var(--neural-cyan))]" />
+          <span className="text-muted-foreground">Hurst</span>
+          <span className="text-foreground font-bold">≥ 0.62</span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <div className="w-1.5 h-1.5 rounded-full bg-yellow-400" />
+          <span className="text-muted-foreground">Z-OFI</span>
+          <span className="text-foreground font-bold">&gt; 2.5σ</span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <div className="w-1.5 h-1.5 rounded-full bg-[hsl(var(--neural-red))]" />
+          <span className="text-muted-foreground">VPIN</span>
+          <span className="text-foreground font-bold">&gt; 0.60</span>
+        </div>
+      </div>
+      <div className="border-t border-border/20 pt-2 space-y-1 text-[9px] font-mono text-muted-foreground">
+        <p><span className="text-[hsl(var(--neural-cyan))] font-bold">⚡ LIVE</span> = Trade currently open at broker (no exit price yet).</p>
+        <p><span className="text-yellow-400 font-bold">⚠ NOTE:</span> Gate values (Efficiency, Hurst, Z-OFI, VPIN) are not stored per-trade in the database — trades are filtered by <span className="text-foreground">david-atlas engine</span> only. To verify gate thresholds were met at entry, cross-reference with sovereign_memory physics snapshots.</p>
+      </div>
+    </div>
+  );
+}
+
 // ── Main Component ───────────────────────────────────────────────────────────
 
 export function ClimaxBacktestLog() {
@@ -244,6 +283,9 @@ export function ClimaxBacktestLog() {
 
   return (
     <div className="space-y-4">
+      {/* ── Gate Legend & Definitions ── */}
+      <GateLegend />
+
       {/* ── Momentum Heatmap ── */}
       <Card className="border-border/30 bg-card/50 p-4 space-y-3">
         <div className="flex items-center justify-between">
