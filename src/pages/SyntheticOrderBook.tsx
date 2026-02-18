@@ -480,17 +480,17 @@ function TacticalUnit({ pair, data, activeTrade }: { pair: string; data: PairPhy
   const tacticalClass = {
     CLIMAX:       'tactical-climax',
     ACTIVE:       'tactical-active',
-    STRIKE_READY: 'tactical-strike-ready',
+    STRIKE_READY: '', // no pulse — not yet a real signal
     FATIGUE:      'tactical-fatigue',
     SCANNING:     '',
   }[state];
 
   const stateMeta = {
-    CLIMAX:       { label: 'CLIMAX',       color: 'text-yellow-300', bg: 'bg-yellow-500/10 border-yellow-500/30' },
-    ACTIVE:       { label: 'ACTIVE TRADE', color: 'text-yellow-400', bg: 'bg-yellow-500/10 border-yellow-500/30' },
-    STRIKE_READY: { label: 'STRIKE READY', color: 'text-amber-300',  bg: 'bg-amber-500/10 border-amber-500/30' },
-    FATIGUE:      { label: 'FATIGUE',      color: 'text-red-400',    bg: 'bg-red-900/20 border-red-800/40' },
-    SCANNING:     { label: 'SCANNING',     color: 'text-muted-foreground', bg: 'bg-muted/20 border-border/20' },
+    CLIMAX:       { label: 'CLIMAX',         color: 'text-yellow-300', bg: 'bg-yellow-500/10 border-yellow-500/30' },
+    ACTIVE:       { label: 'ACTIVE TRADE',   color: 'text-yellow-400', bg: 'bg-yellow-500/10 border-yellow-500/30' },
+    STRIKE_READY: { label: 'WARMING UP',     color: 'text-blue-400',   bg: 'bg-blue-500/10 border-blue-500/20' },
+    FATIGUE:      { label: 'FATIGUE',        color: 'text-red-400',    bg: 'bg-red-900/20 border-red-800/40' },
+    SCANNING:     { label: 'SCANNING',       color: 'text-muted-foreground', bg: 'bg-muted/20 border-border/20' },
   }[state];
 
   const leadIndicator = getLeadIndicator(p);
