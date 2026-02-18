@@ -59,6 +59,7 @@ export interface ActiveTrade {
   direction: string;
   status: string;
   created_at: string;
+  closed_at: string | null;
   entry_price: number | null;
   units: number;
   direction_engine: string | null;
@@ -87,10 +88,12 @@ export function useSyntheticOrderBook(pollMs = 3_000) {
   }, []);
 
   const fetchActiveTrades = useCallback(async () => {
+    // The engine writes 'filled' for active trades (not 'open'). Also include
+    // recently-closed trades so the flash persists briefly on-screen.
     const { data } = await supabase
       .from('oanda_orders')
-      .select('id, currency_pair, direction, status, created_at, entry_price, units, direction_engine')
-      .eq('status', 'open')
+      .select('id, currency_pair, direction, status, created_at, entry_price, units, direction_engine, closed_at')
+      .in('status', ['filled', 'pending', 'open'])
       .eq('environment', 'live')
       .order('created_at', { ascending: false });
     setActiveTrades(data || []);
