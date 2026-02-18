@@ -995,7 +995,9 @@ Deno.serve(async (req) => {
       requestedUnits: number,
       currentPrice: { mid: number; spreadPips: number },
     ): Promise<{ success: boolean; tradeId?: string; fillPrice?: number; slippage?: number }> {
-      if (LIVE_ENABLED !== "true") {
+      // Practice mode always allowed. LIVE_ENABLED gate only applies to live account.
+      const isPractice = OANDA_API.includes("fxpractice");
+      if (!isPractice && LIVE_ENABLED !== "true") {
         console.log(`[DAVID-ATLAS] 🔇 Would fire ${direction} ${requestedUnits} ${pair} — LIVE DISABLED`);
         return { success: false };
       }
@@ -1139,7 +1141,9 @@ Deno.serve(async (req) => {
       instrument: string,
       reason: string,
     ): Promise<void> {
-      if (LIVE_ENABLED !== "true") return;
+      // Practice mode always allowed to close. Gate only blocks live.
+      const isPracticeClose = OANDA_API.includes("fxpractice");
+      if (!isPracticeClose && LIVE_ENABLED !== "true") return;
       // ─── Close In-Flight Guard: prevents TRADE_DOESNT_EXIST broker spam ───
       // BUG FIX #2: closeInFlight was never cleared after a successful close.
       // If OANDA re-uses a trade ID or another engine closes the trade and exitTradeMap
