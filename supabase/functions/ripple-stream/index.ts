@@ -1,31 +1,27 @@
-// Ripple Stream Engine v6 — Lean 6 Zero-Lag Protocol
-// The Committee is dead. Long live the Frontline Soldiers.
+// ═══════════════════════════════════════════════════════════════
+// DAVID & ATLAS — Zero-Stop Tunnel Strategy v1.0
+// Sole active strategy. All other strategies deactivated.
 //
-// SENIOR OPS SYNTHETIC ORDER BOOK (100% O(1) recursive):
-//   - Adaptive Z-OFI (Welford's): Z-score of OFI auto-adjusts per session dynamics
+// THE TUNNEL PROTOCOL:
+//   Entry  : 4/4 Gate Active State — Hurst, Efficiency, VPIN, Z-OFI all green.
+//            Direction locked by leading Z-OFI (positive = LONG, negative = SHORT).
+//   Hold   : No stop loss. No take profit. Draft the Whale.
+//            Physical probability of continuation is at statistical maximum while
+//            4/4 gates remain active.
+//   Exit   : Mandatory MarketClose() the INSTANT any gate drops → 3/4.
+//            Institutional consensus has evaporated. Tunnel has collapsed.
+//            Exit is mandatory whether trade is in profit or loss.
+//
+// SYNTHETIC ORDER BOOK (O(1) recursive physics engine — unchanged):
+//   - Adaptive Z-OFI (Welford's): Z-score of OFI, fires at |Z| > 2.0
 //   - Adaptive KM Windowing ("Gear Shift"): α adapts to D2 noise level
-//   - Fast Hurst Exponent (Hall-Wood): O(1) regime classification (trend vs mean-rev)
-//   - Velocity+Displacement Weighted OFI: recursive, no arrays
-//   - Kramers-Moyal Drift/Diffusion: recursive D1/D2
-//   - Recursive VPIN (EWMA): O(1) toxicity — no bucket scans
-//   - Efficiency Ratio E = |OFI|/(|D1|+ε): LIQUID/ABSORBING/SLIPPING
-//   - Hidden Limit Player Detection via E ratio
-//   - Price-Level Persistence: tick-density S/R
+//   - Fast Hurst Exponent (Hall-Wood): O(1) regime classification
+//   - Recursive VPIN (EWMA): O(1) toxicity — institutional participation check
+//   - Efficiency Ratio E = |OFI|/(|D1|+ε): classifies market state
+//   - Price-Level Persistence: tick-density S/R map
 //
-// LEAN 6 ZERO-LAG GATE PIPELINE (all O(1) float comparisons):
-//   1. SIGNAL    — Z-Score > threshold (something is happening)
-//   2. LIQUIDITY — Tick Density (safe to enter)
-//   3. REGIME    — Hurst H > 0.45 (move will travel, not snap back)
-//   4. FORCE     — Z-OFI > 2.0 (buying pressure is statistically abnormal)
-//   5. VELOCITY  — KM Drift |D1| (replaces O(N) momentum array scan)
-//   6. STRUCTURE — Efficiency E (replaces hidden player — detects iceberg walls)
-//
-// Three L0 deterministic strategies on OANDA ms tick data:
-//   1. Z-SCORE STRIKE — Lean 6 pipeline with Senior Ops synthetic book
-//   2. VELOCITY GATING — 5+ same-direction ticks in 2s = impulse fire
-//   3. SNAP-BACK SNIPER — Stop-hunt exhaustion → contrarian entry
-//
-// AI is the General Staff — sizing, regime, risk (hourly). Soldiers fire autonomously.
+// DEACTIVATED: Z-Score Strike, Velocity Gating, Snap-Back Sniper, Ghost Vacuum
+// ═══════════════════════════════════════════════════════════════
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
@@ -644,41 +640,36 @@ const ZSCORE_FIRE_THRESHOLD = 2.0;  // z > 2.0 = statistical divergence (overrid
 const ZSCORE_EXIT_TARGET = 0.0;     // mean reversion target
 const ZSCORE_COOLDOWN_MS = 300_000; // 5 MINUTES between fires on same group (was 10s — caused triple-taps)
 
-// ═══ PREDATORY HUNTER GATE THRESHOLDS (2026 Strategy) ═══
-// The DGE remains LOCKED until all four gates are open.
-const PREDATOR_HURST_MIN = 0.62;        // Gate 1: Persistent regime — raised from 0.57 to ensure proper buffer above 0.45 EXIT threshold
-const PREDATOR_EFFICIENCY_MIN = 2.0;     // Gate 2: Strong momentum (was 3.5 — 0 scans ever reached it)
-const PREDATOR_OFI_RATIO_LONG = 1.6;    // Gate 3 LONG: Whale imbalance
-const PREDATOR_OFI_RATIO_SHORT = 0.625; // Gate 3 SHORT: Whale imbalance (reciprocal of 1.6)
-// WEIGHTING FIX v2: Was 55 → 51, but STILL Weight=0 in all logs. Root cause:
-// ewmaBuyPct is a fraction (0.0-1.0) multiplied by 100 at check time → 50 for balanced flow.
-// At buyDecay=0.88, 4 consecutive buys: 0.5*0.88 + 0.12 = 0.56 → 56% buyPressure.
-// However: Gate 4 checks buyPressure > 51 (strict >). ewmaBuyPct is stored as fraction,
-// rounded to integer at check. So 51.4% rounds to 51 and is NOT > 51 (fails strict check).
-// FIX: Changed to >= 51 (inclusive) and lowered threshold to 50 (majority = > 50%).
-// A genuine 51:49 buy majority IS meaningful institutional directional flow.
-const PREDATOR_WEIGHTING_MIN = 50;      // Gate 4: Buy/Sell weighting >= 50% (strict majority) — was 51 with ">" operator (never fired)
-const PREDATOR_RULE_OF_3 = 3;           // All gates must hold for 3 consecutive ticks
-const PREDATOR_VPIN_MIN = 0.40;         // VPIN validation: >= 0.40 for institutional participation
-const PREDATOR_VPIN_GHOST_MAX = 0.15;   // VPIN < 0.15 = "Ghost Move" = retail-driven, block
-const PREDATOR_KM_DRIFT_MIN = 0.12;     // KM Drift minimum
-const PREDATOR_WALL_OFFSET_PIPS = 0.3;  // Stop-Limit placed 0.3 pips BEYOND the wall
-// Market Order Override: Only slap the ask if the Tsunami is confirmed beyond doubt
-const PREDATOR_MARKET_OVERRIDE_EFFICIENCY = 7.0;  // E > 7.0 = extreme vacuum
-const PREDATOR_MARKET_OVERRIDE_VPIN = 0.65;        // VPIN > 0.65 = heavy institutional flow
-// Exit Protocol:
-// CRITICAL: EXIT thresholds must be well BELOW entry thresholds to prevent instant close.
-// Entry: H >= 0.62, Weight >= 55%. Exit: H < 0.45, Weight <= 40%.
-// Buffer zones: Hurst buffer = 0.17, Weighting buffer = 15%.
-const PREDATOR_EXIT_HURST_MIN = 0.45;          // Close if Hurst drops below 0.45 (0.17 buffer below 0.62 entry)
-const PREDATOR_EXIT_WEIGHTING_THRESHOLD = 40;  // Close if weighting hits 40% — lowered from 49% (was firing within 3 ticks of 52% entry)
-const PREDATOR_MIN_HOLD_MS = 90_000;           // 90s minimum hold — no exits before this (prevents instant close on EWMA convergence lag)
-// Whale-Shadow Trail: stop tucked 0.3 pips behind the largest resting wall within 3 pips
-const WHALE_SHADOW_RANGE_PIPS = 3.0;    // scan radius for nearby walls
-const WHALE_SHADOW_OFFSET_PIPS = 0.3;   // tuck stop 0.3 pips behind the wall
-const WHALE_SHADOW_MIN_HITS = 3;        // wall must have ≥3 hits to qualify
-// Emergency Exit: If a massive Buy Wall appears below price during a SHORT → OFI flip = "dam hit"
-const WHALE_SHADOW_EMERGENCY_OFI_FLIP = 2.5; // OFI ratio >= 2.5 while short = absorption emergency
+// ═══ DAVID & ATLAS — TUNNEL GATE THRESHOLDS ═══
+// 4/4 GATES OPEN = Enter / Hold  (Tunnel is active, institutional consensus is absolute)
+// Any gate drops to 3/4 = Mandatory MarketClose() — Tunnel collapsed.
+//
+// GATE 1: HURST   — H ≥ 0.62 (persistent regime — move will travel)
+// GATE 2: EFFICIENCY — E ≥ 2.0 (structural vacuum — price moving with minimal resistance)
+// GATE 3: Z-OFI   — |Z| ≥ 1.0σ + direction check (statistical abnormality confirmed)
+// GATE 4: VPIN    — VPIN ≥ 0.40 (informed institutional flow, not retail noise)
+//
+// DIRECTION: Z-OFI > 0 = LONG. Z-OFI < 0 = SHORT. No ambiguity.
+// NO STOP LOSS. NO TAKE PROFIT. The 3/4 gate drop IS the only exit authority.
+
+const DA_HURST_MIN = 0.62;          // Gate 1: Persistent regime
+const DA_EFFICIENCY_MIN = 2.0;       // Gate 2: Structural vacuum
+const DA_ZOFI_MIN = 1.0;             // Gate 3: |Z-OFI| ≥ 1.0σ (directional intent confirmed)
+const DA_VPIN_MIN = 0.40;            // Gate 4: Institutional flow (not ghost/retail)
+const DA_VPIN_GHOST_MAX = 0.15;      // Ghost move block: VPIN < 0.15 = retail-driven, never enter
+
+// Rule of 2: Require 2 consecutive 4/4-gate ticks before entry (anti-noise, anti-lag)
+const DA_RULE_OF_2 = 2;
+
+// Exit sensitivity: how many consecutive ticks a gate must fail before firing MarketClose
+// Value = 1 = immediate (any single tick drop = flush). Zero-fault tolerance.
+const DA_EXIT_FAIL_TICKS = 1;
+
+// Cooldown: 5 minutes between entries per pair
+const DA_COOLDOWN_MS = 300_000;
+
+// Minimum hold before exit gates are evaluated (prevents EWMA warm-up false exits)
+const DA_MIN_HOLD_MS = 30_000; // 30s minimum hold for David & Atlas (tighter than Predatory Hunter)
 
 // ─── Daily VWAP Tracker (tick-weighted volume price) ───
 // Used as failsafe anchor when no institutional wall is within 3 pips.
@@ -933,48 +924,35 @@ Deno.serve(async (req) => {
     const snapbackFires: string[] = [];
     const ghostVacuumFires: string[] = [];
 
-    // ═══ PREDATORY HUNTER: Per-Instrument State ═══
-    const predatorState = new Map<string, {
-      consecutivePassCount: number;
+    // ═══ DAVID & ATLAS: Per-Instrument State ═══
+    const davidAtlasState = new Map<string, {
+      consecutivePassCount: number;  // consecutive 4/4 tick passes before entry
       lastPassDirection: string | null;
-      lastFireTs: number;
-      // FIX #4: Hurst window counter — require Hurst < 0.45 for 2 consecutive windows
-      hurstBelowExitCount: number;
-      // FIX #6: Track previous Z-OFI for momentum acceleration check
-      prevZOfi: number;
-      // FIX #7: Pending limit order tracking for gap-fill recovery
-      pendingLimitPrice: number | null;
-      pendingLimitTs: number | null;
+      lastFireTs: number;            // last entry timestamp (cooldown)
     }>();
 
-    // BUG FIX: Cross-session cooldown — load recent fires from DB to prevent
-    // re-firing within 5 min. predatorState was re-initialized every 110s session,
-    // so lastFireTs=0 allowed firing every session instead of respecting cooldown.
+    // Cross-session cooldown: load recent DA fires from DB
     try {
-      const fiveMinAgo = new Date(Date.now() - ZSCORE_COOLDOWN_MS).toISOString();
+      const fiveMinAgo = new Date(Date.now() - DA_COOLDOWN_MS).toISOString();
       const { data: recentFires } = await supabase
         .from("oanda_orders")
         .select("currency_pair, created_at")
-        .eq("direction_engine", "predatory-hunter")
+        .eq("direction_engine", "david-atlas")
         .eq("environment", "live")
         .gte("created_at", fiveMinAgo)
         .order("created_at", { ascending: false });
 
       for (const fire of (recentFires || [])) {
-        predatorState.set(fire.currency_pair, {
+        davidAtlasState.set(fire.currency_pair, {
           consecutivePassCount: 0,
           lastPassDirection: null,
           lastFireTs: new Date(fire.created_at).getTime(),
-          hurstBelowExitCount: 0,
-          prevZOfi: 0,
-          pendingLimitPrice: null,
-          pendingLimitTs: null,
         });
       }
       if (recentFires?.length) {
-        console.log(`[STRIKE-v3] 🔁 Cross-session cooldown: ${recentFires.length} recent fires loaded`);
+        console.log(`[DAVID-ATLAS] 🔁 Cross-session cooldown: ${recentFires.length} recent fires loaded`);
       }
-    } catch { /* non-critical — default to fresh state */ }
+    } catch { /* non-critical */ }
 
     // ═══ GATE DIAGNOSTICS: Track which gates kill signals ═══
     const gateDiag = { total: 0, density: 0, warmup: 0, hurst: 0, efficiency: 0, ofiRatio: 0, weighting: 0, kmDrift: 0, vpinGhost: 0, vpinMin: 0, ruleOf3: 0, passed: 0 };
@@ -985,83 +963,14 @@ Deno.serve(async (req) => {
     let lastExitScanTs = 0;
     const EXIT_SCAN_INTERVAL_MS = 2000; // Scan open trades every 2s on tick data
 
-    // ═══ STRATEGY 4: AUTONOMOUS GHOST (Lean 6 Vacuum) ═══
-    // Immune to credit exhaustion — runs on pure Lean 6 physics.
-    // 1. Scans price-level persistence for retail stop clusters
-    // 2. Places Ghost Limit Orders at cluster prices
-    // 3. Safety: cancels if Hurst > 0.6 (trending) OR |DriftNorm| > 2.0 (high velocity)
-    // 4. Only fills if Efficiency < 0.3 (ABSORBING — hidden player eating flow)
-    // Natural hedge: Z-Score profits in trends, Ghost profits in ranges.
-    const GHOST_CLUSTER_MIN_HITS = 3;      // Minimum hits on a price level to qualify as cluster
-    const GHOST_CLUSTER_MIN_SELLS = 2;     // Minimum sell-side activity (retail stops are sells)
-    const GHOST_COOLDOWN_MS = 300_000;     // 5-minute cooldown per pair
-    const GHOST_SL_PIPS_DEFAULT = 8;
-    const GHOST_TP_PIPS_DEFAULT = 30;              // 3.75:1 R:R
-    const GHOST_UNITS_DEFAULT = 1000;
-    const ghostLastFireTs = new Map<string, number>();
+    // ═══ GATE DIAGNOSTICS: Track which gates block signals ═══
+    const gateDiag = { total: 0, density: 0, warmup: 0, hurst: 0, efficiency: 0, zofi: 0, vpin: 0, ruleOf2: 0, passed: 0 };
+    let lastDiagTs = 0;
 
-    // Load ghost vacuum config from sovereign memory (DGE can tune these dynamically)
-    let ghostUnits = GHOST_UNITS_DEFAULT;
-    let ghostSlPips = GHOST_SL_PIPS_DEFAULT;
-    let ghostTpPips = GHOST_TP_PIPS_DEFAULT;
-    let ghostBlockedPairs: string[] = [];
-    let GHOST_HURST_CANCEL = 0.6;        // Cancel limit if H > threshold (steamroller)
-    let GHOST_DRIFT_CANCEL = 2.0;        // Cancel limit if |DriftNorm| > threshold (high velocity)
-    let GHOST_EFFICIENCY_MAX = 0.3;      // Only fill if E < threshold (absorption = safe)
-    try {
-      const { data: ghostConfig } = await supabase
-        .from("sovereign_memory")
-        .select("payload")
-        .eq("memory_key", "ghost_vacuum_config")
-        .maybeSingle();
-      if (ghostConfig?.payload) {
-        const gc = ghostConfig.payload as Record<string, unknown>;
-        ghostUnits = (gc.units as number) || GHOST_UNITS_DEFAULT;
-        ghostSlPips = (gc.slPips as number) || GHOST_SL_PIPS_DEFAULT;
-        ghostTpPips = (gc.tpPips as number) || GHOST_TP_PIPS_DEFAULT;
-        ghostBlockedPairs = (gc.blockedPairs as string[]) || [];
-        // Dynamic thresholds — DGE can tune these during credit exhaustion
-        GHOST_HURST_CANCEL = (gc.hurstCancel as number) || 0.6;
-        GHOST_DRIFT_CANCEL = (gc.driftCancel as number) || 2.0;
-        GHOST_EFFICIENCY_MAX = (gc.efficiencyMax as number) || 0.3;
-      }
-    } catch { /* use defaults */ }
-
-    // ═══ G17 DISPLACEMENT EFFICIENCY GATE ═══
-    // Loads the FM-created G17 gate from gate_bypasses.
-    // If active, requires displacement signature before any trade fires.
-    // In ripple-stream context: displacement = |D1/√D2| (drift-to-noise ratio)
-    let g17Active = false;
-    let g17Threshold = 0.7;
-    try {
-      const { data: g17Gates } = await supabase
-        .from("gate_bypasses")
-        .select("reason, expires_at")
-        .eq("gate_id", "DYNAMIC_GATE:G17_DISPLACEMENT_EFFICIENCY")
-        .eq("revoked", false)
-        .gte("expires_at", now.toISOString())
-        .limit(1);
-      if (g17Gates && g17Gates.length > 0) {
-        g17Active = true;
-        try {
-          const meta = JSON.parse(g17Gates[0].reason);
-          g17Threshold = meta.threshold ?? 0.7;
-        } catch { /* use default */ }
-        console.log(`[STRIKE-v3] 🎯 G17 DISPLACEMENT GATE ACTIVE — threshold=${g17Threshold}`);
-      }
-    } catch { /* non-critical */ }
-
-    // ═══ IMPROVEMENT #2: AUTONOMOUS EXIT AUTHORITY ═══
-    // L0 soldiers now manage exits at tick speed instead of waiting
-    // for the 60s trade-monitor cycle. Three exit triggers:
-    // 1. Profit-Capture Retrace: MFE >= 0.8R but price retracing → lock profit
-    // 2. THS-Decay: Trade health collapsed while in profit → exit
-    // 3. Time-Decay: Trade stale > 15 bars with no MFE progress → exit
-    
-    // Load open trades for exit monitoring
+    // ─── David & Atlas: Load open trades for exit monitoring ───
     const { data: openTradesForExit } = await supabase
       .from("oanda_orders")
-      .select("id, oanda_trade_id, currency_pair, direction, entry_price, r_pips, mfe_price, mae_price, trade_health_score, bars_since_entry, created_at, environment")
+      .select("id, oanda_trade_id, currency_pair, direction, entry_price, created_at, environment")
       .eq("status", "filled")
       .is("exit_price", null)
       .not("oanda_trade_id", "is", null)
@@ -1071,33 +980,19 @@ Deno.serve(async (req) => {
     for (const t of (openTradesForExit || [])) {
       exitTradeMap.set(t.currency_pair, t);
     }
-    console.log(`[STRIKE-v3] 🎯 Exit authority: monitoring ${exitTradeMap.size} open trades at tick speed`);
+    console.log(`[DAVID-ATLAS] 🎯 Tunnel monitoring ${exitTradeMap.size} open trades`);
 
-    // Init z-score trackers per correlation group
-    for (const g of correlationGroups) {
-      zScoreTrackers.set(g.name, { spreadHistory: [], lastFireTs: 0, firedDirection: null, consecutivePassCount: 0, lastPassDirection: null });
-    }
-    // Init velocity trackers
-    for (const p of velocityPairs) {
-      velocityTrackers.set(p, { ticks: [], lastFireTs: 0 });
-    }
-    // Also track momentum for z-score quiet pairs
-    for (const g of correlationGroups) {
-      if (!velocityTrackers.has(g.pairA)) velocityTrackers.set(g.pairA, { ticks: [], lastFireTs: 0 });
-      if (!velocityTrackers.has(g.pairB)) velocityTrackers.set(g.pairB, { ticks: [], lastFireTs: 0 });
-    }
-    // BUG FIX: PREDATORY HUNTER scans ALL instruments but velocityTrackers was only
-    // initialized for velocityPairs + correlationGroups. Any instrument not in those sets
-    // had vt=undefined → recentDirTicks=[] → length<6 → OFI_R block every single tick.
-    // This was the root cause of OFI_R=2215+ blocks while Weight=0 (never even reached).
-    // Fix: ensure ALL instruments in the stream have a velocity tracker.
+    // Init velocity trackers for all instruments (needed for Lee-Ready tick classification)
     for (const p of instruments) {
       if (!velocityTrackers.has(p)) velocityTrackers.set(p, { ticks: [], lastFireTs: 0 });
     }
-    // Init snapback trackers
-    for (const p of snapbackPairs) {
-      snapbackTrackers.set(p, { recentTicks: [], lastMid: null, lastFireTs: 0 });
-    }
+
+    const tunnelFires: string[] = [];
+    const tunnelExits: string[] = [];
+    const startTime = Date.now();
+    let tickCount = 0;
+    let lastExitScanTs = 0;
+    const EXIT_SCAN_INTERVAL_MS = 500; // Every 500ms — high-precision tunnel gate monitoring
 
     const reader = streamRes.body.getReader();
     const decoder = new TextDecoder();
@@ -1111,66 +1006,45 @@ Deno.serve(async (req) => {
       .limit(1)
       .single();
 
-    // ─── Helper: Execute order (unchanged) ───
-    async function executeOrder(
-      pair: string, direction: string, units: number,
-      slPips: number, tpPips: number, engine: string,
-      metadata: Record<string, unknown>, currentPrice: { mid: number; spreadPips: number },
-      orderType: "MARKET" | "LIMIT" = "MARKET",
-      limitPrice?: number, // Optional explicit limit price (e.g., Ghost cluster price)
+    // ─── David & Atlas: Execute MARKET order — no SL, no TP ───
+    // The Tunnel strategy has zero stop loss and zero take profit.
+    // The 3/4 gate flush IS the only exit authority.
+    async function davidAtlasEnter(
+      pair: string,
+      direction: string,
+      units: number,
+      currentPrice: { mid: number; spreadPips: number },
     ): Promise<{ success: boolean; tradeId?: string; fillPrice?: number; slippage?: number }> {
       if (LIVE_ENABLED !== "true") {
-        console.log(`[STRIKE-v3] 🔇 ${engine} would fire ${direction} ${units} ${pair} — LIVE DISABLED`);
+        console.log(`[DAVID-ATLAS] 🔇 Would fire ${direction} ${units} ${pair} — LIVE DISABLED`);
         return { success: false };
       }
 
-      // ─── L0 HARD GATE 1: Spread gate — block if > rolling avg or > 4 pip hard max ───
+      // ─── L0 HARD GATE: Spread gate ───
       const spreadCheck = isSpreadTooWide(pair, currentPrice.spreadPips);
       if (spreadCheck.blocked) {
-        console.log(`[STRIKE-v3] 🛡 SPREAD GATE: ${pair} ${spreadCheck.reason} (avg=${spreadCheck.avg.toFixed(1)}p) — BLOCKED`);
+        console.log(`[DAVID-ATLAS] 🛡 SPREAD GATE: ${pair} ${spreadCheck.reason} — BLOCKED`);
         return { success: false };
       }
 
-      // ─── L0 HARD GATE 2: Late-NY / Rollover session block (20:00-23:59 UTC and 00:00 UTC rollover) ───
-      // BUG FIX: `utcHour < 0` was unreachable (getUTCHours returns 0-23). Changed to `utcHour < 1`
-      // so the midnight rollover hour (00:00-00:59 UTC) is also blocked as intended.
+      // ─── L0 HARD GATE: Late-NY / Rollover block ───
       const utcHour = new Date().getUTCHours();
       if (utcHour >= 20 || utcHour < 1) {
-        console.log(`[STRIKE-v3] 🛡 SESSION GATE: UTC ${utcHour}h — late-NY/rollover blocked`);
+        console.log(`[DAVID-ATLAS] 🛡 SESSION GATE: UTC ${utcHour}h — late-NY/rollover blocked`);
         return { success: false };
-      }
-
-      // ─── L0 HARD GATE 3: Friction-to-edge ratio — spread must be < 30% of TP target ───
-      const frictionPct = (currentPrice.spreadPips / tpPips) * 100;
-      if (frictionPct > 30) {
-        console.log(`[STRIKE-v3] 🛡 FRICTION GATE: ${pair} spread ${currentPrice.spreadPips.toFixed(1)}p = ${frictionPct.toFixed(0)}% of TP(${tpPips}p) — too expensive`);
-        return { success: false };
-      }
-
-      // Slippage audit auto-switch
-      const audit = slippageAudit.get(pair);
-      if (audit?.switchedToLimit) {
-        orderType = "LIMIT";
       }
 
       const dirUnits = direction === "long" ? units : -units;
-      const slDistance = fromPips(slPips, pair);
-      const tpDistance = fromPips(tpPips, pair);
-
-      // OANDA requires correct price precision: JPY pairs use 3 decimals, others use 5
       const isJPYPair = pair.includes("JPY");
       const pricePrecision = isJPYPair ? 3 : 5;
 
-      const orderBody: Record<string, unknown> = {
+      // NO stopLossOnFill, NO takeProfitOnFill — pure tunnel
+      const orderBody = {
         order: {
-          type: orderType,
+          type: "MARKET",
           instrument: pair,
           units: String(dirUnits),
-          timeInForce: orderType === "MARKET" ? "FOK" : "GTD",
-          ...(orderType === "LIMIT" ? { gtdTime: new Date(Date.now() + 5 * 60_000).toISOString() } : {}),
-          stopLossOnFill: { distance: slDistance.toFixed(pricePrecision), timeInForce: "GTC" },
-          takeProfitOnFill: { distance: tpDistance.toFixed(pricePrecision), timeInForce: "GTC" },
-          ...(orderType === "LIMIT" ? { price: (limitPrice ?? currentPrice.mid).toFixed(pricePrecision) } : {}),
+          timeInForce: "FOK",
         },
       };
 
@@ -1192,30 +1066,10 @@ Deno.serve(async (req) => {
           const tradeId = fill.tradeOpened?.tradeID || fill.id;
           const slippagePips = Math.abs(toPips(fillPrice - currentPrice.mid, pair));
 
-          // Micro-Slippage Audit
-          if (!slippageAudit.has(pair)) {
-            slippageAudit.set(pair, { totalSlippage: 0, fills: 0, switchedToLimit: false });
-          }
-          const sa = slippageAudit.get(pair)!;
-          sa.totalSlippage += slippagePips;
-          sa.fills++;
-
-          if (slippagePips > SLIPPAGE_THRESHOLD_PIPS && !sa.switchedToLimit) {
-            sa.switchedToLimit = true;
-            console.log(`[STRIKE-v3] 🔴 SLIPPAGE AUDIT: ${pair} → PREDATORY_LIMIT`);
-            await supabase.from("gate_bypasses").insert({
-              gate_id: `PREDATORY_LIMIT_SWITCH:${pair}`,
-              reason: JSON.stringify({ pair, slippage: slippagePips, engine: "slippage-auditor-v1" }),
-              expires_at: new Date(Date.now() + 3600_000).toISOString(),
-              created_by: "slippage-auditor",
-            });
-          }
-
-          // Record trade
           if (adminRole) {
             await supabase.from("oanda_orders").insert({
               user_id: adminRole.user_id,
-              signal_id: `${engine}-${pair}-${Date.now()}`,
+              signal_id: `david-atlas-${pair}-${Date.now()}`,
               currency_pair: pair,
               direction: direction.toLowerCase(),
               units,
@@ -1224,50 +1078,60 @@ Deno.serve(async (req) => {
               oanda_trade_id: tradeId,
               status: "filled",
               environment: "live",
-              direction_engine: engine,
-              sovereign_override_tag: `${engine}:${pair}`,
-              confidence_score: (metadata.confidence as number) || 0.5,
-              governance_payload: { ...metadata, slippagePips, orderType },
+              direction_engine: "david-atlas",
+              sovereign_override_tag: `david-atlas:${pair}`,
+              confidence_score: 1.0, // 4/4 gates = maximum institutional consensus
+              governance_payload: { strategy: "david-atlas-tunnel-v1", pair, direction, slippagePips },
               requested_price: currentPrice.mid,
               slippage_pips: slippagePips,
               spread_at_entry: currentPrice.spreadPips,
             });
           }
 
-          console.log(`[STRIKE-v3] ✅ ${engine} FILLED: ${tradeId} @ ${fillPrice} | ${direction} ${units} ${pair} | slip ${slippagePips.toFixed(2)}p`);
+          console.log(`[DAVID-ATLAS] ✅ TUNNEL OPEN: ${tradeId} @ ${fillPrice} | ${direction.toUpperCase()} ${units} ${pair} | slip ${slippagePips.toFixed(2)}p | NO SL | NO TP`);
           return { success: true, tradeId, fillPrice, slippage: slippagePips };
         } else {
-          // BUG FIX: Track pending LIMIT orders that weren't immediately filled.
-          // These live on OANDA with 5-min GTD but had no DB record → "invisible trades."
-          const pendingOrderId = orderData.orderCreateTransaction?.id;
-          if (orderType === "LIMIT" && pendingOrderId && adminRole) {
-            console.warn(`[STRIKE-v3] ⏳ ${engine} LIMIT PENDING: order ${pendingOrderId} ${pair} — tracking in DB`);
-            await supabase.from("oanda_orders").insert({
-              user_id: adminRole.user_id,
-              signal_id: `${engine}-${pair}-${Date.now()}`,
-              currency_pair: pair,
-              direction: direction.toLowerCase(),
-              units,
-              oanda_order_id: pendingOrderId,
-              status: "submitted",
-              environment: "live",
-              direction_engine: engine,
-              sovereign_override_tag: `${engine}:${pair}:pending-limit`,
-              confidence_score: (metadata.confidence as number) || 0.5,
-              governance_payload: { ...metadata, orderType: "LIMIT", limitPrice: limitPrice ?? currentPrice.mid },
-              requested_price: limitPrice ?? currentPrice.mid,
-              spread_at_entry: currentPrice.spreadPips,
-            });
-          } else {
-            const rejectReason = orderData.orderRejectTransaction?.rejectReason ||
-              orderData.orderCancelTransaction?.reason || "Unknown";
-            console.warn(`[STRIKE-v3] ❌ ${engine} REJECTED: ${rejectReason}`);
-          }
+          const rejectReason = orderData.orderRejectTransaction?.rejectReason || "Unknown";
+          console.warn(`[DAVID-ATLAS] ❌ REJECTED: ${pair} ${rejectReason}`);
           return { success: false };
         }
       } catch (err) {
-        console.error(`[STRIKE-v3] ${engine} execution error:`, err);
+        console.error(`[DAVID-ATLAS] Execution error:`, err);
         return { success: false };
+      }
+    }
+
+    // ─── David & Atlas: MarketClose — mandatory tunnel flush ───
+    async function davidAtlasFlush(
+      openTrade: any,
+      instrument: string,
+      reason: string,
+    ): Promise<void> {
+      if (LIVE_ENABLED !== "true") return;
+      console.log(`[DAVID-ATLAS] 🚪 TUNNEL FLUSH: ${instrument} ${openTrade.direction} | ${reason}`);
+      try {
+        const closeRes = await fetch(
+          `${OANDA_API}/accounts/${OANDA_ACCOUNT}/trades/${openTrade.oanda_trade_id}/close`,
+          { method: "PUT", headers: { Authorization: `Bearer ${OANDA_TOKEN}`, "Content-Type": "application/json" } },
+        );
+        if (closeRes.ok) {
+          const closeData = await closeRes.json();
+          const exitPrice = parseFloat(closeData.orderFillTransaction?.price || "0");
+          tunnelExits.push(`${instrument}:${reason}`);
+          await supabase.from("oanda_orders").update({
+            exit_price: exitPrice,
+            status: "closed",
+            closed_at: new Date().toISOString(),
+            health_governance_action: `TUNNEL_FLUSH: ${reason}`,
+          }).eq("id", openTrade.id);
+          exitTradeMap.delete(instrument);
+          console.log(`[DAVID-ATLAS] ✅ TUNNEL CLOSED ${instrument} @ ${exitPrice} | ${reason}`);
+        } else {
+          const err = await closeRes.json();
+          console.warn(`[DAVID-ATLAS] ⚠️ Close failed ${instrument}: ${JSON.stringify(err)}`);
+        }
+      } catch (err) {
+        console.error(`[DAVID-ATLAS] ❌ Close error ${instrument}:`, err);
       }
     }
 
@@ -1324,235 +1188,63 @@ Deno.serve(async (req) => {
               while (vt.ticks.length > 20) vt.ticks.shift();
             }
 
-            // ═══ PREDATORY HUNTER: AUTONOMOUS EXIT AUTHORITY ═══
-            // Tick-speed exit scans every 2s. Three exit triggers:
-            // 1. Regime Exit: Close if Hurst drops below 0.45
-            // 2. Flow Exit: Close if Buy/Sell Weighting hits 49%
-            // 3. Whale-Shadow Trail: Move SL behind largest resting wall within 3 pips
+            // ═══════════════════════════════════════════════
+            // DAVID & ATLAS — TUNNEL EXIT MONITOR (every 500ms)
+            // Every open trade is evaluated against 4/4 gate state.
+            // If ANY gate drops → 3/4, fire mandatory MarketClose().
+            // ═══════════════════════════════════════════════
             if (tickTs - lastExitScanTs >= EXIT_SCAN_INTERVAL_MS) {
               lastExitScanTs = tickTs;
               const openTrade = exitTradeMap.get(instrument);
               if (openTrade && openTrade.oanda_trade_id) {
                 const exitTracker = getOrCreateOfi(instrument);
-                  if (exitTracker.tickCount >= 10) {
-                    let exitReason: string | null = null;
-
-                  // ─── MINIMUM HOLD TIME: Never exit before 90s ───
-                  // Prevents instant close caused by EWMA convergence lag immediately after fill.
-                  // ewmaBuyPct/hurst need ~20 ticks to stabilize after fresh session state.
+                if (exitTracker.tickCount >= 10) {
+                  // ─── Minimum hold — EWMA needs ~30s to stabilize after entry ───
                   const tradeAgeMs = openTrade.created_at
                     ? Date.now() - new Date(openTrade.created_at).getTime()
-                    : PREDATOR_MIN_HOLD_MS + 1; // default: allow exits if no timestamp
-                  const holdBlocked = tradeAgeMs < PREDATOR_MIN_HOLD_MS;
+                    : DA_MIN_HOLD_MS + 1;
 
-                  if (!holdBlocked) {
-                    // FIX #4: REGIME EXIT — require Hurst < 0.45 for 2 CONSECUTIVE 20-tick windows.
-                    // Single-window Hurst drops caused false exits due to window-reset noise spikes.
-                    // Each Hurst recalc fires every HURST_SCALE=20 ticks → ~2 windows = 40 ticks = ~10-20s.
-                    // Only declare persistence collapsed if both windows confirm below exit threshold.
-                    const hurstBelowExit = exitTracker.hurst < PREDATOR_EXIT_HURST_MIN;
-                    if (!predatorState.has(instrument)) {
-                      predatorState.set(instrument, { consecutivePassCount: 0, lastPassDirection: null, lastFireTs: 0, hurstBelowExitCount: 0, prevZOfi: 0, pendingLimitPrice: null, pendingLimitTs: null });
-                    }
-                    const pStateExit = predatorState.get(instrument)!;
-                    if (hurstBelowExit) {
-                      pStateExit.hurstBelowExitCount++;
-                      if (pStateExit.hurstBelowExitCount >= 2) {
-                        exitReason = `REGIME_EXIT: H=${exitTracker.hurst.toFixed(3)} < ${PREDATOR_EXIT_HURST_MIN} for ${pStateExit.hurstBelowExitCount} consecutive windows — persistence confirmed collapsed`;
-                      } else {
-                        console.log(`[PREDATOR_EXIT] ⚠️ Hurst window ${pStateExit.hurstBelowExitCount}/2 below exit threshold for ${instrument} — watching`);
-                      }
-                    } else {
-                      // Hurst recovered — reset window counter
-                      if (pStateExit.hurstBelowExitCount > 0) {
-                        console.log(`[PREDATOR_EXIT] ✅ Hurst recovered for ${instrument} (${exitTracker.hurst.toFixed(3)}) — resetting exit counter`);
-                        pStateExit.hurstBelowExitCount = 0;
-                      }
-                    }
-
-                    // ─── FLOW EXIT: Weighting hits 40% (directional consensus firmly lost) ───
-                    if (!exitReason) {
-                      const isLong = openTrade.direction === "long";
-                      const relevantWeighting = isLong
-                        ? Math.round(exitTracker.ewmaBuyPct * 100)
-                        : Math.round(exitTracker.ewmaSellPct * 100);
-                      if (relevantWeighting <= PREDATOR_EXIT_WEIGHTING_THRESHOLD) {
-                        exitReason = `FLOW_EXIT: ${isLong ? "Buy" : "Sell"}%=${relevantWeighting}% <= ${PREDATOR_EXIT_WEIGHTING_THRESHOLD}% — directional consensus lost`;
-                      }
-                    }
-
-                    // ─── Z-OFI SLAM EXIT: Abnormal counter-flow = "House on Fire" ───
-                    // Tightened from 2.5 → 3.5 to prevent premature exits from normal noise spikes.
-                    // Only fire when Z-OFI is a 3.5σ event — a true institutional reversal.
-                    if (!exitReason) {
-                      const isLong = openTrade.direction === "long";
-                      const zOfiSlam = isLong
-                        ? exitTracker.zOfi < -3.5
-                        : exitTracker.zOfi > 3.5;
-                      if (zOfiSlam) {
-                        exitReason = `ZOFI_SLAM_EXIT: Z-OFI=${exitTracker.zOfi.toFixed(2)} — 3.5σ counter-flow, house on fire`;
-                      }
-                    }
+                  if (tradeAgeMs < DA_MIN_HOLD_MS) {
+                    console.log(`[DAVID-ATLAS] 🛡️ MIN_HOLD: ${instrument} age=${Math.round(tradeAgeMs/1000)}s < ${DA_MIN_HOLD_MS/1000}s — exit suppressed`);
                   } else {
-                    console.log(`[PREDATOR_EXIT] 🛡️ MIN_HOLD: ${instrument} ${openTrade.direction} trade age=${Math.round(tradeAgeMs/1000)}s < ${PREDATOR_MIN_HOLD_MS/1000}s — exit suppressed`);
-                  }
-                  // ═══ WHALE-SHADOW TRAIL v2: 3-Tier Stop Strategy ═══
-                  //
-                  // 🟢 LONG "Shield": Find largest Net×Hits buy-limit cluster between price and -3 pips.
-                  //    SL = 0.3 pips BELOW that wall. Guard: if wall consumed, re-scan for next wall.
-                  //
-                  // 🔴 SHORT "Ceiling": Find largest Net×Hits sell-limit cluster between price and +3 pips.
-                  //    SL = 0.3 pips ABOVE that wall. Guard: if massive Buy Wall appears below price
-                  //    (OFI Ratio flip ≥ 2.5), trigger Emergency Exit — the "Tsunami hit a dam."
-                  //
-                  // 📡 "Out-of-Range" Failsafe: If no wall within 3 pips (common in Vacuum moves),
-                  //    default SL to Daily VWAP + 0.3 pip offset — never be "naked" without structural anchor.
-                  if (!exitReason) {
+                    // ─── DAVID & ATLAS: 4-Gate Active State Check ───
+                    // Compute exact same gates used for entry. If ANY fails → Tunnel collapsed → FLUSH.
+                    const d2Floor = Math.max(Math.abs(exitTracker.D2), 1e-14);
+                    const sqrtD2Exit = Math.sqrt(d2Floor);
+                    const pipMultExit = instrument.includes("JPY") ? 100 : 10000;
+                    const absD1Exit = Math.abs(exitTracker.D1);
+                    const absOfiExit = Math.abs(exitTracker.ofiRecursive);
+                    const ofiScaledExit = absOfiExit / pipMultExit;
+                    const d1PipVelExit = absD1Exit * pipMultExit;
+                    const efficiencyExit = ofiScaledExit / (d1PipVelExit + EFFICIENCY_EPSILON);
+                    const zOfiExit = exitTracker.zOfi;
+
+                    // Determine direction-aligned Z-OFI gate
                     const isLong = openTrade.direction === "long";
-                    const rangePx = fromPips(WHALE_SHADOW_RANGE_PIPS, instrument);
-                    const offsetPx = fromPips(WHALE_SHADOW_OFFSET_PIPS, instrument);
-                    const entryPrice = openTrade.entry_price || 0;
-                    const tradeId = openTrade.oanda_trade_id;
-                    const pricePrecision = instrument.includes("JPY") ? 3 : 5;
+                    const zOfiAligned = isLong ? (zOfiExit >= DA_ZOFI_MIN) : (zOfiExit <= -DA_ZOFI_MIN);
 
-                    // ─── SCAN: Find the strongest wall within 3-pip radius ───
-                    let bestWallPrice: number | null = null;
-                    let bestWallStrength = 0;
+                    // Evaluate all 4 gates (same thresholds as entry)
+                    const gate1Hurst = exitTracker.hurst >= DA_HURST_MIN;
+                    const gate2Efficiency = efficiencyExit >= DA_EFFICIENCY_MIN;
+                    const gate3ZOfi = zOfiAligned;
+                    const gate4Vpin = exitTracker.vpinRecursive >= DA_VPIN_MIN;
 
-                    for (const [levelPrice, info] of exitTracker.priceLevels.entries()) {
-                      if (info.hits < WHALE_SHADOW_MIN_HITS) continue;
-                      const dist = Math.abs(levelPrice - mid);
-                      if (dist > rangePx) continue; // outside 3-pip scan radius
+                    const gatesOpen = [gate1Hurst, gate2Efficiency, gate3ZOfi, gate4Vpin].filter(Boolean).length;
 
-                      const levelNet = info.buys - info.sells;
-                      if (isLong) {
-                        // 🟢 SHIELD: Buy Walls BELOW price (support shields)
-                        if (levelPrice < mid && info.buys >= 2 && levelNet > 0) {
-                          const strength = levelNet * info.hits;
-                          if (strength > bestWallStrength) {
-                            bestWallStrength = strength;
-                            bestWallPrice = levelPrice;
-                          }
-                        }
-                      } else {
-                        // 🔴 CEILING: Sell Walls ABOVE price (resistance shields)
-                        if (levelPrice > mid && info.sells >= 2 && levelNet < 0) {
-                          const strength = Math.abs(levelNet) * info.hits;
-                          if (strength > bestWallStrength) {
-                            bestWallStrength = strength;
-                            bestWallPrice = levelPrice;
-                          }
-                        }
-                      }
-                    }
+                    if (gatesOpen < 4) {
+                      // TUNNEL COLLAPSED — mandatory MarketClose()
+                      const failedGates = [
+                        !gate1Hurst ? `HURST(${exitTracker.hurst.toFixed(3)}<${DA_HURST_MIN})` : null,
+                        !gate2Efficiency ? `EFF(${efficiencyExit.toFixed(2)}<${DA_EFFICIENCY_MIN})` : null,
+                        !gate3ZOfi ? `ZOFI(${zOfiExit.toFixed(2)} not ${isLong ? "≥" : "≤"}${isLong ? DA_ZOFI_MIN : -DA_ZOFI_MIN})` : null,
+                        !gate4Vpin ? `VPIN(${exitTracker.vpinRecursive.toFixed(3)}<${DA_VPIN_MIN})` : null,
+                      ].filter(Boolean).join(" | ");
 
-                    // ─── EMERGENCY EXIT: OFI Ratio Flip (Absorption / Tsunami Dam) ───
-                    // BUG FIX: Use windowed velocity tracker (last 20 ticks) instead of cumulative
-                    // session counts, which caused false exits from early-session imbalance.
-                    // Previously only guarded SHORTS. Added symmetric LONG guard:
-                    //   SHORT guard: massive BUY absorption appearing BELOW price (dam vs short)
-                    //   LONG guard:  massive SELL absorption appearing ABOVE price (dam vs long)
-                    if (!exitReason) {
-                      const exitVt = velocityTrackers.get(instrument);
-                      const exitRecentTicks = exitVt?.ticks || [];
-                      if (exitRecentTicks.length >= 8) {
-                        const exitBuys = exitRecentTicks.filter(t => t.direction === 1).length;
-                        const exitSells = exitRecentTicks.filter(t => t.direction === -1).length;
-                        const windowedOfiRatio = exitSells > 0 ? exitBuys / exitSells : (exitBuys > 0 ? 10.0 : 1.0);
-                        if (!isLong && windowedOfiRatio >= WHALE_SHADOW_EMERGENCY_OFI_FLIP) {
-                          exitReason = `EMERGENCY_EXIT: SHORT OFI_RATIO=${windowedOfiRatio.toFixed(2)} >= ${WHALE_SHADOW_EMERGENCY_OFI_FLIP} — massive Buy Wall absorption (windowed 20-tick)`;
-                        } else if (isLong && windowedOfiRatio <= (1 / WHALE_SHADOW_EMERGENCY_OFI_FLIP)) {
-                          // Reciprocal: OFI <= 0.4 = sell-side absorption overwhelming buy flow
-                          exitReason = `EMERGENCY_EXIT: LONG OFI_RATIO=${windowedOfiRatio.toFixed(2)} <= ${(1 / WHALE_SHADOW_EMERGENCY_OFI_FLIP).toFixed(2)} — massive Sell Wall absorption, tsunami hit a dam`;
-                        }
-                      }
-                    }
-
-                    // ─── DETERMINE NEW SL ───
-                    let newSL: number | null = null;
-                    let slSource = "";
-
-                    if (bestWallPrice !== null) {
-                      // Primary: 0.3 pips behind the wall
-                      newSL = isLong
-                        ? bestWallPrice - offsetPx   // below the buy wall
-                        : bestWallPrice + offsetPx;  // above the sell wall
-                      slSource = `WALL@${bestWallPrice.toFixed(pricePrecision)} str=${bestWallStrength}`;
+                      const flushReason = `3/${4-gatesOpen+1}_GATE_FLUSH: ${gatesOpen}/4 gates open. Failed: ${failedGates}`;
+                      await davidAtlasFlush(openTrade, instrument, flushReason);
                     } else {
-                      // 📡 OUT-OF-RANGE FAILSAFE: No wall within 3 pips → use Daily VWAP
-                      const vwap = getOrResetVwap(instrument, mid);
-                      // BUG FIX: Validate VWAP is on correct side of price before using as SL anchor
-                      // If VWAP is on wrong side (e.g., VWAP > price for long), skip SL update to avoid immediate stop-out
-                      const vwapValid = isLong ? (vwap < mid) : (vwap > mid);
-                      if (vwapValid) {
-                        newSL = isLong
-                          ? vwap - offsetPx   // VWAP - 0.3 pips
-                          : vwap + offsetPx;  // VWAP + 0.3 pips
-                        slSource = `VWAP@${vwap.toFixed(pricePrecision)} (no wall in ${WHALE_SHADOW_RANGE_PIPS}p range)`;
-                      } else {
-                        slSource = `VWAP_SKIP (VWAP@${vwap.toFixed(pricePrecision)} on wrong side of price)`;
-                      }
-                    }
-
-                    // ─── ENFORCE UNIDIRECTIONAL MOVE (never widen SL) ───
-                    if (newSL !== null && !exitReason) {
-                      const prevSL = lastAppliedSL.get(tradeId);
-                      const slImproves = isLong
-                        ? (prevSL == null ? newSL > entryPrice - fromPips(2, instrument) : newSL > prevSL)
-                        : (prevSL == null ? newSL < entryPrice + fromPips(2, instrument) : newSL < prevSL);
-
-                      if (slImproves) {
-                        try {
-                          const slStr = newSL.toFixed(pricePrecision);
-                          const updateRes = await fetch(
-                            `${OANDA_API}/accounts/${OANDA_ACCOUNT}/trades/${tradeId}/orders`,
-                            {
-                              method: "PUT",
-                              headers: { Authorization: `Bearer ${OANDA_TOKEN}`, "Content-Type": "application/json" },
-                              body: JSON.stringify({ stopLoss: { price: slStr, timeInForce: "GTC" } }),
-                            },
-                          );
-                          if (updateRes.ok) {
-                            lastAppliedSL.set(tradeId, newSL);
-                            console.log(`[WHALE_SHADOW] 🐋 ${instrument} ${isLong ? "SHIELD" : "CEILING"} — SL→${slStr} | ${slSource}`);
-                          } else {
-                            const errData = await updateRes.json();
-                            console.warn(`[WHALE_SHADOW] ⚠️ SL update failed ${instrument}: ${JSON.stringify(errData)}`);
-                          }
-                        } catch (err) {
-                          console.error(`[WHALE_SHADOW] ❌ SL error ${instrument}:`, err);
-                        }
-                      }
-                    }
-                  }
-
-                  // ─── MARKET ORDER MATRIX: Exit Protocol ───
-                  // ALL emergency exits use MARKET close (PUT /trades/{id}/close).
-                  // Senior Ops Protocol: NEVER use Limit Orders for exits.
-                  // In a "House on Fire" (Hurst collapse, Z-OFI Slam, Flow Exit),
-                  // you pay 0.1 pip slippage to guarantee you keep the other 5 pips of profit.
-                  if (exitReason && LIVE_ENABLED === "true") {
-                    console.log(`[PREDATOR_EXIT] 🚪 MARKET CLOSE: ${instrument} ${openTrade.direction} trade ${openTrade.oanda_trade_id}: ${exitReason}`);
-                    try {
-                      const closeRes = await fetch(
-                        `${OANDA_API}/accounts/${OANDA_ACCOUNT}/trades/${openTrade.oanda_trade_id}/close`,
-                        { method: "PUT", headers: { Authorization: `Bearer ${OANDA_TOKEN}`, "Content-Type": "application/json" } },
-                      );
-                      if (closeRes.ok) {
-                        const closeData = await closeRes.json();
-                        const exitPrice = parseFloat(closeData.orderFillTransaction?.price || "0");
-                        autonomousExits.push(`${instrument}:${exitReason}`);
-                        await supabase.from("oanda_orders").update({
-                          exit_price: exitPrice,
-                          status: "closed",
-                          closed_at: new Date().toISOString(),
-                          health_governance_action: exitReason,
-                        }).eq("id", openTrade.id);
-                        exitTradeMap.delete(instrument);
-                        console.log(`[PREDATOR_EXIT] ✅ CLOSED ${instrument} @ ${exitPrice} — ${exitReason}`);
-                      }
-                    } catch (err) {
-                      console.error(`[PREDATOR_EXIT] ❌ Failed to close ${instrument}:`, err);
+                      // Tunnel still active — log state
+                      console.log(`[DAVID-ATLAS] 🟢 TUNNEL ACTIVE: ${instrument} ${openTrade.direction} | 4/4 gates | H=${exitTracker.hurst.toFixed(3)} E=${efficiencyExit.toFixed(2)} Z=${zOfiExit.toFixed(2)} VPIN=${exitTracker.vpinRecursive.toFixed(3)}`);
                     }
                   }
                 }
@@ -1560,17 +1252,17 @@ Deno.serve(async (req) => {
             }
 
             // ═══════════════════════════════════════════════
-            // PREDATORY HUNTER v2: INDEPENDENT INSTRUMENT SCAN
-            // No longer trapped behind Z-Score pair divergence.
-            // Scans ALL instruments for institutional flow setups.
-            // Direction determined by order flow, not cross-pair mean reversion.
+            // DAVID & ATLAS — TUNNEL ENTRY SCANNER
+            // Scans all instruments on every tick.
+            // Fires ONLY when 4/4 gates are confirmed for DA_RULE_OF_2 consecutive ticks.
+            // Direction locked by Z-OFI sign.
             // ═══════════════════════════════════════════════
 
             // ─── GATE DIAGNOSTICS: Log every 30s ───
             if (tickTs - lastDiagTs > 30_000) {
               lastDiagTs = tickTs;
               if (gateDiag.total > 0) {
-                console.log(`[PREDATOR_DIAG] 📊 Scans=${gateDiag.total} | Density=${gateDiag.density} Warmup=${gateDiag.warmup} Hurst=${gateDiag.hurst} Eff=${gateDiag.efficiency} OFI_R=${gateDiag.ofiRatio} Weight=${gateDiag.weighting} KM=${gateDiag.kmDrift} VPIN_G=${gateDiag.vpinGhost} VPIN_M=${gateDiag.vpinMin} R3=${gateDiag.ruleOf3} | PASSED=${gateDiag.passed}`);
+                console.log(`[DAVID-ATLAS-DIAG] 📊 Scans=${gateDiag.total} | Density=${gateDiag.density} Warmup=${gateDiag.warmup} Hurst=${gateDiag.hurst} Eff=${gateDiag.efficiency} ZOfi=${gateDiag.zofi} VPIN=${gateDiag.vpin} R2=${gateDiag.ruleOf2} | TUNNELS_OPENED=${gateDiag.passed}`);
               }
             }
 
@@ -1578,304 +1270,137 @@ Deno.serve(async (req) => {
               if (blockedPairs.includes(tradePair)) continue;
               gateDiag.total++;
 
-              // Per-instrument state
-              if (!predatorState.has(tradePair)) {
-                predatorState.set(tradePair, { consecutivePassCount: 0, lastPassDirection: null, lastFireTs: 0, hurstBelowExitCount: 0, prevZOfi: 0, pendingLimitPrice: null, pendingLimitTs: null });
+              // Per-instrument David & Atlas state
+              if (!davidAtlasState.has(tradePair)) {
+                davidAtlasState.set(tradePair, { consecutivePassCount: 0, lastPassDirection: null, lastFireTs: 0 });
               }
-              const pState = predatorState.get(tradePair)!;
+              const daState = davidAtlasState.get(tradePair)!;
 
-              // Cooldown: 5 minutes between fires on same pair
-              if (tickTs - pState.lastFireTs < ZSCORE_COOLDOWN_MS) continue;
+              // Cooldown: 5 minutes between tunnel entries per pair
+              if (tickTs - daState.lastFireTs < DA_COOLDOWN_MS) continue;
 
-              // ─── PRE-GATE: LIQUIDITY (Tick Density) ───
+              // ─── PRE-GATE: Tick density ───
               const densityCheck = isTickDensitySufficient(tradePair);
-              if (!densityCheck.ok) { pState.consecutivePassCount = 0; gateDiag.density++; continue; }
+              if (!densityCheck.ok) { daState.consecutivePassCount = 0; gateDiag.density++; continue; }
 
-              // ─── READ PHYSICS ───
-              const tradeTracker = getOrCreateOfi(tradePair);
-              if (tradeTracker.tickCount < 20) { pState.consecutivePassCount = 0; gateDiag.warmup++; continue; } // was 30 — too conservative for 110s sessions
+              // ─── Warmup ───
+              const daTracker = getOrCreateOfi(tradePair);
+              if (daTracker.tickCount < 20) { daState.consecutivePassCount = 0; gateDiag.warmup++; continue; }
 
-              // ─── DETERMINE DIRECTION FROM FLOW ───
-              // Use last ~20 ticks from velocity tracker for responsive OFI ratio
-              // BUG FIX: With 8+ instruments sharing 110s streams, each pair gets ~8-10 ticks/pair.
-              // A 20-tick buffer with only 6 ticks filled gives unreliable ratios (e.g., 1 buy / 0 sells = 10.0).
-              // Require at least 6 ticks in the window before using the ratio.
-              const vt = velocityTrackers.get(tradePair);
-              const recentDirTicks = vt?.ticks || [];
-              if (recentDirTicks.length < 6) { pState.consecutivePassCount = 0; gateDiag.ofiRatio++; continue; }
-              const recentBuys = recentDirTicks.filter(t => t.direction === 1).length;
-              const recentSells = recentDirTicks.filter(t => t.direction === -1).length;
-              const shortWindowRatio = recentSells > 0
-                ? recentBuys / recentSells
-                : (recentBuys > 0 ? 10.0 : 1.0);
-
-              let tradeDirection: string | null = null;
-              if (shortWindowRatio >= PREDATOR_OFI_RATIO_LONG) {
-                tradeDirection = "long";
-              } else if (shortWindowRatio <= PREDATOR_OFI_RATIO_SHORT) {
-                tradeDirection = "short";
-              }
-              if (!tradeDirection) { pState.consecutivePassCount = 0; gateDiag.ofiRatio++; continue; }
-
-              // ─── COMPUTE PHYSICS METRICS ───
-              // BUG FIX: D2 floor prevents driftNorm from exploding during near-zero diffusion.
-              const d2Floored = Math.max(Math.abs(tradeTracker.D2), 1e-14);
-              const sqrtD2Trade = Math.sqrt(d2Floored);
-              const driftNormTrade = sqrtD2Trade > 1e-10 ? tradeTracker.D1 / sqrtD2Trade : 0;
-              const absD1Trade = Math.abs(tradeTracker.D1);
-              const absOfiTrade = Math.abs(tradeTracker.ofiRecursive);
-              // BUG FIX: Efficiency unit mismatch — use pip-velocity units for both ofi and D1.
-              // ofiRecursive = pips * ticks/s (force); D1 = price/sec → convert to pips/sec.
-              const tradePipMult = tradePair.includes("JPY") ? 100 : 10000;
-              const ofiScaledTrade = absOfiTrade / tradePipMult;   // normalize to pip-velocity
-              const d1PipVelTrade = absD1Trade * tradePipMult;     // D1 in pips/sec
-              const efficiencyTrade = ofiScaledTrade / (d1PipVelTrade + EFFICIENCY_EPSILON);
-              const ofiNormTrade = Math.tanh(tradeTracker.ofiRecursive / 100);
-
-              const tradeOfi = {
-                hurst: Math.round(tradeTracker.hurst * 1000) / 1000,
-                efficiency: Math.round(efficiencyTrade * 1000) / 1000,
-                vpin: Math.round(tradeTracker.vpinRecursive * 1000) / 1000,
-                buyPressure: Math.round(tradeTracker.ewmaBuyPct * 100),
-                sellPressure: Math.round(tradeTracker.ewmaSellPct * 100),
-                km: {
-                  D1: tradeTracker.D1, D2: tradeTracker.D2,
-                  driftNormalized: Math.round(driftNormTrade * 1000) / 1000,
-                  sampleSize: tradeTracker.tickCount,
-                  alphaAdaptive: Math.round(tradeTracker.alpha * 10000) / 10000,
-                },
-                zOfi: Math.round(tradeTracker.zOfi * 1000) / 1000,
-                bias: (ofiNormTrade > OFI_IMBALANCE_THRESHOLD ? "BUY" : ofiNormTrade < -OFI_IMBALANCE_THRESHOLD ? "SELL" : "NEUTRAL") as "BUY" | "SELL" | "NEUTRAL",
-              };
-
-              // ═══ 4-GATE INSTITUTIONAL FILTER ═══
-
-              // ─── GATE 1: HURST ≥ 0.60 ───
-              if (tradeOfi.hurst < PREDATOR_HURST_MIN) {
-                pState.consecutivePassCount = 0;
-                gateDiag.hurst++;
+              // ─── Double-entry guard ───
+              if (exitTradeMap.has(tradePair)) {
+                daState.consecutivePassCount = 0;
                 continue;
               }
 
-              // ─── GATE 2: EFFICIENCY ≥ 3.5 ───
-              if (tradeOfi.efficiency < PREDATOR_EFFICIENCY_MIN) {
-                pState.consecutivePassCount = 0;
-                gateDiag.efficiency++;
-                continue;
+              // ─── Compute physics ───
+              const pipMultDA = tradePair.includes("JPY") ? 100 : 10000;
+              const absD1DA = Math.abs(daTracker.D1);
+              const absOfiDA = Math.abs(daTracker.ofiRecursive);
+              const ofiScaledDA = absOfiDA / pipMultDA;
+              const d1PipVelDA = absD1DA * pipMultDA;
+              const efficiencyDA = ofiScaledDA / (d1PipVelDA + EFFICIENCY_EPSILON);
+
+              // ─── GATE 1: HURST ≥ 0.62 ───
+              if (daTracker.hurst < DA_HURST_MIN) {
+                daState.consecutivePassCount = 0; gateDiag.hurst++; continue;
               }
 
-              // Gate 3 (OFI Ratio) already passed via direction determination above
-
-              // ─── GATE 4: WEIGHTING >= 50% (directional majority) ───
-              // BUG FIX: Was ">" strict operator — ewmaBuyPct rounds to 50 at balanced flow,
-              // so 50.4% → 50 which is NOT > 50. Changed to ">=" so a genuine buy majority fires.
-              const weightingPassed = tradeDirection === "long"
-                ? tradeOfi.buyPressure >= PREDATOR_WEIGHTING_MIN
-                : tradeOfi.sellPressure >= PREDATOR_WEIGHTING_MIN;
-              if (!weightingPassed) {
-                pState.consecutivePassCount = 0;
-                gateDiag.weighting++;
-                continue;
+              // ─── GATE 2: EFFICIENCY ≥ 2.0 ───
+              if (efficiencyDA < DA_EFFICIENCY_MIN) {
+                daState.consecutivePassCount = 0; gateDiag.efficiency++; continue;
               }
 
-              // ─── KM DRIFT MINIMUM ───
-              if (Math.abs(tradeOfi.km.driftNormalized) < PREDATOR_KM_DRIFT_MIN) {
-                pState.consecutivePassCount = 0;
-                gateDiag.kmDrift++;
-                continue;
+              // ─── GATE 3: Z-OFI — direction lock ───
+              // Z-OFI > 0 = LONG (positive institutional flow)
+              // Z-OFI < 0 = SHORT (negative institutional flow)
+              const zOfiDA = daTracker.zOfi;
+              let tunnelDirection: string | null = null;
+              if (zOfiDA >= DA_ZOFI_MIN) {
+                tunnelDirection = "long";
+              } else if (zOfiDA <= -DA_ZOFI_MIN) {
+                tunnelDirection = "short";
+              }
+              if (!tunnelDirection) {
+                daState.consecutivePassCount = 0; gateDiag.zofi++; continue;
               }
 
-              // ─── VPIN VALIDATION ───
-              if (tradeOfi.vpin < PREDATOR_VPIN_GHOST_MAX) {
-                console.log(`[PREDATOR] 👻 GHOST MOVE: ${tradePair} VPIN=${tradeOfi.vpin} < ${PREDATOR_VPIN_GHOST_MAX} — BLOCKED`);
-                pState.consecutivePassCount = 0;
-                gateDiag.vpinGhost++;
-                continue;
+              // ─── GATE 4: VPIN ≥ 0.40 ───
+              if (daTracker.vpinRecursive < DA_VPIN_GHOST_MAX) {
+                console.log(`[DAVID-ATLAS] 👻 GHOST MOVE BLOCKED: ${tradePair} VPIN=${daTracker.vpinRecursive.toFixed(3)}`);
+                daState.consecutivePassCount = 0; gateDiag.vpin++; continue;
               }
-              if (tradeOfi.vpin < PREDATOR_VPIN_MIN) {
-                pState.consecutivePassCount = 0;
-                gateDiag.vpinMin++;
-                continue;
+              if (daTracker.vpinRecursive < DA_VPIN_MIN) {
+                daState.consecutivePassCount = 0; gateDiag.vpin++; continue;
               }
 
-              // ═══ FIX #5: GHOST DOUBLE-ENTRY GUARD ═══
-              // Before firing, check if there's already an open trade on this pair.
-              // Prevents Ghost Limit stacking and avoids doubling position size from
-              // two concurrent strategies on the same pair.
-              const existingTrade = exitTradeMap.get(tradePair);
-              if (existingTrade) {
-                console.log(`[PREDATOR] 🛡️ DOUBLE-ENTRY GUARD: ${tradePair} already has open trade ${existingTrade.oanda_trade_id} — BLOCKED`);
-                pState.consecutivePassCount = 0;
-                continue;
-              }
-
-              // ═══ FIX #6: RULE OF 2 WITH MOMENTUM ACCELERATION ═══
-              // Standard Rule of 3 adds 0.5–1.5 pip lag. If Z-OFI is accelerating in the
-              // trade direction (growing magnitude), only require 2 consecutive passes.
-              // Keeps 3-pass requirement for flat/decelerating flow (higher noise).
-              if (pState.lastPassDirection === tradeDirection) {
-                pState.consecutivePassCount++;
+              // ─── RULE OF 2: Require DA_RULE_OF_2 consecutive 4/4 ticks ───
+              if (daState.lastPassDirection === tunnelDirection) {
+                daState.consecutivePassCount++;
               } else {
-                // Direction changed — not a pass, start over
-                pState.consecutivePassCount = 0;
-                pState.lastPassDirection = tradeDirection;
-                pState.prevZOfi = tradeOfi.zOfi;
-                gateDiag.ruleOf3++;
+                daState.consecutivePassCount = 1;
+                daState.lastPassDirection = tunnelDirection;
+                gateDiag.ruleOf2++;
                 continue;
               }
 
-              const zOfiAccelerating = tradeDirection === "long"
-                ? (tradeOfi.zOfi > 0 && tradeOfi.zOfi > pState.prevZOfi)
-                : (tradeOfi.zOfi < 0 && tradeOfi.zOfi < pState.prevZOfi);
-              const requiredPasses = zOfiAccelerating ? 2 : PREDATOR_RULE_OF_3;
-              pState.prevZOfi = tradeOfi.zOfi;
-
-              if (pState.consecutivePassCount < requiredPasses) {
-                console.log(`[PREDATOR] ⏳ RULE OF ${requiredPasses}${zOfiAccelerating ? " (ACCEL)" : ""}: ${tradePair} ${tradeDirection} pass ${pState.consecutivePassCount}/${requiredPasses} | H=${tradeOfi.hurst} E=${tradeOfi.efficiency} R=${shortWindowRatio.toFixed(2)} Z=${tradeOfi.zOfi.toFixed(2)} VPIN=${tradeOfi.vpin}`);
-                gateDiag.ruleOf3++;
+              if (daState.consecutivePassCount < DA_RULE_OF_2) {
+                console.log(`[DAVID-ATLAS] ⏳ RULE OF 2: ${tradePair} ${tunnelDirection} — pass ${daState.consecutivePassCount}/${DA_RULE_OF_2} | H=${daTracker.hurst.toFixed(3)} E=${efficiencyDA.toFixed(2)} Z=${zOfiDA.toFixed(2)} VPIN=${daTracker.vpinRecursive.toFixed(3)}`);
+                gateDiag.ruleOf2++;
                 continue;
               }
 
-              // ═══ ALL GATES PASSED — FIRE ═══
-              pState.consecutivePassCount = 0;
+              // ═══ ALL 4 GATES CONFIRMED — TUNNEL OPENING ═══
+              daState.consecutivePassCount = 0;
               gateDiag.passed++;
 
               const tradePrice = prices.get(tradePair);
               if (!tradePrice) continue;
 
-              pState.lastFireTs = tickTs;
+              daState.lastFireTs = tickTs;
 
-              // ─── ENTRY: Wall detection ───
-              // LONG: Find nearest SELL wall ABOVE price → place Stop-Limit 0.3 pips ABOVE it
-              //        (piggyback retail stop-hunt above resistance)
-              // SHORT: Find nearest SELL wall ABOVE price → place Stop-Limit 0.3 pips BELOW it
-              //        (anchor against sell wall, place limit just below for breakdown entry)
-              let wallPrice: number | null = null;
-              const wallOffset = fromPips(PREDATOR_WALL_OFFSET_PIPS, tradePair);
-              for (const [price, info] of tradeTracker.priceLevels.entries()) {
-                if (info.hits < 3) continue;
-                const priceNum = +price;
-                const distPips = Math.abs(toPips(priceNum - tradePrice.mid, tradePair));
-                if (distPips < 1 || distPips > 30) continue;
-                if (info.sells >= 2 && priceNum > tradePrice.mid) {
-                  if (!wallPrice || priceNum < wallPrice) wallPrice = priceNum;
-                }
-              }
+              console.log(`[DAVID-ATLAS] 🎯 TUNNEL STRIKE: ${tunnelDirection.toUpperCase()} ${baseUnits} ${tradePair} | H=${daTracker.hurst.toFixed(3)} E=${efficiencyDA.toFixed(2)} Z=${zOfiDA.toFixed(2)} VPIN=${daTracker.vpinRecursive.toFixed(3)} | 4/4 GATES — NO SL | NO TP | TUNNEL IS LIVE`);
 
-              // ─── FIX #7: STOP-LIMIT GAP-FILL RECOVERY ───
-              // If a previous LIMIT order was placed but price gapped > 1.5x SL distance
-              // past the wall without filling (stale limit), cancel it and submit MARKET.
-              // Check if this pair has a pending limit that is now stale (>3 ticks / >5s elapsed).
-              const pendingLimit = pState.pendingLimitPrice;
-              const pendingLimitTs = pState.pendingLimitTs;
-              let gapFillOverride = false;
-              if (pendingLimit !== null && pendingLimitTs !== null) {
-                const limitAge = tickTs - pendingLimitTs;
-                const gapDistance = Math.abs(toPips(tradePrice.mid - pendingLimit, tradePair));
-                const slDistPips = baseSlPips;
-                if (limitAge > 5000 && gapDistance > slDistPips * 1.5) {
-                  gapFillOverride = true;
-                  pState.pendingLimitPrice = null;
-                  pState.pendingLimitTs = null;
-                  console.log(`[PREDATOR] 🌊 GAP-FILL RECOVERY: ${tradePair} limit@${pendingLimit.toFixed(5)} stale (age=${(limitAge/1000).toFixed(0)}s, gap=${gapDistance.toFixed(1)}p > 1.5×SL=${slDistPips}p) → MARKET override`);
-                }
-              }
+              const daResult = await davidAtlasEnter(tradePair, tunnelDirection, baseUnits, tradePrice);
 
-              // ─── MARKET ORDER MATRIX: Entry Protocol ───
-              const tsunamiOverride = tradeOfi.efficiency > PREDATOR_MARKET_OVERRIDE_EFFICIENCY
-                && tradeOfi.vpin > PREDATOR_MARKET_OVERRIDE_VPIN;
-              const orderType: "MARKET" | "LIMIT" = (tsunamiOverride || gapFillOverride) ? "MARKET" : (wallPrice ? "LIMIT" : "MARKET");
-              const limitEntryPrice = (!tsunamiOverride && !gapFillOverride && wallPrice)
-                ? (tradeDirection === "long" ? wallPrice + wallOffset : wallPrice - wallOffset)
-                : undefined;
-              if (tsunamiOverride) {
-                console.log(`[PREDATOR] 🌊 TSUNAMI OVERRIDE: ${tradePair} E=${tradeOfi.efficiency} VPIN=${tradeOfi.vpin} → MARKET`);
-              }
+              if (daResult.success) {
+                tunnelFires.push(`${tradePair}:${tunnelDirection}`);
 
-              // Track pending limit order for gap-fill recovery (Fix #7)
-              if (orderType === "LIMIT" && limitEntryPrice != null) {
-                pState.pendingLimitPrice = limitEntryPrice;
-                pState.pendingLimitTs = tickTs;
-              }
+                // Register in exitTradeMap immediately to prevent double-entry
+                exitTradeMap.set(tradePair, {
+                  id: daResult.tradeId,
+                  oanda_trade_id: daResult.tradeId,
+                  currency_pair: tradePair,
+                  direction: tunnelDirection,
+                  entry_price: daResult.fillPrice,
+                  created_at: new Date().toISOString(),
+                  environment: "live",
+                });
 
-              console.log(`[PREDATOR] 🎯 FIRE: ${tradeDirection.toUpperCase()} ${baseUnits} ${tradePair} | H=${tradeOfi.hurst} E=${tradeOfi.efficiency} EWMA_R=${shortWindowRatio.toFixed(2)} VPIN=${tradeOfi.vpin} | Buy%=${tradeOfi.buyPressure} Sell%=${tradeOfi.sellPressure} | |D1n|=${Math.abs(tradeOfi.km.driftNormalized).toFixed(2)} | Wall=${wallPrice?.toFixed(tradePair.includes("JPY") ? 3 : 5) ?? "NONE"} → ${orderType}${zOfiAccelerating ? " (ACCEL)" : ""} | tick #${tickCount}`);
-
-              const hurstConviction = Math.min(0.3, (tradeOfi.hurst - 0.5) * 3);
-              const effConviction = Math.min(0.3, (tradeOfi.efficiency - 3.0) * 0.1);
-              const vpinConviction = Math.min(0.2, (tradeOfi.vpin - 0.4) * 2);
-              const ofiAligned = (tradeDirection === "long" && tradeOfi.bias === "BUY") ||
-                                 (tradeDirection === "short" && tradeOfi.bias === "SELL");
-              const ofiConviction = ofiAligned ? 0.2 : 0;
-
-              const result = await executeOrder(
-                tradePair, tradeDirection, baseUnits,
-                baseSlPips, baseTpPips, "predatory-hunter",
-                {
-                  strategy: "predatory-hunter-2026-v2",
-                  tickNumber: tickCount,
-                  ticksPerSecond: densityCheck.tps,
-                  streamLatencyMs: Date.now() - startTime,
-                  confidence: Math.min(1, hurstConviction + effConviction + vpinConviction + ofiConviction),
-                  engine: "predatory-hunter-v2-independent",
-                  predatorGates: {
-                    hurst: tradeOfi.hurst,
-                    efficiency: tradeOfi.efficiency,
-                    ewmaRatio: shortWindowRatio,
-                    buyPct: tradeOfi.buyPressure,
-                    sellPct: tradeOfi.sellPressure,
-                    vpin: tradeOfi.vpin,
-                    kmDrift: tradeOfi.km.driftNormalized,
-                    ruleOf3: requiredPasses,
-                    zOfiAccelerating,
-                  },
-                  wall: wallPrice ? { price: wallPrice, offset: PREDATOR_WALL_OFFSET_PIPS } : null,
-                  ofi: {
-                    weighted: Math.round(ofiNormTrade * 1000) / 1000,
-                    vpin: tradeOfi.vpin, bias: tradeOfi.bias,
-                    buyPct: tradeOfi.buyPressure, sellPct: tradeOfi.sellPressure,
-                    zOfi: tradeOfi.zOfi,
-                  },
-                  kramersMoyal: tradeOfi.km,
-                  hurst: { H: tradeOfi.hurst },
-                },
-                tradePrice,
-                orderType,
-                limitEntryPrice,
-              );
-
-              if (result.success) {
-                zScoreFires.push(`predator:${tradePair}`);
-                // Clear pending limit tracking on successful fill
-                pState.pendingLimitPrice = null;
-                pState.pendingLimitTs = null;
-
-                // Register in exitTradeMap to prevent double-entry on next tick
-                exitTradeMap.set(tradePair, { id: result.tradeId, oanda_trade_id: result.tradeId, currency_pair: tradePair, direction: tradeDirection, entry_price: result.fillPrice, r_pips: null, mfe_price: null, created_at: new Date().toISOString(), environment: "live" });
-
-                // Audit log
+                // Audit record
                 await supabase.from("gate_bypasses").insert({
-                  gate_id: `PREDATOR_FIRE:${tradePair}`,
+                  gate_id: `DAVID_ATLAS_TUNNEL:${tradePair}`,
                   reason: JSON.stringify({
-                    strategy: "predatory-hunter-2026-v2",
-                    pair: tradePair, direction: tradeDirection,
-                    hurst: tradeOfi.hurst, efficiency: tradeOfi.efficiency,
-                    ewmaRatio: shortWindowRatio, vpin: tradeOfi.vpin,
-                    buyPct: tradeOfi.buyPressure, sellPct: tradeOfi.sellPressure,
-                    wall: wallPrice, orderType, gapFillOverride,
-                    fillPrice: result.fillPrice,
-                    slippage: result.slippage,
-                    tickNumber: tickCount,
-                    zOfiAccelerating,
+                    strategy: "david-atlas-tunnel-v1",
+                    pair: tradePair,
+                    direction: tunnelDirection,
+                    hurst: daTracker.hurst,
+                    efficiency: efficiencyDA,
+                    zOfi: zOfiDA,
+                    vpin: daTracker.vpinRecursive,
+                    fillPrice: daResult.fillPrice,
+                    slippage: daResult.slippage,
+                    gateState: "4/4",
+                    note: "NO_SL_NO_TP — Tunnel protocol. Exit only on 3/4 gate drop.",
                   }),
-                  expires_at: new Date(Date.now() + 3600_000).toISOString(),
-                  created_by: "predatory-hunter-engine",
+                  expires_at: new Date(Date.now() + 4 * 3600_000).toISOString(),
+                  created_by: "david-atlas-engine",
                 });
               }
             }
 
-            // ═══ DEACTIVATED STRATEGIES ═══
-            // Predatory Hunter v2 is the ONLY active strategy.
-
+            // ═══ ALL OTHER STRATEGIES DEACTIVATED ═══
+            // David & Atlas is the SOLE active strategy.
           } catch { /* skip malformed tick */ }
         }
       }
@@ -1989,13 +1514,13 @@ Deno.serve(async (req) => {
       };
     }
 
-    // Persist O(1) recursive synthetic book
+    // Persist synthetic book snapshot
     if (Object.keys(ofiSnapshot).length > 0) {
       await supabase.from("sovereign_memory").upsert({
         memory_type: "ofi_synthetic_book",
         memory_key: "latest_snapshot",
         payload: {
-          version: "v8-predatory-hunter",
+          version: "david-atlas-v1",
           pairs: ofiSnapshot,
           pairsCount: Object.keys(ofiSnapshot).length,
           hiddenPlayerAlerts,
@@ -2004,65 +1529,67 @@ Deno.serve(async (req) => {
           ticksProcessed: tickCount,
           streamDurationMs: Date.now() - startTime,
           timestamp: new Date().toISOString(),
-          architecture: "O(1)_recursive_predatory_hunter",
+          architecture: "O(1)_recursive_david_atlas",
           decayFactors: { kmAlphaRange: [KM_ALPHA_MIN, KM_ALPHA_MAX], ofiGamma: OFI_GAMMA_DEFAULT },
-          gates: ["0:SIGNAL(Z-Score)", "1:HURST≥0.62", "2:EFFICIENCY≥2.0", "3:OFI_RATIO(Whale)", "4:WEIGHTING≥50%", "VPIN≥0.40", "KM_DRIFT≥0.12", "RULE_OF_3"],
+          gates: ["1:HURST≥0.62", "2:EFFICIENCY≥2.0", "3:|Z-OFI|≥1.0", "4:VPIN≥0.40"],
+          strategy: "david-atlas-tunnel-v1",
           capabilities: [
-            "predatory_hunter_2026", "rule_of_3_verification",
+            "david_atlas_tunnel", "rule_of_2_verification",
             "adaptive_km_gear_shift", "welford_z_ofi", "hall_wood_hurst",
-            "recursive_kramers_moyal", "recursive_velocity_displacement_ofi",
-            "recursive_vpin_ewma", "efficiency_ratio_E", "market_state_classification",
-            "hidden_limit_detection", "price_level_persistence", "tick_density_sr",
-            "autonomous_exit_authority", "wall_stop_limit_entry",
+            "recursive_kramers_moyal", "recursive_vpin_ewma",
+            "efficiency_ratio_E", "market_state_classification",
+            "hidden_limit_detection", "price_level_persistence",
+            "mandatory_gate_flush_exit", "no_sl_no_tp_tunnel",
           ],
         },
         relevance_score: hiddenPlayerAlerts > 0 ? 1.0 : 0.8,
-        created_by: "ripple-stream-predatory-hunter-v1",
+        created_by: "ripple-stream-david-atlas-v1",
       }, { onConflict: "memory_type,memory_key" });
     }
 
     const totalMs = Date.now() - startTime;
-    console.log(`[PREDATOR] 📊 Session: ${totalMs}ms, ${tickCount} ticks | Hunter: ${zScoreFires.length} | Exits: ${autonomousExits.length} | OFI: ${Object.keys(ofiSnapshot).length} pairs | Hidden: ${hiddenPlayerAlerts} | Absorbing: ${absorbingPairs} | Slipping: ${slippingPairs} | SOLE STRATEGY: Predatory Hunter v2`);
-    console.log(`[PREDATOR_DIAG] 📊 FINAL: Scans=${gateDiag.total} | Blocked→ Density=${gateDiag.density} Warmup=${gateDiag.warmup} Hurst=${gateDiag.hurst} Eff=${gateDiag.efficiency} OFI_R=${gateDiag.ofiRatio} Weight=${gateDiag.weighting} KM=${gateDiag.kmDrift} VPIN_G=${gateDiag.vpinGhost} VPIN_M=${gateDiag.vpinMin} R3=${gateDiag.ruleOf3} | PASSED=${gateDiag.passed}`);
+    console.log(`[DAVID-ATLAS] 📊 Session: ${totalMs}ms, ${tickCount} ticks | Tunnels opened: ${tunnelFires.length} | Tunnel exits (gate flush): ${tunnelExits.length} | OFI pairs: ${Object.keys(ofiSnapshot).length}`);
+    console.log(`[DAVID-ATLAS-DIAG] 📊 FINAL: Scans=${gateDiag.total} | Density=${gateDiag.density} Warmup=${gateDiag.warmup} Hurst=${gateDiag.hurst} Eff=${gateDiag.efficiency} ZOfi=${gateDiag.zofi} VPIN=${gateDiag.vpin} R2=${gateDiag.ruleOf2} | TUNNELS_OPENED=${gateDiag.passed}`);
 
     return new Response(
       JSON.stringify({
         success: true,
-        version: "v8-predatory-hunter",
-        creditExhausted,
-        activeStrategies: ["predatory-hunter"],
+        version: "david-atlas-v1",
+        strategy: "david-atlas-tunnel",
+        activeStrategies: ["david-atlas"],
+        deactivated: ["predatory-hunter", "ghost-vacuum", "velocity-gating", "snapback-sniper"],
         streamDurationMs: totalMs,
         ticksProcessed: tickCount,
-        predatoryHunter: {
-          fired: zScoreFires.length, pairs: zScoreFires,
-          groups: correlationGroups.length, threshold: zScoreThreshold,
-          gates: { hurst: PREDATOR_HURST_MIN, efficiency: PREDATOR_EFFICIENCY_MIN, ofiRatioLong: PREDATOR_OFI_RATIO_LONG, ofiRatioShort: PREDATOR_OFI_RATIO_SHORT, weighting: PREDATOR_WEIGHTING_MIN, vpinMin: PREDATOR_VPIN_MIN, kmDriftMin: PREDATOR_KM_DRIFT_MIN, ruleOf3: PREDATOR_RULE_OF_3 },
-          strategy: "predatory-hunter-2026",
+        davidAtlas: {
+          tunnelsOpened: tunnelFires.length,
+          tunnelPairs: tunnelFires,
+          tunnelExits: tunnelExits.length,
+          tunnelExitPairs: tunnelExits,
+          gates: {
+            hurst: DA_HURST_MIN,
+            efficiency: DA_EFFICIENCY_MIN,
+            zOfi: DA_ZOFI_MIN,
+            vpinMin: DA_VPIN_MIN,
+            ruleOf2: DA_RULE_OF_2,
+            exitScanMs: EXIT_SCAN_INTERVAL_MS,
+          },
+          protocol: "4/4_gates=ENTER | any_gate_drop=MANDATORY_FLUSH | no_sl | no_tp",
         },
-        autonomousExits: { count: autonomousExits.length, trades: autonomousExits },
-        deactivated: ["ghost-vacuum", "velocity-gating", "snapback-sniper"],
         syntheticBook: {
-          version: "v8-predatory-hunter",
-          architecture: "O(1)_recursive_predatory_hunter",
+          version: "david-atlas-v1",
+          architecture: "O(1)_recursive",
           pairsTracked: Object.keys(ofiSnapshot).length,
           hiddenPlayerAlerts,
           absorbingPairs,
           slippingPairs,
-          gates: ["0:SIGNAL", "1:HURST≥0.60", "2:EFFICIENCY≥3.5", "3:OFI_RATIO", "4:WEIGHTING>50%", "VPIN≥0.45", "KM_DRIFT≥0.50", "RULE_OF_3"],
-          capabilities: [
-            "predatory_hunter_2026", "rule_of_3_verification",
-            "adaptive_km_gear_shift", "welford_z_ofi", "hall_wood_hurst",
-            "autonomous_exit_authority", "wall_stop_limit_entry",
-          ],
           snapshot: ofiSnapshot,
         },
-        slippageAudit: slippageSummary,
         timestamp: new Date().toISOString(),
       }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } },
     );
   } catch (err) {
-    console.error("[PREDATOR] Error:", err);
+    console.error("[DAVID-ATLAS] Error:", err);
     return new Response(
       JSON.stringify({ success: false, error: (err as Error).message }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
