@@ -14,11 +14,11 @@ import { cn } from '@/lib/utils';
 
 type TacticalState = 'FATIGUE' | 'ACTIVE' | 'CLIMAX' | 'STRIKE_READY' | 'SCANNING';
 
-// ─── CLIMAX PROTOCOL v2.0 — HARD-CODED THRESHOLDS (must match ripple-stream engine) ───
-const CLIMAX_EFFICIENCY_MIN = 100.0;   // E > 100x  — Liquidity Hole / Tsunami
-const CLIMAX_ZOFI_MIN = 2.5;           // |Z| > 2.5σ — Whale exhaustion
-const CLIMAX_VPIN_MIN = 0.60;          // VPIN > 0.60 — Toxicity threshold
-const CLIMAX_HURST_MIN = 0.62;         // H ≥ 0.62   — Regime persistence
+// ─── CLIMAX PROTOCOL — LEGACY THRESHOLDS ───────────────────────────────────
+const CLIMAX_EFFICIENCY_MIN = 7.0;    // E >= 7x  — Legacy threshold
+const CLIMAX_ZOFI_MIN = 2.5;          // |Z| > 2.5σ — Whale exhaustion
+const CLIMAX_VPIN_MIN = 0.60;         // VPIN > 0.60 — Toxicity threshold
+const CLIMAX_HURST_MIN = 0.62;        // H ≥ 0.62   — Regime persistence
 
 function deriveTacticalState(p: PairPhysics): TacticalState {
   const H = p.hurst?.H ?? 0;
@@ -26,8 +26,8 @@ function deriveTacticalState(p: PairPhysics): TacticalState {
   const vpin = p.vpin ?? 0;
   const absZ = Math.abs(p.zOfi ?? 0);
   if (H < 0.45) return 'FATIGUE';
-  // ALL states require the same 4 hard-coded Climax Protocol v2.0 gates
-  const allGatesOpen = H >= CLIMAX_HURST_MIN && eff > CLIMAX_EFFICIENCY_MIN && absZ > CLIMAX_ZOFI_MIN && vpin > CLIMAX_VPIN_MIN;
+  // ALL states require the same 4 legacy gates
+  const allGatesOpen = H >= CLIMAX_HURST_MIN && eff >= CLIMAX_EFFICIENCY_MIN && absZ > CLIMAX_ZOFI_MIN && vpin > CLIMAX_VPIN_MIN;
   if (!allGatesOpen) {
     if (H >= 0.55 && eff >= 1.5) return 'STRIKE_READY';
     return 'SCANNING';
