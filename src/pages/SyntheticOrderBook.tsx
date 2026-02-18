@@ -471,7 +471,7 @@ function IntelBriefPanel({ brief, stateMeta }: { brief: IntelBrief; stateMeta: {
 
 import React, { useState } from 'react';
 
-function TacticalUnit({ pair, data }: { pair: string; data: PairPhysics }) {
+function TacticalUnit({ pair, data, activeTrade }: { pair: string; data: PairPhysics; activeTrade?: { direction: string; created_at: string } | null }) {
   const p = data;
   const state = deriveTacticalState(p);
   const pulseSpeed = getPulseSpeed(p.zOfi ?? 0);
@@ -514,6 +514,19 @@ function TacticalUnit({ pair, data }: { pair: string; data: PairPhysics }) {
       style={{ '--pulse-speed': pulseSpeed } as React.CSSProperties}
     >
       {(state === 'ACTIVE' || state === 'CLIMAX') && <LightningSVG speed={pulseSpeed} />}
+
+      {/* ── Active Trade Banner ── */}
+      {activeTrade && (
+        <div className={cn(
+          'flex items-center justify-between px-3 py-1.5 text-[9px] font-mono font-bold tracking-widest uppercase border-b',
+          activeTrade.direction === 'long'
+            ? 'bg-green-500/20 text-green-300 border-green-500/30'
+            : 'bg-red-500/20 text-red-300 border-red-500/30'
+        )}>
+          <span>⚡ TUNNEL ACTIVE — {activeTrade.direction.toUpperCase()}</span>
+          <span>{Math.round((Date.now() - new Date(activeTrade.created_at).getTime()) / 1000)}s</span>
+        </div>
+      )}
 
       {/* ── Header ── */}
       <div className="px-4 pt-4 pb-3 space-y-1.5">
@@ -757,7 +770,7 @@ function GatePipeline({ gates }: { gates: string[] }) {
 // ─── Main Page ───────────────────────────────────────────────────────────────
 
 const SyntheticOrderBook = () => {
-  const { snapshot, loading, lastUpdated, refetch } = useSyntheticOrderBook(8_000);
+  const { snapshot, loading, lastUpdated, refetch, activeTrades } = useSyntheticOrderBook(3_000);
 
   const pairs = snapshot?.pairs ? Object.entries(snapshot.pairs).sort((a, b) =>
     Math.abs((b[1] as any).zOfi || 0) - Math.abs((a[1] as any).zOfi || 0)
@@ -857,9 +870,11 @@ const SyntheticOrderBook = () => {
         {!loading && activePairs.length > 0 && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.1 }}>
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-              {activePairs.map(([pair, data]) => (
-                <TacticalUnit key={pair} pair={pair} data={data as PairPhysics} />
-              ))}
+              {activePairs.map(([pair, data]) => {
+                const normalizedPair = pair.replace('/', '_');
+                const trade = activeTrades.find(t => t.currency_pair === normalizedPair || t.currency_pair === pair) || null;
+                return <TacticalUnit key={pair} pair={pair} data={data as PairPhysics} activeTrade={trade} />;
+              })}
             </div>
           </motion.div>
         )}
