@@ -151,12 +151,13 @@ function useClimaxEvents() {
 
   useEffect(() => {
     async function fetch() {
-      // Fetch ALL environments (practice + live) — filter by david-atlas strategy only
-      // Only show trades that are fully CLOSED (status=closed) with a closed_at timestamp
-      // OR currently LIVE (status=filled, no exit_price, no closed_at — truly still open at broker)
+      // Only fetch david-atlas trades — strict DB-level filter
+      // Require: oanda_trade_id (broker confirmed), entry_price present
+      // Include closed trades (status=closed, closed_at NOT NULL) + truly live fills (<30min)
       const { data } = await supabase
         .from('oanda_orders')
-        .select('id, currency_pair, direction, status, entry_price, exit_price, created_at, closed_at, oanda_trade_id, governance_payload, gate_result, gate_reasons, environment')
+        .select('id, currency_pair, direction, status, entry_price, exit_price, created_at, closed_at, oanda_trade_id, governance_payload, gate_result, gate_reasons, environment, direction_engine')
+        .eq('direction_engine', 'david-atlas')
         .in('status', ['filled', 'closed'])
         .not('oanda_trade_id', 'is', null)
         .not('entry_price', 'is', null)
@@ -165,13 +166,21 @@ function useClimaxEvents() {
 
       if (!data) { setLoading(false); return; }
 
-      // Only include rows from the david-atlas engine
-      const davidAtlas = data.filter((row) => {
-        const payload = row.governance_payload as any;
-        return payload?.strategy === 'david-atlas-tunnel-v1' || (row as any).direction_engine === 'david-atlas';
-      });
-
       const now = Date.now();
+
+      // Separate truly live trades from closed ones
+      // A trade is LIVE only if: filled at broker, no exit, no closed_at, opened <30 min ago
+      // Everything else must have a closed_at to be shown (excludes ghost/stale records)
+      const davidAtlas = data.filter((row) => {
+        const ageMs = now - new Date(row.created_at).getTime();
+        const isTrulyLive = row.status === 'filled'
+          && row.exit_price == null
+          && row.closed_at == null
+          && ageMs < 30 * 60 * 1000;
+
+        // Show: truly live trades OR properly closed trades (has closed_at)
+        return isTrulyLive || (row.status === 'closed' && row.closed_at != null);
+      });
 
       const mapped: ClimaxEvent[] = davidAtlas.map((row) => {
         const pair = row.currency_pair as string;
@@ -190,20 +199,11 @@ function useClimaxEvents() {
           pips = Math.round((dir === 'long' ? (exit - entry) : (entry - exit)) * mult * 10) / 10;
         }
 
-        // A trade is truly LIVE only if:
-        // - status is 'filled' (open at broker)
-        // - no exit_price recorded
-        // - no closed_at recorded
-        // - opened less than 30 minutes ago (Climax = fast 5-min scalp, anything older is a data issue)
-        const ageMs = now - createdAt.getTime();
-        const isTrulyLive = row.status === 'filled'
-          && exit == null
-          && closedAt == null
-          && ageMs < 30 * 60 * 1000; // < 30 min old
+        // Already filtered to truly-live or properly-closed; determine display result
+        const isOpen = row.status === 'filled' && exit == null && closedAt == null;
 
-        // Closed trades with no exit_price are data gaps — mark as BREAKEVEN not OPEN
         const result: ClimaxEvent['result'] =
-          isTrulyLive ? 'OPEN' :
+          isOpen       ? 'OPEN' :
           pips == null ? 'BREAKEVEN' :
           pips > 0.5   ? 'WIN' :
           pips < -0.5  ? 'LOSS' : 'BREAKEVEN';
