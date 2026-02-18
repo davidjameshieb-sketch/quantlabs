@@ -8,6 +8,7 @@ import { DashboardLayout } from '@/components/dashboard/DashboardLayout';
 import { IntelligenceModeBadge } from '@/components/dashboard/IntelligenceModeBadge';
 import { Badge } from '@/components/ui/badge';
 import { useSyntheticOrderBook, type PairPhysics } from '@/hooks/useSyntheticOrderBook';
+import { ClimaxBacktestLog } from '@/components/forex/floor-manager/ClimaxBacktestLog';
 import { cn } from '@/lib/utils';
 
 // ─── Tactical State ─────────────────────────────────────────────────────────
@@ -994,6 +995,11 @@ const SyntheticOrderBook = () => {
             <p className="text-xs mt-1 font-mono">The ripple-stream engine populates this when the market is open.</p>
           </div>
         )}
+
+        {/* ── Climax Backtest Log + Momentum Heatmap ── */}
+        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}>
+          <ClimaxBacktestLog />
+        </motion.div>
 
         {snapshot?.capabilities && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.15 }}
