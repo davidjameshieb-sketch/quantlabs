@@ -663,28 +663,28 @@ const ZSCORE_COOLDOWN_MS = 300_000; // 5 MINUTES between fires on same group (wa
 // ═══ DAVID & ATLAS — CLIMAX PROTOCOL THRESHOLDS (HARD-CODED — DO NOT CHANGE) ═══
 //
 // ┌──────────┬───────────────────────────────────────────────────────────────────┐
-// │ Gate     │ CLIMAX Entry AND Exit Threshold                                   │
+// │ Gate     │ CLIMAX Entry AND Exit Threshold (Legacy)                          │
 // ├──────────┼───────────────────────────────────────────────────────────────────┤
 // │ 1: Hurst │ H ≥ 0.62   — persistent trending regime                          │
-// │ 2: Eff   │ E > 100x   — Liq Hole / Tsunami (order book non-existent 1 side) │
+// │ 2: Eff   │ E ≥ 7x     — Legacy institutional threshold                      │
 // │ 3: Z-OFI │ |Z| > 2.5σ — Whale exhausting order block (extreme boundary)     │
 // │ 4: VPIN  │ > 0.60     — MM toxicity threshold (MMs about to pull liquidity) │
 // └──────────┴───────────────────────────────────────────────────────────────────┘
 //
-// EXIT: ANY gate drops below CLIMAX threshold → 3/4 gates → IMMEDIATE flush.
+// EXIT: ANY gate drops below threshold → 3/4 gates → IMMEDIATE flush.
 // ENTRY + EXIT use IDENTICAL thresholds. If it's not CLIMAX, there's no trade.
 
 const DA_HURST_MIN = 0.62;           // Gate 1: Persistent regime (unchanged)
-const DA_EFFICIENCY_MIN = 100.0;     // Gate 2: CLIMAX — Liq Hole / Tsunami (E > 100x)
-const DA_ZOFI_MIN = 2.5;             // Gate 3: CLIMAX — Whale exhausting order block (|Z| > 2.5σ)
-const DA_VPIN_MIN = 0.60;            // Gate 4: CLIMAX — MM toxicity threshold (VPIN > 0.60)
+const DA_EFFICIENCY_MIN = 7.0;       // Gate 2: Legacy — institutional threshold (E >= 7x)
+const DA_ZOFI_MIN = 2.5;             // Gate 3: Whale exhausting order block (|Z| > 2.5σ)
+const DA_VPIN_MIN = 0.60;            // Gate 4: MM toxicity threshold (VPIN > 0.60)
 const DA_VPIN_GHOST_MAX = 0.15;      // Ghost move block: VPIN < 0.15 = retail noise, never enter
 
-// EXIT uses IDENTICAL CLIMAX thresholds — no separate lower thresholds.
-// The moment ANY metric drops below CLIMAX level → 3/4 gates → mandatory flush.
-const DA_EXIT_EFFICIENCY_MIN = 100.0; // Exit: Efficiency must stay in CLIMAX (E > 100x)
-const DA_EXIT_VPIN_MIN = 0.60;        // Exit: VPIN must stay in CLIMAX (> 0.60)
-const DA_EXIT_ZOFI_MIN = 2.5;         // Exit: |Z-OFI| must stay at CLIMAX level (> 2.5σ)
+// EXIT uses IDENTICAL thresholds — no separate lower thresholds.
+// The moment ANY metric drops below threshold → 3/4 gates → mandatory flush.
+const DA_EXIT_EFFICIENCY_MIN = 7.0;   // Exit: Efficiency must stay >= 7x (legacy)
+const DA_EXIT_VPIN_MIN = 0.60;        // Exit: VPIN must stay > 0.60
+const DA_EXIT_ZOFI_MIN = 2.5;         // Exit: |Z-OFI| must stay > 2.5σ
 
 // Rule of 2: Require 2 consecutive CLIMAX ticks before entry (anti-noise, anti-lag)
 const DA_RULE_OF_2 = 2;
@@ -894,7 +894,7 @@ Deno.serve(async (req) => {
       );
     }
 
-    console.log(`[CLIMAX] ⚡ CLIMAX PROTOCOL ACTIVE | ${instruments.size} pairs | ENTRY: Hurst≥${DA_HURST_MIN} | Eff>${DA_EFFICIENCY_MIN}x | |Z-OFI|>${DA_ZOFI_MIN}σ | VPIN>${DA_VPIN_MIN} | Rule-of-${DA_RULE_OF_2} | EXIT: identical CLIMAX thresholds — 3/4 gate = instant flush`);
+    console.log(`[CLIMAX] ⚡ LEGACY PROTOCOL ACTIVE | ${instruments.size} pairs | ENTRY: Hurst≥${DA_HURST_MIN} | Eff≥${DA_EFFICIENCY_MIN}x | |Z-OFI|>${DA_ZOFI_MIN}σ | VPIN>${DA_VPIN_MIN} | Rule-of-${DA_RULE_OF_2} | EXIT: 3/4 gate drop = instant flush`);
 
     // ─── 4. Open OANDA stream ───
     const instrumentList = Array.from(instruments).join(",");
@@ -1358,7 +1358,7 @@ Deno.serve(async (req) => {
                       : (zOfiExit <= -DA_EXIT_ZOFI_MIN);  // Short: Z must stay below -2.5σ
 
                     const gate1Hurst      = exitTracker.hurst >= DA_HURST_MIN;
-                    const gate2Efficiency = efficiencyExit >= DA_EXIT_EFFICIENCY_MIN;  // must stay > 100x
+                    const gate2Efficiency = efficiencyExit >= DA_EXIT_EFFICIENCY_MIN;  // must stay >= 7x (legacy)
                     const gate3ZOfi       = zOfiAtClimaxLevel;                          // must stay > ±2.5σ
                     const gate4Vpin       = exitTracker.vpinRecursive >= DA_EXIT_VPIN_MIN; // must stay > 0.60
 
@@ -1441,8 +1441,8 @@ Deno.serve(async (req) => {
                 daState.consecutivePassCount = 0; gateDiag.hurst++; continue;
               }
 
-              // ─── GATE 2: EFFICIENCY > 100x — Liq Hole / Tsunami ───
-              // Order book effectively non-existent on one side. Price rockets/slips with zero friction.
+              // ─── GATE 2: EFFICIENCY >= 7x — Legacy institutional threshold ───
+              // Identifies institutional displacement where order flow is unbalanced.
               if (efficiencyDA < DA_EFFICIENCY_MIN) {
                 daState.consecutivePassCount = 0; gateDiag.efficiency++; continue;
               }
