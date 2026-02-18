@@ -146,11 +146,13 @@ function useClimaxEvents() {
     async function fetch() {
       const { data } = await supabase
         .from('oanda_orders')
-        .select('id, currency_pair, direction, status, entry_price, exit_price, created_at, closed_at')
-        .in('status', ['filled', 'closed', 'open'])
+        .select('id, currency_pair, direction, status, entry_price, exit_price, created_at, closed_at, oanda_trade_id')
+        .in('status', ['filled', 'closed'])
         .eq('environment', 'live')
+        .not('oanda_trade_id', 'is', null)
+        .not('entry_price', 'is', null)
         .order('created_at', { ascending: false })
-        .limit(100);
+        .limit(200);
 
       if (!data) { setLoading(false); return; }
 
@@ -171,8 +173,10 @@ function useClimaxEvents() {
           pips = Math.round((dir === 'long' ? (exit - entry) : (entry - exit)) * mult * 10) / 10;
         }
 
+        // 'filled' = currently open at broker (has trade_id but no exit yet)
+        // 'closed' = completed trade with exit_price
         const result: ClimaxEvent['result'] =
-          row.status === 'filled' || row.status === 'open' ? 'OPEN' :
+          row.status === 'filled' && exit == null ? 'OPEN' :
           pips == null ? 'OPEN' :
           pips > 0.5   ? 'WIN' :
           pips < -0.5  ? 'LOSS' : 'BREAKEVEN';
