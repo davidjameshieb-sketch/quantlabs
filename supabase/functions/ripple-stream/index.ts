@@ -821,7 +821,7 @@ Deno.serve(async (req) => {
       .maybeSingle();
     if (ceState?.payload?.exhausted === true) {
       creditExhausted = true;
-      console.log("[STRIKE-v3] 🔋 CREDIT EXHAUSTION ACTIVE — Predatory Hunter is sole strategy. DGE fallback engaged.");
+      console.log("[DAVID-ATLAS] 🔋 CREDIT EXHAUSTION ACTIVE — DGE fallback engaged. David & Atlas tunnel strategy remains active.");
     }
   } catch { /* non-critical — default to all strategies enabled */ }
 
@@ -947,6 +947,8 @@ Deno.serve(async (req) => {
 
     const tunnelFires: string[] = [];
     const tunnelExits: string[] = [];
+    // ─── Close In-Flight Guard: prevents TRADE_DOESNT_EXIST spam on repeated 500ms scans ───
+    const closeInFlight = new Set<string>(); // keyed by oanda_trade_id
     const startTime = Date.now();
     let tickCount = 0;
     let lastExitScanTs = 0;
@@ -1115,6 +1117,13 @@ Deno.serve(async (req) => {
       reason: string,
     ): Promise<void> {
       if (LIVE_ENABLED !== "true") return;
+      // ─── Close In-Flight Guard: prevents TRADE_DOESNT_EXIST broker spam ───
+      const tradeKey = openTrade.oanda_trade_id || openTrade.id;
+      if (closeInFlight.has(tradeKey)) {
+        console.log(`[DAVID-ATLAS] ⏭ CLOSE GUARD: ${instrument} close already in-flight (${tradeKey}) — skipping duplicate flush`);
+        return;
+      }
+      closeInFlight.add(tradeKey);
       console.log(`[DAVID-ATLAS] 🚪 TUNNEL FLUSH: ${instrument} ${openTrade.direction} | ${reason}`);
       try {
         const closeRes = await fetch(
@@ -1211,8 +1220,18 @@ Deno.serve(async (req) => {
                     ? Date.now() - new Date(openTrade.created_at).getTime()
                     : DA_MIN_HOLD_MS + 1;
 
-                  if (tradeAgeMs < DA_MIN_HOLD_MS) {
-                    console.log(`[DAVID-ATLAS] 🛡️ MIN_HOLD: ${instrument} age=${Math.round(tradeAgeMs/1000)}s < ${DA_MIN_HOLD_MS/1000}s — exit suppressed`);
+                  // ─── PRIORITY-0 INTERRUPT: Z-OFI Zero-Cross ───
+                  // BYPASSES MIN_HOLD — fires immediately regardless of trade age.
+                  // Institutional intent has FLIPPED. Tunnel collapsed. Mandatory P0 flush.
+                  const zOfiExitP0 = exitTracker.zOfi;
+                  const isLongP0 = openTrade.direction === "long";
+                  const zOfiZeroCrossP0 = isLongP0 ? (zOfiExitP0 <= 0) : (zOfiExitP0 >= 0);
+                  if (zOfiZeroCrossP0 && exitTracker.tickCount >= 20) {
+                    const p0Reason = `Z-OFI_ZERO_CROSS (P0): Z=${zOfiExitP0.toFixed(3)} crossed zero — institutional intent reversed. Mandatory P0 flush.`;
+                    console.log(`[DAVID-ATLAS] ⚡ ZERO-CROSS P0 EXIT (bypassing MIN_HOLD): ${instrument} | ${p0Reason}`);
+                    await davidAtlasFlush(openTrade, instrument, p0Reason);
+                  } else if (tradeAgeMs < DA_MIN_HOLD_MS) {
+                    console.log(`[DAVID-ATLAS] 🛡️ MIN_HOLD: ${instrument} age=${Math.round(tradeAgeMs/1000)}s < ${DA_MIN_HOLD_MS/1000}s — gate-flush suppressed`);
                   } else {
                     // ─── DAVID & ATLAS: 4-Gate Active State Check ───
                     // Compute exact same gates used for entry. If ANY fails → Tunnel collapsed → FLUSH.
@@ -1224,17 +1243,9 @@ Deno.serve(async (req) => {
                     const zOfiExit = exitTracker.zOfi;
                     const isLong = openTrade.direction === "long";
 
-                    // ─── PRIORITY-0 INTERRUPT: Z-OFI Zero-Cross ───
-                    // If Z-OFI crosses ZERO (reverses sign), institutional intent has FLIPPED.
-                    // This is a secondary exit trigger that fires even if other 3 gates are green.
-                    // Fires regardless of gate count — it represents instantaneous consensus reversal.
-                    const zOfiZeroCross = isLong ? (zOfiExit <= 0) : (zOfiExit >= 0);
-                    if (zOfiZeroCross && exitTracker.tickCount >= 20) {
-                      const zeroCrossReason = `Z-OFI_ZERO_CROSS: Z=${zOfiExit.toFixed(3)} crossed zero — institutional intent reversed. Mandatory P0 flush.`;
-                      console.log(`[DAVID-ATLAS] ⚡ ZERO-CROSS EXIT: ${instrument} | ${zeroCrossReason}`);
-                      await davidAtlasFlush(openTrade, instrument, zeroCrossReason);
-                    } else {
-                      // Determine direction-aligned Z-OFI gate
+                    // ─── DAVID & ATLAS: 4-Gate Active State Check ───
+                    // (P0 Z-OFI zero-cross is handled above, bypassing MIN_HOLD)
+                    // Determine direction-aligned Z-OFI gate
                       const zOfiAligned = isLong ? (zOfiExit >= DA_ZOFI_MIN) : (zOfiExit <= -DA_ZOFI_MIN);
 
                       // Evaluate all 4 gates (same thresholds as entry)
@@ -1260,7 +1271,6 @@ Deno.serve(async (req) => {
                         // Tunnel still active — log state
                         console.log(`[DAVID-ATLAS] 🟢 TUNNEL ACTIVE: ${instrument} ${openTrade.direction} | 4/4 gates | H=${exitTracker.hurst.toFixed(3)} E=${efficiencyExit.toFixed(2)} Z=${zOfiExit.toFixed(2)} VPIN=${exitTracker.vpinRecursive.toFixed(3)}`);
                       }
-                    }
                   }
                 }
               }
@@ -1424,13 +1434,8 @@ Deno.serve(async (req) => {
     }
 
     // ─── 8. Session summary ───
-    const slippageSummary: Record<string, { avgSlippage: number; fills: number; switchedToLimit: boolean }> = {};
-    for (const [pair, sa] of slippageAudit.entries()) {
-      slippageSummary[pair] = {
-        avgSlippage: sa.fills > 0 ? Math.round((sa.totalSlippage / sa.fills) * 100) / 100 : 0,
-        fills: sa.fills, switchedToLimit: sa.switchedToLimit,
-      };
-    }
+    // NOTE: slippageAudit removed — David & Atlas uses FOK orders, slippage tracked per-fill in oanda_orders table.
+    const slippageSummary: Record<string, unknown> = {};
 
     // ─── O(1) Recursive Snapshot: read directly from tracker state (no recomputation) ───
     const ofiSnapshot: Record<string, unknown> = {};
