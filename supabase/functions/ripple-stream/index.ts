@@ -828,76 +828,49 @@ Deno.serve(async (req) => {
   try {
     const now = new Date();
 
-    // ─── 1. Load General Staff orders (AI governance: sizing, regime) ───
+  // ─── 1. Load David & Atlas governance config ───
     const { data: governanceConfig } = await supabase
       .from("sovereign_memory")
       .select("payload")
-      .eq("memory_key", "zscore_strike_config")
+      .eq("memory_key", "david_atlas_config")
       .maybeSingle();
 
     const govPayload = governanceConfig?.payload as Record<string, unknown> | null;
     const baseUnits: number = (govPayload?.units as number) || 1000;
-    const baseSlPips: number = (govPayload?.slPips as number) || 8;
-    const baseTpPips: number = (govPayload?.tpPips as number) || 30;
-    const zScoreThreshold: number = (govPayload?.zScoreThreshold as number) || ZSCORE_FIRE_THRESHOLD;
     const blockedPairs: string[] = (govPayload?.blockedPairs as string[]) || [];
 
-    // ─── 2. Load velocity & snapback config ───
-    const { data: velocityConfig } = await supabase
-      .from("sovereign_memory")
-      .select("payload")
-      .eq("memory_key", "velocity_gating_config")
-      .maybeSingle();
+    // ─── 2. Load blocked pairs override from circuit breaker ───
+    const { data: circuitBypasses } = await supabase
+      .from("gate_bypasses")
+      .select("gate_id, pair")
+      .eq("revoked", false)
+      .gt("expires_at", new Date().toISOString())
+      .like("gate_id", "CIRCUIT_BREAKER:%");
 
-    const velocityPairs: string[] = (velocityConfig?.payload as any)?.pairs || [
-      "EUR_USD", "GBP_USD", "USD_JPY", "AUD_USD", "USD_CAD",
-      "EUR_JPY", "GBP_JPY", "EUR_GBP", "NZD_USD",
-    ];
-    const velocityUnits: number = (velocityConfig?.payload as any)?.units || baseUnits;
-    const velocitySlPips: number = (velocityConfig?.payload as any)?.slPips || baseSlPips;
-    const velocityTpPips: number = (velocityConfig?.payload as any)?.tpPips || baseTpPips;
-
-    const { data: snapbackConfig } = await supabase
-      .from("sovereign_memory")
-      .select("payload")
-      .eq("memory_key", "snapback_sniper_config")
-      .maybeSingle();
-
-    const snapbackPairs: string[] = (snapbackConfig?.payload as any)?.pairs || [
-      "EUR_USD", "GBP_USD", "USD_JPY", "GBP_JPY", "AUD_USD",
-    ];
-    const snapbackUnits: number = (snapbackConfig?.payload as any)?.units || baseUnits;
-    const snapbackSlPips: number = (snapbackConfig?.payload as any)?.slPips || 6;
-    const snapbackTpPips: number = (snapbackConfig?.payload as any)?.tpPips || 12;
-
-    // ─── 3. Load correlation groups (can be overridden by General Staff) ───
-    const { data: corrGroupConfig } = await supabase
-      .from("sovereign_memory")
-      .select("payload")
-      .eq("memory_key", "correlation_groups_config")
-      .maybeSingle();
-
-    const correlationGroups = (corrGroupConfig?.payload as any)?.groups || DEFAULT_CORRELATION_GROUPS;
-
-    // ─── 4. Build instrument set ───
-    const instruments = new Set<string>();
-    for (const g of correlationGroups) {
-      if (!blockedPairs.includes(g.pairA)) instruments.add(g.pairA);
-      if (!blockedPairs.includes(g.pairB)) instruments.add(g.pairB);
+    const circuitActive = (circuitBypasses?.length ?? 0) > 0;
+    if (circuitActive) {
+      console.log(`[DAVID-ATLAS] 🚨 CIRCUIT BREAKER ACTIVE — all entries blocked`);
     }
-    for (const p of velocityPairs) if (!blockedPairs.includes(p)) instruments.add(p);
-    for (const p of snapbackPairs) if (!blockedPairs.includes(p)) instruments.add(p);
+
+    // ─── 3. Build instrument set — David & Atlas pairs ───
+    const DA_PAIRS = [
+      "EUR_USD", "GBP_USD", "USD_JPY", "AUD_USD", "USD_CAD",
+      "EUR_JPY", "GBP_JPY", "EUR_GBP", "NZD_USD", "AUD_JPY",
+    ];
+    const instruments = new Set<string>(
+      DA_PAIRS.filter(p => !blockedPairs.includes(p))
+    );
 
     if (instruments.size === 0) {
       return new Response(
-        JSON.stringify({ success: true, evaluated: 0, message: "No instruments — General Staff has blocked all pairs" }),
+        JSON.stringify({ success: true, evaluated: 0, message: "No instruments — all pairs blocked" }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" } },
       );
     }
 
-    console.log(`[STRIKE-v3] ⚡ Z-Score Strike Engine | ${correlationGroups.length} z-groups, ${velocityPairs.length} velocity, ${snapbackPairs.length} snapback | ${instruments.size} instruments | threshold z>${zScoreThreshold}`);
+    console.log(`[DAVID-ATLAS] ⚡ Tunnel Engine v2 | ${instruments.size} pairs | Hurst≥${DA_HURST_MIN} Eff≥${DA_EFFICIENCY_MIN} |Z-OFI|≥${DA_ZOFI_MIN} VPIN≥${DA_VPIN_MIN} | Rule-of-2`);
 
-    // ─── 5. Open OANDA stream ───
+    // ─── 4. Open OANDA stream ───
     const instrumentList = Array.from(instruments).join(",");
     const streamRes = await fetch(
       `${OANDA_STREAM}/accounts/${OANDA_ACCOUNT}/pricing/stream?instruments=${instrumentList}&snapshot=true`,
@@ -913,16 +886,9 @@ Deno.serve(async (req) => {
       );
     }
 
-    // ─── 6. Initialize trackers ───
+    // ─── 5. Initialize trackers ───
     const prices = new Map<string, { bid: number; ask: number; mid: number; spread: number; spreadPips: number }>();
-    const zScoreTrackers = new Map<string, ZScoreTracker>();
     const velocityTrackers = new Map<string, VelocityTracker>();
-    const snapbackTrackers = new Map<string, SnapBackTracker>();
-    const slippageAudit = new Map<string, SlippageRecord>();
-    const zScoreFires: string[] = [];
-    const velocityFires: string[] = [];
-    const snapbackFires: string[] = [];
-    const ghostVacuumFires: string[] = [];
 
     // ═══ DAVID & ATLAS: Per-Instrument State ═══
     const davidAtlasState = new Map<string, {
@@ -954,17 +920,8 @@ Deno.serve(async (req) => {
       }
     } catch { /* non-critical */ }
 
-    // ═══ GATE DIAGNOSTICS: Track which gates kill signals ═══
-    const gateDiag = { total: 0, density: 0, warmup: 0, hurst: 0, efficiency: 0, ofiRatio: 0, weighting: 0, kmDrift: 0, vpinGhost: 0, vpinMin: 0, ruleOf3: 0, passed: 0 };
-    let lastDiagTs = 0;
-    const autonomousExits: string[] = [];
-    const startTime = Date.now();
-    let tickCount = 0;
-    let lastExitScanTs = 0;
-    const EXIT_SCAN_INTERVAL_MS = 2000; // Scan open trades every 2s on tick data
-
-    // ═══ GATE DIAGNOSTICS: Track which gates block signals ═══
-    const gateDiag = { total: 0, density: 0, warmup: 0, hurst: 0, efficiency: 0, zofi: 0, vpin: 0, ruleOf2: 0, passed: 0 };
+    // ═══ GATE DIAGNOSTICS (single declaration) ═══
+    const gateDiag = { total: 0, density: 0, warmup: 0, hurst: 0, efficiency: 0, zofi: 0, vpin: 0, ruleOf2: 0, circuit: 0, passed: 0 };
     let lastDiagTs = 0;
 
     // ─── David & Atlas: Load open trades for exit monitoring ───
@@ -982,7 +939,7 @@ Deno.serve(async (req) => {
     }
     console.log(`[DAVID-ATLAS] 🎯 Tunnel monitoring ${exitTradeMap.size} open trades`);
 
-    // Init velocity trackers for all instruments (needed for Lee-Ready tick classification)
+    // Init velocity trackers for all instruments
     for (const p of instruments) {
       if (!velocityTrackers.has(p)) velocityTrackers.set(p, { ticks: [], lastFireTs: 0 });
     }
@@ -1007,16 +964,24 @@ Deno.serve(async (req) => {
       .single();
 
     // ─── David & Atlas: Execute MARKET order — no SL, no TP ───
-    // The Tunnel strategy has zero stop loss and zero take profit.
+    // TUNNEL PROTOCOL: Zero stop loss, zero take profit.
     // The 3/4 gate flush IS the only exit authority.
+    // MARGIN GUARD: Pre-calculates margin required; self-corrects lot size if NAV insufficient.
+    // IOC (FOK): Fill at whale-shadow price or not at all — zero partial fill risk.
     async function davidAtlasEnter(
       pair: string,
       direction: string,
-      units: number,
+      requestedUnits: number,
       currentPrice: { mid: number; spreadPips: number },
     ): Promise<{ success: boolean; tradeId?: string; fillPrice?: number; slippage?: number }> {
       if (LIVE_ENABLED !== "true") {
-        console.log(`[DAVID-ATLAS] 🔇 Would fire ${direction} ${units} ${pair} — LIVE DISABLED`);
+        console.log(`[DAVID-ATLAS] 🔇 Would fire ${direction} ${requestedUnits} ${pair} — LIVE DISABLED`);
+        return { success: false };
+      }
+
+      // ─── L0 HARD GATE: Circuit breaker ───
+      if (circuitActive) {
+        console.log(`[DAVID-ATLAS] 🚨 CIRCUIT BREAKER: Entry blocked — all trading halted`);
         return { success: false };
       }
 
@@ -1034,11 +999,49 @@ Deno.serve(async (req) => {
         return { success: false };
       }
 
+      // ─── MARGIN GUARD: Fetch live NAV and pre-calculate required margin ───
+      // Self-corrects lot size to fit available margin — prevents rejections on small accounts.
+      let units = requestedUnits;
+      try {
+        const acctRes = await fetch(
+          `${OANDA_API}/accounts/${OANDA_ACCOUNT}/summary`,
+          { headers: { Authorization: `Bearer ${OANDA_TOKEN}` } },
+        );
+        if (acctRes.ok) {
+          const acctData = await acctRes.json();
+          const nav = parseFloat(acctData.account?.NAV || acctData.account?.balance || "0");
+          const marginRate = parseFloat(acctData.account?.marginRate || "0.02"); // default 2% margin
+          const isJPY = pair.includes("JPY");
+          // Approximate notional in account currency (USD base assumption)
+          const priceForMargin = currentPrice.mid;
+          const notional = isJPY ? (units / priceForMargin) : (units * priceForMargin);
+          const requiredMargin = notional * marginRate;
+          const marginAvailable = parseFloat(acctData.account?.marginAvailable || String(nav));
+
+          if (requiredMargin > marginAvailable * 0.9) {
+            // Self-correct: reduce units to use at most 90% of available margin
+            const maxSafeNotional = (marginAvailable * 0.9) / marginRate;
+            const correctedUnits = isJPY
+              ? Math.floor(maxSafeNotional * priceForMargin / 1000) * 1000
+              : Math.floor(maxSafeNotional / priceForMargin / 1000) * 1000;
+
+            if (correctedUnits < 1000) {
+              console.log(`[DAVID-ATLAS] 🛡 MARGIN GUARD: Insufficient margin (NAV=$${nav.toFixed(2)}, need $${requiredMargin.toFixed(2)}) — BLOCKED`);
+              return { success: false };
+            }
+            console.log(`[DAVID-ATLAS] 🔧 MARGIN GUARD: Self-corrected ${pair} ${requestedUnits} → ${correctedUnits} units (NAV=$${nav.toFixed(2)}, margin avail=$${marginAvailable.toFixed(2)})`);
+            units = correctedUnits;
+          }
+        }
+      } catch (marginErr) {
+        console.warn(`[DAVID-ATLAS] ⚠️ Margin guard fetch failed (non-critical):`, marginErr);
+      }
+
       const dirUnits = direction === "long" ? units : -units;
-      const isJPYPair = pair.includes("JPY");
-      const pricePrecision = isJPYPair ? 3 : 5;
 
       // NO stopLossOnFill, NO takeProfitOnFill — pure tunnel
+      // FOK (Fill or Kill) = atomic IOC: filled at whale-shadow price or cancelled instantly.
+      // Eliminates partial fills and dangerous slippage in liquidity vacuums.
       const orderBody = {
         order: {
           type: "MARKET",
@@ -1081,14 +1084,17 @@ Deno.serve(async (req) => {
               direction_engine: "david-atlas",
               sovereign_override_tag: `david-atlas:${pair}`,
               confidence_score: 1.0, // 4/4 gates = maximum institutional consensus
-              governance_payload: { strategy: "david-atlas-tunnel-v1", pair, direction, slippagePips },
+              governance_payload: {
+                strategy: "david-atlas-tunnel-v1", pair, direction, slippagePips,
+                requestedUnits, actualUnits: units, marginGuardApplied: units !== requestedUnits,
+              },
               requested_price: currentPrice.mid,
               slippage_pips: slippagePips,
               spread_at_entry: currentPrice.spreadPips,
             });
           }
 
-          console.log(`[DAVID-ATLAS] ✅ TUNNEL OPEN: ${tradeId} @ ${fillPrice} | ${direction.toUpperCase()} ${units} ${pair} | slip ${slippagePips.toFixed(2)}p | NO SL | NO TP`);
+          console.log(`[DAVID-ATLAS] ✅ TUNNEL OPEN: ${tradeId} @ ${fillPrice} | ${direction.toUpperCase()} ${units} ${pair} | slip ${slippagePips.toFixed(2)}p | NO SL | NO TP | ATOMIC FOK`);
           return { success: true, tradeId, fillPrice, slippage: slippagePips };
         } else {
           const rejectReason = orderData.orderRejectTransaction?.rejectReason || "Unknown";
@@ -1209,42 +1215,50 @@ Deno.serve(async (req) => {
                   } else {
                     // ─── DAVID & ATLAS: 4-Gate Active State Check ───
                     // Compute exact same gates used for entry. If ANY fails → Tunnel collapsed → FLUSH.
-                    const d2Floor = Math.max(Math.abs(exitTracker.D2), 1e-14);
-                    const sqrtD2Exit = Math.sqrt(d2Floor);
                     const pipMultExit = instrument.includes("JPY") ? 100 : 10000;
                     const absD1Exit = Math.abs(exitTracker.D1);
                     const absOfiExit = Math.abs(exitTracker.ofiRecursive);
                     const ofiScaledExit = absOfiExit / pipMultExit;
-                    const d1PipVelExit = absD1Exit * pipMultExit;
-                    const efficiencyExit = ofiScaledExit / (d1PipVelExit + EFFICIENCY_EPSILON);
+                    const efficiencyExit = ofiScaledExit / (absD1Exit + EFFICIENCY_EPSILON);
                     const zOfiExit = exitTracker.zOfi;
-
-                    // Determine direction-aligned Z-OFI gate
                     const isLong = openTrade.direction === "long";
-                    const zOfiAligned = isLong ? (zOfiExit >= DA_ZOFI_MIN) : (zOfiExit <= -DA_ZOFI_MIN);
 
-                    // Evaluate all 4 gates (same thresholds as entry)
-                    const gate1Hurst = exitTracker.hurst >= DA_HURST_MIN;
-                    const gate2Efficiency = efficiencyExit >= DA_EFFICIENCY_MIN;
-                    const gate3ZOfi = zOfiAligned;
-                    const gate4Vpin = exitTracker.vpinRecursive >= DA_VPIN_MIN;
-
-                    const gatesOpen = [gate1Hurst, gate2Efficiency, gate3ZOfi, gate4Vpin].filter(Boolean).length;
-
-                    if (gatesOpen < 4) {
-                      // TUNNEL COLLAPSED — mandatory MarketClose()
-                      const failedGates = [
-                        !gate1Hurst ? `HURST(${exitTracker.hurst.toFixed(3)}<${DA_HURST_MIN})` : null,
-                        !gate2Efficiency ? `EFF(${efficiencyExit.toFixed(2)}<${DA_EFFICIENCY_MIN})` : null,
-                        !gate3ZOfi ? `ZOFI(${zOfiExit.toFixed(2)} not ${isLong ? "≥" : "≤"}${isLong ? DA_ZOFI_MIN : -DA_ZOFI_MIN})` : null,
-                        !gate4Vpin ? `VPIN(${exitTracker.vpinRecursive.toFixed(3)}<${DA_VPIN_MIN})` : null,
-                      ].filter(Boolean).join(" | ");
-
-                      const flushReason = `3/${4-gatesOpen+1}_GATE_FLUSH: ${gatesOpen}/4 gates open. Failed: ${failedGates}`;
-                      await davidAtlasFlush(openTrade, instrument, flushReason);
+                    // ─── PRIORITY-0 INTERRUPT: Z-OFI Zero-Cross ───
+                    // If Z-OFI crosses ZERO (reverses sign), institutional intent has FLIPPED.
+                    // This is a secondary exit trigger that fires even if other 3 gates are green.
+                    // Fires regardless of gate count — it represents instantaneous consensus reversal.
+                    const zOfiZeroCross = isLong ? (zOfiExit <= 0) : (zOfiExit >= 0);
+                    if (zOfiZeroCross && exitTracker.tickCount >= 20) {
+                      const zeroCrossReason = `Z-OFI_ZERO_CROSS: Z=${zOfiExit.toFixed(3)} crossed zero — institutional intent reversed. Mandatory P0 flush.`;
+                      console.log(`[DAVID-ATLAS] ⚡ ZERO-CROSS EXIT: ${instrument} | ${zeroCrossReason}`);
+                      await davidAtlasFlush(openTrade, instrument, zeroCrossReason);
                     } else {
-                      // Tunnel still active — log state
-                      console.log(`[DAVID-ATLAS] 🟢 TUNNEL ACTIVE: ${instrument} ${openTrade.direction} | 4/4 gates | H=${exitTracker.hurst.toFixed(3)} E=${efficiencyExit.toFixed(2)} Z=${zOfiExit.toFixed(2)} VPIN=${exitTracker.vpinRecursive.toFixed(3)}`);
+                      // Determine direction-aligned Z-OFI gate
+                      const zOfiAligned = isLong ? (zOfiExit >= DA_ZOFI_MIN) : (zOfiExit <= -DA_ZOFI_MIN);
+
+                      // Evaluate all 4 gates (same thresholds as entry)
+                      const gate1Hurst = exitTracker.hurst >= DA_HURST_MIN;
+                      const gate2Efficiency = efficiencyExit >= DA_EFFICIENCY_MIN;
+                      const gate3ZOfi = zOfiAligned;
+                      const gate4Vpin = exitTracker.vpinRecursive >= DA_VPIN_MIN;
+
+                      const gatesOpen = [gate1Hurst, gate2Efficiency, gate3ZOfi, gate4Vpin].filter(Boolean).length;
+
+                      if (gatesOpen < 4) {
+                        // TUNNEL COLLAPSED — mandatory MarketClose()
+                        const failedGates = [
+                          !gate1Hurst ? `HURST(${exitTracker.hurst.toFixed(3)}<${DA_HURST_MIN})` : null,
+                          !gate2Efficiency ? `EFF(${efficiencyExit.toFixed(2)}<${DA_EFFICIENCY_MIN})` : null,
+                          !gate3ZOfi ? `ZOFI(${zOfiExit.toFixed(2)} not ${isLong ? "≥" : "≤"}${isLong ? DA_ZOFI_MIN : -DA_ZOFI_MIN})` : null,
+                          !gate4Vpin ? `VPIN(${exitTracker.vpinRecursive.toFixed(3)}<${DA_VPIN_MIN})` : null,
+                        ].filter(Boolean).join(" | ");
+
+                        const flushReason = `3/4_GATE_FLUSH: ${gatesOpen}/4 gates open. Failed: ${failedGates}`;
+                        await davidAtlasFlush(openTrade, instrument, flushReason);
+                      } else {
+                        // Tunnel still active — log state
+                        console.log(`[DAVID-ATLAS] 🟢 TUNNEL ACTIVE: ${instrument} ${openTrade.direction} | 4/4 gates | H=${exitTracker.hurst.toFixed(3)} E=${efficiencyExit.toFixed(2)} Z=${zOfiExit.toFixed(2)} VPIN=${exitTracker.vpinRecursive.toFixed(3)}`);
+                      }
                     }
                   }
                 }
