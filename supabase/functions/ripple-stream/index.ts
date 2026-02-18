@@ -1063,14 +1063,15 @@ Deno.serve(async (req) => {
       // NO stopLossOnFill, NO takeProfitOnFill — pure tunnel
       // FOK (Fill or Kill) = atomic IOC: filled at whale-shadow price or cancelled instantly.
       // Eliminates partial fills and dangerous slippage in liquidity vacuums.
-      // GFD (Good-For-Day) fills at best available price — FOK was being cancelled
-      // because OANDA requires exact liquidity at mid price for FOK which never happens in FX
+      // OANDA MARKET orders only accept FOK or IOC as timeInForce.
+      // GFD is for limit/stop orders only — causes TIME_IN_FORCE_INVALID on practice + live.
+      // Using FOK: atomic fill-or-cancel at best available price.
       const orderBody = {
         order: {
           type: "MARKET",
           instrument: pair,
           units: String(dirUnits),
-          timeInForce: "GFD",
+          timeInForce: "FOK",
         },
       };
 
