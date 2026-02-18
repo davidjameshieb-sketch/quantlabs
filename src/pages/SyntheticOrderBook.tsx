@@ -12,7 +12,11 @@ import { cn } from '@/lib/utils';
 
 // ─── Tactical State ─────────────────────────────────────────────────────────
 
-type TacticalState = 'FATIGUE' | 'ACTIVE' | 'CLIMAX' | 'STRIKE_READY' | 'SCANNING';
+// COOLDOWN: 2-min per-pair cooldown after trade closes (mirrors engine DA_COOLDOWN_MS)
+const COOLDOWN_MS = 2 * 60 * 1000;
+const recentCloseMap = new Map<string, number>(); // pair → close timestamp
+
+type TacticalState = 'FATIGUE' | 'ACTIVE' | 'CLIMAX' | 'STRIKE_READY' | 'SCANNING' | 'COOLDOWN';
 
 function deriveTacticalState(p: PairPhysics): TacticalState {
   const H = p.hurst?.H ?? 0;
@@ -469,30 +473,57 @@ function IntelBriefPanel({ brief, stateMeta }: { brief: IntelBrief; stateMeta: {
 
 // ─── Tactical Unit Card ──────────────────────────────────────────────────────
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 
-function TacticalUnit({ pair, data, activeTrade }: { pair: string; data: PairPhysics; activeTrade?: { direction: string; created_at: string } | null }) {
+function TacticalUnit({ pair, data, activeTrade, recentlyClosed }: {
+  pair: string;
+  data: PairPhysics;
+  activeTrade?: { direction: string; created_at: string } | null;
+  recentlyClosed?: boolean;
+}) {
   const p = data;
-  // If a live trade is confirmed by the broker, ALWAYS show ACTIVE regardless of
-  // snapshot physics lag — the snapshot may be up to 3s stale when the trade fired.
-  const state = activeTrade ? 'ACTIVE' : deriveTacticalState(p);
-  const pulseSpeed = getPulseSpeed(p.zOfi ?? 0);
   const [showBrief, setShowBrief] = useState(false);
+  const [cooldownSecsLeft, setCooldownSecsLeft] = useState(0);
+
+  // Track cooldown countdown
+  useEffect(() => {
+    if (!recentlyClosed) return;
+    const closeTs = recentCloseMap.get(pair) ?? 0;
+    const update = () => {
+      const secsLeft = Math.max(0, Math.round((closeTs + COOLDOWN_MS - Date.now()) / 1000));
+      setCooldownSecsLeft(secsLeft);
+    };
+    update();
+    const iv = setInterval(update, 1000);
+    return () => clearInterval(iv);
+  }, [pair, recentlyClosed]);
+
+  // Derive state: ACTIVE if live trade, COOLDOWN if recently closed (physics may still show CLIMAX), else physics-driven
+  const baseState = deriveTacticalState(p);
+  const state: TacticalState = activeTrade
+    ? 'ACTIVE'
+    : recentlyClosed && cooldownSecsLeft > 0
+    ? 'COOLDOWN'
+    : baseState;
+
+  const pulseSpeed = getPulseSpeed(p.zOfi ?? 0);
 
   const tacticalClass = {
     CLIMAX:       'tactical-climax',
     ACTIVE:       'tactical-active',
-    STRIKE_READY: '', // no pulse — not yet a real signal
+    COOLDOWN:     'tactical-fatigue', // amber-ish, no gold pulse
+    STRIKE_READY: '',
     FATIGUE:      'tactical-fatigue',
     SCANNING:     '',
   }[state];
 
   const stateMeta = {
-    CLIMAX:       { label: 'CLIMAX',         color: 'text-yellow-300', bg: 'bg-yellow-500/10 border-yellow-500/30' },
-    ACTIVE:       { label: 'ACTIVE TRADE',   color: 'text-yellow-400', bg: 'bg-yellow-500/10 border-yellow-500/30' },
-    STRIKE_READY: { label: 'WARMING UP',     color: 'text-blue-400',   bg: 'bg-blue-500/10 border-blue-500/20' },
-    FATIGUE:      { label: 'FATIGUE',        color: 'text-red-400',    bg: 'bg-red-900/20 border-red-800/40' },
-    SCANNING:     { label: 'SCANNING',       color: 'text-muted-foreground', bg: 'bg-muted/20 border-border/20' },
+    CLIMAX:       { label: 'CLIMAX',              color: 'text-yellow-300',       bg: 'bg-yellow-500/10 border-yellow-500/30' },
+    ACTIVE:       { label: 'ACTIVE TRADE',        color: 'text-yellow-400',       bg: 'bg-yellow-500/10 border-yellow-500/30' },
+    COOLDOWN:     { label: `COOLDOWN ${cooldownSecsLeft}s`, color: 'text-amber-400', bg: 'bg-amber-500/10 border-amber-500/30' },
+    STRIKE_READY: { label: 'WARMING UP',          color: 'text-blue-400',         bg: 'bg-blue-500/10 border-blue-500/20' },
+    FATIGUE:      { label: 'FATIGUE',             color: 'text-red-400',          bg: 'bg-red-900/20 border-red-800/40' },
+    SCANNING:     { label: 'SCANNING',            color: 'text-muted-foreground', bg: 'bg-muted/20 border-border/20' },
   }[state];
 
   const leadIndicator = getLeadIndicator(p);
@@ -771,8 +802,26 @@ function GatePipeline({ gates }: { gates: string[] }) {
 
 // ─── Main Page ───────────────────────────────────────────────────────────────
 
+import { useRef } from 'react';
+
 const SyntheticOrderBook = () => {
   const { snapshot, loading, lastUpdated, refetch, activeTrades } = useSyntheticOrderBook(3_000);
+
+  // Track recently-closed pairs for COOLDOWN display (mirrors engine 2-min cooldown)
+  const prevActiveIds = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const currentIds = new Set(
+      activeTrades
+        .filter(t => t.status === 'filled' || t.status === 'pending')
+        .map(t => t.currency_pair)
+    );
+    for (const pair of prevActiveIds.current) {
+      if (!currentIds.has(pair)) {
+        recentCloseMap.set(pair, Date.now());
+      }
+    }
+    prevActiveIds.current = currentIds;
+  }, [activeTrades]);
 
   const pairs = snapshot?.pairs ? Object.entries(snapshot.pairs).sort((a, b) =>
     Math.abs((b[1] as any).zOfi || 0) - Math.abs((a[1] as any).zOfi || 0)
@@ -874,12 +923,21 @@ const SyntheticOrderBook = () => {
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
               {activePairs.map(([pair, data]) => {
                 const normalizedPair = pair.replace('/', '_');
-                // Only show TUNNEL ACTIVE banner for truly open trades (filled/pending, not closed)
                 const trade = activeTrades.find(t =>
                   (t.currency_pair === normalizedPair || t.currency_pair === pair) &&
                   (t.status === 'filled' || t.status === 'pending')
                 ) || null;
-                return <TacticalUnit key={pair} pair={pair} data={data as PairPhysics} activeTrade={trade} />;
+                const closeTs = recentCloseMap.get(normalizedPair) ?? recentCloseMap.get(pair) ?? 0;
+                const inCooldown = !trade && closeTs > 0 && Date.now() - closeTs < COOLDOWN_MS;
+                return (
+                  <TacticalUnit
+                    key={pair}
+                    pair={pair}
+                    data={data as PairPhysics}
+                    activeTrade={trade}
+                    recentlyClosed={inCooldown}
+                  />
+                );
               })}
             </div>
           </motion.div>
