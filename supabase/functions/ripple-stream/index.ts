@@ -678,8 +678,7 @@ const DA_RULE_OF_2 = 2;
 // Value = 1 = immediate (any single tick drop = flush). Zero-fault tolerance.
 const DA_EXIT_FAIL_TICKS = 1;
 
-// Cooldown: 2 minutes between entries per pair (reduced from 5min — P0 flush exits should re-arm faster)
-const DA_COOLDOWN_MS = 120_000;
+// No per-pair cooldown — pure physics gates (Hurst, Efficiency, VPIN, Z-OFI) decide re-entry
 
 // Minimum hold before exit gates are evaluated (prevents EWMA warm-up false exits)
 const DA_MIN_HOLD_MS = 30_000; // 30s minimum hold for David & Atlas (tighter than Predatory Hunter)
@@ -1393,8 +1392,7 @@ Deno.serve(async (req) => {
               }
               const daState = davidAtlasState.get(tradePair)!;
 
-              // Cooldown: 5 minutes between tunnel entries per pair
-              if (tickTs - daState.lastFireTs < DA_COOLDOWN_MS) continue;
+              // No cooldown — pure physics gates decide re-entry
 
               // ─── PRE-GATE: Tick density ───
               const densityCheck = isTickDensitySufficient(tradePair);
