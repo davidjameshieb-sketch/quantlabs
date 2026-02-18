@@ -473,7 +473,9 @@ import React, { useState } from 'react';
 
 function TacticalUnit({ pair, data, activeTrade }: { pair: string; data: PairPhysics; activeTrade?: { direction: string; created_at: string } | null }) {
   const p = data;
-  const state = deriveTacticalState(p);
+  // If a live trade is confirmed by the broker, ALWAYS show ACTIVE regardless of
+  // snapshot physics lag — the snapshot may be up to 3s stale when the trade fired.
+  const state = activeTrade ? 'ACTIVE' : deriveTacticalState(p);
   const pulseSpeed = getPulseSpeed(p.zOfi ?? 0);
   const [showBrief, setShowBrief] = useState(false);
 
