@@ -23,8 +23,15 @@ interface ClimaxEvent {
   durationSec: number | null;
   pips: number | null;
   result: 'WIN' | 'LOSS' | 'BREAKEVEN' | 'OPEN';
-  // Momentum phase inferred from timing + pips
   phase: 'COIL' | 'EXPANSION' | 'CLIMAX_PEAK' | 'DECAY';
+  // Gate metrics at entry (stored from ripple-stream)
+  gates: {
+    hurst: number | null;
+    efficiency: number | null;
+    zOfi: number | null;
+    vpin: number | null;
+    verified: boolean; // true if gate data was stored at entry
+  };
 }
 
 // ── Momentum Phase Bar ───────────────────────────────────────────────────────
@@ -146,7 +153,7 @@ function useClimaxEvents() {
     async function fetch() {
       const { data } = await supabase
         .from('oanda_orders')
-        .select('id, currency_pair, direction, status, entry_price, exit_price, created_at, closed_at, oanda_trade_id')
+        .select('id, currency_pair, direction, status, entry_price, exit_price, created_at, closed_at, oanda_trade_id, governance_payload, gate_result, gate_reasons')
         .in('status', ['filled', 'closed'])
         .eq('environment', 'live')
         .not('oanda_trade_id', 'is', null)
@@ -188,6 +195,17 @@ function useClimaxEvents() {
           durationSec != null && durationSec < 90 ? 'CLIMAX_PEAK' :
           result === 'WIN'        ? 'EXPANSION' : 'DECAY';
 
+        // Extract gate metrics from governance_payload (stored by ripple-stream at entry)
+        const payload = row.governance_payload as any;
+        const gatesPayload = payload?.gates;
+        const gates: ClimaxEvent['gates'] = {
+          hurst:      gatesPayload?.hurst      ?? null,
+          efficiency: gatesPayload?.efficiency ?? null,
+          zOfi:       gatesPayload?.zOfi       ?? null,
+          vpin:       gatesPayload?.vpin       ?? null,
+          verified:   !!gatesPayload,
+        };
+
         return {
           id: row.id,
           pair,
@@ -201,6 +219,7 @@ function useClimaxEvents() {
           pips,
           result,
           phase,
+          gates,
         };
       });
 
@@ -398,68 +417,94 @@ export function ClimaxBacktestLog() {
             <table className="w-full text-[10px] font-mono">
               <thead>
                 <tr className="border-b border-border/30">
-                  {['Pair', 'Climax Time', 'Dir', 'Entry', 'Exit', 'Duration', 'Pips', 'Phase', 'Result'].map(h => (
+                  {['Pair', 'Time', 'Dir', 'Entry', 'Exit', 'Dur', 'Pips', 'H ≥0.62', 'E ≥7x', 'Z >2.5σ', 'V >0.60', 'Result'].map(h => (
                     <th key={h} className="text-left py-1.5 px-2 text-muted-foreground font-semibold uppercase tracking-wider whitespace-nowrap text-[9px]">{h}</th>
                   ))}
                 </tr>
               </thead>
               <AnimatePresence mode="popLayout">
                 <tbody>
-                  {displayed.map((event, i) => (
-                    <motion.tr
-                      key={event.id}
-                      initial={{ opacity: 0, x: -10 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      transition={{ delay: i * 0.02 }}
-                      className={cn(
-                        'border-b border-border/10 hover:bg-muted/10 transition-colors',
-                        event.result === 'OPEN' && 'bg-[hsl(var(--neural-cyan))]/5',
-                      )}
-                    >
-                      <td className="py-1.5 px-2 font-bold text-foreground">{event.displayPair}</td>
-                      <td className="py-1.5 px-2 text-muted-foreground whitespace-nowrap">
-                        <div className="flex items-center gap-1">
-                          <Clock className="w-2.5 h-2.5 opacity-50" />
-                          {event.climaxTime.toLocaleTimeString()}
-                        </div>
-                      </td>
-                      <td className="py-1.5 px-2">
-                        {event.direction === 'long'
-                          ? <span className="flex items-center gap-0.5 text-[hsl(var(--neural-green))]"><TrendingUp className="w-3 h-3" />Long</span>
-                          : <span className="flex items-center gap-0.5 text-[hsl(var(--neural-red))]"><TrendingDown className="w-3 h-3" />Short</span>
-                        }
-                      </td>
-                      <td className="py-1.5 px-2 text-foreground">{event.entryPrice}</td>
-                      <td className="py-1.5 px-2 text-muted-foreground">{event.exitPrice ?? '—'}</td>
-                      <td className="py-1.5 px-2 text-muted-foreground whitespace-nowrap">
-                        {event.durationSec == null ? '—' :
-                          event.durationSec < 60 ? `${event.durationSec}s` :
-                          `${Math.floor(event.durationSec / 60)}m ${event.durationSec % 60}s`
-                        }
-                      </td>
-                      <td className={cn('py-1.5 px-2 font-bold',
-                        (event.pips ?? 0) > 0 ? 'text-[hsl(var(--neural-green))]' :
-                        (event.pips ?? 0) < 0 ? 'text-[hsl(var(--neural-red))]' :
-                        'text-muted-foreground'
-                      )}>
-                        {event.pips == null ? '—' : `${event.pips >= 0 ? '+' : ''}${event.pips}p`}
-                      </td>
-                      <td className="py-1.5 px-2">
-                        {(() => {
-                          const ph = PHASES.find(p => p.key === event.phase);
-                          return ph ? (
-                            <span className="flex items-center gap-1">
-                              <div className={cn('w-1.5 h-1.5 rounded-full', ph.color)} />
-                              <span className="text-muted-foreground">{ph.label}</span>
-                            </span>
-                          ) : null;
-                        })()}
-                      </td>
-                      <td className="py-1.5 px-2">
-                        <ResultBadge result={event.result} pips={event.pips} />
-                      </td>
-                    </motion.tr>
-                  ))}
+                  {displayed.map((event, i) => {
+                    const { gates } = event;
+                    // Gate pass/fail indicators
+                    const hurstPass = gates.hurst != null ? gates.hurst >= 0.62 : null;
+                    const effPass   = gates.efficiency != null ? gates.efficiency >= 7 : null;
+                    const zPass     = gates.zOfi != null ? Math.abs(gates.zOfi) > 2.5 : null;
+                    const vpinPass  = gates.vpin != null ? gates.vpin > 0.60 : null;
+
+                    function GatePill({ pass, value, fmt }: { pass: boolean | null; value: number | null; fmt: (v: number) => string }) {
+                      if (pass === null || value === null) return (
+                        <span className="text-muted-foreground/40 text-[8px]">—</span>
+                      );
+                      return (
+                        <span className={cn(
+                          'inline-flex items-center gap-0.5 text-[8px] font-bold',
+                          pass ? 'text-[hsl(var(--neural-green))]' : 'text-[hsl(var(--neural-red))]'
+                        )}>
+                          <div className={cn('w-1.5 h-1.5 rounded-full shrink-0', pass ? 'bg-[hsl(var(--neural-green))]' : 'bg-[hsl(var(--neural-red))]')} />
+                          {fmt(value)}
+                        </span>
+                      );
+                    }
+
+                    return (
+                      <motion.tr
+                        key={event.id}
+                        initial={{ opacity: 0, x: -10 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        transition={{ delay: i * 0.02 }}
+                        className={cn(
+                          'border-b border-border/10 hover:bg-muted/10 transition-colors',
+                          event.result === 'OPEN' && 'bg-[hsl(var(--neural-cyan))]/5',
+                        )}
+                      >
+                        <td className="py-1.5 px-2 font-bold text-foreground whitespace-nowrap">{event.displayPair}</td>
+                        <td className="py-1.5 px-2 text-muted-foreground whitespace-nowrap">
+                          <div className="flex items-center gap-1">
+                            <Clock className="w-2.5 h-2.5 opacity-50" />
+                            {event.climaxTime.toLocaleTimeString()}
+                          </div>
+                        </td>
+                        <td className="py-1.5 px-2 whitespace-nowrap">
+                          {event.direction === 'long'
+                            ? <span className="flex items-center gap-0.5 text-[hsl(var(--neural-green))]"><TrendingUp className="w-3 h-3" />L</span>
+                            : <span className="flex items-center gap-0.5 text-[hsl(var(--neural-red))]"><TrendingDown className="w-3 h-3" />S</span>
+                          }
+                        </td>
+                        <td className="py-1.5 px-2 text-foreground">{event.entryPrice}</td>
+                        <td className="py-1.5 px-2 text-muted-foreground">{event.exitPrice ?? '—'}</td>
+                        <td className="py-1.5 px-2 text-muted-foreground whitespace-nowrap">
+                          {event.durationSec == null ? '—' :
+                            event.durationSec < 60 ? `${event.durationSec}s` :
+                            `${Math.floor(event.durationSec / 60)}m${event.durationSec % 60}s`
+                          }
+                        </td>
+                        <td className={cn('py-1.5 px-2 font-bold',
+                          (event.pips ?? 0) > 0 ? 'text-[hsl(var(--neural-green))]' :
+                          (event.pips ?? 0) < 0 ? 'text-[hsl(var(--neural-red))]' :
+                          'text-muted-foreground'
+                        )}>
+                          {event.pips == null ? '—' : `${event.pips >= 0 ? '+' : ''}${event.pips}p`}
+                        </td>
+                        {/* Gate columns */}
+                        <td className="py-1.5 px-2">
+                          <GatePill pass={hurstPass} value={gates.hurst} fmt={v => v.toFixed(3)} />
+                        </td>
+                        <td className="py-1.5 px-2">
+                          <GatePill pass={effPass} value={gates.efficiency} fmt={v => `${v.toFixed(1)}x`} />
+                        </td>
+                        <td className="py-1.5 px-2">
+                          <GatePill pass={zPass} value={gates.zOfi} fmt={v => `${v.toFixed(2)}σ`} />
+                        </td>
+                        <td className="py-1.5 px-2">
+                          <GatePill pass={vpinPass} value={gates.vpin} fmt={v => v.toFixed(3)} />
+                        </td>
+                        <td className="py-1.5 px-2">
+                          <ResultBadge result={event.result} pips={event.pips} />
+                        </td>
+                      </motion.tr>
+                    );
+                  })}
                 </tbody>
               </AnimatePresence>
             </table>

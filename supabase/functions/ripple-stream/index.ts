@@ -1005,6 +1005,7 @@ Deno.serve(async (req) => {
       direction: string,
       requestedUnits: number,
       currentPrice: { mid: number; spreadPips: number },
+      entryGates: { hurst: number; efficiency: number; zOfi: number; vpin: number },
     ): Promise<{ success: boolean; tradeId?: string; fillPrice?: number; slippage?: number }> {
       // Practice mode always allowed. LIVE_ENABLED gate only applies to live account.
       const isPractice = OANDA_API.includes("fxpractice");
@@ -1106,6 +1107,7 @@ Deno.serve(async (req) => {
           const tradeId = fill.tradeOpened?.tradeID || fill.id;
           const slippagePips = Math.abs(toPips(fillPrice - currentPrice.mid, pair));
 
+          const { hurst: entryHurst, efficiency: entryEfficiency, zOfi: entryZOfi, vpin: entryVpin } = entryGates;
           if (adminRole) {
             await supabase.from("oanda_orders").insert({
               user_id: adminRole.user_id,
@@ -1121,9 +1123,27 @@ Deno.serve(async (req) => {
               direction_engine: "david-atlas",
               sovereign_override_tag: `david-atlas:${pair}`,
               confidence_score: 1.0, // 4/4 gates = maximum institutional consensus
+              // ── GATE METRICS AT ENTRY — stored for backtesting forensics ──
+              // These are the EXACT physics values that passed all 4 Climax gates
+              // at the moment of the tunnel opening. Used by the Climax Strike Log.
+              gate_result: "4/4_CLIMAX",
+              gate_reasons: [
+                `HURST:${entryHurst.toFixed(4)}`,
+                `EFF:${entryEfficiency.toFixed(2)}x`,
+                `ZOFI:${entryZOfi.toFixed(3)}σ`,
+                `VPIN:${entryVpin.toFixed(4)}`,
+              ],
               governance_payload: {
                 strategy: "david-atlas-tunnel-v1", pair, direction, slippagePips,
                 requestedUnits, actualUnits: units, marginGuardApplied: units !== requestedUnits,
+                // Climax gate values snapshot at entry tick
+                gates: {
+                  hurst: entryHurst,
+                  efficiency: entryEfficiency,
+                  zOfi: entryZOfi,
+                  vpin: entryVpin,
+                  gateState: "4/4",
+                },
               },
               requested_price: currentPrice.mid,
               slippage_pips: slippagePips,
@@ -1498,7 +1518,12 @@ Deno.serve(async (req) => {
 
               console.log(`[CLIMAX] 🎯 CLIMAX STRIKE: ${tunnelDirection.toUpperCase()} ${baseUnits} ${tradePair} | H=${daTracker.hurst.toFixed(3)} E=${efficiencyDA.toFixed(1)}x Z=${zOfiDA.toFixed(2)}σ VPIN=${daTracker.vpinRecursive.toFixed(3)} | 4/4 CLIMAX GATES — NO SL | NO TP | HOLD UNTIL CLIMAX ENDS`);
 
-              const daResult = await davidAtlasEnter(tradePair, tunnelDirection, baseUnits, tradePrice);
+              const daResult = await davidAtlasEnter(tradePair, tunnelDirection, baseUnits, tradePrice, {
+                hurst: daTracker.hurst,
+                efficiency: efficiencyDA,
+                zOfi: zOfiDA,
+                vpin: daTracker.vpinRecursive,
+              });
 
               if (daResult.success) {
                 tunnelFires.push(`${tradePair}:${tunnelDirection}`);
