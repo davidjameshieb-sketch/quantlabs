@@ -1116,8 +1116,10 @@ Deno.serve(async (req) => {
           console.log(`[DAVID-ATLAS] ✅ TUNNEL OPEN: ${tradeId} @ ${fillPrice} | ${direction.toUpperCase()} ${units} ${pair} | slip ${slippagePips.toFixed(2)}p | NO SL | NO TP | ATOMIC FOK`);
           return { success: true, tradeId, fillPrice, slippage: slippagePips };
         } else {
-          const rejectReason = orderData.orderRejectTransaction?.rejectReason || "Unknown";
-          console.warn(`[DAVID-ATLAS] ❌ REJECTED: ${pair} ${rejectReason}`);
+          const rejectTx = orderData.orderRejectTransaction;
+          const rejectReason = rejectTx?.rejectReason || rejectTx?.type || "Unknown";
+          const rejectDetail = rejectTx?.reason || orderData.errorMessage || orderData.errorCode || "";
+          console.warn(`[DAVID-ATLAS] ❌ REJECTED: ${pair} | reason=${rejectReason} | detail=${rejectDetail} | httpStatus=${orderRes.status} | rawKeys=${Object.keys(orderData).join(',')}`);
           return { success: false };
         }
       } catch (err) {
