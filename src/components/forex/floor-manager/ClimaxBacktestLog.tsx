@@ -151,11 +151,13 @@ function useClimaxEvents() {
 
   useEffect(() => {
     async function fetch() {
+      // Fetch ALL environments (practice + live) — filter by david-atlas strategy only
+      // Only show trades that are fully CLOSED (status=closed) with a closed_at timestamp
+      // OR currently LIVE (status=filled, no exit_price, no closed_at — truly still open at broker)
       const { data } = await supabase
         .from('oanda_orders')
-        .select('id, currency_pair, direction, status, entry_price, exit_price, created_at, closed_at, oanda_trade_id, governance_payload, gate_result, gate_reasons')
+        .select('id, currency_pair, direction, status, entry_price, exit_price, created_at, closed_at, oanda_trade_id, governance_payload, gate_result, gate_reasons, environment')
         .in('status', ['filled', 'closed'])
-        .eq('environment', 'live')
         .not('oanda_trade_id', 'is', null)
         .not('entry_price', 'is', null)
         .order('created_at', { ascending: false })
@@ -163,7 +165,15 @@ function useClimaxEvents() {
 
       if (!data) { setLoading(false); return; }
 
-      const mapped: ClimaxEvent[] = data.map((row) => {
+      // Only include rows from the david-atlas engine
+      const davidAtlas = data.filter((row) => {
+        const payload = row.governance_payload as any;
+        return payload?.strategy === 'david-atlas-tunnel-v1' || (row as any).direction_engine === 'david-atlas';
+      });
+
+      const now = Date.now();
+
+      const mapped: ClimaxEvent[] = davidAtlas.map((row) => {
         const pair = row.currency_pair as string;
         const displayPair = pair.replace('_', '/');
         const isJpy = /JPY/.test(pair);
@@ -180,11 +190,21 @@ function useClimaxEvents() {
           pips = Math.round((dir === 'long' ? (exit - entry) : (entry - exit)) * mult * 10) / 10;
         }
 
-        // 'filled' = currently open at broker (has trade_id but no exit yet)
-        // 'closed' = completed trade with exit_price
+        // A trade is truly LIVE only if:
+        // - status is 'filled' (open at broker)
+        // - no exit_price recorded
+        // - no closed_at recorded
+        // - opened less than 30 minutes ago (Climax = fast 5-min scalp, anything older is a data issue)
+        const ageMs = now - createdAt.getTime();
+        const isTrulyLive = row.status === 'filled'
+          && exit == null
+          && closedAt == null
+          && ageMs < 30 * 60 * 1000; // < 30 min old
+
+        // Closed trades with no exit_price are data gaps — mark as BREAKEVEN not OPEN
         const result: ClimaxEvent['result'] =
-          row.status === 'filled' && exit == null ? 'OPEN' :
-          pips == null ? 'OPEN' :
+          isTrulyLive ? 'OPEN' :
+          pips == null ? 'BREAKEVEN' :
           pips > 0.5   ? 'WIN' :
           pips < -0.5  ? 'LOSS' : 'BREAKEVEN';
 
@@ -272,8 +292,8 @@ function GateLegend() {
         </div>
       </div>
       <div className="border-t border-border/20 pt-2 space-y-1 text-[9px] font-mono text-muted-foreground">
-        <p><span className="text-[hsl(var(--neural-cyan))] font-bold">⚡ LIVE</span> = Trade currently open at broker (no exit price yet).</p>
-        <p><span className="text-yellow-400 font-bold">⚠ NOTE:</span> Gate values (Efficiency, Hurst, Z-OFI, VPIN) are not stored per-trade in the database — trades are filtered by <span className="text-foreground">david-atlas engine</span> only. To verify gate thresholds were met at entry, cross-reference with sovereign_memory physics snapshots.</p>
+        <p><span className="text-[hsl(var(--neural-cyan))] font-bold">⚡ LIVE</span> = Trade open at broker right now (&lt;30 min, no exit yet). Climax = fast 5-min scalp — anything older is closed.</p>
+        <p><span className="text-yellow-400 font-bold">⚠ H/E/Z/V columns:</span> Gate values will populate for new strikes after the ripple-stream engine deploys the metric-persistence update. Past trades show <span className="text-foreground">—</span> as data was not stored at entry.</p>
       </div>
     </div>
   );
