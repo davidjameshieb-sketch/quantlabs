@@ -31,8 +31,9 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
-const OANDA_API = "https://api-fxtrade.oanda.com/v3";
-const OANDA_STREAM = "https://stream-fxtrade.oanda.com/v3";
+// ── PRACTICE MODE endpoints ──
+const OANDA_API = "https://api-fxpractice.oanda.com/v3";
+const OANDA_STREAM = "https://stream-fxpractice.oanda.com/v3";
 const MAX_STREAM_SECONDS = 110;
 
 // ─── Spread Gate: Block only on extreme spread outliers per pair type ───
@@ -787,8 +788,9 @@ function computeZScore(values: number[]): { mean: number; std: number; z: number
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
-  const OANDA_TOKEN = Deno.env.get("OANDA_LIVE_API_TOKEN");
-  const OANDA_ACCOUNT = Deno.env.get("OANDA_LIVE_ACCOUNT_ID");
+  // ── PRACTICE MODE: Use demo account credentials ──
+  const OANDA_TOKEN = Deno.env.get("OANDA_API_TOKEN");
+  const OANDA_ACCOUNT = Deno.env.get("OANDA_ACCOUNT_ID");
   const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
   const SUPABASE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
   const LIVE_ENABLED = Deno.env.get("LIVE_TRADING_ENABLED");
@@ -1061,12 +1063,14 @@ Deno.serve(async (req) => {
       // NO stopLossOnFill, NO takeProfitOnFill — pure tunnel
       // FOK (Fill or Kill) = atomic IOC: filled at whale-shadow price or cancelled instantly.
       // Eliminates partial fills and dangerous slippage in liquidity vacuums.
+      // GFD (Good-For-Day) fills at best available price — FOK was being cancelled
+      // because OANDA requires exact liquidity at mid price for FOK which never happens in FX
       const orderBody = {
         order: {
           type: "MARKET",
           instrument: pair,
           units: String(dirUnits),
-          timeInForce: "FOK",
+          timeInForce: "GFD",
         },
       };
 
@@ -1099,7 +1103,7 @@ Deno.serve(async (req) => {
               oanda_order_id: fill.id,
               oanda_trade_id: tradeId,
               status: "filled",
-              environment: "live",
+              environment: "practice",
               direction_engine: "david-atlas",
               sovereign_override_tag: `david-atlas:${pair}`,
               confidence_score: 1.0, // 4/4 gates = maximum institutional consensus
