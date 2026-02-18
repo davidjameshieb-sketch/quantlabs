@@ -35,14 +35,21 @@ const OANDA_API = "https://api-fxtrade.oanda.com/v3";
 const OANDA_STREAM = "https://stream-fxtrade.oanda.com/v3";
 const MAX_STREAM_SECONDS = 110;
 
-// ─── Spread Gate: Block if spread > rolling average OR > 4 pip hard max ───
-const SPREAD_HARD_MAX_PIPS = 4.0;
+// ─── Spread Gate: Block only on extreme spread outliers per pair type ───
+// JPY crosses naturally have wider spreads — use 10p hard max
+// All other pairs: 6p hard max
+const SPREAD_HARD_MAX_PIPS_JPY = 10.0;
+const SPREAD_HARD_MAX_PIPS_DEFAULT = 6.0;
 const SPREAD_AVG_WINDOW = 50; // ticks to build rolling average
 const spreadHistory = new Map<string, number[]>();
 
+function getSpreadHardMax(pair: string): number {
+  return pair.includes("JPY") ? SPREAD_HARD_MAX_PIPS_JPY : SPREAD_HARD_MAX_PIPS_DEFAULT;
+}
+
 function getAvgSpread(pair: string): number {
   const hist = spreadHistory.get(pair);
-  if (!hist || hist.length < 10) return SPREAD_HARD_MAX_PIPS; // not enough data — use hard max
+  if (!hist || hist.length < 10) return getSpreadHardMax(pair);
   return hist.reduce((a, b) => a + b, 0) / hist.length;
 }
 
@@ -54,9 +61,10 @@ function recordSpread(pair: string, spreadPips: number) {
 }
 
 function isSpreadTooWide(pair: string, spreadPips: number): { blocked: boolean; avg: number; reason: string } {
+  const hardMax = getSpreadHardMax(pair);
   const avg = getAvgSpread(pair);
-  if (spreadPips > SPREAD_HARD_MAX_PIPS) return { blocked: true, avg, reason: `hard max (${spreadPips.toFixed(1)}p > ${SPREAD_HARD_MAX_PIPS}p)` };
-  if (spreadPips > avg * 1.5) return { blocked: true, avg, reason: `above avg (${spreadPips.toFixed(1)}p > 1.5x avg ${avg.toFixed(1)}p)` };
+  // Only block on hard max — VPIN gate handles toxicity detection
+  if (spreadPips > hardMax) return { blocked: true, avg, reason: `hard max (${spreadPips.toFixed(1)}p > ${hardMax}p)` };
   return { blocked: false, avg, reason: "ok" };
 }
 
