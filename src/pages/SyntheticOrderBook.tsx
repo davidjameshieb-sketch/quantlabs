@@ -26,13 +26,14 @@ function deriveTacticalState(p: PairPhysics): TacticalState {
   const vpin = p.vpin ?? 0;
   const absZ = Math.abs(p.zOfi ?? 0);
   if (H < 0.45) return 'FATIGUE';
-  // CLIMAX: ALL 4 gates must hit outer statistical boundaries
-  if (H >= CLIMAX_HURST_MIN && eff > CLIMAX_EFFICIENCY_MIN && absZ > CLIMAX_ZOFI_MIN && vpin > CLIMAX_VPIN_MIN) return 'CLIMAX';
-  // ACTIVE: 4/4 standard alignment (below CLIMAX thresholds)
-  if (H >= CLIMAX_HURST_MIN && eff >= 7 && vpin >= 0.40 && absZ >= 1.0) return 'ACTIVE';
-  // STRIKE_READY: warming up
-  if (H >= 0.55 && eff >= 1.5) return 'STRIKE_READY';
-  return 'SCANNING';
+  // ALL states require the same 4 hard-coded Climax Protocol v2.0 gates
+  const allGatesOpen = H >= CLIMAX_HURST_MIN && eff > CLIMAX_EFFICIENCY_MIN && absZ > CLIMAX_ZOFI_MIN && vpin > CLIMAX_VPIN_MIN;
+  if (!allGatesOpen) {
+    if (H >= 0.55 && eff >= 1.5) return 'STRIKE_READY';
+    return 'SCANNING';
+  }
+  // All 4 gates open — CLIMAX is the only valid trade state
+  return 'CLIMAX';
 }
 
 function getPulseSpeed(zOfi: number): string {
