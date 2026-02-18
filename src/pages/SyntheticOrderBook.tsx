@@ -889,27 +889,103 @@ const SyntheticOrderBook = () => {
           </div>
         )}
 
-        {!loading && activePairs.length > 0 && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.1 }}>
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-              {activePairs.map(([pair, data]) => {
-                const normalizedPair = pair.replace('/', '_');
-                const trade = activeTrades.find(t =>
-                  (t.currency_pair === normalizedPair || t.currency_pair === pair) &&
-                  (t.status === 'filled' || t.status === 'pending')
-                ) || null;
-                return (
-                  <TacticalUnit
-                    key={pair}
-                    pair={pair}
-                    data={data as PairPhysics}
-                    activeTrade={trade}
-                  />
-                );
-              })}
-            </div>
-          </motion.div>
-        )}
+        {!loading && activePairs.length > 0 && (() => {
+          // ── Categorise pairs ──────────────────────────────────────────────
+          const MARKET_GROUPS: { label: string; emoji: string; pairs: string[] }[] = [
+            { label: 'USD Majors', emoji: '🇺🇸', pairs: ['EUR_USD','GBP_USD','USD_JPY','USD_CHF','AUD_USD','USD_CAD','NZD_USD'] },
+            { label: 'EUR Crosses', emoji: '🇪🇺', pairs: ['EUR_GBP','EUR_JPY','EUR_CHF','EUR_AUD','EUR_CAD','EUR_NZD'] },
+            { label: 'GBP Crosses', emoji: '🇬🇧', pairs: ['GBP_JPY','GBP_CHF','GBP_AUD','GBP_CAD','GBP_NZD'] },
+            { label: 'JPY Crosses', emoji: '🇯🇵', pairs: ['AUD_JPY','CAD_JPY','CHF_JPY','NZD_JPY'] },
+            { label: 'Commodity & Minors', emoji: '🌏', pairs: ['AUD_CAD','AUD_CHF','AUD_NZD','CAD_CHF','NZD_CAD','NZD_CHF'] },
+          ];
+
+          const renderCard = ([pair, data]: [string, unknown]) => {
+            const normalizedPair = (pair as string).replace('/', '_');
+            const trade = activeTrades.find(t =>
+              (t.currency_pair === normalizedPair || t.currency_pair === pair) &&
+              (t.status === 'filled' || t.status === 'pending')
+            ) || null;
+            return (
+              <TacticalUnit
+                key={pair as string}
+                pair={pair as string}
+                data={data as PairPhysics}
+                activeTrade={trade}
+              />
+            );
+          };
+
+          // Split into CLIMAX (active pulse) vs the rest
+          const climaxPairs = activePairs.filter(([, d]) => deriveTacticalState(d as PairPhysics) === 'CLIMAX');
+          const restPairs   = activePairs.filter(([, d]) => deriveTacticalState(d as PairPhysics) !== 'CLIMAX');
+
+          // Build market groups from restPairs
+          const placed = new Set<string>();
+          const groups = MARKET_GROUPS.map(g => {
+            const members = restPairs.filter(([p]) => {
+              const norm = (p as string).replace('/', '_');
+              if (placed.has(norm)) return false;
+              if (g.pairs.includes(norm)) { placed.add(norm); return true; }
+              return false;
+            });
+            return { ...g, members };
+          }).filter(g => g.members.length > 0);
+
+          // Any pair not matched above goes into "Other"
+          const otherPairs = restPairs.filter(([p]) => !placed.has((p as string).replace('/', '_')));
+
+          return (
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.1 }} className="space-y-6">
+
+              {/* ── ACTIVE PULSE ── */}
+              {climaxPairs.length > 0 && (
+                <div className="space-y-3">
+                  <div className="flex items-center gap-2">
+                    <div className="w-2 h-2 rounded-full bg-yellow-400 animate-pulse" />
+                    <span className="text-xs font-mono font-black uppercase tracking-widest text-yellow-300">
+                      ⚡ Active Pulse — {climaxPairs.length} pair{climaxPairs.length > 1 ? 's' : ''} in CLIMAX
+                    </span>
+                    <div className="flex-1 h-px bg-yellow-500/20" />
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                    {climaxPairs.map(renderCard)}
+                  </div>
+                </div>
+              )}
+
+              {/* ── MARKET GROUPS ── */}
+              {groups.map(g => (
+                <div key={g.label} className="space-y-3">
+                  <div className="flex items-center gap-2">
+                    <span className="text-base">{g.emoji}</span>
+                    <span className="text-xs font-mono font-bold uppercase tracking-widest text-muted-foreground">
+                      {g.label}
+                    </span>
+                    <div className="flex-1 h-px bg-border/30" />
+                    <span className="text-[9px] font-mono text-muted-foreground">{g.members.length}</span>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                    {g.members.map(renderCard)}
+                  </div>
+                </div>
+              ))}
+
+              {/* ── OTHER ── */}
+              {otherPairs.length > 0 && (
+                <div className="space-y-3">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-mono font-bold uppercase tracking-widest text-muted-foreground">🔀 Other</span>
+                    <div className="flex-1 h-px bg-border/30" />
+                    <span className="text-[9px] font-mono text-muted-foreground">{otherPairs.length}</span>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                    {otherPairs.map(renderCard)}
+                  </div>
+                </div>
+              )}
+            </motion.div>
+          );
+        })()}
 
         {!loading && activePairs.length === 0 && (
           <div className="text-center py-20 text-muted-foreground">
