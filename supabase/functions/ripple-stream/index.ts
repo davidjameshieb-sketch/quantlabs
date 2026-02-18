@@ -1,26 +1,37 @@
 // ═══════════════════════════════════════════════════════════════
-// DAVID & ATLAS — Zero-Stop Tunnel Strategy v1.0
-// Sole active strategy. All other strategies deactivated.
+// DAVID & ATLAS — CLIMAX PROTOCOL v2.0 (HARD-CODED — DO NOT MODIFY)
+// Sole active strategy. All other strategies permanently deactivated.
 //
-// THE TUNNEL PROTOCOL:
-//   Entry  : 4/4 Gate Active State — Hurst, Efficiency, VPIN, Z-OFI all green.
-//            Direction locked by leading Z-OFI (positive = LONG, negative = SHORT).
-//   Hold   : No stop loss. No take profit. Draft the Whale.
-//            Physical probability of continuation is at statistical maximum while
-//            4/4 gates remain active.
-//   Exit   : Mandatory MarketClose() the INSTANT any gate drops → 3/4.
-//            Institutional consensus has evaporated. Tunnel has collapsed.
-//            Exit is mandatory whether trade is in profit or loss.
+// ┌─────────────────────────────────────────────────────────────┐
+// │  THE CLIMAX PROTOCOL — EXACT EXECUTION RULES                │
+// │                                                             │
+// │  ENTRY ("The Strike"): ALL 4 gates at CLIMAX thresholds:   │
+// │    Gate 1: Hurst       ≥ 0.62  (persistent regime)         │
+// │    Gate 2: Efficiency  > 100x  (Liq Hole / Tsunami)        │
+// │    Gate 3: |Z-OFI|    > 2.5σ  (Whale exhausting order blk) │
+// │    Gate 4: VPIN       > 0.60  (toxicity threshold — MMs    │
+// │                                about to withdraw liquidity) │
+// │    → Require 2 consecutive CLIMAX ticks (Rule of 2)        │
+// │    → Direction: Z-OFI sign (+ = LONG, - = SHORT)           │
+// │    → Size: Fixed 1,250 units. No SL. No TP.                │
+// │                                                             │
+// │  HOLD ("The Peak"): Extreme Efficiency = Ghost Move        │
+// │    → Hold as long as ALL 4/4 CLIMAX gates remain active    │
+// │                                                             │
+// │  EXIT ("The Flush"): ANY gate drops → 3/4 = IMMEDIATE EXIT │
+// │    → Institutional consensus gone. Tunnel collapsed.        │
+// │    → Exit mandatory whether in profit or loss.              │
+// │    → P0 Interrupt: Z-OFI crosses past ±2.5σ in reverse    │
+// │                    direction = instant flush (no MIN_HOLD)  │
+// └─────────────────────────────────────────────────────────────┘
 //
-// SYNTHETIC ORDER BOOK (O(1) recursive physics engine — unchanged):
-//   - Adaptive Z-OFI (Welford's): Z-score of OFI, fires at |Z| > 2.0
+// SYNTHETIC ORDER BOOK (O(1) recursive physics engine):
+//   - Adaptive Z-OFI (Welford's): fires at |Z| > 2.5σ (CLIMAX)
 //   - Adaptive KM Windowing ("Gear Shift"): α adapts to D2 noise level
 //   - Fast Hurst Exponent (Hall-Wood): O(1) regime classification
 //   - Recursive VPIN (EWMA): O(1) toxicity — institutional participation check
-//   - Efficiency Ratio E = |OFI|/(|D1|+ε): classifies market state
+//   - Efficiency Ratio E = |OFI|/(|D1|+ε): CLIMAX at E > 100x
 //   - Price-Level Persistence: tick-density S/R map
-//
-// DEACTIVATED: Z-Score Strike, Velocity Gating, Snap-Back Sniper, Ghost Vacuum
 // ═══════════════════════════════════════════════════════════════
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -649,40 +660,40 @@ const ZSCORE_FIRE_THRESHOLD = 2.0;  // z > 2.0 = statistical divergence (overrid
 const ZSCORE_EXIT_TARGET = 0.0;     // mean reversion target
 const ZSCORE_COOLDOWN_MS = 300_000; // 5 MINUTES between fires on same group (was 10s — caused triple-taps)
 
-// ═══ DAVID & ATLAS — TUNNEL GATE THRESHOLDS ═══
-// CLIMAX-ONLY ENTRY MODE: Trades only fire when the War Room card is in CLIMAX state.
-// CLIMAX = E ≥ 7.0 AND VPIN ≥ 0.65 — extreme institutional conviction.
-// This matches the War Room UI "glow" exactly — if the card isn't glowing gold, no trade fires.
+// ═══ DAVID & ATLAS — CLIMAX PROTOCOL THRESHOLDS (HARD-CODED — DO NOT CHANGE) ═══
 //
-// GATE 1: HURST      — H ≥ 0.62  (persistent regime — move will travel)
-// GATE 2: EFFICIENCY — E ≥ 7.0   (CLIMAX structural vacuum — was 2.0)
-// GATE 3: Z-OFI      — |Z| ≥ 1.0σ + direction check (statistical abnormality confirmed)
-// GATE 4: VPIN       — VPIN ≥ 0.65 (CLIMAX institutional conviction — was 0.40)
+// ┌──────────┬───────────────────────────────────────────────────────────────────┐
+// │ Gate     │ CLIMAX Entry AND Exit Threshold                                   │
+// ├──────────┼───────────────────────────────────────────────────────────────────┤
+// │ 1: Hurst │ H ≥ 0.62   — persistent trending regime                          │
+// │ 2: Eff   │ E > 100x   — Liq Hole / Tsunami (order book non-existent 1 side) │
+// │ 3: Z-OFI │ |Z| > 2.5σ — Whale exhausting order block (extreme boundary)     │
+// │ 4: VPIN  │ > 0.60     — MM toxicity threshold (MMs about to pull liquidity) │
+// └──────────┴───────────────────────────────────────────────────────────────────┘
 //
-// DIRECTION: Z-OFI > 0 = LONG. Z-OFI < 0 = SHORT. No ambiguity.
-// EXIT: Standard 3/4 gate drop (E drops below 2.0 OR VPIN drops below 0.40) = tunnel collapsed.
+// EXIT: ANY gate drops below CLIMAX threshold → 3/4 gates → IMMEDIATE flush.
+// ENTRY + EXIT use IDENTICAL thresholds. If it's not CLIMAX, there's no trade.
 
-const DA_HURST_MIN = 0.62;          // Gate 1: Persistent regime (unchanged)
-const DA_EFFICIENCY_MIN = 7.0;       // Gate 2: CLIMAX entry — extreme vacuum (raised from 2.0)
-const DA_ZOFI_MIN = 1.0;             // Gate 3: |Z-OFI| ≥ 1.0σ (unchanged)
-const DA_VPIN_MIN = 0.65;            // Gate 4: CLIMAX entry — deep institutional flow (raised from 0.40)
+const DA_HURST_MIN = 0.62;           // Gate 1: Persistent regime (unchanged)
+const DA_EFFICIENCY_MIN = 100.0;     // Gate 2: CLIMAX — Liq Hole / Tsunami (E > 100x)
+const DA_ZOFI_MIN = 2.5;             // Gate 3: CLIMAX — Whale exhausting order block (|Z| > 2.5σ)
+const DA_VPIN_MIN = 0.60;            // Gate 4: CLIMAX — MM toxicity threshold (VPIN > 0.60)
 const DA_VPIN_GHOST_MAX = 0.15;      // Ghost move block: VPIN < 0.15 = retail noise, never enter
-// Exit gates: SAME as entry CLIMAX thresholds — exit as soon as pair is no longer in CLIMAX
-// Strategy: enter on CLIMAX, hold while CLIMAX, exit the instant CLIMAX is lost.
-const DA_EXIT_EFFICIENCY_MIN = 7.0;  // Exit: must stay in CLIMAX (E≥7.0) — same as entry
-const DA_EXIT_VPIN_MIN = 0.65;       // Exit: must stay in CLIMAX (VPIN≥0.65) — same as entry
 
-// Rule of 2: Require 2 consecutive 4/4-gate ticks before entry (anti-noise, anti-lag)
+// EXIT uses IDENTICAL CLIMAX thresholds — no separate lower thresholds.
+// The moment ANY metric drops below CLIMAX level → 3/4 gates → mandatory flush.
+const DA_EXIT_EFFICIENCY_MIN = 100.0; // Exit: Efficiency must stay in CLIMAX (E > 100x)
+const DA_EXIT_VPIN_MIN = 0.60;        // Exit: VPIN must stay in CLIMAX (> 0.60)
+const DA_EXIT_ZOFI_MIN = 2.5;         // Exit: |Z-OFI| must stay at CLIMAX level (> 2.5σ)
+
+// Rule of 2: Require 2 consecutive CLIMAX ticks before entry (anti-noise, anti-lag)
 const DA_RULE_OF_2 = 2;
 
-// Exit sensitivity: how many consecutive ticks a gate must fail before firing MarketClose
-// Value = 1 = immediate (any single tick drop = flush). Zero-fault tolerance.
+// Exit sensitivity: 1 = immediate (any single tick gate drop = flush). Zero-fault tolerance.
 const DA_EXIT_FAIL_TICKS = 1;
 
-// No per-pair cooldown — pure physics gates (Hurst, Efficiency, VPIN, Z-OFI) decide re-entry
-
-// Minimum hold before exit gates are evaluated (prevents EWMA warm-up false exits)
-const DA_MIN_HOLD_MS = 30_000; // 30s minimum hold for David & Atlas (tighter than Predatory Hunter)
+// Minimum hold before exit gates fire (prevents EWMA warm-up false exits on first few ticks)
+const DA_MIN_HOLD_MS = 10_000; // 10s minimum — enough for EWMA to stabilize post-entry
 
 // ─── Daily VWAP Tracker (tick-weighted volume price) ───
 // Used as failsafe anchor when no institutional wall is within 3 pips.
@@ -883,7 +894,7 @@ Deno.serve(async (req) => {
       );
     }
 
-    console.log(`[DAVID-ATLAS] ⚡ Tunnel Engine v2 CLIMAX-ONLY | ${instruments.size} pairs | Hurst≥${DA_HURST_MIN} Eff≥${DA_EFFICIENCY_MIN}(entry)/≥${DA_EXIT_EFFICIENCY_MIN}(exit) |Z-OFI|≥${DA_ZOFI_MIN} VPIN≥${DA_VPIN_MIN}(entry)/≥${DA_EXIT_VPIN_MIN}(exit) | Rule-of-2`);
+    console.log(`[CLIMAX] ⚡ CLIMAX PROTOCOL ACTIVE | ${instruments.size} pairs | ENTRY: Hurst≥${DA_HURST_MIN} | Eff>${DA_EFFICIENCY_MIN}x | |Z-OFI|>${DA_ZOFI_MIN}σ | VPIN>${DA_VPIN_MIN} | Rule-of-${DA_RULE_OF_2} | EXIT: identical CLIMAX thresholds — 3/4 gate = instant flush`);
 
     // ─── 4. Open OANDA stream ───
     const instrumentList = Array.from(instruments).join(",");
@@ -1310,59 +1321,65 @@ Deno.serve(async (req) => {
                     ? Date.now() - new Date(openTrade.created_at).getTime()
                     : DA_MIN_HOLD_MS + 1;
 
-                  // ─── PRIORITY-0 INTERRUPT: Z-OFI direction reversal past CLIMAX threshold ───
-                  // Only fires if Z-OFI has crossed firmly past the entry threshold in opposite direction.
-                  // This prevents noise exits on minor Z-OFI oscillations near zero.
-                  // Long: exit only if Z < -DA_ZOFI_MIN (firm negative institutional flow)
-                  // Short: exit only if Z > +DA_ZOFI_MIN (firm positive institutional flow)
-                  const zOfiExitP0 = exitTracker.zOfi;
-                  const isLongP0 = openTrade.direction === "long";
-                  const zOfiReversalP0 = isLongP0 ? (zOfiExitP0 < -DA_ZOFI_MIN) : (zOfiExitP0 > DA_ZOFI_MIN);
-                  if (zOfiReversalP0 && exitTracker.tickCount >= 20) {
-                    const p0Reason = `Z-OFI_REVERSAL (P0): Z=${zOfiExitP0.toFixed(3)} — institutional flow fully reversed past threshold. Mandatory flush.`;
-                    console.log(`[DAVID-ATLAS] ⚡ Z-OFI REVERSAL P0 EXIT (bypassing MIN_HOLD): ${instrument} | ${p0Reason}`);
+                  // ═══════════════════════════════════════════════════════════
+                  // CLIMAX EXIT LOGIC — HARD-CODED PROTOCOL
+                  // Exit fires the INSTANT any CLIMAX gate falls below threshold.
+                  // Entry and exit thresholds are IDENTICAL — no separate lower bar.
+                  // ═══════════════════════════════════════════════════════════
+
+                  // Compute current physics
+                  const pipMultExit = instrument.includes("JPY") ? 100 : 10000;
+                  const absD1Exit = Math.abs(exitTracker.D1);
+                  const absOfiExit = Math.abs(exitTracker.ofiRecursive);
+                  const ofiScaledExit = absOfiExit / pipMultExit;
+                  const efficiencyExit = ofiScaledExit / (absD1Exit + EFFICIENCY_EPSILON);
+                  const zOfiExit = exitTracker.zOfi;
+                  const isLong = openTrade.direction === "long";
+
+                  // ─── PRIORITY-0 INTERRUPT: Z-OFI full CLIMAX reversal ───
+                  // If Z-OFI crosses past ±2.5σ in the OPPOSITE direction → Whale has flipped.
+                  // Bypasses MIN_HOLD — institutional intent has completely reversed.
+                  const zOfiFullReversal = isLong
+                    ? (zOfiExit <= -DA_EXIT_ZOFI_MIN)   // Long: Z drops below -2.5σ
+                    : (zOfiExit >= DA_EXIT_ZOFI_MIN);    // Short: Z rises above +2.5σ
+                  if (zOfiFullReversal && exitTracker.tickCount >= 10) {
+                    const p0Reason = `P0_CLIMAX_REVERSAL: Z-OFI=${zOfiExit.toFixed(3)} — Whale fully reversed past ±${DA_EXIT_ZOFI_MIN}σ. Mandatory instant flush.`;
+                    console.log(`[CLIMAX] ⚡ P0 REVERSAL EXIT (bypassing MIN_HOLD): ${instrument} | ${p0Reason}`);
                     await davidAtlasFlush(openTrade, instrument, p0Reason);
                   } else if (tradeAgeMs < DA_MIN_HOLD_MS) {
-                    console.log(`[DAVID-ATLAS] 🛡️ MIN_HOLD: ${instrument} age=${Math.round(tradeAgeMs/1000)}s < ${DA_MIN_HOLD_MS/1000}s — gate-flush suppressed`);
+                    // Still in warm-up window — only P0 can exit
+                    console.log(`[CLIMAX] 🛡️ MIN_HOLD: ${instrument} age=${Math.round(tradeAgeMs/1000)}s < ${DA_MIN_HOLD_MS/1000}s — waiting for EWMA stabilization`);
                   } else {
-                    // ─── DAVID & ATLAS: 4-Gate Active State Check ───
-                    // Compute exact same gates used for entry. If ANY fails → Tunnel collapsed → FLUSH.
-                    const pipMultExit = instrument.includes("JPY") ? 100 : 10000;
-                    const absD1Exit = Math.abs(exitTracker.D1);
-                    const absOfiExit = Math.abs(exitTracker.ofiRecursive);
-                    const ofiScaledExit = absOfiExit / pipMultExit;
-                    const efficiencyExit = ofiScaledExit / (absD1Exit + EFFICIENCY_EPSILON);
-                    const zOfiExit = exitTracker.zOfi;
-                    const isLong = openTrade.direction === "long";
+                    // ─── CLIMAX GATE CHECK: All 4 gates must remain at CLIMAX level ───
+                    // Same thresholds as entry. No separate "exit lower bar" exists.
+                    // ANY gate below CLIMAX = 3/4 gates = TUNNEL COLLAPSED = flush NOW.
+                    const zOfiAtClimaxLevel = isLong
+                      ? (zOfiExit >= DA_EXIT_ZOFI_MIN)   // Long: Z must stay above +2.5σ
+                      : (zOfiExit <= -DA_EXIT_ZOFI_MIN);  // Short: Z must stay below -2.5σ
 
-                    // ─── DAVID & ATLAS: 4-Gate Active State Check ───
-                    // (P0 Z-OFI zero-cross is handled above, bypassing MIN_HOLD)
-                    // Determine direction-aligned Z-OFI gate
-                      const zOfiAligned = isLong ? (zOfiExit >= DA_ZOFI_MIN) : (zOfiExit <= -DA_ZOFI_MIN);
+                    const gate1Hurst      = exitTracker.hurst >= DA_HURST_MIN;
+                    const gate2Efficiency = efficiencyExit >= DA_EXIT_EFFICIENCY_MIN;  // must stay > 100x
+                    const gate3ZOfi       = zOfiAtClimaxLevel;                          // must stay > ±2.5σ
+                    const gate4Vpin       = exitTracker.vpinRecursive >= DA_EXIT_VPIN_MIN; // must stay > 0.60
 
-                      // Exit uses standard thresholds (not CLIMAX) — tunnel collapses as soon as conviction fades
-                      const gate1Hurst = exitTracker.hurst >= DA_HURST_MIN;
-                      const gate2Efficiency = efficiencyExit >= DA_EXIT_EFFICIENCY_MIN;  // 2.0 not 7.0
-                      const gate3ZOfi = zOfiAligned;
-                      const gate4Vpin = exitTracker.vpinRecursive >= DA_EXIT_VPIN_MIN;   // 0.40 not 0.65
+                    const gatesOpen = [gate1Hurst, gate2Efficiency, gate3ZOfi, gate4Vpin].filter(Boolean).length;
 
-                      const gatesOpen = [gate1Hurst, gate2Efficiency, gate3ZOfi, gate4Vpin].filter(Boolean).length;
+                    if (gatesOpen < 4) {
+                      // CLIMAX ENDED — mandatory immediate exit
+                      const failedGates = [
+                        !gate1Hurst      ? `HURST(${exitTracker.hurst.toFixed(3)}<${DA_HURST_MIN})` : null,
+                        !gate2Efficiency ? `EFF(${efficiencyExit.toFixed(2)}<${DA_EXIT_EFFICIENCY_MIN}x)` : null,
+                        !gate3ZOfi       ? `Z-OFI(${zOfiExit.toFixed(2)} not ${isLong ? "≥" : "≤"}±${DA_EXIT_ZOFI_MIN}σ)` : null,
+                        !gate4Vpin       ? `VPIN(${exitTracker.vpinRecursive.toFixed(3)}<${DA_EXIT_VPIN_MIN})` : null,
+                      ].filter(Boolean).join(" | ");
 
-                      if (gatesOpen < 4) {
-                        // TUNNEL COLLAPSED — mandatory MarketClose()
-                        const failedGates = [
-                          !gate1Hurst ? `HURST(${exitTracker.hurst.toFixed(3)}<${DA_HURST_MIN})` : null,
-                          !gate2Efficiency ? `EFF(${efficiencyExit.toFixed(2)}<${DA_EXIT_EFFICIENCY_MIN})` : null,
-                          !gate3ZOfi ? `ZOFI(${zOfiExit.toFixed(2)} not ${isLong ? "≥" : "≤"}${isLong ? DA_ZOFI_MIN : -DA_ZOFI_MIN})` : null,
-                          !gate4Vpin ? `VPIN(${exitTracker.vpinRecursive.toFixed(3)}<${DA_EXIT_VPIN_MIN})` : null,
-                        ].filter(Boolean).join(" | ");
-
-                        const flushReason = `3/4_GATE_FLUSH: ${gatesOpen}/4 gates open. Failed: ${failedGates}`;
-                        await davidAtlasFlush(openTrade, instrument, flushReason);
-                      } else {
-                        // Tunnel still active — log state
-                        console.log(`[DAVID-ATLAS] 🟢 TUNNEL ACTIVE: ${instrument} ${openTrade.direction} | 4/4 gates | H=${exitTracker.hurst.toFixed(3)} E=${efficiencyExit.toFixed(2)} Z=${zOfiExit.toFixed(2)} VPIN=${exitTracker.vpinRecursive.toFixed(3)}`);
-                      }
+                      const flushReason = `CLIMAX_ENDED: ${gatesOpen}/4 CLIMAX gates. Failed: ${failedGates}`;
+                      console.log(`[CLIMAX] 🔴 3/4 FLUSH: ${instrument} | ${flushReason}`);
+                      await davidAtlasFlush(openTrade, instrument, flushReason);
+                    } else {
+                      // All 4 CLIMAX gates still active — hold the position
+                      console.log(`[CLIMAX] 🟡 CLIMAX ACTIVE: ${instrument} ${openTrade.direction} | H=${exitTracker.hurst.toFixed(3)} E=${efficiencyExit.toFixed(1)}x Z=${zOfiExit.toFixed(2)}σ VPIN=${exitTracker.vpinRecursive.toFixed(3)} | HOLDING`);
+                    }
                   }
                 }
               }
@@ -1424,14 +1441,15 @@ Deno.serve(async (req) => {
                 daState.consecutivePassCount = 0; gateDiag.hurst++; continue;
               }
 
-              // ─── GATE 2: EFFICIENCY ≥ 2.0 ───
+              // ─── GATE 2: EFFICIENCY > 100x — Liq Hole / Tsunami ───
+              // Order book effectively non-existent on one side. Price rockets/slips with zero friction.
               if (efficiencyDA < DA_EFFICIENCY_MIN) {
                 daState.consecutivePassCount = 0; gateDiag.efficiency++; continue;
               }
 
-              // ─── GATE 3: Z-OFI — direction lock ───
-              // Z-OFI > 0 = LONG (positive institutional flow)
-              // Z-OFI < 0 = SHORT (negative institutional flow)
+              // ─── GATE 3: |Z-OFI| > 2.5σ — Whale exhausting order block ───
+              // Z > +2.5σ = LONG (aggressive institutional buy exhaustion)
+              // Z < -2.5σ = SHORT (aggressive institutional sell exhaustion)
               const zOfiDA = daTracker.zOfi;
               let tunnelDirection: string | null = null;
               if (zOfiDA >= DA_ZOFI_MIN) {
@@ -1443,9 +1461,10 @@ Deno.serve(async (req) => {
                 daState.consecutivePassCount = 0; gateDiag.zofi++; continue;
               }
 
-              // ─── GATE 4: VPIN ≥ 0.40 ───
+              // ─── GATE 4: VPIN > 0.60 — MM toxicity threshold ───
+              // MMs about to withdraw liquidity → violent price reversal / Climax
               if (daTracker.vpinRecursive < DA_VPIN_GHOST_MAX) {
-                console.log(`[DAVID-ATLAS] 👻 GHOST MOVE BLOCKED: ${tradePair} VPIN=${daTracker.vpinRecursive.toFixed(3)}`);
+                console.log(`[CLIMAX] 👻 GHOST MOVE BLOCKED: ${tradePair} VPIN=${daTracker.vpinRecursive.toFixed(3)}`);
                 daState.consecutivePassCount = 0; gateDiag.vpin++; continue;
               }
               if (daTracker.vpinRecursive < DA_VPIN_MIN) {
@@ -1477,7 +1496,7 @@ Deno.serve(async (req) => {
 
               daState.lastFireTs = tickTs;
 
-              console.log(`[DAVID-ATLAS] 🎯 TUNNEL STRIKE: ${tunnelDirection.toUpperCase()} ${baseUnits} ${tradePair} | H=${daTracker.hurst.toFixed(3)} E=${efficiencyDA.toFixed(2)} Z=${zOfiDA.toFixed(2)} VPIN=${daTracker.vpinRecursive.toFixed(3)} | 4/4 GATES — NO SL | NO TP | TUNNEL IS LIVE`);
+              console.log(`[CLIMAX] 🎯 CLIMAX STRIKE: ${tunnelDirection.toUpperCase()} ${baseUnits} ${tradePair} | H=${daTracker.hurst.toFixed(3)} E=${efficiencyDA.toFixed(1)}x Z=${zOfiDA.toFixed(2)}σ VPIN=${daTracker.vpinRecursive.toFixed(3)} | 4/4 CLIMAX GATES — NO SL | NO TP | HOLD UNTIL CLIMAX ENDS`);
 
               const daResult = await davidAtlasEnter(tradePair, tunnelDirection, baseUnits, tradePrice);
 
