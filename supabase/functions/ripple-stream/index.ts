@@ -667,9 +667,10 @@ const DA_EFFICIENCY_MIN = 7.0;       // Gate 2: CLIMAX entry — extreme vacuum 
 const DA_ZOFI_MIN = 1.0;             // Gate 3: |Z-OFI| ≥ 1.0σ (unchanged)
 const DA_VPIN_MIN = 0.65;            // Gate 4: CLIMAX entry — deep institutional flow (raised from 0.40)
 const DA_VPIN_GHOST_MAX = 0.15;      // Ghost move block: VPIN < 0.15 = retail noise, never enter
-// Exit gates: standard thresholds — tunnel collapses as soon as conviction fades
-const DA_EXIT_EFFICIENCY_MIN = 2.0;  // Exit: any efficiency fade below 2.0 = flush
-const DA_EXIT_VPIN_MIN = 0.40;       // Exit: any VPIN retreat below 0.40 = flush
+// Exit gates: SAME as entry CLIMAX thresholds — exit as soon as pair is no longer in CLIMAX
+// Strategy: enter on CLIMAX, hold while CLIMAX, exit the instant CLIMAX is lost.
+const DA_EXIT_EFFICIENCY_MIN = 7.0;  // Exit: must stay in CLIMAX (E≥7.0) — same as entry
+const DA_EXIT_VPIN_MIN = 0.65;       // Exit: must stay in CLIMAX (VPIN≥0.65) — same as entry
 
 // Rule of 2: Require 2 consecutive 4/4-gate ticks before entry (anti-noise, anti-lag)
 const DA_RULE_OF_2 = 2;
@@ -1309,17 +1310,17 @@ Deno.serve(async (req) => {
                     ? Date.now() - new Date(openTrade.created_at).getTime()
                     : DA_MIN_HOLD_MS + 1;
 
-                  // ─── PRIORITY-0 INTERRUPT: Z-OFI Zero-Cross ───
-                  // BYPASSES MIN_HOLD — fires immediately regardless of trade age.
-                  // Institutional intent has FLIPPED. Tunnel collapsed. Mandatory P0 flush.
-                  // BUG FIX #4: z=0.000 is neutral noise, not a reversal.
-                  // Require meaningful cross: long flushes only if Z < -0.1, short only if Z > +0.1.
+                  // ─── PRIORITY-0 INTERRUPT: Z-OFI direction reversal past CLIMAX threshold ───
+                  // Only fires if Z-OFI has crossed firmly past the entry threshold in opposite direction.
+                  // This prevents noise exits on minor Z-OFI oscillations near zero.
+                  // Long: exit only if Z < -DA_ZOFI_MIN (firm negative institutional flow)
+                  // Short: exit only if Z > +DA_ZOFI_MIN (firm positive institutional flow)
                   const zOfiExitP0 = exitTracker.zOfi;
                   const isLongP0 = openTrade.direction === "long";
-                  const zOfiZeroCrossP0 = isLongP0 ? (zOfiExitP0 < -0.1) : (zOfiExitP0 > 0.1);
-                  if (zOfiZeroCrossP0 && exitTracker.tickCount >= 20) {
-                    const p0Reason = `Z-OFI_ZERO_CROSS (P0): Z=${zOfiExitP0.toFixed(3)} crossed zero — institutional intent reversed. Mandatory P0 flush.`;
-                    console.log(`[DAVID-ATLAS] ⚡ ZERO-CROSS P0 EXIT (bypassing MIN_HOLD): ${instrument} | ${p0Reason}`);
+                  const zOfiReversalP0 = isLongP0 ? (zOfiExitP0 < -DA_ZOFI_MIN) : (zOfiExitP0 > DA_ZOFI_MIN);
+                  if (zOfiReversalP0 && exitTracker.tickCount >= 20) {
+                    const p0Reason = `Z-OFI_REVERSAL (P0): Z=${zOfiExitP0.toFixed(3)} — institutional flow fully reversed past threshold. Mandatory flush.`;
+                    console.log(`[DAVID-ATLAS] ⚡ Z-OFI REVERSAL P0 EXIT (bypassing MIN_HOLD): ${instrument} | ${p0Reason}`);
                     await davidAtlasFlush(openTrade, instrument, p0Reason);
                   } else if (tradeAgeMs < DA_MIN_HOLD_MS) {
                     console.log(`[DAVID-ATLAS] 🛡️ MIN_HOLD: ${instrument} age=${Math.round(tradeAgeMs/1000)}s < ${DA_MIN_HOLD_MS/1000}s — gate-flush suppressed`);
