@@ -53,12 +53,24 @@ export interface SyntheticBookSnapshot {
   capabilities: string[];
 }
 
-export function useSyntheticOrderBook(pollMs = 10_000) {
+export interface ActiveTrade {
+  id: string;
+  currency_pair: string;
+  direction: string;
+  status: string;
+  created_at: string;
+  entry_price: number | null;
+  units: number;
+  direction_engine: string | null;
+}
+
+export function useSyntheticOrderBook(pollMs = 3_000) {
   const [snapshot, setSnapshot] = useState<SyntheticBookSnapshot | null>(null);
   const [loading, setLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
+  const [activeTrades, setActiveTrades] = useState<ActiveTrade[]>([]);
 
-  const fetch = useCallback(async () => {
+  const fetchSnapshot = useCallback(async () => {
     const { data } = await supabase
       .from('sovereign_memory')
       .select('payload, updated_at')
@@ -74,11 +86,38 @@ export function useSyntheticOrderBook(pollMs = 10_000) {
     setLoading(false);
   }, []);
 
-  useEffect(() => {
-    fetch();
-    const iv = setInterval(fetch, pollMs);
-    return () => clearInterval(iv);
-  }, [fetch, pollMs]);
+  const fetchActiveTrades = useCallback(async () => {
+    const { data } = await supabase
+      .from('oanda_orders')
+      .select('id, currency_pair, direction, status, created_at, entry_price, units, direction_engine')
+      .eq('status', 'open')
+      .eq('environment', 'live')
+      .order('created_at', { ascending: false });
+    setActiveTrades(data || []);
+  }, []);
 
-  return { snapshot, loading, lastUpdated, refetch: fetch };
+  useEffect(() => {
+    fetchSnapshot();
+    fetchActiveTrades();
+
+    // Poll physics snapshot every 3s
+    const iv = setInterval(fetchSnapshot, pollMs);
+
+    // Realtime subscription for instant trade open/close detection
+    const channel = supabase
+      .channel('active-trades-realtime')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'oanda_orders' },
+        () => { fetchActiveTrades(); }
+      )
+      .subscribe();
+
+    return () => {
+      clearInterval(iv);
+      supabase.removeChannel(channel);
+    };
+  }, [fetchSnapshot, fetchActiveTrades, pollMs]);
+
+  return { snapshot, loading, lastUpdated, refetch: fetchSnapshot, activeTrades };
 }
