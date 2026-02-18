@@ -14,13 +14,23 @@ import { cn } from '@/lib/utils';
 
 type TacticalState = 'FATIGUE' | 'ACTIVE' | 'CLIMAX' | 'STRIKE_READY' | 'SCANNING';
 
+// ─── CLIMAX PROTOCOL v2.0 — HARD-CODED THRESHOLDS (must match ripple-stream engine) ───
+const CLIMAX_EFFICIENCY_MIN = 100.0;   // E > 100x  — Liquidity Hole / Tsunami
+const CLIMAX_ZOFI_MIN = 2.5;           // |Z| > 2.5σ — Whale exhaustion
+const CLIMAX_VPIN_MIN = 0.60;          // VPIN > 0.60 — Toxicity threshold
+const CLIMAX_HURST_MIN = 0.62;         // H ≥ 0.62   — Regime persistence
+
 function deriveTacticalState(p: PairPhysics): TacticalState {
   const H = p.hurst?.H ?? 0;
   const eff = p.efficiency ?? 0;
   const vpin = p.vpin ?? 0;
+  const absZ = Math.abs(p.zOfi ?? 0);
   if (H < 0.45) return 'FATIGUE';
-  if (eff >= 7 && vpin >= 0.65) return 'CLIMAX';
-  if (H >= 0.62 && eff >= 2 && vpin >= 0.4 && Math.abs(p.zOfi) >= 1) return 'ACTIVE';
+  // CLIMAX: ALL 4 gates must hit outer statistical boundaries
+  if (H >= CLIMAX_HURST_MIN && eff > CLIMAX_EFFICIENCY_MIN && absZ > CLIMAX_ZOFI_MIN && vpin > CLIMAX_VPIN_MIN) return 'CLIMAX';
+  // ACTIVE: 4/4 standard alignment (below CLIMAX thresholds)
+  if (H >= CLIMAX_HURST_MIN && eff >= 7 && vpin >= 0.40 && absZ >= 1.0) return 'ACTIVE';
+  // STRIKE_READY: warming up
   if (H >= 0.55 && eff >= 1.5) return 'STRIKE_READY';
   return 'SCANNING';
 }
@@ -673,10 +683,10 @@ function SovereignProtocolHUD() {
   ];
 
   const gates = [
-    { id: 'H', label: 'Hurst', threshold: '≥ 0.62', desc: 'Persistent trend' },
-    { id: 'E', label: 'Efficiency', threshold: '≥ 2.0×', desc: 'Iceberg / Vacuum' },
-    { id: 'V', label: 'VPIN', threshold: '≥ 0.40', desc: 'Informed flow' },
-    { id: 'Z', label: 'Z-OFI', threshold: '|Z| ≥ 1.0σ', desc: 'Directional intent' },
+    { id: 'H', label: 'Hurst', threshold: '≥ 0.62', desc: 'Regime persistence' },
+    { id: 'E', label: 'Efficiency', threshold: '> 100×', desc: 'Liq Hole / Tsunami' },
+    { id: 'V', label: 'VPIN', threshold: '> 0.60', desc: 'Toxicity threshold' },
+    { id: 'Z', label: 'Z-OFI', threshold: '|Z| > 2.5σ', desc: 'Whale exhaustion' },
   ];
 
   return (
