@@ -616,6 +616,115 @@ function TacticalUnit({ pair, data }: { pair: string; data: PairPhysics }) {
   );
 }
 
+// ─── Sovereign Entry Protocol HUD ───────────────────────────────────────────
+
+function SovereignProtocolHUD() {
+  const rows = [
+    {
+      gates: '4/4',
+      pulse: true,
+      state: 'Active Pulse',
+      regime: 'Tsunami / Vacuum Strike',
+      action: 'ENTER / HOLD',
+      actionColor: 'text-green-400 bg-green-500/10 border-green-500/30',
+      gateColor: 'text-yellow-300',
+      desc: 'Physics are leading.',
+    },
+    {
+      gates: '3/4',
+      pulse: false,
+      state: 'Decay Phase',
+      regime: 'Absorption / Random Walk',
+      action: 'EXIT',
+      actionColor: 'text-red-400 bg-red-500/10 border-red-500/30',
+      gateColor: 'text-amber-400',
+      desc: 'Edge has evaporated.',
+    },
+    {
+      gates: '1/4',
+      pulse: false,
+      state: 'Fade Mode',
+      regime: 'Momentum Collapse',
+      action: 'AVOID',
+      actionColor: 'text-muted-foreground bg-muted/10 border-border/30',
+      gateColor: 'text-red-400',
+      desc: 'Retail noise dominance.',
+    },
+  ];
+
+  const gates = [
+    { id: 'H', label: 'Hurst', threshold: '≥ 0.62', desc: 'Persistent trend' },
+    { id: 'E', label: 'Efficiency', threshold: '≥ 2.0×', desc: 'Iceberg / Vacuum' },
+    { id: 'V', label: 'VPIN', threshold: '≥ 0.40', desc: 'Informed flow' },
+    { id: 'Z', label: 'Z-OFI', threshold: '|Z| ≥ 1.0σ', desc: 'Directional intent' },
+  ];
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: -6 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ delay: 0.02 }}
+      className="rounded-xl border border-yellow-500/20 bg-yellow-500/5 overflow-hidden"
+    >
+      {/* Header */}
+      <div className="flex items-center justify-between px-4 py-2.5 border-b border-yellow-500/15 bg-yellow-500/5">
+        <div className="flex items-center gap-2">
+          <Zap className="w-3.5 h-3.5 text-yellow-400" />
+          <span className="text-[10px] font-mono font-bold uppercase tracking-widest text-yellow-300">Sovereign Barrage Protocol</span>
+        </div>
+        <span className="text-[9px] font-mono text-muted-foreground">Direction: Z-OFI &gt; 0 = LONG · Z-OFI &lt; 0 = SHORT</span>
+      </div>
+
+      <div className="p-3 grid grid-cols-1 md:grid-cols-2 gap-3">
+        {/* Gate Alignment Table */}
+        <div className="space-y-1.5">
+          <span className="text-[8px] font-mono uppercase tracking-widest text-muted-foreground">Gate State → Action</span>
+          <div className="space-y-1">
+            {rows.map((row) => (
+              <div key={row.gates} className="flex items-center gap-2 rounded-md px-2.5 py-1.5 bg-card/40 border border-border/30">
+                <div className="flex items-center gap-1.5 w-10 flex-shrink-0">
+                  <span className={`text-[11px] font-mono font-black ${row.gateColor}`}>{row.gates}</span>
+                  {row.pulse && <Zap className="w-2.5 h-2.5 text-yellow-400 animate-pulse" />}
+                </div>
+                <span className="text-[8px] font-mono text-muted-foreground w-28 flex-shrink-0">{row.state}</span>
+                <span className="text-[8px] font-mono text-muted-foreground flex-1 hidden md:block">{row.regime}</span>
+                <div className={`flex items-center px-2 py-0.5 rounded border text-[8px] font-mono font-bold flex-shrink-0 ${row.actionColor}`}>
+                  {row.action}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* 4 Gate Requirements */}
+        <div className="space-y-1.5">
+          <span className="text-[8px] font-mono uppercase tracking-widest text-muted-foreground">4/4 Gate Requirements</span>
+          <div className="grid grid-cols-2 gap-1">
+            {gates.map((g) => (
+              <div key={g.id} className="flex items-start gap-2 rounded-md px-2.5 py-1.5 bg-card/40 border border-border/30">
+                <div className="w-4 h-4 rounded-full bg-green-500/20 border border-green-500/40 flex items-center justify-center flex-shrink-0 mt-0.5">
+                  <span className="text-[7px] font-mono font-black text-green-400">{g.id}</span>
+                </div>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[9px] font-mono font-bold text-foreground">{g.label}</span>
+                    <span className="text-[8px] font-mono text-yellow-300 font-bold">{g.threshold}</span>
+                  </div>
+                  <span className="text-[8px] font-mono text-muted-foreground">{g.desc}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="rounded-md px-2.5 py-1.5 bg-amber-500/5 border border-amber-500/20 flex items-center gap-2">
+            <AlertTriangle className="w-3 h-3 text-amber-400 flex-shrink-0" />
+            <span className="text-[8px] font-mono text-amber-300">Exit the <strong>exact second</strong> the dashboard drops to 3/4 — the yellow pulse extinguishes.</span>
+          </div>
+        </div>
+      </div>
+    </motion.div>
+  );
+}
+
 // ─── Gate Pipeline Banner ────────────────────────────────────────────────────
 
 function GatePipeline({ gates }: { gates: string[] }) {
@@ -696,6 +805,9 @@ const SyntheticOrderBook = () => {
             Predatory Hunter v2.0 — Tap any metric to decode its meaning
           </p>
         </motion.div>
+
+        {/* Sovereign Protocol HUD */}
+        <SovereignProtocolHUD />
 
         {/* Pipeline Banner */}
         {snapshot && (
