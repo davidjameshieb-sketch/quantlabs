@@ -665,8 +665,8 @@ const DA_RULE_OF_2 = 2;
 // Value = 1 = immediate (any single tick drop = flush). Zero-fault tolerance.
 const DA_EXIT_FAIL_TICKS = 1;
 
-// Cooldown: 5 minutes between entries per pair
-const DA_COOLDOWN_MS = 300_000;
+// Cooldown: 2 minutes between entries per pair (reduced from 5min — P0 flush exits should re-arm faster)
+const DA_COOLDOWN_MS = 120_000;
 
 // Minimum hold before exit gates are evaluated (prevents EWMA warm-up false exits)
 const DA_MIN_HOLD_MS = 30_000; // 30s minimum hold for David & Atlas (tighter than Predatory Hunter)
@@ -900,13 +900,13 @@ Deno.serve(async (req) => {
 
     // Cross-session cooldown: load recent DA fires from DB
     try {
-      const fiveMinAgo = new Date(Date.now() - DA_COOLDOWN_MS).toISOString();
+      const twoMinAgo = new Date(Date.now() - DA_COOLDOWN_MS).toISOString();
       const { data: recentFires } = await supabase
         .from("oanda_orders")
         .select("currency_pair, created_at")
         .eq("direction_engine", "david-atlas")
         .eq("environment", "live")
-        .gte("created_at", fiveMinAgo)
+        .gte("created_at", twoMinAgo)
         .order("created_at", { ascending: false });
 
       for (const fire of (recentFires || [])) {
