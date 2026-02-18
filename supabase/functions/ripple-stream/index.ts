@@ -836,7 +836,8 @@ Deno.serve(async (req) => {
       .maybeSingle();
 
     const govPayload = governanceConfig?.payload as Record<string, unknown> | null;
-    const baseUnits: number = (govPayload?.units as number) || 1000;
+    // ─── SOVEREIGN PULSE PROTOCOL: Fixed 1,250 units per strike. No dynamic sizing. ───
+    const baseUnits: number = 1250;
     const blockedPairs: string[] = (govPayload?.blockedPairs as string[]) || [];
 
     // ─── 2. Load blocked pairs override from circuit breaker ───
