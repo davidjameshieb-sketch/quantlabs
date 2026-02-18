@@ -872,7 +872,11 @@ const SyntheticOrderBook = () => {
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
               {activePairs.map(([pair, data]) => {
                 const normalizedPair = pair.replace('/', '_');
-                const trade = activeTrades.find(t => t.currency_pair === normalizedPair || t.currency_pair === pair) || null;
+                // Only show TUNNEL ACTIVE banner for truly open trades (filled/pending, not closed)
+                const trade = activeTrades.find(t =>
+                  (t.currency_pair === normalizedPair || t.currency_pair === pair) &&
+                  (t.status === 'filled' || t.status === 'pending')
+                ) || null;
                 return <TacticalUnit key={pair} pair={pair} data={data as PairPhysics} activeTrade={trade} />;
               })}
             </div>
