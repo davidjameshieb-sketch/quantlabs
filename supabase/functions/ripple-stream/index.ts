@@ -1,36 +1,44 @@
 // ═══════════════════════════════════════════════════════════════
-// DAVID & ATLAS — CLIMAX PROTOCOL v2.0 (HARD-CODED — DO NOT MODIFY)
+// DAVID & ATLAS — REGIME-SWITCHING LIQUIDITY PREDATION (HARD-CODED — DO NOT MODIFY)
 // Sole active strategy. All other strategies permanently deactivated.
 //
 // ┌─────────────────────────────────────────────────────────────┐
-// │  THE CLIMAX PROTOCOL — EXACT EXECUTION RULES                │
+// │  5-PHASE DGE RULEBOOK — EXACT EXECUTION SEQUENCE           │
 // │                                                             │
-// │  ENTRY ("The Strike"): ALL 4 gates at CLIMAX thresholds:   │
-// │    Gate 1: Hurst       ≥ 0.62  (persistent regime)         │
-// │    Gate 2: Efficiency  > 100x  (Liq Hole / Tsunami)        │
-// │    Gate 3: |Z-OFI|    > 2.5σ  (Whale exhausting order blk) │
-// │    Gate 4: VPIN       > 0.60  (toxicity threshold — MMs    │
-// │                                about to withdraw liquidity) │
-// │    → Require 2 consecutive CLIMAX ticks (Rule of 2)        │
-// │    → Direction: Z-OFI sign (+ = LONG, - = SHORT)           │
-// │    → Size: Fixed 1,250 units. No SL. No TP.                │
+// │  PHASE 1 — Environment Gate (Shannon-Hartley):             │
+// │    S/N ≥ 1.5 (Sr < 1.0) → DGE switches to ACTIVE_HUNT     │
+// │    S/N < 1.5 → STANDBY, all pending limits cancelled        │
 // │                                                             │
-// │  HOLD ("The Peak"): Extreme Efficiency = Ghost Move        │
-// │    → Hold as long as ALL 4/4 CLIMAX gates remain active    │
+// │  PHASE 2 — Target Acquisition (Laplace + NOI):             │
+// │    |NOI| > 0.8 + ΔP critical → arm limit trap              │
+// │    Long: Bid Wall + 0.1 pip | Short: Ask Ceiling − 0.1 pip │
 // │                                                             │
-// │  EXIT ("The Flush"): ANY gate drops → 3/4 = IMMEDIATE EXIT │
-// │    → Institutional consensus gone. Tunnel collapsed.        │
-// │    → Exit mandatory whether in profit or loss.              │
-// │    → P0 Interrupt: Z-OFI crosses past ±2.5σ in reverse    │
-// │                    direction = instant flush (no MIN_HOLD)  │
+// │  PHASE 3 — Sizing Engine (Kelly Criterion):                │
+// │    f* = p − q/b  ·  hard ceiling: 5% NAV ($307.42)         │
+// │    Unit size scales with structural alignment               │
+// │                                                             │
+// │  PHASE 4 — Execution Trigger (SVD Eigen-Signal):           │
+// │    E_sig = composite(E > 100x + |Z| > 2.5σ) → fill        │
+// │    Rule 4.2 Dud Abort: E_sig decays < 50x in 500ms         │
+// │      → instant MarketClose()                               │
+// │                                                             │
+// │  PHASE 5 — Weaponized Exit (PID Controller Ratchet):       │
+// │    On fill: TP = +10.0 pips, SL = −10.0 pips              │
+// │    At +3.0p profit: PID ratchet activates                  │
+// │      Kp=0.2 · Ki=0.05 · Kd=0.5 (directional-aware)        │
+// │      dynamic_trail = 2.5p − P(profit) − I(ticks) − D(vel) │
+// │      D_term = Kd × velocity ONLY if velocity > 0 (favored) │
+// │      SL never retreats — one-way mechanical ratchet         │
+// │    Rule 5.3 Master Override: H < 0.45 or E_sig baseline    │
+// │      drop → instant MarketClose() overrides all PID/TP/SL  │
 // └─────────────────────────────────────────────────────────────┘
 //
 // SYNTHETIC ORDER BOOK (O(1) recursive physics engine):
-//   - Adaptive Z-OFI (Welford's): fires at |Z| > 2.5σ (CLIMAX)
+//   - Adaptive Z-OFI (Welford's): fires at |Z| > 2.5σ
 //   - Adaptive KM Windowing ("Gear Shift"): α adapts to D2 noise level
 //   - Fast Hurst Exponent (Hall-Wood): O(1) regime classification
-//   - Recursive VPIN (EWMA): O(1) toxicity — institutional participation check
-//   - Efficiency Ratio E = |OFI|/(|D1|+ε): CLIMAX at E > 100x
+//   - Recursive VPIN (EWMA): O(1) toxicity — book fragility check
+//   - Efficiency Ratio E = |OFI|/(|D1|+ε): E > 100x = vacuum
 //   - Price-Level Persistence: tick-density S/R map
 // ═══════════════════════════════════════════════════════════════
 
@@ -724,6 +732,31 @@ function getOrResetVwap(pair: string, mid: number): number {
 // if the best wall shifted down. Now we seed from the actual broker SL price.
 const lastAppliedSL = new Map<string, number>();
 
+// ─── Phase 5: PID Ratchet State (per trade, keyed by oanda_trade_id) ───────
+// Tracks per-trade PID variables for the weaponized exit (Rule 5.2).
+interface PIDTradeState {
+  maxProfit: number;       // MFE in pips (for Proportional term)
+  ticksInTrade: number;    // Integral counter
+  prevPrice: number;       // For Derivative directional velocity
+  currentSL: number;       // Current SL price (ratchets forward only)
+  pidActivated: boolean;   // True once maxProfit >= PID_TRAIL_START pips
+  dudCheckTs: number;      // Timestamp when fill occurred (for 500ms dud window)
+  entryPrice: number;      // Entry price (pip calculation base)
+  direction: string;       // "long" | "short"
+}
+const pidStateMap = new Map<string, PIDTradeState>();
+
+// ─── Phase 5: PID Constants (Rule 5.2) ──────────────────────────────────────
+const PID_KP = 0.2;              // Proportional: base trail distance from profit depth
+const PID_KI = 0.05;             // Integral: time-decay factor (tightens SL over time)
+const PID_KD = 0.5;              // Derivative: velocity factor (DIRECTIONAL — only favored moves)
+const PID_BASE_TRAIL = 2.5;      // Starting trail buffer in pips
+const PID_FLOOR_TRAIL = 0.2;     // Hard floor: trail distance never below 0.2 pips
+const PID_TP_PIPS = 10.0;        // Phase 5 Rule 5.1: hard TP bracket
+const PID_SL_PIPS = 10.0;        // Phase 5 Rule 5.1: hard SL bracket
+const PID_ACTIVATION_PIPS = 3.0; // Ratchet activates only at +3.0 pips profit
+const PID_DUD_ABORT_MS = 500;    // Rule 4.2: E_sig must hold for 500ms or fire MarketClose()
+
 // ─── Velocity Gating Constants ───────────────────────────
 const VELOCITY_TICK_THRESHOLD = 5;
 const VELOCITY_MAX_AGE_MS = 2000;
@@ -1093,7 +1126,30 @@ Deno.serve(async (req) => {
         return { success: false };
       }
 
-      // ─── L0 HARD GATE: Circuit breaker ───
+      // ─── PHASE 3: KELLY CRITERION SIZING ───
+      // f* = p − q/b  where p=win_prob, q=1-p, b=reward/risk ratio
+      // Win probability (p) is derived from structural alignment:
+      //   - E_sig strength: how far E is above 100x and |Z| above 2.5σ
+      //   - NOI alignment: how close to ±1.0 (max whale pressure)
+      // Hard ceiling: 5% of $307.42 NAV = $15.37 max risk per strike
+      const eAlignment = Math.min(1.0, entryGates.efficiency / 500);  // 0→1 as E goes 0→500x
+      const zAlignment = Math.min(1.0, Math.abs(entryGates.zOfi) / 5.0); // 0→1 as |Z| goes 0→5σ
+      const p = 0.45 + 0.25 * (eAlignment * 0.6 + zAlignment * 0.4); // p ∈ [0.45, 0.70]
+      const q = 1 - p;
+      const b = 1.0; // 1:1 reward/risk (10p TP / 10p SL)
+      const kellyFrac = Math.max(0, p - q / b); // f* — always >= 0
+      const NAV = 307.42;
+      const MAX_RISK_USD = NAV * 0.05; // $15.37 hard ceiling (Rule 3.3)
+      // Risk per pip in USD = notional × pip_value; for 1,250 units, 1 pip ≈ $0.125
+      const pipValueUsd = requestedUnits * (currentPrice.mid > 50 ? 0.01 : 0.0001) * (currentPrice.mid > 50 ? 100 : 10000) / currentPrice.mid;
+      const maxPipRisk = PID_SL_PIPS; // SL is 10 pips
+      const maxUnitsByKelly = kellyFrac > 0
+        ? Math.floor((MAX_RISK_USD / (maxPipRisk * (pipValueUsd / requestedUnits))) / 1000) * 1000
+        : requestedUnits;
+      requestedUnits = Math.max(1000, Math.min(requestedUnits, maxUnitsByKelly));
+      console.log(`[PHASE3-KELLY] ${pair} | p=${p.toFixed(3)} f*=${kellyFrac.toFixed(3)} | Kelly units=${maxUnitsByKelly} → capped at ${requestedUnits} (5% NAV hard ceiling)`);
+
+    // ─── L0 HARD GATE: Circuit breaker ───
       if (circuitActive) {
         console.log(`[DAVID-ATLAS] 🚨 CIRCUIT BREAKER: Entry blocked — all trading halted`);
         return { success: false };
@@ -1153,20 +1209,31 @@ Deno.serve(async (req) => {
 
       const dirUnits = direction === "long" ? units : -units;
 
-      // NO stopLossOnFill, NO takeProfitOnFill — pure tunnel
+      // PHASE 5 Rule 5.1: Arm hard bracket on fill — TP=+10 pips, SL=−10 pips
+      // Convert pips to price for this pair
+      const pipSize = pair.includes("JPY") ? 0.01 : 0.0001;
+      const isLongOrder = direction === "long";
+      const tpPrice = isLongOrder
+        ? +(currentPrice.mid + PID_TP_PIPS * pipSize).toFixed(pair.includes("JPY") ? 3 : 5)
+        : +(currentPrice.mid - PID_TP_PIPS * pipSize).toFixed(pair.includes("JPY") ? 3 : 5);
+      const slPrice = isLongOrder
+        ? +(currentPrice.mid - PID_SL_PIPS * pipSize).toFixed(pair.includes("JPY") ? 3 : 5)
+        : +(currentPrice.mid + PID_SL_PIPS * pipSize).toFixed(pair.includes("JPY") ? 3 : 5);
+
       // FOK (Fill or Kill) = atomic IOC: filled at whale-shadow price or cancelled instantly.
       // Eliminates partial fills and dangerous slippage in liquidity vacuums.
       // OANDA MARKET orders only accept FOK or IOC as timeInForce.
-      // GFD is for limit/stop orders only — causes TIME_IN_FORCE_INVALID on practice + live.
-      // Using FOK: atomic fill-or-cancel at best available price.
       const orderBody = {
         order: {
           type: "MARKET",
           instrument: pair,
           units: String(dirUnits),
           timeInForce: "FOK",
+          takeProfitOnFill: { price: String(tpPrice), timeInForce: "GTC" },
+          stopLossOnFill:   { price: String(slPrice), timeInForce: "GTC" },
         },
       };
+      console.log(`[PHASE5-BRACKET] ${pair} ${direction} | TP=${tpPrice} (+${PID_TP_PIPS}p) SL=${slPrice} (−${PID_SL_PIPS}p)`);
 
       try {
         const orderRes = await fetch(
@@ -1189,6 +1256,22 @@ Deno.serve(async (req) => {
           // fill.time is the OANDA transaction timestamp — matches broker reality for P&L analytics.
           const openTime = fill.time ? new Date(fill.time).toISOString() : new Date().toISOString();
 
+          // ─── PHASE 5: Initialize PID Ratchet state for this trade ───
+          // Starts inactive (pidActivated=false) until maxProfit >= PID_ACTIVATION_PIPS (+3p)
+          pidStateMap.set(tradeId, {
+            maxProfit: 0,
+            ticksInTrade: 0,
+            prevPrice: fillPrice,
+            currentSL: isLongOrder
+              ? fillPrice - PID_SL_PIPS * pipSize
+              : fillPrice + PID_SL_PIPS * pipSize,
+            pidActivated: false,
+            dudCheckTs: Date.now(),
+            entryPrice: fillPrice,
+            direction,
+          });
+          console.log(`[PHASE5-PID] ${pair} PID state initialized | entry=${fillPrice} | SL armed at ${isLongOrder ? fillPrice - PID_SL_PIPS * pipSize : fillPrice + PID_SL_PIPS * pipSize}`);
+
           const { hurst: entryHurst, efficiency: entryEfficiency, zOfi: entryZOfi, vpin: entryVpin } = entryGates;
           if (adminRole) {
             await supabase.from("oanda_orders").insert({
@@ -1207,22 +1290,26 @@ Deno.serve(async (req) => {
               confidence_score: 1.0, // 4/4 gates = maximum institutional consensus
               created_at: openTime, // OANDA broker timestamp — prevents negative hold times
               // ── GATE METRICS AT ENTRY — stored for backtesting forensics ──
-              gate_result: "4/4_CLIMAX",
+              gate_result: "DA_5PHASE_CONFIRMED",
               gate_reasons: [
-                `HURST:${entryHurst.toFixed(4)}`,
-                `EFF:${entryEfficiency.toFixed(2)}x`,
-                `ZOFI:${entryZOfi.toFixed(3)}σ`,
-                `VPIN:${entryVpin.toFixed(4)}`,
+                `P1_SN:OK`,
+                `P2_NOI:${entryZOfi > 0 ? 'BUY_WALL' : 'SELL_CEILING'}`,
+                `P3_KELLY:p=${p.toFixed(3)},f*=${kellyFrac.toFixed(3)}`,
+                `P4_ESIG:E=${entryEfficiency.toFixed(1)}x,Z=${entryZOfi.toFixed(3)}σ,H=${entryHurst.toFixed(4)},VPIN=${entryVpin.toFixed(4)}`,
+                `P5_BRACKET:TP=+${PID_TP_PIPS}p,SL=-${PID_SL_PIPS}p,PID_ARMED`,
               ],
               governance_payload: {
-                strategy: "david-atlas-tunnel-v1", pair, direction, slippagePips,
+                strategy: "david-atlas-v2-5phase", pair, direction, slippagePips,
                 requestedUnits, actualUnits: units, marginGuardApplied: units !== requestedUnits,
-                gates: {
+                phase3Kelly: { p, q, b, kellyFrac, kellyUnits: maxUnitsByKelly, navCeiling: MAX_RISK_USD },
+                phase4Esig: { efficiency: entryEfficiency, zOfi: entryZOfi, hurst: entryHurst, vpin: entryVpin },
+                phase5Bracket: { tpPrice, slPrice, tpPips: PID_TP_PIPS, slPips: PID_SL_PIPS, pidActivationPips: PID_ACTIVATION_PIPS },
+                phase4Gates: {
                   hurst: entryHurst,
                   efficiency: entryEfficiency,
                   zOfi: entryZOfi,
                   vpin: entryVpin,
-                  gateState: "4/4",
+                  gateState: "DA_5PHASE",
                 },
               },
               requested_price: currentPrice.mid,
@@ -1231,7 +1318,7 @@ Deno.serve(async (req) => {
             });
           }
 
-          console.log(`[DAVID-ATLAS] ✅ TUNNEL OPEN: ${tradeId} @ ${fillPrice} | ${direction.toUpperCase()} ${units} ${pair} | slip ${slippagePips.toFixed(2)}p | NO SL | NO TP | ATOMIC FOK`);
+          console.log(`[DAVID-ATLAS] ✅ STRIKE OPEN: ${tradeId} @ ${fillPrice} | ${direction.toUpperCase()} ${units} ${pair} | slip ${slippagePips.toFixed(2)}p | TP=+${PID_TP_PIPS}p SL=-${PID_SL_PIPS}p | KELLY f*=${kellyFrac.toFixed(3)} p=${p.toFixed(3)}`);
           return { success: true, tradeId, fillPrice, slippage: slippagePips, openTime };
         } else {
           const rejectTx = orderData.orderRejectTransaction;
@@ -1464,13 +1551,15 @@ Deno.serve(async (req) => {
                   : DA_MIN_HOLD_MS + 1;
 
                 // ═══════════════════════════════════════════════════════════
-                // CLIMAX EXIT LOGIC — HARD-CODED PROTOCOL
-                // Exit fires the INSTANT any CLIMAX gate falls below threshold.
-                // Entry and exit thresholds are IDENTICAL — no separate lower bar.
+                // DAVID-ATLAS 5-PHASE EXIT LOGIC
+                // Phase 4 Rule 4.2 Dud Abort: E_sig decays < 50x within 500ms → instant close
+                // Phase 5 Rule 5.3 Master Override: H < 0.45 → instant close
+                // Phase 5 Rule 5.2 PID Ratchet: trails SL after +3p (directional Kd only)
                 // ═══════════════════════════════════════════════════════════
 
                 // Compute current physics for this trade's pair
                 const pipMultExit = tradePairKey.includes("JPY") ? 100 : 10000;
+                const pipSizeExit  = tradePairKey.includes("JPY") ? 0.01 : 0.0001;
                 const absD1Exit = Math.abs(exitTracker.D1);
                 const absOfiExit = Math.abs(exitTracker.ofiRecursive);
                 const ofiScaledExit = absOfiExit / pipMultExit;
@@ -1478,50 +1567,134 @@ Deno.serve(async (req) => {
                 const zOfiExit = exitTracker.zOfi;
                 const isLong = openTrade.direction === "long";
 
-                // ─── PRIORITY-0 INTERRUPT: Z-OFI full CLIMAX reversal ───
-                // If Z-OFI crosses past ±2.5σ in the OPPOSITE direction → Whale has flipped.
-                // Bypasses MIN_HOLD — institutional intent has completely reversed.
-                const zOfiFullReversal = isLong
-                  ? (zOfiExit <= -DA_EXIT_ZOFI_MIN)   // Long: Z drops below -2.5σ
-                  : (zOfiExit >= DA_EXIT_ZOFI_MIN);    // Short: Z rises above +2.5σ
-                if (zOfiFullReversal && exitTracker.tickCount >= 10) {
-                  const p0Reason = `P0_CLIMAX_REVERSAL: Z-OFI=${zOfiExit.toFixed(3)} — Whale fully reversed past ±${DA_EXIT_ZOFI_MIN}σ. Mandatory instant flush.`;
-                  console.log(`[CLIMAX] ⚡ P0 REVERSAL EXIT (bypassing MIN_HOLD): ${tradePairKey} | ${p0Reason}`);
-                  await davidAtlasFlush(openTrade, tradePairKey, p0Reason);
-                } else if (tradeAgeMs < DA_MIN_HOLD_MS) {
-                  // Still in warm-up window — only P0 can exit
-                  // (silent — log only once per 5s to avoid log spam across multiple open trades)
-                } else {
-                  // ─── CLIMAX GATE CHECK: All 4 gates must remain at CLIMAX level ───
-                  // Same thresholds as entry. No separate "exit lower bar" exists.
-                  // ANY gate below CLIMAX = 3/4 gates = TUNNEL COLLAPSED = flush NOW.
-                  const zOfiAtClimaxLevel = isLong
-                    ? (zOfiExit >= DA_EXIT_ZOFI_MIN)   // Long: Z must stay above +2.5σ
-                    : (zOfiExit <= -DA_EXIT_ZOFI_MIN);  // Short: Z must stay below -2.5σ
-
-                  const gate1Hurst      = exitTracker.hurst >= DA_HURST_MIN;
-                  const gate2Efficiency = efficiencyExit >= DA_EXIT_EFFICIENCY_MIN;
-                  const gate3ZOfi       = zOfiAtClimaxLevel;
-                  const gate4Vpin       = exitTracker.vpinRecursive >= DA_EXIT_VPIN_MIN;
-
-                  const gatesOpen = [gate1Hurst, gate2Efficiency, gate3ZOfi, gate4Vpin].filter(Boolean).length;
-
-                  if (gatesOpen < 4) {
-                    // CLIMAX ENDED — mandatory immediate exit
-                    const failedGates = [
-                      !gate1Hurst      ? `HURST(${exitTracker.hurst.toFixed(3)}<${DA_HURST_MIN})` : null,
-                      !gate2Efficiency ? `EFF(${efficiencyExit.toFixed(2)}<${DA_EXIT_EFFICIENCY_MIN}x)` : null,
-                      !gate3ZOfi       ? `Z-OFI(${zOfiExit.toFixed(2)} not ${isLong ? "≥" : "≤"}±${DA_EXIT_ZOFI_MIN}σ)` : null,
-                      !gate4Vpin       ? `VPIN(${exitTracker.vpinRecursive.toFixed(3)}<${DA_EXIT_VPIN_MIN})` : null,
-                    ].filter(Boolean).join(" | ");
-
-                    const flushReason = `CLIMAX_ENDED: ${gatesOpen}/4 CLIMAX gates. Failed: ${failedGates}`;
-                    console.log(`[CLIMAX] 🔴 3/4 FLUSH: ${tradePairKey} | ${flushReason}`);
-                    await davidAtlasFlush(openTrade, tradePairKey, flushReason);
-                  } else {
-                    // All 4 CLIMAX gates still active — hold the position
-                    console.log(`[CLIMAX] 🟡 CLIMAX ACTIVE: ${tradePairKey} ${openTrade.direction} | H=${exitTracker.hurst.toFixed(3)} E=${efficiencyExit.toFixed(1)}x Z=${zOfiExit.toFixed(2)}σ VPIN=${exitTracker.vpinRecursive.toFixed(3)} | HOLDING`);
+                // ─── RULE 4.2: Dud Abort — E_sig decays within 500ms of fill ───
+                const pidSt = pidStateMap.get(openTrade.oanda_trade_id);
+                if (pidSt) {
+                  const msSinceFill = Date.now() - pidSt.dudCheckTs;
+                  if (msSinceFill < PID_DUD_ABORT_MS && efficiencyExit < 50) {
+                    const dudReason = `RULE_4.2_DUD_ABORT: E_sig=${efficiencyExit.toFixed(1)}x decayed below 50x within ${msSinceFill}ms — vacuum failed to sustain`;
+                    console.log(`[DA-EXIT] 💥 DUD ABORT: ${tradePairKey} | ${dudReason}`);
+                    pidStateMap.delete(openTrade.oanda_trade_id);
+                    await davidAtlasFlush(openTrade, tradePairKey, dudReason);
+                    continue;
                   }
+                }
+
+                // ─── RULE 5.3: Master Override — Hurst below baseline ───
+                if (exitTracker.hurst < 0.45) {
+                  const masterReason = `RULE_5.3_MASTER_OVERRIDE: H=${exitTracker.hurst.toFixed(3)} below 0.45 — SVD Eigen-Signal dropped below baseline. Whale volume exhausted.`;
+                  console.log(`[DA-EXIT] 🛑 MASTER OVERRIDE: ${tradePairKey} | ${masterReason}`);
+                  pidStateMap.delete(openTrade.oanda_trade_id);
+                  await davidAtlasFlush(openTrade, tradePairKey, masterReason);
+                  continue;
+                }
+
+                // ─── P0 INTERRUPT: Z-OFI full directional reversal (bypasses MIN_HOLD) ───
+                const zOfiFullReversal = isLong
+                  ? (zOfiExit <= -DA_EXIT_ZOFI_MIN)
+                  : (zOfiExit >= DA_EXIT_ZOFI_MIN);
+                if (zOfiFullReversal && exitTracker.tickCount >= 10) {
+                  const p0Reason = `P0_ZOFi_REVERSAL: Z=${zOfiExit.toFixed(3)} — Whale fully reversed past ±${DA_EXIT_ZOFI_MIN}σ. Bypasses MIN_HOLD.`;
+                  console.log(`[DA-EXIT] ⚡ P0 REVERSAL: ${tradePairKey} | ${p0Reason}`);
+                  pidStateMap.delete(openTrade.oanda_trade_id);
+                  await davidAtlasFlush(openTrade, tradePairKey, p0Reason);
+                  continue;
+                }
+
+                if (tradeAgeMs < DA_MIN_HOLD_MS) {
+                  // In warm-up window — only P0/Dud/Master can exit
+                  continue;
+                }
+
+                // ─── PHASE 5 RULE 5.2: PID Ratchet — update SL if ratchet armed ───
+                const currentPriceForPair = prices.get(tradePairKey);
+                if (pidSt && currentPriceForPair) {
+                  const currPriceMid = currentPriceForPair.mid;
+                  const currentProfitPips = isLong
+                    ? toPips(currPriceMid - pidSt.entryPrice, tradePairKey)
+                    : toPips(pidSt.entryPrice - currPriceMid, tradePairKey);
+
+                  // Update MFE
+                  if (currentProfitPips > pidSt.maxProfit) pidSt.maxProfit = currentProfitPips;
+                  pidSt.ticksInTrade++;
+
+                  // Activate ratchet when +3.0 pips reached
+                  if (!pidSt.pidActivated && pidSt.maxProfit >= PID_ACTIVATION_PIPS) {
+                    pidSt.pidActivated = true;
+                    console.log(`[PHASE5-PID] 🔒 RATCHET ARMED: ${tradePairKey} | MFE=+${pidSt.maxProfit.toFixed(2)}p | ticks=${pidSt.ticksInTrade}`);
+                  }
+
+                  if (pidSt.pidActivated) {
+                    // A. Proportional term — profit depth
+                    const P_term = PID_KP * currentProfitPips;
+                    // B. Integral term — time penalty
+                    const I_term = PID_KI * pidSt.ticksInTrade;
+                    // C. Derivative — DIRECTIONAL velocity only (zero on adverse moves — BUG FIX)
+                    const priceDelta = currPriceMid - pidSt.prevPrice;
+                    const directionalVelocity = priceDelta * (isLong ? 1 : -1);
+                    const D_term = directionalVelocity > 0 ? PID_KD * directionalVelocity * pipMultExit : 0;
+
+                    // Compute dynamic trail (pip buffer behind current price)
+                    let dynamicTrail = PID_BASE_TRAIL - P_term - I_term - D_term;
+                    if (dynamicTrail < PID_FLOOR_TRAIL) dynamicTrail = PID_FLOOR_TRAIL;
+
+                    // Proposed new SL price
+                    const proposedSL = isLong
+                      ? currPriceMid - dynamicTrail * pipSizeExit
+                      : currPriceMid + dynamicTrail * pipSizeExit;
+
+                    // Ratchet Guard: SL only moves forward (one-way mechanical gear)
+                    const slImproves = isLong ? proposedSL > pidSt.currentSL : proposedSL < pidSt.currentSL;
+                    if (slImproves) {
+                      const newSLFormatted = +proposedSL.toFixed(tradePairKey.includes("JPY") ? 3 : 5);
+                      console.log(`[PHASE5-PID] 📈 SL RATCHET: ${tradePairKey} | trail=${dynamicTrail.toFixed(2)}p | P=${P_term.toFixed(3)} I=${I_term.toFixed(3)} D=${D_term.toFixed(3)} | SL ${pidSt.currentSL.toFixed(5)} → ${newSLFormatted.toFixed(5)}`);
+                      // Modify OANDA SL
+                      try {
+                        const slModRes = await fetch(
+                          `${OANDA_API}/accounts/${OANDA_ACCOUNT}/trades/${openTrade.oanda_trade_id}/orders`,
+                          {
+                            method: "PUT",
+                            headers: { Authorization: `Bearer ${OANDA_TOKEN}`, "Content-Type": "application/json" },
+                            body: JSON.stringify({ stopLoss: { price: String(newSLFormatted), timeInForce: "GTC" } }),
+                          },
+                        );
+                        if (slModRes.ok) {
+                          pidSt.currentSL = proposedSL;
+                        } else {
+                          const slErr = await slModRes.text();
+                          console.warn(`[PHASE5-PID] ⚠️ SL modify failed ${tradePairKey}: ${slErr.slice(0, 100)}`);
+                        }
+                      } catch (slErr) {
+                        console.warn(`[PHASE5-PID] ⚠️ SL modify error ${tradePairKey}:`, slErr);
+                      }
+                    }
+                    pidSt.prevPrice = currPriceMid;
+                  }
+                }
+
+                // ─── PHASE 5 FALLBACK: E_sig sustained drop check (Rule 5.3 extended) ───
+                // If efficiency stays below entry minimum, the vacuum has collapsed
+                const eSigCollapsed = efficiencyExit < DA_EXIT_EFFICIENCY_MIN;
+                const zOfiDropped   = !(isLong ? zOfiExit >= DA_EXIT_ZOFI_MIN : zOfiExit <= -DA_EXIT_ZOFI_MIN);
+                const vpinDropped   = exitTracker.vpinRecursive < DA_EXIT_VPIN_MIN;
+                const hurstDropped  = exitTracker.hurst < DA_HURST_MIN;
+                const gatesOpen     = [!eSigCollapsed, !zOfiDropped, !vpinDropped, !hurstDropped].filter(Boolean).length;
+
+                if (gatesOpen < 4) {
+                  const failedGates = [
+                    hurstDropped    ? `HURST(${exitTracker.hurst.toFixed(3)}<${DA_HURST_MIN})` : null,
+                    eSigCollapsed   ? `E_SIG(${efficiencyExit.toFixed(2)}<${DA_EXIT_EFFICIENCY_MIN}x)` : null,
+                    zOfiDropped     ? `Z-OFI(${zOfiExit.toFixed(2)} directionless)` : null,
+                    vpinDropped     ? `VPIN(${exitTracker.vpinRecursive.toFixed(3)}<${DA_EXIT_VPIN_MIN})` : null,
+                  ].filter(Boolean).join(" | ");
+
+                  const flushReason = `ESIG_BASELINE_DROP: ${gatesOpen}/4 gates. Failed: ${failedGates}`;
+                  console.log(`[DA-EXIT] 🔴 E_SIG FLUSH: ${tradePairKey} | ${flushReason}`);
+                  pidStateMap.delete(openTrade.oanda_trade_id);
+                  await davidAtlasFlush(openTrade, tradePairKey, flushReason);
+                } else {
+                  // All gates active — PID ratchet managing exit
+                  console.log(`[DA-EXIT] 🟡 PID ACTIVE: ${tradePairKey} ${openTrade.direction} | H=${exitTracker.hurst.toFixed(3)} E=${efficiencyExit.toFixed(1)}x Z=${zOfiExit.toFixed(2)}σ VPIN=${exitTracker.vpinRecursive.toFixed(3)} | MFE=${pidSt?.maxProfit?.toFixed(2) ?? '?'}p SL=${pidSt?.currentSL?.toFixed(5) ?? '?'}`);
                 }
               }
             }
@@ -1679,8 +1852,8 @@ Deno.serve(async (req) => {
                     vpin: daTracker.vpinRecursive,
                     fillPrice: daResult.fillPrice,
                     slippage: daResult.slippage,
-                    gateState: "4/4",
-                    note: "NO_SL_NO_TP — Tunnel protocol. Exit only on 3/4 gate drop.",
+                    gateState: "DA_5PHASE",
+                    note: "5-PHASE: TP=+10p SL=-10p | PID ratchet at +3p | Kd directional-aware | Rule 5.3 master override",
                   }),
                   expires_at: new Date(Date.now() + 4 * 3600_000).toISOString(),
                   created_by: "david-atlas-engine",
@@ -1818,8 +1991,8 @@ Deno.serve(async (req) => {
           timestamp: new Date().toISOString(),
           architecture: "O(1)_recursive_david_atlas",
           decayFactors: { kmAlphaRange: [KM_ALPHA_MIN, KM_ALPHA_MAX], ofiGamma: OFI_GAMMA_DEFAULT },
-          gates: ["1:HURST≥0.62", "2:EFFICIENCY≥2.0", "3:|Z-OFI|≥1.0", "4:VPIN≥0.40"],
-          strategy: "david-atlas-tunnel-v1",
+          gates: ["P1:S/N≥1.5(Sr<1.0)", "P2:|NOI|>0.8+ΔP_critical", "P3:Kelly_f*_5%NAV", "P4:E_sig(E>100x+|Z|>2.5σ)", "P5:PID_TP+10p_SL-10p_Kd_directional"],
+          strategy: "david-atlas-v2-5phase",
           capabilities: [
             "david_atlas_tunnel", "rule_of_2_verification",
             "adaptive_km_gear_shift", "welford_z_ofi", "hall_wood_hurst",
