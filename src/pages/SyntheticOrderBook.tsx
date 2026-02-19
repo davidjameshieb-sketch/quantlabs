@@ -1195,21 +1195,41 @@ function TacticalUnitCard({ pair, data, activeTrade }: { pair: string; data: Pai
           <Badge variant="outline" className={cn('text-[7px] font-mono font-bold', stateMeta.color)}>{stateMeta.label}</Badge>
         </div>
 
-        {/* Gate bar — supply chain phase gates */}
-        <div className="flex items-center gap-1 flex-wrap">
-          {[
-            { pass: Sr < SR_COIL,               label: '🎚 Belt',   title: 'Conveyor Belt S/N ≥1.5: smooth belt movement, low vibration' },
-            { pass: Math.abs(NOI) > NOI_WHALE,  label: '🚛 Docks',  title: 'Loading Docks NOI >0.8: 40 outbound trucks — Whale arrived' },
-            { pass: Math.abs(Z) > Z_STRIKE,     label: '⚡ Force',   title: 'Dock Z-score >2.5σ: sudden priority manifest surge' },
-            { pass: E > E_VACUUM_MIN,           label: '🏭 Floor',   title: 'Floor Friction >100×: polished epoxy — zero resistance vacuum' },
-            { pass: H >= HURST_PERSIST,         label: '🚶 Rhythm',  title: 'Workflow Rhythm H ≥0.62: workers walking in straight lines' },
-          ].map(({ pass, label, title }) => (
-            <div key={label} title={title} className={cn('text-[6px] font-mono font-bold px-1 py-0.5 rounded border cursor-help',
-              pass ? 'bg-green-500/20 text-green-400 border-green-500/30' : 'bg-muted/10 text-muted-foreground/40 border-border/20')}>
-              {label}
-            </div>
-          ))}
-          <span className={cn('ml-auto text-[9px] font-mono font-bold', biasColor)}>{p.bias}</span>
+        {/* Gate bar — Climax Protocol v2.0 — 4 entry gates */}
+        <div className="space-y-1">
+          <div className="flex items-center gap-1">
+            <span className="text-[6px] font-mono text-muted-foreground/60 uppercase tracking-widest">Climax v2.0 — ALL 4 gates required:</span>
+            <span className={cn('ml-auto text-[9px] font-mono font-bold', biasColor)}>{p.bias}</span>
+          </div>
+          <div className="flex items-center gap-1 flex-wrap">
+            {[
+              {
+                pass: E >= 7,
+                label: '🏭 Floor ≥7×',
+                title: 'Floor Friction (Efficiency ≥7×): How much energy to move a pallet? ≥7× means the floor has enough polish for freight to slide. ≥100× = full polished epoxy vacuum — zero resistance.',
+              },
+              {
+                pass: Math.abs(Z) > Z_STRIKE,
+                label: '🚛 Docks >2.5σ',
+                title: 'Loading Docks (Z-OFI >2.5σ): 40 outbound trucks just backed in simultaneously with priority manifests. The Institutional Whale has arrived — massive demand shock.',
+              },
+              {
+                pass: H >= HURST_PERSIST,
+                label: '🚶 Rhythm ≥0.62',
+                title: 'Workflow Rhythm (Hurst ≥0.62): Workers are picking up boxes and walking in a perfectly straight line to the shipping dock. Flow is continuous. If H drops below 0.45, workers are lost — Rule 5.3 Master Override.',
+              },
+              {
+                pass: (p.vpin ?? 0) > 0.60,
+                label: '🏗 VIP >0.60',
+                title: 'VIP Override (VPIN >0.60): Regular floor managers (market makers) just realized a VIP corporate truck pulled up. They are pulling their limit orders — creating the vacuum for your 10-pip strike.',
+              },
+            ].map(({ pass, label, title }) => (
+              <div key={label} title={title} className={cn('text-[6px] font-mono font-bold px-1.5 py-0.5 rounded border cursor-help transition-all',
+                pass ? 'bg-green-500/20 text-green-400 border-green-500/40' : 'bg-muted/10 text-muted-foreground/40 border-border/20')}>
+                {pass ? '✓' : '○'} {label}
+              </div>
+            ))}
+          </div>
         </div>
 
         {/* Key metrics — plain English */}
