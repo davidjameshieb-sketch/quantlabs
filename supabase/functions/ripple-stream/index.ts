@@ -675,14 +675,14 @@ const ZSCORE_COOLDOWN_MS = 300_000; // 5 MINUTES between fires on same group (wa
 // ENTRY + EXIT use IDENTICAL thresholds. If it's not CLIMAX, there's no trade.
 
 const DA_HURST_MIN = 0.62;           // Gate 1: Persistent regime (unchanged)
-const DA_EFFICIENCY_MIN = 7.0;       // Gate 2: Legacy — institutional threshold (E >= 7x)
+const DA_EFFICIENCY_MIN = 100.0;     // Gate 2: SPP v2.0 SPEC — Liquidity Vacuum / Ghost Move (E > 100x)
 const DA_ZOFI_MIN = 2.5;             // Gate 3: Whale exhausting order block (|Z| > 2.5σ)
 const DA_VPIN_MIN = 0.60;            // Gate 4: MM toxicity threshold (VPIN > 0.60)
 const DA_VPIN_GHOST_MAX = 0.15;      // Ghost move block: VPIN < 0.15 = retail noise, never enter
 
 // EXIT uses IDENTICAL thresholds — no separate lower thresholds.
 // The moment ANY metric drops below threshold → 3/4 gates → mandatory flush.
-const DA_EXIT_EFFICIENCY_MIN = 7.0;   // Exit: Efficiency must stay >= 7x (legacy)
+const DA_EXIT_EFFICIENCY_MIN = 100.0; // Exit: Efficiency must stay > 100x (SPP v2.0 spec — Ghost Move)
 const DA_EXIT_VPIN_MIN = 0.60;        // Exit: VPIN must stay > 0.60
 const DA_EXIT_ZOFI_MIN = 2.5;         // Exit: |Z-OFI| must stay > 2.5σ
 
@@ -1598,7 +1598,7 @@ Deno.serve(async (req) => {
                 daState.consecutivePassCount = 0; gateDiag.hurst++; continue;
               }
 
-              // ─── GATE 2: EFFICIENCY >= 7x — Legacy institutional threshold ───
+              // ─── GATE 2: EFFICIENCY > 100x — SPP v2.0 spec: Liquidity Vacuum / Ghost Move ───
               // Identifies institutional displacement where order flow is unbalanced.
               if (efficiencyDA < DA_EFFICIENCY_MIN) {
                 daState.consecutivePassCount = 0; gateDiag.efficiency++; continue;
