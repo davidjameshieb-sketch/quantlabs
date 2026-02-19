@@ -920,10 +920,34 @@ Deno.serve(async (req) => {
       );
     }
 
-    console.log(`[CLIMAX] ⚡ LEGACY PROTOCOL ACTIVE | ${instruments.size} pairs | ENTRY: Hurst≥${DA_HURST_MIN} | Eff≥${DA_EFFICIENCY_MIN}x | |Z-OFI|>${DA_ZOFI_MIN}σ | VPIN>${DA_VPIN_MIN} | Rule-of-${DA_RULE_OF_2} | EXIT: 3/4 gate drop = instant flush`);
+    console.log(`[CLIMAX] ⚡ SPP v2.0 ACTIVE | ${instruments.size} pairs | ENTRY: Hurst≥${DA_HURST_MIN} | Eff≥${DA_EFFICIENCY_MIN}x | |Z-OFI|>${DA_ZOFI_MIN}σ | VPIN>${DA_VPIN_MIN} | Rule-of-${DA_RULE_OF_2} | EXIT: 3/4 gate drop = instant flush`);
 
     // ─── 4. Open OANDA stream ───
-    const instrumentList = Array.from(instruments).join(",");
+    // CRITICAL BUG FIX: OANDA practice streaming has a limit of ~20 instruments per connection.
+    // Sending all 60 pairs in one stream causes the connection to be silently dropped or rejected.
+    // Fix: Use the top 20 most liquid pairs for streaming (all 60 still receive synthetic book
+    // physics in the snapshot from the DB, but live ticking is throttled to the 20 core pairs).
+    // The full 60-pair set still appears in the War Room via the sovereign_memory snapshot.
+    const STREAM_PAIRS_MAX = 20;
+    const PRIORITY_STREAM_PAIRS = [
+      "EUR_USD", "GBP_USD", "USD_JPY", "AUD_USD", "USD_CAD", "USD_CHF", "NZD_USD",
+      "EUR_GBP", "EUR_JPY", "EUR_CHF", "EUR_AUD", "EUR_CAD",
+      "GBP_JPY", "GBP_CHF", "GBP_AUD",
+      "AUD_JPY", "CAD_JPY", "CHF_JPY", "NZD_JPY",
+      "AUD_CAD",
+    ];
+    // Use priority pairs first, filling remaining slots from instruments set
+    const streamInstruments = new Set<string>();
+    for (const p of PRIORITY_STREAM_PAIRS) {
+      if (instruments.has(p) && streamInstruments.size < STREAM_PAIRS_MAX) streamInstruments.add(p);
+    }
+    for (const p of instruments) {
+      if (streamInstruments.size >= STREAM_PAIRS_MAX) break;
+      streamInstruments.add(p);
+    }
+
+    const instrumentList = Array.from(streamInstruments).join(",");
+    console.log(`[STRIKE-v3] 🌊 Opening stream for ${streamInstruments.size} priority pairs (${instruments.size} total monitored)`);
     const streamRes = await fetch(
       `${OANDA_STREAM}/accounts/${OANDA_ACCOUNT}/pricing/stream?instruments=${instrumentList}&snapshot=true`,
       { headers: { Authorization: `Bearer ${OANDA_TOKEN}` } },
@@ -991,8 +1015,8 @@ Deno.serve(async (req) => {
     }
     console.log(`[DAVID-ATLAS] 🎯 Tunnel monitoring ${exitTradeMap.size} open trades`);
 
-    // Init velocity trackers for all instruments
-    for (const p of instruments) {
+    // Init velocity trackers for all STREAMED instruments (not all 60 — only 20 are live-ticked)
+    for (const p of streamInstruments) {
       if (!velocityTrackers.has(p)) velocityTrackers.set(p, { ticks: [], lastFireTs: 0 });
     }
 
@@ -1220,44 +1244,74 @@ Deno.serve(async (req) => {
         );
         if (closeRes.ok) {
           const closeData = await closeRes.json();
-          const exitPrice = parseFloat(closeData.orderFillTransaction?.price || "0");
+          // CRITICAL BUG FIX: parseFloat("0") was stored when orderFillTransaction.price was absent.
+          // "0" as exit_price corrupts all P&L and analytics. Now fall back to fetching the real
+          // fill price from the OANDA trade record when the close response lacks it.
+          let exitPrice = closeData.orderFillTransaction?.price
+            ? parseFloat(closeData.orderFillTransaction.price)
+            : null;
+
+          // If the close response didn't include a fill price, fetch the trade's realised PL
+          // to reconstruct the actual exit price from OANDA's authoritative record.
+          if (exitPrice === null || exitPrice === 0) {
+            try {
+              const tradeDetailRes = await fetch(
+                `${OANDA_API}/accounts/${OANDA_ACCOUNT}/trades/${openTrade.oanda_trade_id}`,
+                { headers: { Authorization: `Bearer ${OANDA_TOKEN}` } },
+              );
+              if (tradeDetailRes.ok) {
+                const tradeDetail = await tradeDetailRes.json();
+                const closePrice = tradeDetail.trade?.averageClosePrice
+                  || tradeDetail.trade?.price || null;
+                if (closePrice) exitPrice = parseFloat(closePrice);
+              }
+            } catch { /* non-critical — already storing null is better than 0 */ }
+          }
+
           tunnelExits.push(`${instrument}:${reason}`);
-          // BUG FIX #3: openTrade.id was seeded as the OANDA trade ID (daResult.tradeId)
-          // when registering in exitTradeMap on new entry — not the DB row UUID.
-          // Fix: update by oanda_trade_id (which is always correct) rather than id.
           await supabase.from("oanda_orders").update({
-            exit_price: exitPrice,
+            exit_price: exitPrice, // null is better than 0 — nulls are excluded from analytics
             status: "closed",
             closed_at: new Date().toISOString(),
             health_governance_action: `TUNNEL_FLUSH: ${reason}`,
           }).eq("oanda_trade_id", openTrade.oanda_trade_id);
           exitTradeMap.delete(instrument);
-          // BUG FIX #2 cont: clear the in-flight lock after success so re-opens work
           closeInFlight.delete(tradeKey);
-          console.log(`[DAVID-ATLAS] ✅ TUNNEL CLOSED ${instrument} @ ${exitPrice} | ${reason}`);
+          console.log(`[DAVID-ATLAS] ✅ TUNNEL CLOSED ${instrument} @ ${exitPrice ?? "UNKNOWN"} | ${reason}`);
         } else {
           const errData = await closeRes.json();
           const rejectReason = errData?.orderRejectTransaction?.rejectReason || "";
-          // BUG FIX #5: If trade no longer exists on broker (closed externally), treat as already closed:
-          // remove from exitTradeMap and clear the in-flight guard so we don't loop forever.
           if (rejectReason === "TRADE_DOESNT_EXIST") {
-            console.warn(`[DAVID-ATLAS] ⚠️ ${instrument} (${tradeKey}) no longer exists on OANDA — removing from exitTradeMap (closed externally)`);
+            // Trade already closed externally — fetch the true exit price from OANDA history
+            console.warn(`[DAVID-ATLAS] ⚠️ ${instrument} (${tradeKey}) no longer exists on OANDA — fetching exit price from trade history`);
+            let externalExitPrice: number | null = null;
+            try {
+              // Query OANDA transactions to find the actual close price
+              const txRes = await fetch(
+                `${OANDA_API}/accounts/${OANDA_ACCOUNT}/trades/${openTrade.oanda_trade_id}`,
+                { headers: { Authorization: `Bearer ${OANDA_TOKEN}` } },
+              );
+              if (txRes.ok) {
+                const txData = await txRes.json();
+                const closePrice = txData.trade?.averageClosePrice || txData.trade?.price || null;
+                if (closePrice) externalExitPrice = parseFloat(closePrice);
+              }
+            } catch { /* best-effort */ }
+
             exitTradeMap.delete(instrument);
             closeInFlight.delete(tradeKey);
-            // Mark DB record closed with no exit price (unknown — was closed externally)
             await supabase.from("oanda_orders").update({
               status: "closed",
+              exit_price: externalExitPrice, // null if we can't recover — NOT 0
               closed_at: new Date().toISOString(),
               health_governance_action: `CLOSED_EXTERNALLY: ${reason}`,
             }).eq("oanda_trade_id", openTrade.oanda_trade_id).eq("status", "filled");
           } else {
-            // Other failure: release in-flight lock so next scan can retry
             closeInFlight.delete(tradeKey);
             console.warn(`[DAVID-ATLAS] ⚠️ Close failed ${instrument}: ${JSON.stringify(errData)}`);
           }
         }
       } catch (err) {
-        // Network/runtime error: always release the in-flight lock so next scan retries
         closeInFlight.delete(tradeKey);
         console.error(`[DAVID-ATLAS] ❌ Close error ${instrument}:`, err);
       }
@@ -1446,7 +1500,10 @@ Deno.serve(async (req) => {
               }
             }
 
-            for (const tradePair of instruments) {
+            // BUG FIX: Only scan pairs we have live tick data for (streamInstruments).
+            // Iterating all 60 pairs when only 20 have OFI trackers caused gate diagnostics
+            // to count phantom warmup failures for pairs with no live price data.
+            for (const tradePair of streamInstruments) {
               if (blockedPairs.includes(tradePair)) continue;
               gateDiag.total++;
 

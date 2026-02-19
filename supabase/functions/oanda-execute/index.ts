@@ -280,11 +280,20 @@ Deno.serve(async (req) => {
             ? parseFloat(result.orderFillTransaction.price)
             : null;
 
-        // Capture execution telemetry
+        // Capture execution telemetry — compute REAL slippage from fill price vs requested
         const halfSpreadCost = result.orderFillTransaction?.halfSpreadCost
           ? parseFloat(result.orderFillTransaction.halfSpreadCost) : null;
         const spreadAtEntry = halfSpreadCost != null ? halfSpreadCost * 2 : null;
-        const slippagePips = filledPrice ? Math.random() * 0.25 : null; // Simulated for practice
+        // CRITICAL BUG FIX: Math.random() was used as slippage — corrupting analytics.
+        // Compute real slippage: |fill_price - requested_price| in pips.
+        const requestedPx = result.orderCreateTransaction?.price
+          ? parseFloat(result.orderCreateTransaction.price) : filledPrice;
+        const isJPY = (body.currencyPair || "").includes("JPY");
+        const pipMult = isJPY ? 100 : 10000;
+        const slippagePips = (filledPrice != null && requestedPx != null)
+          ? Math.abs((filledPrice - requestedPx) * pipMult)
+          : null;
+        const execQuality = slippagePips != null ? Math.round(Math.min(100, 100 - slippagePips * 10)) : null;
 
         // Update order record with telemetry
         await supabase
@@ -294,11 +303,11 @@ Deno.serve(async (req) => {
             oanda_order_id: oandaOrderId,
             oanda_trade_id: oandaTradeId,
             entry_price: filledPrice,
-            requested_price: filledPrice,
+            requested_price: requestedPx,
             slippage_pips: slippagePips,
             fill_latency_ms: fillLatencyMs,
             spread_at_entry: spreadAtEntry,
-            execution_quality_score: slippagePips != null ? Math.round(Math.min(100, 90 - slippagePips * 40)) : null,
+            execution_quality_score: execQuality,
           })
           .eq("id", order.id);
 
@@ -309,7 +318,7 @@ Deno.serve(async (req) => {
               ...order, status: "filled",
               oanda_order_id: oandaOrderId, oanda_trade_id: oandaTradeId,
               entry_price: filledPrice, fill_latency_ms: fillLatencyMs,
-              slippage_pips: slippagePips, execution_quality_score: slippagePips != null ? Math.round(90 - slippagePips * 40) : null,
+              slippage_pips: slippagePips, execution_quality_score: execQuality,
             },
             oandaResult: result,
           }),
@@ -377,12 +386,29 @@ Deno.serve(async (req) => {
         );
       }
 
+      // CRITICAL BUG FIX: JPY pairs require 3 decimal places, all others 5.
+      // Using .toFixed(5) for JPY pairs causes PRICE_PRECISION_EXCEEDED rejections from OANDA.
+      const instrument = body.oandaTradeId || "";
+      // We don't have the pair here, so fetch the open trade from OANDA to get the instrument
+      let pricePrecision = 5;
+      try {
+        const tradeRes = await fetch(
+          `${OANDA_HOSTS[environment]}/v3/accounts/${Deno.env.get(environment === "live" ? "OANDA_LIVE_ACCOUNT_ID" : "OANDA_ACCOUNT_ID")}/trades/${body.oandaTradeId}`,
+          { headers: { Authorization: `Bearer ${Deno.env.get(environment === "live" ? "OANDA_LIVE_API_TOKEN" : "OANDA_API_TOKEN")}`, Accept: "application/json" } }
+        );
+        if (tradeRes.ok) {
+          const tradeData = await tradeRes.json();
+          const tradeInstrument = tradeData.trade?.instrument || "";
+          pricePrecision = tradeInstrument.includes("JPY") ? 3 : 5;
+        }
+      } catch { /* non-critical, default to 5 */ }
+
       const orderUpdate: Record<string, unknown> = {};
       if (body.stopLossPrice != null) {
-        orderUpdate.stopLoss = { price: body.stopLossPrice.toFixed(5), timeInForce: "GTC" };
+        orderUpdate.stopLoss = { price: body.stopLossPrice.toFixed(pricePrecision), timeInForce: "GTC" };
       }
       if (body.takeProfitPrice != null) {
-        orderUpdate.takeProfit = { price: body.takeProfitPrice.toFixed(5), timeInForce: "GTC" };
+        orderUpdate.takeProfit = { price: body.takeProfitPrice.toFixed(pricePrecision), timeInForce: "GTC" };
       }
 
       if (Object.keys(orderUpdate).length === 0) {
@@ -399,7 +425,7 @@ Deno.serve(async (req) => {
         environment
       );
 
-      console.log(`[OANDA] Trade ${body.oandaTradeId} orders updated: SL=${body.stopLossPrice || 'unchanged'} TP=${body.takeProfitPrice || 'unchanged'}`);
+      console.log(`[OANDA] Trade ${body.oandaTradeId} orders updated: SL=${body.stopLossPrice?.toFixed(pricePrecision) || 'unchanged'} TP=${body.takeProfitPrice?.toFixed(pricePrecision) || 'unchanged'}`);
 
       return new Response(
         JSON.stringify({ success: true, result }),
