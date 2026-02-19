@@ -1222,16 +1222,9 @@ Deno.serve(async (req) => {
 
       const dirUnits = direction === "long" ? units : -units;
 
-      // PHASE 5 Rule 5.1: Arm hard bracket on fill — TP=+10 pips, SL=−10 pips
-      // Convert pips to price for this pair
+      // Phase 2/5: Bracket arms RELATIVE to limit price (set below after limitPrice is computed)
       const pipSize = pair.includes("JPY") ? 0.01 : 0.0001;
       const isLongOrder = direction === "long";
-      const tpPrice = isLongOrder
-        ? +(currentPrice.mid + PID_TP_PIPS * pipSize).toFixed(pair.includes("JPY") ? 3 : 5)
-        : +(currentPrice.mid - PID_TP_PIPS * pipSize).toFixed(pair.includes("JPY") ? 3 : 5);
-      const slPrice = isLongOrder
-        ? +(currentPrice.mid - PID_SL_PIPS * pipSize).toFixed(pair.includes("JPY") ? 3 : 5)
-        : +(currentPrice.mid + PID_SL_PIPS * pipSize).toFixed(pair.includes("JPY") ? 3 : 5);
 
       // ─── PHASE 2: Compute PREDATORY LIMIT price at the NOI wall ───
       // Long  → bid wall is below current ask; place limit at bid + 0.1 pip
