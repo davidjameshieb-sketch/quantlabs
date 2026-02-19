@@ -72,36 +72,81 @@ function computeNOI(p: PairPhysics): number {
   return Math.max(-1, Math.min(1, (totalBuys - totalSells) / total));
 }
 
+// ─── Per-pair Dud Rule anchor ────────────────────────────────────────────────
+// Tracks when each pair entered STRIKE state (first tick of STRIKE window).
+// DUD only fires within DUD_WINDOW_TICKS ticks of STRIKE onset.
+// Without this, DUD fires stale — any pair with E<50× after the vacuum closes
+// would show DUD even if the trade already exited 20 minutes ago. Bug #4.
+const strikeOnsetMap = new Map<string, { tick: number; ts: number }>();
+let globalTickCounter = 0; // increments every snapshot poll
+
+// ─── Per-pair sparkline ring-buffer (last 10 snapshot ticks) ─────────────────
+// Stores snapshots of key formulas for trend arrows and mini-sparklines.
+interface SparkPoint { Sr: number; NOI: number; E: number; Z: number; H: number }
+const sparklineBuffers = new Map<string, SparkPoint[]>();
+const SPARKLINE_MAX = 10;
+
+function updateSparkline(pair: string, p: PairPhysics): SparkPoint[] {
+  const buf = sparklineBuffers.get(pair) ?? [];
+  buf.push({ Sr: computeSr(p), NOI: computeNOI(p), E: p.efficiency ?? 0, Z: p.zOfi ?? 0, H: p.hurst?.H ?? 0 });
+  if (buf.length > SPARKLINE_MAX) buf.shift();
+  sparklineBuffers.set(pair, buf);
+  return buf;
+}
+
+function getTrend(buf: SparkPoint[], key: keyof SparkPoint): 'up' | 'down' | 'flat' {
+  if (buf.length < 2) return 'flat';
+  const delta = buf[buf.length - 1][key] - buf[0][key];
+  if (delta > 0.05) return 'up';
+  if (delta < -0.05) return 'down';
+  return 'flat';
+}
+
 // Tactical states
 type TacticalState = 'HUNT' | 'SET' | 'STRIKE' | 'GUARD' | 'DUD' | 'FATIGUE' | 'SCANNING';
 
-function deriveSPPState(p: PairPhysics): TacticalState {
+// DUD_WINDOW_TICKS: DUD only fires within this many snapshot polls of STRIKE onset
+const DUD_WINDOW_TICKS = 3;
+
+function deriveSPPState(p: PairPhysics, pair?: string): TacticalState {
   const H    = p.hurst?.H ?? 0;
   const eff  = p.efficiency ?? 0;
   const vpin = p.vpin ?? 0;
   const absZ = Math.abs(p.zOfi ?? 0);
-  // True physics — no proxies
-  const Sr   = computeSr(p);   // ATR-ratio via KM diffusion: Sr < 1.0 = coiling, < 0.5 = critical
-  const Ar   = vpin;            // VPIN as structural fragility gate
-  const NOI  = computeNOI(p);  // Resting limit book imbalance from syntheticDepth
-
-  // GUARD is set externally when activeTrade is live during STRIKE conditions
+  const Sr   = computeSr(p);
+  const Ar   = vpin;
+  const NOI  = computeNOI(p);
 
   // Step 3 — STRIKE: vacuum + firing pin (all 4 gates)
-  if (eff >= E_VACUUM_MIN && absZ > Z_STRIKE && Ar > VPIN_FRAGILITY && H >= HURST_PERSIST) return 'STRIKE';
+  if (eff >= E_VACUUM_MIN && absZ > Z_STRIKE && Ar > VPIN_FRAGILITY && H >= HURST_PERSIST) {
+    // Anchor the Dud Rule window: record first STRIKE tick timestamp per pair
+    if (pair && !strikeOnsetMap.has(pair)) {
+      strikeOnsetMap.set(pair, { tick: globalTickCounter, ts: Date.now() });
+    }
+    return 'STRIKE';
+  }
 
-  // Step 3 — DUD: trade entered but vacuum collapsed (E < 50× within 3 ticks)
-  if (eff < E_DUD_ABORT && absZ > Z_STRIKE && Ar > 0.4) return 'DUD';
+  // Step 3 — DUD RULE (timestamp-anchored): vacuum collapsed within DUD_WINDOW_TICKS of STRIKE onset
+  // FIX #4: Without the anchor, DUD fires stale — any pair with E<50× long after trade exit shows DUD.
+  if (pair) {
+    const onset = strikeOnsetMap.get(pair);
+    if (onset) {
+      if ((globalTickCounter - onset.tick) <= DUD_WINDOW_TICKS) {
+        if (eff < E_DUD_ABORT && absZ > Z_STRIKE && Ar > 0.4) return 'DUD';
+      } else {
+        // Window expired — clear so it can re-arm on a fresh STRIKE
+        strikeOnsetMap.delete(pair);
+      }
+    }
+  }
 
-  // Step 2 — SET: coil confirmed (Sr < 1.0), book fragile, whale shadow visible (|NOI| > 0.8)
-  // Sr uses KM diffusion as ATR-ratio; NOI uses resting limit book imbalance from syntheticDepth
+  // Step 2 — SET
   if (Sr < SR_COIL && Ar > VPIN_FRAGILITY && Math.abs(NOI) > NOI_WHALE) return 'SET';
 
-  // Step 1 — HUNT: compression detected (Sr < 1.0), fragility building
-  // Critical compression at Sr < 0.5 = spring is fully loaded
+  // Step 1 — HUNT
   if (Sr < SR_COIL && Ar > 0.4) return 'HUNT';
 
-  // Fatigue — Hurst below random-walk threshold, mean-reversion dominant
+  // Fatigue
   if (H < 0.45) return 'FATIGUE';
 
   return 'SCANNING';
@@ -498,11 +543,13 @@ function TacticalUnit({ pair, data, activeTrade }: {
   const p = data;
   const [showBrief, setShowBrief] = useState(false);
 
-  const physicsState = deriveSPPState(p);
-  // Override with GUARD if live trade is running with 4/4 gates
-  const state: TacticalState = activeTrade
-    ? (physicsState === 'STRIKE' ? 'GUARD' : physicsState)
-    : physicsState;
+  // Pass pair to deriveSPPState for DUD Rule timestamp anchor (Fix #4)
+  const physicsState = deriveSPPState(p, pair);
+  // Update sparkline ring-buffer on every render (3s poll)
+  const sparkBuf = updateSparkline(pair, p);
+
+  // GUARD FIX: Force GUARD when a live trade is open — regardless of momentary physics dip.
+  const state: TacticalState = activeTrade ? 'GUARD' : physicsState;
 
   const pulseSpeed = getPulseSpeed(state, p.zOfi ?? 0);
 
@@ -812,16 +859,24 @@ function GatePipeline({ gates }: { gates: string[] }) {
 const SyntheticOrderBook = () => {
   const { snapshot, loading, lastUpdated, refetch, activeTrades } = useSyntheticOrderBook(3_000);
 
+  // Increment globalTickCounter on every render (each snapshot poll = 1 tick)
+  // Used for DUD Rule timestamp anchor to avoid stale DUD state. Fix #4.
+  React.useEffect(() => { globalTickCounter++; }, [snapshot]);
+
+  // GUARD FIX: normalise pair to underscore format for matching (snapshot now uses EUR_USD, activeTrades also uses EUR_USD)
+  const normPair = (p: string) => p.replace(/\//g, '_').replace(/-/g, '_');
+
   const pairs = snapshot?.pairs ? Object.entries(snapshot.pairs).sort((a, b) =>
     Math.abs((b[1] as any).zOfi || 0) - Math.abs((a[1] as any).zOfi || 0)
   ) : [];
 
   const activePairs    = pairs.filter(([, d]) => (d as any).ticksAnalyzed > 10);
   const hiddenAlerts   = pairs.filter(([, d]) => (d as any).hiddenPlayer);
-  const strikePairs    = activePairs.filter(([, d]) => deriveSPPState(d as PairPhysics) === 'STRIKE');
-  const setPairs       = activePairs.filter(([, d]) => deriveSPPState(d as PairPhysics) === 'SET');
-  const huntPairs      = activePairs.filter(([, d]) => deriveSPPState(d as PairPhysics) === 'HUNT');
-  const dudPairs       = activePairs.filter(([, d]) => deriveSPPState(d as PairPhysics) === 'DUD');
+  // Pass pair name to deriveSPPState for DUD Rule timestamp anchor
+  const strikePairs    = activePairs.filter(([p, d]) => deriveSPPState(d as PairPhysics, p as string) === 'STRIKE');
+  const setPairs       = activePairs.filter(([p, d]) => deriveSPPState(d as PairPhysics, p as string) === 'SET');
+  const huntPairs      = activePairs.filter(([p, d]) => deriveSPPState(d as PairPhysics, p as string) === 'HUNT');
+  const dudPairs       = activePairs.filter(([p, d]) => deriveSPPState(d as PairPhysics, p as string) === 'DUD');
   const vacuumCount    = activePairs.filter(([, d]) => (d as any).efficiency >= E_VACUUM_MIN).length;
 
   const ageMs  = lastUpdated ? Date.now() - new Date(lastUpdated).getTime() : null;
@@ -926,7 +981,8 @@ const SyntheticOrderBook = () => {
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
               {dudPairs.map(([pair, data]) => {
-                const trade = activeTrades.find(t => (t.currency_pair === (pair as string).replace('/', '_') || t.currency_pair === pair) && (t.status === 'filled' || t.status === 'pending')) || null;
+                const normalizedPair = normPair(pair as string);
+                const trade = activeTrades.find(t => normPair(t.currency_pair) === normalizedPair && (t.status === 'filled' || t.status === 'pending' || t.status === 'open')) || null;
                 return <TacticalUnit key={pair as string} pair={pair as string} data={data as PairPhysics} activeTrade={trade} />;
               })}
             </div>
@@ -935,10 +991,11 @@ const SyntheticOrderBook = () => {
 
         {!loading && activePairs.length > 0 && (() => {
           const renderCard = ([pair, data]: [string, unknown]) => {
-            const normalizedPair = (pair as string).replace('/', '_');
+            // GUARD FIX: normalise both sides to underscore format before matching
+            const normalizedPair = normPair(pair as string);
             const trade = activeTrades.find(t =>
-              (t.currency_pair === normalizedPair || t.currency_pair === pair) &&
-              (t.status === 'filled' || t.status === 'pending')
+              normPair(t.currency_pair) === normalizedPair &&
+              (t.status === 'filled' || t.status === 'pending' || t.status === 'open')
             ) || null;
             return <TacticalUnit key={pair as string} pair={pair as string} data={data as PairPhysics} activeTrade={trade} />;
           };
