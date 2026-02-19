@@ -12,7 +12,6 @@ import { IntelligenceModeBadge } from '@/components/dashboard/IntelligenceModeBa
 import { Badge } from '@/components/ui/badge';
 import { useSyntheticOrderBook, type PairPhysics } from '@/hooks/useSyntheticOrderBook';
 import { ClimaxBacktestLog } from '@/components/forex/floor-manager/ClimaxBacktestLog';
-import { DockChartCard } from '@/components/forex/warroom/DockChartCard';
 import { cn } from '@/lib/utils';
 import { supabase } from '@/integrations/supabase/client';
 
@@ -976,7 +975,7 @@ function NuclearCodes({ onStandby, onFlush, standbyActive }: {
 const SyntheticOrderBook = () => {
   const { snapshot, loading, lastUpdated, refetch, activeTrades } = useSyntheticOrderBook(3_000);
   const [standbyActive, setStandbyActive] = useState(false);
-  const [view, setView] = useState<'command-center' | 'tactical' | 'dock-charts'>('command-center');
+  const [view, setView] = useState<'command-center' | 'tactical'>('command-center');
 
   // Track ticks for DUD rule
   React.useEffect(() => { globalTickCounter++; }, [snapshot]);
@@ -1036,7 +1035,7 @@ const SyntheticOrderBook = () => {
             </div>
             <div className="flex items-center gap-2">
               <div className="flex rounded-lg border border-border/40 overflow-hidden text-[9px] font-mono font-bold">
-              <button
+                <button
                   onClick={() => setView('command-center')}
                   className={cn('px-3 py-1.5 transition-all uppercase', view === 'command-center' ? 'bg-primary/20 text-primary' : 'text-muted-foreground hover:text-foreground')}
                 >Manager's Office</button>
@@ -1044,10 +1043,6 @@ const SyntheticOrderBook = () => {
                   onClick={() => setView('tactical')}
                   className={cn('px-3 py-1.5 transition-all uppercase border-l border-border/40', view === 'tactical' ? 'bg-primary/20 text-primary' : 'text-muted-foreground hover:text-foreground')}
                 >Warehouse Floor</button>
-                <button
-                  onClick={() => setView('dock-charts')}
-                  className={cn('px-3 py-1.5 transition-all uppercase border-l border-border/40', view === 'dock-charts' ? 'bg-primary/20 text-primary' : 'text-muted-foreground hover:text-foreground')}
-                >📊 Dock Charts</button>
               </div>
               <button onClick={refetch} className="text-muted-foreground hover:text-foreground transition-colors p-1">
                 <RefreshCw className="w-3.5 h-3.5" />
@@ -1113,31 +1108,6 @@ const SyntheticOrderBook = () => {
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.1 }}>
               <ClimaxBacktestLog />
             </motion.div>
-          </motion.div>
-        )}
-
-        {!loading && view === 'dock-charts' && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-4">
-            <div className="flex items-center gap-2">
-              <span className="text-[9px] font-mono text-muted-foreground">
-                📊 5-min synthetic candles seeded from live physics · Supply chain environment brief per distribution centre · {activePairsEntries.length} bays active
-              </span>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-              {activePairsEntries.map(([pair, data]) => (
-                <DockChartCard
-                  key={pair}
-                  pair={pair}
-                  data={data}
-                  activeTrade={getActiveTrade(pair)}
-                />
-              ))}
-              {activePairsEntries.length === 0 && (
-                <div className="col-span-3 text-center py-16 text-muted-foreground">
-                  <p className="text-sm font-mono">Awaiting warehouse telemetry — charts populate when the market opens.</p>
-                </div>
-              )}
-            </div>
           </motion.div>
         )}
 
