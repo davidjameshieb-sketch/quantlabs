@@ -689,6 +689,9 @@ const DA_EXIT_ZOFI_MIN = 2.5;         // Exit: |Z-OFI| must stay > 2.5σ
 // Rule of 2: Require 2 consecutive CLIMAX ticks before entry (anti-noise, anti-lag)
 const DA_RULE_OF_2 = 2;
 
+// Cross-session cooldown: 2 minutes between fires on the same pair
+const DA_COOLDOWN_MS = 120_000;
+
 // Exit sensitivity: 1 = immediate (any single tick gate drop = flush). Zero-fault tolerance.
 const DA_EXIT_FAIL_TICKS = 1;
 
@@ -1634,7 +1637,10 @@ Deno.serve(async (req) => {
       const hurstRegime = tracker.hurst > HURST_PERSISTENCE_THRESHOLD ? "PERSISTENT" :
         tracker.hurst < HURST_MEANREV_THRESHOLD ? "MEAN_REVERTING" : "RANDOM_WALK";
 
-      ofiSnapshot[pair.replace("_", "/")] = {
+      // CRITICAL FIX: Store pairs as EUR_USD (underscore) not EUR/USD (slash).
+      // The UI activeTrades.currency_pair uses underscore format. Slash format caused
+      // GUARD state to never match → trades showed without GUARD overlay. Bug #2.
+      ofiSnapshot[pair] = {
         ofiRatio: Math.round(ofiRatio * 1000) / 1000,
         ofiWeighted: Math.round(ofiNorm * 1000) / 1000,
         ofiRawRecursive: Math.round(tracker.ofiRecursive * 100) / 100,
