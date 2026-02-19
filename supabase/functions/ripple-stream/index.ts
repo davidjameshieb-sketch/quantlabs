@@ -18,9 +18,11 @@
 // │    Unit size scales with structural alignment               │
 // │                                                             │
 // │  PHASE 4 — Execution Trigger (SVD Eigen-Signal):           │
-// │    E_sig = composite(E > 100x + |Z| > 2.5σ) → fill        │
-// │    Rule 4.2 Dud Abort: E_sig decays < 50x in 500ms         │
-// │      → instant MarketClose()                               │
+// │    E_sig = composite(E > 100x + |Z| > 2.5σ)               │
+// │    ENTRY: PREDATORY_LIMIT at NOI wall (not FOK market)     │
+// │      Long: BidWall + 0.1p | Short: AskCeiling − 0.1p      │
+// │    Rule 4.2 Dud Abort: E_sig decays < 50x in 1500ms        │
+// │      → instant MarketClose() (widened for API latency)     │
 // │                                                             │
 // │  PHASE 5 — Weaponized Exit (PID Controller Ratchet):       │
 // │    On fill: TP = +10.0 pips, SL = −10.0 pips              │
@@ -29,7 +31,8 @@
 // │      dynamic_trail = 2.5p − P(profit) − I(ticks) − D(vel) │
 // │      D_term = Kd × velocity ONLY if velocity > 0 (favored) │
 // │      SL never retreats — one-way mechanical ratchet         │
-// │    Rule 5.3 Master Override: H < 0.45 or E_sig baseline    │
+// │    Rule 5.3 Master Override: H < 0.45 (SLIDING WINDOW —    │
+// │      updates every tick, zero blind spot) or E_sig baseline │
 // │      drop → instant MarketClose() overrides all PID/TP/SL  │
 // └─────────────────────────────────────────────────────────────┘
 //
@@ -154,7 +157,7 @@ const Z_OFI_FIRE_THRESHOLD = 2.0; // Welford Z-score: "only fire if |Z| > 2.0"
 // Hurst Exponent thresholds
 const HURST_PERSISTENCE_THRESHOLD = 0.55; // H > 0.55 = trending (ripple travels)
 const HURST_MEANREV_THRESHOLD = 0.45;     // H < 0.45 = mean-reverting (snap back)
-const HURST_SCALE = 20;                   // Window for Hall-Wood estimator (was 40 — need 2+ updates per pair per 110s session)
+const HURST_SCALE = 20;                   // Sliding window size for Hall-Wood (updates every tick, not every 20)
 
 // Efficiency ratio thresholds for market state classification
 const EFFICIENCY_ABSORBING_THRESHOLD = 0.3; // E < 0.3 = hidden limit player
@@ -210,12 +213,13 @@ interface OfiTracker {
   ofiWelfordN: number;       // Count for Welford's
   zOfi: number;              // Current Z-score of OFI (the adaptive gate)
 
-  // ─── Fast Hurst Exponent (Hall-Wood O(1)) ───
-  sumD1Abs: number;          // Σ|Δx| at scale 1 (single tick)
-  sumD2Abs: number;          // Σ|Δx₂| at scale 2 (two-tick returns)
-  prevDx: number;            // Previous Δx for scale-2 computation
-  hurstN: number;            // Tick counter for Hurst (mod HURST_SCALE)
-  hurst: number;             // Current H estimate
+  // ─── Fast Hurst Exponent (Hall-Wood Sliding Window O(1)) ───
+  // Sliding ring buffer of last HURST_SCALE dx values — updates H on EVERY tick.
+  // Fixes 20-tick blind spot in Rule 5.3 Master Override.
+  hurstDxWindow: number[];   // Ring buffer: last HURST_SCALE Δx values
+  hurstDxIdx: number;        // Write pointer into ring buffer
+  hurstWindowFull: boolean;  // True once we have HURST_SCALE samples
+  hurst: number;             // Current H estimate (updated every tick)
 
   // ─── Recursive VPIN (O(1) EWMA — no bucket scans) ───
   ewmaBuyVol: number;        // EWMA of buy-classified volume
@@ -254,11 +258,10 @@ function getOrCreateOfi(pair: string): OfiTracker {
       ofiM2: 0,
       ofiWelfordN: 0,
       zOfi: 0,
-      // Fast Hurst (Hall-Wood)
-      sumD1Abs: 0,
-      sumD2Abs: 0,
-      prevDx: 0,
-      hurstN: 0,
+      // Fast Hurst (Hall-Wood Sliding Window)
+      hurstDxWindow: new Array(HURST_SCALE).fill(0),
+      hurstDxIdx: 0,
+      hurstWindowFull: false,
       hurst: 0.55, // warm start: reduces cold-start bias (0.5 → 0.60 took 60+ ticks)
       // BUG FIX: VPIN cold-start — ewmaBuyVol/ewmaSellVol initialized at 0 meant VPIN=0 for
       // first ~20 ticks, killing every scan immediately after warmup passes. Warm-start at
@@ -427,29 +430,35 @@ function processOfiTick(
   const ofiStd = Math.sqrt(Math.max(ofiVariance, 1e-20));
   tracker.zOfi = (tracker.ofiRecursive - tracker.ofiMean) / ofiStd;
 
-  // ─── UPGRADE 3: FAST HURST EXPONENT (Hall-Wood O(1)) ───
-  // Track S1 = Σ|Δx| (scale 1) and S2 = Σ|Δx + prevΔx| (scale 2)
-  // H = log2(S2/S1) — computed every HURST_SCALE ticks, then reset
-  const absDx = Math.abs(dx);
-  tracker.sumD1Abs += absDx;
-  const dx2 = dx + tracker.prevDx; // two-tick return
-  tracker.sumD2Abs += Math.abs(dx2);
-  tracker.prevDx = dx;
-  tracker.hurstN++;
+  // ─── UPGRADE 3: FAST HURST EXPONENT (Hall-Wood SLIDING WINDOW) ───
+  // FIX: Replaces the reset-every-N-ticks accumulator with a true sliding ring buffer.
+  // H is now recalculated on EVERY tick from the last HURST_SCALE samples.
+  // This eliminates the 20-tick blind spot that let trends break down unseen (Rule 5.3).
+  //
+  // Sliding window: overwrite oldest sample, recompute S1/S2 from entire window each tick.
+  // O(N) per tick where N=20 — acceptable (20 operations vs. 1e6 for a full scan).
+  const oldDx = tracker.hurstDxWindow[tracker.hurstDxIdx];
+  tracker.hurstDxWindow[tracker.hurstDxIdx] = dx;
+  tracker.hurstDxIdx = (tracker.hurstDxIdx + 1) % HURST_SCALE;
+  if (!tracker.hurstWindowFull && tracker.hurstDxIdx === 0) tracker.hurstWindowFull = true;
 
-  if (tracker.hurstN >= HURST_SCALE && tracker.sumD1Abs > 1e-15) {
-    // Hall-Wood estimator: H = log2(S2 / S1)
-    // For pure random walk: S2/S1 = sqrt(2), so log2(sqrt(2)) = 0.5 ✓
-    // For trending: S2 > sqrt(2)*S1, so H > 0.5
-    // For mean-reverting: S2 < sqrt(2)*S1, so H < 0.5
-    const ratio = tracker.sumD2Abs / tracker.sumD1Abs;
-    const rawH = Math.log2(Math.max(ratio, 1e-10));
-    // EWMA smoothing to avoid single-window noise spikes
-    tracker.hurst = 0.5 * Math.max(0, Math.min(1, rawH)) + 0.5 * tracker.hurst; // faster convergence (was 0.3/0.7 — took 50s to reach 0.60)
-    // Reset accumulators for next window
-    tracker.sumD1Abs = 0;
-    tracker.sumD2Abs = 0;
-    tracker.hurstN = 0;
+  if (tracker.hurstWindowFull) {
+    // Recompute S1 = Σ|Δx| and S2 = Σ|Δx_i + Δx_{i-1}| over the sliding window
+    let s1 = 0;
+    let s2 = 0;
+    const w = tracker.hurstDxWindow;
+    const n = HURST_SCALE;
+    for (let i = 0; i < n; i++) {
+      s1 += Math.abs(w[i]);
+      s2 += Math.abs(w[i] + w[(i + n - 1) % n]); // two-tick return at each position
+    }
+    if (s1 > 1e-15) {
+      // Hall-Wood estimator: H = log2(S2 / S1)
+      const ratio = s2 / s1;
+      const rawH = Math.log2(Math.max(ratio, 1e-10));
+      // EWMA smoothing (0.5/0.5) — fast convergence, noise-resistant
+      tracker.hurst = 0.5 * Math.max(0, Math.min(1, rawH)) + 0.5 * tracker.hurst;
+    }
   }
 
   const hurstRegime: "PERSISTENT" | "MEAN_REVERTING" | "RANDOM_WALK" =
@@ -755,7 +764,7 @@ const PID_FLOOR_TRAIL = 0.2;     // Hard floor: trail distance never below 0.2 p
 const PID_TP_PIPS = 10.0;        // Phase 5 Rule 5.1: hard TP bracket
 const PID_SL_PIPS = 10.0;        // Phase 5 Rule 5.1: hard SL bracket
 const PID_ACTIVATION_PIPS = 3.0; // Ratchet activates only at +3.0 pips profit
-const PID_DUD_ABORT_MS = 500;    // Rule 4.2: E_sig must hold for 500ms or fire MarketClose()
+const PID_DUD_ABORT_MS = 1500;   // Rule 4.2: E_sig must hold for 1500ms — widened from 500ms to absorb OANDA API latency (200-300ms fill confirm)
 
 // ─── Velocity Gating Constants ───────────────────────────
 const VELOCITY_TICK_THRESHOLD = 5;
@@ -1107,11 +1116,15 @@ Deno.serve(async (req) => {
       .limit(1)
       .single();
 
-    // ─── David & Atlas: Execute MARKET order — no SL, no TP ───
-    // TUNNEL PROTOCOL: Zero stop loss, zero take profit.
-    // The 3/4 gate flush IS the only exit authority.
+    // ─── David & Atlas: Phase 2 PREDATORY LIMIT order at NOI wall ───
+    // FIX: Do NOT use FOK Market orders — they guarantee slippage across 100x Efficiency gaps.
+    // PROTOCOL:
+    //   Phase 2 (Target Acquisition): Place LIMIT exactly at the Laplace/NOI wall.
+    //     Long:  BidWall + 0.1 pip  (trap runs when the whale eats the ask wall)
+    //     Short: AskCeiling − 0.1 pip (trap runs when the whale eats the bid wall)
+    //   Phase 4 (Eigen-Signal confirms): LIMIT is already resting at the wall — fill
+    //     occurs the moment the whale breaches the wall. No market-order slippage.
     // MARGIN GUARD: Pre-calculates margin required; self-corrects lot size if NAV insufficient.
-    // IOC (FOK): Fill at whale-shadow price or not at all — zero partial fill risk.
     async function davidAtlasEnter(
       pair: string,
       direction: string,
@@ -1220,20 +1233,46 @@ Deno.serve(async (req) => {
         ? +(currentPrice.mid - PID_SL_PIPS * pipSize).toFixed(pair.includes("JPY") ? 3 : 5)
         : +(currentPrice.mid + PID_SL_PIPS * pipSize).toFixed(pair.includes("JPY") ? 3 : 5);
 
-      // FOK (Fill or Kill) = atomic IOC: filled at whale-shadow price or cancelled instantly.
-      // Eliminates partial fills and dangerous slippage in liquidity vacuums.
-      // OANDA MARKET orders only accept FOK or IOC as timeInForce.
+      // ─── PHASE 2: Compute PREDATORY LIMIT price at the NOI wall ───
+      // Long  → bid wall is below current ask; place limit at bid + 0.1 pip
+      //         (runs when whale blasts through the ask, filling our limit buy)
+      // Short → ask ceiling is above current bid; place limit at ask − 0.1 pip
+      //         (runs when whale blasts through the bid, filling our limit sell)
+      // We use the live bid/ask from `currentPrice` (mid ± half-spread).
+      const halfSpread = (currentPrice.spreadPips * pipSize) / 2;
+      const bid = currentPrice.mid - halfSpread;
+      const ask = currentPrice.mid + halfSpread;
+      const NOI_OFFSET_PIPS = 0.1;
+
+      // Limit price: inside the spread by 0.1 pip so it rests just ahead of the wall
+      const limitPrice = isLongOrder
+        ? +(bid + NOI_OFFSET_PIPS * pipSize).toFixed(pair.includes("JPY") ? 3 : 5)   // buy just above bid wall
+        : +(ask - NOI_OFFSET_PIPS * pipSize).toFixed(pair.includes("JPY") ? 3 : 5);  // sell just below ask ceiling
+
+      // PHASE 5 Rule 5.1: Arm bracket RELATIVE to limit price (not mid) — fills at the wall
+      const tpPrice = isLongOrder
+        ? +(limitPrice + PID_TP_PIPS * pipSize).toFixed(pair.includes("JPY") ? 3 : 5)
+        : +(limitPrice - PID_TP_PIPS * pipSize).toFixed(pair.includes("JPY") ? 3 : 5);
+      const slPrice = isLongOrder
+        ? +(limitPrice - PID_SL_PIPS * pipSize).toFixed(pair.includes("JPY") ? 3 : 5)
+        : +(limitPrice + PID_SL_PIPS * pipSize).toFixed(pair.includes("JPY") ? 3 : 5);
+
+      // PREDATORY_LIMIT: GTC limit order at the NOI wall — fills when whale breaches wall.
+      // GTD (Good-Till-Date) with 60s expiry prevents stale ghost limits if wall disappears.
+      const limitExpiry = new Date(Date.now() + 60_000).toISOString(); // 60s GTD
       const orderBody = {
         order: {
-          type: "MARKET",
+          type: "LIMIT",
           instrument: pair,
           units: String(dirUnits),
-          timeInForce: "FOK",
+          price: String(limitPrice),
+          timeInForce: "GTD",
+          gtdTime: limitExpiry,
           takeProfitOnFill: { price: String(tpPrice), timeInForce: "GTC" },
           stopLossOnFill:   { price: String(slPrice), timeInForce: "GTC" },
         },
       };
-      console.log(`[PHASE5-BRACKET] ${pair} ${direction} | TP=${tpPrice} (+${PID_TP_PIPS}p) SL=${slPrice} (−${PID_SL_PIPS}p)`);
+      console.log(`[PHASE2-LIMIT] 🎯 ${pair} ${direction.toUpperCase()} | PREDATORY_LIMIT @ ${limitPrice} (NOI wall ±${NOI_OFFSET_PIPS}p) | TP=${tpPrice} (+${PID_TP_PIPS}p) SL=${slPrice} (−${PID_SL_PIPS}p) | GTD 60s`);
 
       try {
         const orderRes = await fetch(
@@ -1246,18 +1285,20 @@ Deno.serve(async (req) => {
         );
 
         const orderData = await orderRes.json();
+        // PREDATORY_LIMIT can produce two outcomes:
+        //   1. Immediate fill (limit price crosses current spread) → orderFillTransaction
+        //   2. Resting limit (limit placed, awaiting whale breach)  → orderCreateTransaction
         const fill = orderData.orderFillTransaction;
+        const created = orderData.orderCreateTransaction;
 
         if (fill) {
+          // ─── IMMEDIATE FILL ─── (limit hit the spread on placement)
           const fillPrice = parseFloat(fill.price || "0");
           const tradeId = fill.tradeOpened?.tradeID || fill.id;
-          const slippagePips = Math.abs(toPips(fillPrice - currentPrice.mid, pair));
-          // BUG FIX: Use OANDA openTime as the authoritative created_at to prevent negative hold times.
-          // fill.time is the OANDA transaction timestamp — matches broker reality for P&L analytics.
+          const slippagePips = Math.abs(toPips(fillPrice - limitPrice, pair)); // vs limit, not mid
           const openTime = fill.time ? new Date(fill.time).toISOString() : new Date().toISOString();
 
           // ─── PHASE 5: Initialize PID Ratchet state for this trade ───
-          // Starts inactive (pidActivated=false) until maxProfit >= PID_ACTIVATION_PIPS (+3p)
           pidStateMap.set(tradeId, {
             maxProfit: 0,
             ticksInTrade: 0,
@@ -1270,7 +1311,7 @@ Deno.serve(async (req) => {
             entryPrice: fillPrice,
             direction,
           });
-          console.log(`[PHASE5-PID] ${pair} PID state initialized | entry=${fillPrice} | SL armed at ${isLongOrder ? fillPrice - PID_SL_PIPS * pipSize : fillPrice + PID_SL_PIPS * pipSize}`);
+          console.log(`[PHASE5-PID] ${pair} PID state initialized (immediate fill) | entry=${fillPrice} | SL=${isLongOrder ? fillPrice - PID_SL_PIPS * pipSize : fillPrice + PID_SL_PIPS * pipSize}`);
 
           const { hurst: entryHurst, efficiency: entryEfficiency, zOfi: entryZOfi, vpin: entryVpin } = entryGates;
           if (adminRole) {
@@ -1287,44 +1328,82 @@ Deno.serve(async (req) => {
               environment: "practice",
               direction_engine: "david-atlas",
               sovereign_override_tag: `david-atlas:${pair}`,
-              confidence_score: 1.0, // 4/4 gates = maximum institutional consensus
-              created_at: openTime, // OANDA broker timestamp — prevents negative hold times
-              // ── GATE METRICS AT ENTRY — stored for backtesting forensics ──
+              confidence_score: 1.0,
+              created_at: openTime,
               gate_result: "DA_5PHASE_CONFIRMED",
               gate_reasons: [
                 `P1_SN:OK`,
-                `P2_NOI:${entryZOfi > 0 ? 'BUY_WALL' : 'SELL_CEILING'}`,
+                `P2_NOI:LIMIT_FILL@${limitPrice}(${direction==='long'?'BID_WALL+0.1p':'ASK_CEIL-0.1p'})`,
                 `P3_KELLY:p=${p.toFixed(3)},f*=${kellyFrac.toFixed(3)}`,
                 `P4_ESIG:E=${entryEfficiency.toFixed(1)}x,Z=${entryZOfi.toFixed(3)}σ,H=${entryHurst.toFixed(4)},VPIN=${entryVpin.toFixed(4)}`,
                 `P5_BRACKET:TP=+${PID_TP_PIPS}p,SL=-${PID_SL_PIPS}p,PID_ARMED`,
               ],
               governance_payload: {
                 strategy: "david-atlas-v2-5phase", pair, direction, slippagePips,
+                orderType: "PREDATORY_LIMIT", limitPrice,
                 requestedUnits, actualUnits: units, marginGuardApplied: units !== requestedUnits,
                 phase3Kelly: { p, q, b, kellyFrac, kellyUnits: maxUnitsByKelly, navCeiling: MAX_RISK_USD },
                 phase4Esig: { efficiency: entryEfficiency, zOfi: entryZOfi, hurst: entryHurst, vpin: entryVpin },
                 phase5Bracket: { tpPrice, slPrice, tpPips: PID_TP_PIPS, slPips: PID_SL_PIPS, pidActivationPips: PID_ACTIVATION_PIPS },
-                phase4Gates: {
-                  hurst: entryHurst,
-                  efficiency: entryEfficiency,
-                  zOfi: entryZOfi,
-                  vpin: entryVpin,
-                  gateState: "DA_5PHASE",
-                },
               },
-              requested_price: currentPrice.mid,
+              requested_price: limitPrice,
               slippage_pips: slippagePips,
               spread_at_entry: currentPrice.spreadPips,
             });
           }
 
-          console.log(`[DAVID-ATLAS] ✅ STRIKE OPEN: ${tradeId} @ ${fillPrice} | ${direction.toUpperCase()} ${units} ${pair} | slip ${slippagePips.toFixed(2)}p | TP=+${PID_TP_PIPS}p SL=-${PID_SL_PIPS}p | KELLY f*=${kellyFrac.toFixed(3)} p=${p.toFixed(3)}`);
-          return { success: true, tradeId, fillPrice, slippage: slippagePips, openTime };
+          console.log(`[DAVID-ATLAS] ✅ LIMIT FILLED (immediate): ${tradeId} @ ${fillPrice} | ${direction.toUpperCase()} ${units} ${pair} | slipVsWall=${slippagePips.toFixed(2)}p | TP=${tpPrice} SL=${slPrice} | KELLY f*=${kellyFrac.toFixed(3)}`);
+          return { success: true, tradeId, fillPrice, slippage: slippagePips, openTime } as any;
+
+        } else if (created) {
+          // ─── RESTING LIMIT ─── (order placed at wall — awaiting whale breach)
+          // Return success=true with the OANDA order ID so exitTradeMap can track via polling.
+          // The dud abort clock does NOT start until OANDA confirms the fill via the realtime stream.
+          const orderId = created.orderID || created.id;
+          console.log(`[PHASE2-LIMIT] ⚓ PREDATORY LIMIT RESTING: ${pair} ${direction.toUpperCase()} ${units} @ ${limitPrice} | orderID=${orderId} | Awaiting whale breach (GTD 60s) | TP=${tpPrice} SL=${slPrice}`);
+
+          // Log a 'pending' record — will be updated to 'filled' when OANDA broadcasts the fill
+          const { hurst: entryHurst, efficiency: entryEfficiency, zOfi: entryZOfi, vpin: entryVpin } = entryGates;
+          if (adminRole) {
+            await supabase.from("oanda_orders").insert({
+              user_id: adminRole.user_id,
+              signal_id: `david-atlas-${pair}-${Date.now()}`,
+              currency_pair: pair,
+              direction: direction.toLowerCase(),
+              units,
+              entry_price: null, // not yet filled
+              oanda_order_id: orderId,
+              oanda_trade_id: null,
+              status: "pending",
+              environment: "practice",
+              direction_engine: "david-atlas",
+              sovereign_override_tag: `david-atlas:${pair}`,
+              confidence_score: 1.0,
+              gate_result: "DA_5PHASE_LIMIT_RESTING",
+              gate_reasons: [
+                `P2_NOI:LIMIT_PLACED@${limitPrice}(${direction==='long'?'BID_WALL+0.1p':'ASK_CEIL-0.1p'})`,
+                `P4_ESIG:E=${entryEfficiency.toFixed(1)}x,Z=${entryZOfi.toFixed(3)}σ,H=${entryHurst.toFixed(4)},VPIN=${entryVpin.toFixed(4)}`,
+                `GTD:60s`,
+              ],
+              governance_payload: {
+                strategy: "david-atlas-v2-5phase", pair, direction,
+                orderType: "PREDATORY_LIMIT_RESTING", limitPrice, limitExpiry,
+                requestedUnits, actualUnits: units,
+                phase4Esig: { efficiency: entryEfficiency, zOfi: entryZOfi, hurst: entryHurst, vpin: entryVpin },
+                phase5Bracket: { tpPrice, slPrice, tpPips: PID_TP_PIPS, slPips: PID_SL_PIPS },
+              },
+              requested_price: limitPrice,
+              spread_at_entry: currentPrice.spreadPips,
+            });
+          }
+          // Return tradeId=orderId so exitTradeMap registers the pair as "in-flight"
+          return { success: true, tradeId: orderId, fillPrice: limitPrice, slippage: 0, openTime: new Date().toISOString() } as any;
+
         } else {
           const rejectTx = orderData.orderRejectTransaction;
           const rejectReason = rejectTx?.rejectReason || rejectTx?.type || "Unknown";
           const rejectDetail = rejectTx?.reason || orderData.errorMessage || orderData.errorCode || "";
-          console.warn(`[DAVID-ATLAS] ❌ REJECTED: ${pair} | reason=${rejectReason} | detail=${rejectDetail} | httpStatus=${orderRes.status} | rawKeys=${Object.keys(orderData).join(',')}`);
+          console.warn(`[DAVID-ATLAS] ❌ REJECTED: ${pair} | reason=${rejectReason} | detail=${rejectDetail} | httpStatus=${orderRes.status} | limitPrice=${limitPrice} | rawKeys=${Object.keys(orderData).join(',')}`);
           return { success: false };
         }
       } catch (err) {
