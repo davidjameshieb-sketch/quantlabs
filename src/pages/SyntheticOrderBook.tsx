@@ -708,7 +708,79 @@ function TacticalUnit({ pair, data, activeTrade }: {
   );
 }
 
+// ─── Deck Card — Compact "face-down" card for SCANNING/FATIGUE pairs ────────
+// Shows only the pair name, state badge, and 4 gate dots so ~60 pairs
+// can coexist on screen without noise. Tapping expands to TacticalUnit.
+
+function DeckCard({ pair, data, activeTrade }: {
+  pair: string;
+  data: PairPhysics;
+  activeTrade?: { direction: string; created_at: string } | null;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const p = data;
+  const physicsState = deriveSPPState(p, pair);
+  const state: TacticalState = activeTrade ? 'GUARD' : physicsState;
+
+  if (expanded) {
+    return (
+      <div className="col-span-full md:col-span-1">
+        <TacticalUnit pair={pair} data={data} activeTrade={activeTrade} />
+        <button
+          onClick={() => setExpanded(false)}
+          className="w-full mt-1 text-[8px] font-mono text-muted-foreground hover:text-foreground text-center py-1 transition-colors"
+        >
+          ▲ collapse
+        </button>
+      </div>
+    );
+  }
+
+  const metrics = interpretSPPMetrics(p);
+  const passCount = metrics.filter(m => m.passing).length;
+  const biasColor = p.bias === 'BUY' ? 'text-green-400' : p.bias === 'SELL' ? 'text-red-400' : 'text-muted-foreground';
+  const stateMeta = {
+    STRIKE:  { color: 'text-yellow-300', dot: 'bg-yellow-400' },
+    GUARD:   { color: 'text-green-300',  dot: 'bg-green-400' },
+    SET:     { color: 'text-amber-300',  dot: 'bg-amber-400' },
+    HUNT:    { color: 'text-blue-300',   dot: 'bg-blue-400' },
+    DUD:     { color: 'text-red-400',    dot: 'bg-red-500' },
+    FATIGUE: { color: 'text-red-400',    dot: 'bg-red-800' },
+    SCANNING:{ color: 'text-muted-foreground', dot: 'bg-muted/40' },
+  }[state];
+
+  return (
+    <button
+      onClick={() => setExpanded(true)}
+      className="w-full text-left rounded-lg border border-border/30 bg-card/40 hover:bg-card/70 hover:border-border/60 transition-all px-3 py-2 flex items-center gap-2 group"
+    >
+      {/* state dot */}
+      <div className={cn('w-1.5 h-1.5 rounded-full flex-shrink-0', stateMeta.dot, state === 'SCANNING' ? '' : 'animate-pulse')} />
+      {/* pair name */}
+      <span className="font-mono font-bold text-[10px] text-foreground tracking-widest flex-1 truncate">{pair}</span>
+      {/* gate dots */}
+      <div className="flex items-center gap-0.5 flex-shrink-0">
+        {metrics.slice(0, 4).map((m, i) => (
+          <div key={i} className={cn('w-1 h-1 rounded-full', m.passing ? 'bg-green-500' : 'bg-muted/30')} />
+        ))}
+      </div>
+      {/* pass count */}
+      <span className={cn('text-[9px] font-mono font-bold flex-shrink-0 w-6 text-right', passCount >= 3 ? 'text-yellow-400' : passCount >= 2 ? 'text-amber-400' : 'text-muted-foreground')}>
+        {passCount}/6
+      </span>
+      {/* bias */}
+      <span className={cn('text-[8px] font-mono flex-shrink-0', biasColor)}>{p.bias}</span>
+      {/* E value */}
+      <span className="text-[8px] font-mono text-muted-foreground flex-shrink-0 hidden sm:block">
+        E{(p.efficiency ?? 0).toFixed(0)}×
+      </span>
+      <ChevronRight className="w-3 h-3 text-muted-foreground/40 group-hover:text-muted-foreground flex-shrink-0" />
+    </button>
+  );
+}
+
 // ─── SPP v2.0 Execution Thread HUD ───────────────────────────────────────────
+
 
 function SPPExecutionHUD() {
   const steps = [
@@ -885,10 +957,11 @@ const SyntheticOrderBook = () => {
 
   const MARKET_GROUPS: { label: string; emoji: string; pairs: string[] }[] = [
     { label: 'USD Majors',       emoji: '🇺🇸', pairs: ['EUR_USD','GBP_USD','USD_JPY','USD_CHF','AUD_USD','USD_CAD','NZD_USD'] },
-    { label: 'EUR Crosses',      emoji: '🇪🇺', pairs: ['EUR_GBP','EUR_JPY','EUR_CHF','EUR_AUD','EUR_CAD','EUR_NZD'] },
-    { label: 'GBP Crosses',      emoji: '🇬🇧', pairs: ['GBP_JPY','GBP_CHF','GBP_AUD','GBP_CAD','GBP_NZD'] },
-    { label: 'JPY Crosses',      emoji: '🇯🇵', pairs: ['AUD_JPY','CAD_JPY','CHF_JPY','NZD_JPY'] },
-    { label: 'Commodity & Minors', emoji: '🌏', pairs: ['AUD_CAD','AUD_CHF','AUD_NZD','CAD_CHF','NZD_CAD','NZD_CHF'] },
+    { label: 'EUR Crosses',      emoji: '🇪🇺', pairs: ['EUR_GBP','EUR_JPY','EUR_CHF','EUR_AUD','EUR_CAD','EUR_NZD','EUR_DKK','EUR_HKD','EUR_HUF','EUR_NOK','EUR_PLN','EUR_SEK','EUR_SGD','EUR_TRY','EUR_ZAR'] },
+    { label: 'GBP Crosses',      emoji: '🇬🇧', pairs: ['GBP_JPY','GBP_CHF','GBP_AUD','GBP_CAD','GBP_NZD','GBP_HKD','GBP_NOK','GBP_PLN','GBP_SEK','GBP_SGD','GBP_ZAR'] },
+    { label: 'JPY Crosses',      emoji: '🇯🇵', pairs: ['AUD_JPY','CAD_JPY','CHF_JPY','NZD_JPY','SGD_JPY'] },
+    { label: 'AUD / NZD / CAD',  emoji: '🌏', pairs: ['AUD_CAD','AUD_CHF','AUD_NZD','AUD_HKD','AUD_SGD','NZD_CAD','NZD_CHF','NZD_HKD','NZD_SGD','CAD_CHF','SGD_CHF','SGD_HKD'] },
+    { label: 'USD Exotics',      emoji: '🌐', pairs: ['USD_CNH','USD_CZK','USD_DKK','USD_HKD','USD_HUF','USD_INR','USD_MXN','USD_NOK','USD_PLN','USD_SAR','USD_SEK','USD_SGD','USD_THB','USD_TRY','USD_ZAR'] },
   ];
 
   return (
@@ -990,49 +1063,57 @@ const SyntheticOrderBook = () => {
         )}
 
         {!loading && activePairs.length > 0 && (() => {
-          const renderCard = ([pair, data]: [string, unknown]) => {
-            // GUARD FIX: normalise both sides to underscore format before matching
-            const normalizedPair = normPair(pair as string);
-            const trade = activeTrades.find(t =>
+          const getActiveTrade = (pair: string) => {
+            const normalizedPair = normPair(pair);
+            return activeTrades.find(t =>
               normPair(t.currency_pair) === normalizedPair &&
               (t.status === 'filled' || t.status === 'pending' || t.status === 'open')
             ) || null;
-            return <TacticalUnit key={pair as string} pair={pair as string} data={data as PairPhysics} activeTrade={trade} />;
           };
 
-          // Priority order: STRIKE → SET → HUNT → rest by group
-          const stateOrder: TacticalState[] = ['STRIKE', 'SET', 'HUNT'];
-          const sectionMeta: Record<string, { icon: React.ElementType; color: string; label: string }> = {
-            STRIKE: { icon: Flame,  color: 'text-yellow-300', label: '⚡ STRIKE — Vacuum Ignition' },
-            SET:    { icon: Lock,   color: 'text-amber-300',  label: '🎯 SET — Trap Positioned' },
-            HUNT:   { icon: Search, color: 'text-blue-300',   label: '🔍 HUNT — Coil Detected' },
+          // Determine state for a pair (with GUARD override)
+          const getPairState = (pair: string, data: unknown): TacticalState => {
+            const trade = getActiveTrade(pair);
+            return trade ? 'GUARD' : deriveSPPState(data as PairPhysics, pair);
+          };
+
+          // "Active Pulse" states — fly out as full TacticalUnit cards
+          const ACTIVE_STATES: TacticalState[] = ['GUARD', 'STRIKE', 'SET', 'HUNT'];
+          const sectionMeta: Record<string, { color: string; label: string; pulseColor: string }> = {
+            GUARD:  { color: 'text-green-300',  label: '🛡 GUARD — Active Trade In Play',   pulseColor: 'bg-green-400' },
+            STRIKE: { color: 'text-yellow-300', label: '⚡ STRIKE — Vacuum Ignition',        pulseColor: 'bg-yellow-400' },
+            SET:    { color: 'text-amber-300',  label: '🎯 SET — Limit Trap Positioned',    pulseColor: 'bg-amber-400' },
+            HUNT:   { color: 'text-blue-300',   label: '🔍 HUNT — ATR Coil Detected',       pulseColor: 'bg-blue-400' },
           };
 
           const placed = new Set<string>();
-          const prioritySections = stateOrder.map(s => {
-            const members = activePairs.filter(([p, d]) => {
-              const norm = (p as string).replace('/', '_');
+
+          // Priority: GUARD first (has open trade), then STRIKE, SET, HUNT
+          const prioritySections = ACTIVE_STATES.map(s => {
+            const members = activePairs.filter(([p]) => {
+              const norm = normPair(p as string);
               if (placed.has(norm)) return false;
-              if (deriveSPPState(d as PairPhysics) === s && s !== 'DUD') { placed.add(norm); return true; }
+              const st = getPairState(p as string, activePairs.find(([ap]) => ap === p)?.[1]);
+              if (st === s) { placed.add(norm); return true; }
               return false;
             });
             return { state: s, members, meta: sectionMeta[s] };
           }).filter(g => g.members.length > 0);
 
-          // Place remaining into market groups
+          // Remaining pairs → DeckCard groups
           const groups = MARKET_GROUPS.map(g => {
-            const members = activePairs.filter(([p, d]) => {
-              const norm = (p as string).replace('/', '_');
+            const members = activePairs.filter(([p]) => {
+              const norm = normPair(p as string);
               if (placed.has(norm)) return false;
-              if (dudPairs.find(([dp]) => dp === p)) return false; // already shown
+              if (dudPairs.find(([dp]) => dp === p)) return false;
               if (g.pairs.includes(norm)) { placed.add(norm); return true; }
               return false;
             });
             return { ...g, members };
           }).filter(g => g.members.length > 0);
 
-          const otherPairs = activePairs.filter(([p, d]) => {
-            const norm = (p as string).replace('/', '_');
+          const otherPairs = activePairs.filter(([p]) => {
+            const norm = normPair(p as string);
             if (placed.has(norm)) return false;
             if (dudPairs.find(([dp]) => dp === p)) return false;
             return true;
@@ -1040,51 +1121,74 @@ const SyntheticOrderBook = () => {
 
           return (
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.1 }} className="space-y-6">
-              {/* Priority sections: STRIKE, SET, HUNT */}
+              {/* ── Active Pulse: GUARD / STRIKE / SET / HUNT — full expanded cards ── */}
               {prioritySections.map(({ state, members, meta }) => (
                 <div key={state} className="space-y-3">
                   <div className="flex items-center gap-2">
-                    <div className={cn('w-2 h-2 rounded-full animate-pulse', state === 'STRIKE' ? 'bg-yellow-400' : state === 'SET' ? 'bg-amber-400' : 'bg-blue-400')} />
+                    <div className={cn('w-2 h-2 rounded-full animate-pulse', meta.pulseColor)} />
                     <span className={cn('text-xs font-mono font-black uppercase tracking-widest', meta.color)}>
                       {meta.label} — {members.length} pair{members.length > 1 ? 's' : ''}
                     </span>
                     <div className="flex-1 h-px bg-border/30" />
                   </div>
                   <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-                    {members.map(renderCard)}
+                    {members.map(([pair, data]) => (
+                      <TacticalUnit
+                        key={pair as string}
+                        pair={pair as string}
+                        data={data as PairPhysics}
+                        activeTrade={getActiveTrade(pair as string)}
+                      />
+                    ))}
                   </div>
                 </div>
               ))}
 
-              {/* Market groups */}
+              {/* ── The Deck — SCANNING/FATIGUE pairs as compact face-down cards ── */}
               {groups.map(g => (
-                <div key={g.label} className="space-y-3">
+                <div key={g.label} className="space-y-2">
                   <div className="flex items-center gap-2">
                     <span className="text-base">{g.emoji}</span>
                     <span className="text-xs font-mono font-bold uppercase tracking-widest text-muted-foreground">{g.label}</span>
-                    <div className="flex-1 h-px bg-border/30" />
-                    <span className="text-[9px] font-mono text-muted-foreground">{g.members.length}</span>
+                    <div className="flex-1 h-px bg-border/20" />
+                    <span className="text-[9px] font-mono text-muted-foreground">{g.members.length} pairs</span>
                   </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-                    {g.members.map(renderCard)}
+                  {/* Dense deck grid — tap to flip open */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-1.5">
+                    {g.members.map(([pair, data]) => (
+                      <DeckCard
+                        key={pair as string}
+                        pair={pair as string}
+                        data={data as PairPhysics}
+                        activeTrade={getActiveTrade(pair as string)}
+                      />
+                    ))}
                   </div>
                 </div>
               ))}
 
               {otherPairs.length > 0 && (
-                <div className="space-y-3">
+                <div className="space-y-2">
                   <div className="flex items-center gap-2">
                     <span className="text-xs font-mono font-bold uppercase tracking-widest text-muted-foreground">🔀 Other</span>
-                    <div className="flex-1 h-px bg-border/30" />
-                    <span className="text-[9px] font-mono text-muted-foreground">{otherPairs.length}</span>
+                    <div className="flex-1 h-px bg-border/20" />
+                    <span className="text-[9px] font-mono text-muted-foreground">{otherPairs.length} pairs</span>
                   </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-                    {otherPairs.map(renderCard)}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-1.5">
+                    {otherPairs.map(([pair, data]) => (
+                      <DeckCard
+                        key={pair as string}
+                        pair={pair as string}
+                        data={data as PairPhysics}
+                        activeTrade={getActiveTrade(pair as string)}
+                      />
+                    ))}
                   </div>
                 </div>
               )}
             </motion.div>
           );
+
         })()}
 
         {!loading && activePairs.length === 0 && (

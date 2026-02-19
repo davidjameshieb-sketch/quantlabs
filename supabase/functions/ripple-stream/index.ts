@@ -881,10 +881,33 @@ Deno.serve(async (req) => {
       console.log(`[DAVID-ATLAS] 🚨 CIRCUIT BREAKER ACTIVE — all entries blocked`);
     }
 
-    // ─── 3. Build instrument set — David & Atlas pairs ───
+    // ─── 3. Build instrument set — ALL 60 OANDA forex pairs ───
+    // Expanded from the original 10-pair subset to the full OANDA CURRENCY universe.
+    // Physics (Sr, NOI, Hurst, E, Z-OFI, VPIN) computed for EVERY pair per tick.
+    // The synthetic order book now covers the entire book — War Room shows all cards.
     const DA_PAIRS = [
-      "EUR_USD", "GBP_USD", "USD_JPY", "AUD_USD", "USD_CAD",
-      "EUR_JPY", "GBP_JPY", "EUR_GBP", "NZD_USD", "AUD_JPY",
+      // USD Majors
+      "EUR_USD", "GBP_USD", "USD_JPY", "AUD_USD", "USD_CAD", "USD_CHF", "NZD_USD",
+      // EUR Crosses
+      "EUR_GBP", "EUR_JPY", "EUR_CHF", "EUR_AUD", "EUR_CAD", "EUR_NZD",
+      // GBP Crosses
+      "GBP_JPY", "GBP_CHF", "GBP_AUD", "GBP_CAD", "GBP_NZD",
+      // JPY Crosses
+      "AUD_JPY", "CAD_JPY", "CHF_JPY", "NZD_JPY",
+      // AUD Crosses
+      "AUD_CAD", "AUD_CHF", "AUD_NZD",
+      // NZD Crosses
+      "NZD_CAD", "NZD_CHF",
+      // CAD Crosses
+      "CAD_CHF",
+      // Scandinavian & Emerging (OANDA CURRENCY universe)
+      "EUR_DKK", "EUR_HKD", "EUR_HUF", "EUR_NOK", "EUR_PLN", "EUR_SEK", "EUR_SGD", "EUR_TRY", "EUR_ZAR",
+      "GBP_HKD", "GBP_NOK", "GBP_PLN", "GBP_SEK", "GBP_SGD", "GBP_ZAR",
+      "USD_CNH", "USD_CZK", "USD_DKK", "USD_HKD", "USD_HUF", "USD_INR", "USD_MXN", "USD_NOK",
+      "USD_PLN", "USD_SAR", "USD_SEK", "USD_SGD", "USD_THB", "USD_TRY", "USD_ZAR",
+      "AUD_HKD", "AUD_SGD",
+      "NZD_HKD", "NZD_SGD",
+      "SGD_CHF", "SGD_JPY", "SGD_HKD",
     ];
     const instruments = new Set<string>(
       DA_PAIRS.filter(p => !blockedPairs.includes(p))
