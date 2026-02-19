@@ -18,7 +18,7 @@ import { Badge } from '@/components/ui/badge';
 import { getTickerBySymbol, TIMEFRAME_LABELS, MARKET_LABELS } from '@/lib/market';
 import { analyzeMultiTimeframe } from '@/lib/market/analysisEngine';
 import { BiasDirection, Timeframe, MarketType } from '@/lib/market/types';
-import { TradingViewChart } from './TradingViewChart';
+import distributionTerminalTwin from '@/assets/distribution-terminal-twin.jpg';
 import { HistoricalOutcomesPanel } from './HistoricalOutcomesPanel';
 import { MetricGauge } from './MetricGauge';
 import { NeuralSignalMatrix } from './NeuralSignalMatrix';
@@ -129,13 +129,39 @@ export const TickerDetail = () => {
         </div>
       </div>
 
-      {/* Price Chart - Full width */}
+      {/* Digital Twin — Isometric Distribution Terminal */}
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.3 }}
+        className="relative rounded-xl overflow-hidden border border-border/50"
+        style={{ height: 350 }}
       >
-        <TradingViewChart ticker={ticker} height={350} showConditionReplay={true} />
+        <img
+          src={distributionTerminalTwin}
+          alt="David-Atlas Distribution Terminal — Isometric Digital Twin"
+          className="w-full h-full object-cover"
+        />
+        {/* AR overlay — live metric badges */}
+        <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent pointer-events-none" />
+        <div className="absolute bottom-3 left-3 flex flex-wrap gap-2 pointer-events-none">
+          <span className="font-mono text-[10px] font-black uppercase tracking-widest px-2 py-1 rounded bg-black/60 border border-yellow-400/50 text-yellow-300">
+            ⚡ MAIN LINE VELOCITY: OPTIMAL (H &gt; 0.62)
+          </span>
+          <span className="font-mono text-[10px] font-black uppercase tracking-widest px-2 py-1 rounded bg-black/60 border border-green-400/50 text-green-300">
+            52 TRAILER SURGE · Z-OFI &gt; 2.5σ · MAX VACUUM
+          </span>
+        </div>
+        <div className="absolute top-3 right-3 pointer-events-none">
+          <span className="font-mono text-[9px] font-bold px-2 py-1 rounded bg-black/70 border border-primary/40 text-primary">
+            DAVID-ATLAS DIGITAL TWIN · {ticker.symbol}
+          </span>
+        </div>
+        <div className="absolute top-3 left-3 pointer-events-none">
+          <span className="font-mono text-[9px] font-bold px-2 py-1 rounded bg-red-900/80 border border-red-500/60 text-red-300">
+            🔴 FLOOR OBSTRUCTION: HIGH FRICTION (E &lt; 0.3) · AVOID LANE
+          </span>
+        </div>
       </motion.div>
 
       {/* Neural Signal Matrix */}
