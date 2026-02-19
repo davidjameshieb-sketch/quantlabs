@@ -974,13 +974,15 @@ Deno.serve(async (req) => {
     }>();
 
     // Cross-session cooldown: load recent DA fires from DB
+    // BUG FIX #5: Was querying environment='live' but all trades are written as 'practice'.
+    // This caused the cooldown to ALWAYS be empty → unlimited re-entries on same pair every session.
+    // Fix: query by direction_engine only, ignoring environment field.
     try {
       const twoMinAgo = new Date(Date.now() - DA_COOLDOWN_MS).toISOString();
       const { data: recentFires } = await supabase
         .from("oanda_orders")
         .select("currency_pair, created_at")
         .eq("direction_engine", "david-atlas")
-        .eq("environment", "live")
         .gte("created_at", twoMinAgo)
         .order("created_at", { ascending: false });
 
@@ -1001,19 +1003,58 @@ Deno.serve(async (req) => {
     let lastDiagTs = 0;
 
     // ─── David & Atlas: Load open trades for exit monitoring ───
-    const { data: openTradesForExit } = await supabase
-      .from("oanda_orders")
-      .select("id, oanda_trade_id, currency_pair, direction, entry_price, created_at, environment")
-      .eq("status", "filled")
-      .is("exit_price", null)
-      .not("oanda_trade_id", "is", null)
-      .not("entry_price", "is", null);
-
+    // BUG FIX #4: Cross-validate with OANDA live trades on session boot.
+    // DB query alone is unreliable — trades may be open at OANDA but marked closed in DB (or vice versa).
+    // Authority: OANDA is the source of truth. We seed exitTradeMap from OANDA, then overlay DB metadata.
     const exitTradeMap = new Map<string, any>();
-    for (const t of (openTradesForExit || [])) {
-      exitTradeMap.set(t.currency_pair, t);
+
+    try {
+      const liveBootRes = await fetch(
+        `${OANDA_API}/accounts/${OANDA_ACCOUNT}/openTrades`,
+        { headers: { Authorization: `Bearer ${OANDA_TOKEN}` } },
+      );
+      if (liveBootRes.ok) {
+        const liveBootData = await liveBootRes.json();
+        const liveOandaTrades: any[] = liveBootData.trades || [];
+        // Fetch matching DB records for metadata (direction, signal_id, etc.)
+        if (liveOandaTrades.length > 0) {
+          const liveIds = liveOandaTrades.map((t: any) => t.id);
+          const { data: dbTrades } = await supabase
+            .from("oanda_orders")
+            .select("id, oanda_trade_id, currency_pair, direction, entry_price, created_at, environment")
+            .in("oanda_trade_id", liveIds);
+          const dbByTradeId = new Map((dbTrades || []).map((t: any) => [t.oanda_trade_id, t]));
+          for (const ot of liveOandaTrades) {
+            const instrument = ot.instrument; // OANDA format: EUR_USD
+            const dbRec = dbByTradeId.get(ot.id);
+            exitTradeMap.set(instrument, {
+              id: dbRec?.id || ot.id,
+              oanda_trade_id: ot.id,
+              currency_pair: instrument,
+              direction: dbRec?.direction || (parseFloat(ot.currentUnits) > 0 ? "long" : "short"),
+              entry_price: dbRec?.entry_price || parseFloat(ot.price),
+              created_at: dbRec?.created_at || ot.openTime,
+              environment: dbRec?.environment || "practice",
+            });
+          }
+        }
+        console.log(`[DAVID-ATLAS] 🎯 Tunnel monitoring ${exitTradeMap.size} open trades (OANDA authoritative boot)`);
+      }
+    } catch (bootErr) {
+      // Fallback to DB if OANDA call fails
+      console.warn(`[DAVID-ATLAS] ⚠️ OANDA boot fetch failed — falling back to DB:`, bootErr);
+      const { data: openTradesForExit } = await supabase
+        .from("oanda_orders")
+        .select("id, oanda_trade_id, currency_pair, direction, entry_price, created_at, environment")
+        .eq("status", "filled")
+        .is("exit_price", null)
+        .not("oanda_trade_id", "is", null)
+        .not("entry_price", "is", null);
+      for (const t of (openTradesForExit || [])) {
+        exitTradeMap.set(t.currency_pair, t);
+      }
+      console.log(`[DAVID-ATLAS] 🎯 Tunnel monitoring ${exitTradeMap.size} open trades (DB fallback)`);
     }
-    console.log(`[DAVID-ATLAS] 🎯 Tunnel monitoring ${exitTradeMap.size} open trades`);
 
     // Init velocity trackers for all STREAMED instruments (not all 60 — only 20 are live-ticked)
     for (const p of streamInstruments) {
@@ -1156,6 +1197,9 @@ Deno.serve(async (req) => {
           const fillPrice = parseFloat(fill.price || "0");
           const tradeId = fill.tradeOpened?.tradeID || fill.id;
           const slippagePips = Math.abs(toPips(fillPrice - currentPrice.mid, pair));
+          // BUG FIX: Use OANDA openTime as the authoritative created_at to prevent negative hold times.
+          // fill.time is the OANDA transaction timestamp — matches broker reality for P&L analytics.
+          const openTime = fill.time ? new Date(fill.time).toISOString() : new Date().toISOString();
 
           const { hurst: entryHurst, efficiency: entryEfficiency, zOfi: entryZOfi, vpin: entryVpin } = entryGates;
           if (adminRole) {
@@ -1173,9 +1217,8 @@ Deno.serve(async (req) => {
               direction_engine: "david-atlas",
               sovereign_override_tag: `david-atlas:${pair}`,
               confidence_score: 1.0, // 4/4 gates = maximum institutional consensus
+              created_at: openTime, // OANDA broker timestamp — prevents negative hold times
               // ── GATE METRICS AT ENTRY — stored for backtesting forensics ──
-              // These are the EXACT physics values that passed all 4 Climax gates
-              // at the moment of the tunnel opening. Used by the Climax Strike Log.
               gate_result: "4/4_CLIMAX",
               gate_reasons: [
                 `HURST:${entryHurst.toFixed(4)}`,
@@ -1186,7 +1229,6 @@ Deno.serve(async (req) => {
               governance_payload: {
                 strategy: "david-atlas-tunnel-v1", pair, direction, slippagePips,
                 requestedUnits, actualUnits: units, marginGuardApplied: units !== requestedUnits,
-                // Climax gate values snapshot at entry tick
                 gates: {
                   hurst: entryHurst,
                   efficiency: entryEfficiency,
@@ -1202,7 +1244,7 @@ Deno.serve(async (req) => {
           }
 
           console.log(`[DAVID-ATLAS] ✅ TUNNEL OPEN: ${tradeId} @ ${fillPrice} | ${direction.toUpperCase()} ${units} ${pair} | slip ${slippagePips.toFixed(2)}p | NO SL | NO TP | ATOMIC FOK`);
-          return { success: true, tradeId, fillPrice, slippage: slippagePips };
+          return { success: true, tradeId, fillPrice, slippage: slippagePips, openTime };
         } else {
           const rejectTx = orderData.orderRejectTransaction;
           const rejectReason = rejectTx?.rejectReason || rejectTx?.type || "Unknown";
@@ -1244,15 +1286,15 @@ Deno.serve(async (req) => {
         );
         if (closeRes.ok) {
           const closeData = await closeRes.json();
-          // CRITICAL BUG FIX: parseFloat("0") was stored when orderFillTransaction.price was absent.
-          // "0" as exit_price corrupts all P&L and analytics. Now fall back to fetching the real
-          // fill price from the OANDA trade record when the close response lacks it.
-          let exitPrice = closeData.orderFillTransaction?.price
-            ? parseFloat(closeData.orderFillTransaction.price)
-            : null;
+          // BUG FIX: The primary exit price is in orderFillTransaction.price (the close fill).
+          // If missing, also check tradesClosed[0].price (batch close responses).
+          // Do NOT fall back to 0 — null is cleaner and excluded from analytics.
+          let exitPrice: number | null = null;
+          const fillTx = closeData.orderFillTransaction;
+          if (fillTx?.price) exitPrice = parseFloat(fillTx.price);
+          else if (closeData.tradesClosed?.[0]?.price) exitPrice = parseFloat(closeData.tradesClosed[0].price);
 
-          // If the close response didn't include a fill price, fetch the trade's realised PL
-          // to reconstruct the actual exit price from OANDA's authoritative record.
+          // If close response still missing fill price, query the closed trade directly
           if (exitPrice === null || exitPrice === 0) {
             try {
               const tradeDetailRes = await fetch(
@@ -1261,18 +1303,23 @@ Deno.serve(async (req) => {
               );
               if (tradeDetailRes.ok) {
                 const tradeDetail = await tradeDetailRes.json();
+                // averageClosePrice is only present on closed trades
                 const closePrice = tradeDetail.trade?.averageClosePrice
-                  || tradeDetail.trade?.price || null;
-                if (closePrice) exitPrice = parseFloat(closePrice);
+                  || tradeDetail.trade?.closingTransactionIDs?.[0]
+                  || null;
+                if (closePrice && typeof closePrice === 'string') exitPrice = parseFloat(closePrice);
               }
-            } catch { /* non-critical — already storing null is better than 0 */ }
+            } catch { /* non-critical — null is better than 0 */ }
           }
+
+          // Use OANDA close transaction time as closed_at (broker authority)
+          const closedAt = fillTx?.time ? new Date(fillTx.time).toISOString() : new Date().toISOString();
 
           tunnelExits.push(`${instrument}:${reason}`);
           await supabase.from("oanda_orders").update({
-            exit_price: exitPrice, // null is better than 0 — nulls are excluded from analytics
+            exit_price: exitPrice, // null excluded from analytics; never write 0
             status: "closed",
-            closed_at: new Date().toISOString(),
+            closed_at: closedAt, // OANDA authoritative timestamp prevents negative hold times
             health_governance_action: `TUNNEL_FLUSH: ${reason}`,
           }).eq("oanda_trade_id", openTrade.oanda_trade_id);
           exitTradeMap.delete(instrument);
@@ -1280,20 +1327,19 @@ Deno.serve(async (req) => {
           console.log(`[DAVID-ATLAS] ✅ TUNNEL CLOSED ${instrument} @ ${exitPrice ?? "UNKNOWN"} | ${reason}`);
         } else {
           const errData = await closeRes.json();
-          const rejectReason = errData?.orderRejectTransaction?.rejectReason || "";
-          if (rejectReason === "TRADE_DOESNT_EXIST") {
-            // Trade already closed externally — fetch the true exit price from OANDA history
+          const rejectReason = errData?.orderRejectTransaction?.rejectReason || errData?.errorMessage || "";
+          if (rejectReason === "TRADE_DOESNT_EXIST" || closeRes.status === 404) {
+            // Trade already closed externally — fetch exit price from OANDA closed trade record
             console.warn(`[DAVID-ATLAS] ⚠️ ${instrument} (${tradeKey}) no longer exists on OANDA — fetching exit price from trade history`);
             let externalExitPrice: number | null = null;
             try {
-              // Query OANDA transactions to find the actual close price
               const txRes = await fetch(
                 `${OANDA_API}/accounts/${OANDA_ACCOUNT}/trades/${openTrade.oanda_trade_id}`,
                 { headers: { Authorization: `Bearer ${OANDA_TOKEN}` } },
               );
               if (txRes.ok) {
                 const txData = await txRes.json();
-                const closePrice = txData.trade?.averageClosePrice || txData.trade?.price || null;
+                const closePrice = txData.trade?.averageClosePrice || null;
                 if (closePrice) externalExitPrice = parseFloat(closePrice);
               }
             } catch { /* best-effort */ }
@@ -1302,13 +1348,13 @@ Deno.serve(async (req) => {
             closeInFlight.delete(tradeKey);
             await supabase.from("oanda_orders").update({
               status: "closed",
-              exit_price: externalExitPrice, // null if we can't recover — NOT 0
+              exit_price: externalExitPrice,
               closed_at: new Date().toISOString(),
               health_governance_action: `CLOSED_EXTERNALLY: ${reason}`,
             }).eq("oanda_trade_id", openTrade.oanda_trade_id).eq("status", "filled");
           } else {
             closeInFlight.delete(tradeKey);
-            console.warn(`[DAVID-ATLAS] ⚠️ Close failed ${instrument}: ${JSON.stringify(errData)}`);
+            console.warn(`[DAVID-ATLAS] ⚠️ Close failed ${instrument} (${closeRes.status}): ${rejectReason} | ${JSON.stringify(errData).slice(0, 200)}`);
           }
         }
       } catch (err) {
@@ -1412,78 +1458,86 @@ Deno.serve(async (req) => {
                 }
               }
 
-              const openTrade = exitTradeMap.get(instrument);
-              if (openTrade && openTrade.oanda_trade_id) {
-                const exitTracker = getOrCreateOfi(instrument);
-                if (exitTracker.tickCount >= 10) {
-                  // ─── Minimum hold — EWMA needs ~30s to stabilize after entry ───
-                  const tradeAgeMs = openTrade.created_at
-                    ? Date.now() - new Date(openTrade.created_at).getTime()
-                    : DA_MIN_HOLD_MS + 1;
+              // ═══════════════════════════════════════════════════════════════
+              // CRITICAL BUG FIX: Previously only checked `exitTradeMap.get(instrument)` — 
+              // the CURRENT TICK's pair. If EUR_USD trade is open but current tick is GBP_USD,
+              // EUR_USD trade was NEVER scanned for exit. Trades could hold indefinitely.
+              // Fix: On every exit scan interval, iterate ALL open trades in exitTradeMap.
+              // ═══════════════════════════════════════════════════════════════
+              for (const [tradePairKey, openTrade] of exitTradeMap.entries()) {
+                if (!openTrade || !openTrade.oanda_trade_id) continue;
+                const exitTracker = getOrCreateOfi(tradePairKey);
+                // Only scan pairs we have live OFI data for (i.e., streamed pairs)
+                if (exitTracker.tickCount < 10) continue;
 
-                  // ═══════════════════════════════════════════════════════════
-                  // CLIMAX EXIT LOGIC — HARD-CODED PROTOCOL
-                  // Exit fires the INSTANT any CLIMAX gate falls below threshold.
-                  // Entry and exit thresholds are IDENTICAL — no separate lower bar.
-                  // ═══════════════════════════════════════════════════════════
+                // ─── Minimum hold — EWMA needs ~10s to stabilize after entry ───
+                const tradeAgeMs = openTrade.created_at
+                  ? Date.now() - new Date(openTrade.created_at).getTime()
+                  : DA_MIN_HOLD_MS + 1;
 
-                  // Compute current physics
-                  const pipMultExit = instrument.includes("JPY") ? 100 : 10000;
-                  const absD1Exit = Math.abs(exitTracker.D1);
-                  const absOfiExit = Math.abs(exitTracker.ofiRecursive);
-                  const ofiScaledExit = absOfiExit / pipMultExit;
-                  const efficiencyExit = ofiScaledExit / (absD1Exit + EFFICIENCY_EPSILON);
-                  const zOfiExit = exitTracker.zOfi;
-                  const isLong = openTrade.direction === "long";
+                // ═══════════════════════════════════════════════════════════
+                // CLIMAX EXIT LOGIC — HARD-CODED PROTOCOL
+                // Exit fires the INSTANT any CLIMAX gate falls below threshold.
+                // Entry and exit thresholds are IDENTICAL — no separate lower bar.
+                // ═══════════════════════════════════════════════════════════
 
-                  // ─── PRIORITY-0 INTERRUPT: Z-OFI full CLIMAX reversal ───
-                  // If Z-OFI crosses past ±2.5σ in the OPPOSITE direction → Whale has flipped.
-                  // Bypasses MIN_HOLD — institutional intent has completely reversed.
-                  const zOfiFullReversal = isLong
-                    ? (zOfiExit <= -DA_EXIT_ZOFI_MIN)   // Long: Z drops below -2.5σ
-                    : (zOfiExit >= DA_EXIT_ZOFI_MIN);    // Short: Z rises above +2.5σ
-                  if (zOfiFullReversal && exitTracker.tickCount >= 10) {
-                    const p0Reason = `P0_CLIMAX_REVERSAL: Z-OFI=${zOfiExit.toFixed(3)} — Whale fully reversed past ±${DA_EXIT_ZOFI_MIN}σ. Mandatory instant flush.`;
-                    console.log(`[CLIMAX] ⚡ P0 REVERSAL EXIT (bypassing MIN_HOLD): ${instrument} | ${p0Reason}`);
-                    await davidAtlasFlush(openTrade, instrument, p0Reason);
-                  } else if (tradeAgeMs < DA_MIN_HOLD_MS) {
-                    // Still in warm-up window — only P0 can exit
-                    console.log(`[CLIMAX] 🛡️ MIN_HOLD: ${instrument} age=${Math.round(tradeAgeMs/1000)}s < ${DA_MIN_HOLD_MS/1000}s — waiting for EWMA stabilization`);
+                // Compute current physics for this trade's pair
+                const pipMultExit = tradePairKey.includes("JPY") ? 100 : 10000;
+                const absD1Exit = Math.abs(exitTracker.D1);
+                const absOfiExit = Math.abs(exitTracker.ofiRecursive);
+                const ofiScaledExit = absOfiExit / pipMultExit;
+                const efficiencyExit = ofiScaledExit / (absD1Exit + EFFICIENCY_EPSILON);
+                const zOfiExit = exitTracker.zOfi;
+                const isLong = openTrade.direction === "long";
+
+                // ─── PRIORITY-0 INTERRUPT: Z-OFI full CLIMAX reversal ───
+                // If Z-OFI crosses past ±2.5σ in the OPPOSITE direction → Whale has flipped.
+                // Bypasses MIN_HOLD — institutional intent has completely reversed.
+                const zOfiFullReversal = isLong
+                  ? (zOfiExit <= -DA_EXIT_ZOFI_MIN)   // Long: Z drops below -2.5σ
+                  : (zOfiExit >= DA_EXIT_ZOFI_MIN);    // Short: Z rises above +2.5σ
+                if (zOfiFullReversal && exitTracker.tickCount >= 10) {
+                  const p0Reason = `P0_CLIMAX_REVERSAL: Z-OFI=${zOfiExit.toFixed(3)} — Whale fully reversed past ±${DA_EXIT_ZOFI_MIN}σ. Mandatory instant flush.`;
+                  console.log(`[CLIMAX] ⚡ P0 REVERSAL EXIT (bypassing MIN_HOLD): ${tradePairKey} | ${p0Reason}`);
+                  await davidAtlasFlush(openTrade, tradePairKey, p0Reason);
+                } else if (tradeAgeMs < DA_MIN_HOLD_MS) {
+                  // Still in warm-up window — only P0 can exit
+                  // (silent — log only once per 5s to avoid log spam across multiple open trades)
+                } else {
+                  // ─── CLIMAX GATE CHECK: All 4 gates must remain at CLIMAX level ───
+                  // Same thresholds as entry. No separate "exit lower bar" exists.
+                  // ANY gate below CLIMAX = 3/4 gates = TUNNEL COLLAPSED = flush NOW.
+                  const zOfiAtClimaxLevel = isLong
+                    ? (zOfiExit >= DA_EXIT_ZOFI_MIN)   // Long: Z must stay above +2.5σ
+                    : (zOfiExit <= -DA_EXIT_ZOFI_MIN);  // Short: Z must stay below -2.5σ
+
+                  const gate1Hurst      = exitTracker.hurst >= DA_HURST_MIN;
+                  const gate2Efficiency = efficiencyExit >= DA_EXIT_EFFICIENCY_MIN;
+                  const gate3ZOfi       = zOfiAtClimaxLevel;
+                  const gate4Vpin       = exitTracker.vpinRecursive >= DA_EXIT_VPIN_MIN;
+
+                  const gatesOpen = [gate1Hurst, gate2Efficiency, gate3ZOfi, gate4Vpin].filter(Boolean).length;
+
+                  if (gatesOpen < 4) {
+                    // CLIMAX ENDED — mandatory immediate exit
+                    const failedGates = [
+                      !gate1Hurst      ? `HURST(${exitTracker.hurst.toFixed(3)}<${DA_HURST_MIN})` : null,
+                      !gate2Efficiency ? `EFF(${efficiencyExit.toFixed(2)}<${DA_EXIT_EFFICIENCY_MIN}x)` : null,
+                      !gate3ZOfi       ? `Z-OFI(${zOfiExit.toFixed(2)} not ${isLong ? "≥" : "≤"}±${DA_EXIT_ZOFI_MIN}σ)` : null,
+                      !gate4Vpin       ? `VPIN(${exitTracker.vpinRecursive.toFixed(3)}<${DA_EXIT_VPIN_MIN})` : null,
+                    ].filter(Boolean).join(" | ");
+
+                    const flushReason = `CLIMAX_ENDED: ${gatesOpen}/4 CLIMAX gates. Failed: ${failedGates}`;
+                    console.log(`[CLIMAX] 🔴 3/4 FLUSH: ${tradePairKey} | ${flushReason}`);
+                    await davidAtlasFlush(openTrade, tradePairKey, flushReason);
                   } else {
-                    // ─── CLIMAX GATE CHECK: All 4 gates must remain at CLIMAX level ───
-                    // Same thresholds as entry. No separate "exit lower bar" exists.
-                    // ANY gate below CLIMAX = 3/4 gates = TUNNEL COLLAPSED = flush NOW.
-                    const zOfiAtClimaxLevel = isLong
-                      ? (zOfiExit >= DA_EXIT_ZOFI_MIN)   // Long: Z must stay above +2.5σ
-                      : (zOfiExit <= -DA_EXIT_ZOFI_MIN);  // Short: Z must stay below -2.5σ
-
-                    const gate1Hurst      = exitTracker.hurst >= DA_HURST_MIN;
-                    const gate2Efficiency = efficiencyExit >= DA_EXIT_EFFICIENCY_MIN;  // must stay >= 7x (legacy)
-                    const gate3ZOfi       = zOfiAtClimaxLevel;                          // must stay > ±2.5σ
-                    const gate4Vpin       = exitTracker.vpinRecursive >= DA_EXIT_VPIN_MIN; // must stay > 0.60
-
-                    const gatesOpen = [gate1Hurst, gate2Efficiency, gate3ZOfi, gate4Vpin].filter(Boolean).length;
-
-                    if (gatesOpen < 4) {
-                      // CLIMAX ENDED — mandatory immediate exit
-                      const failedGates = [
-                        !gate1Hurst      ? `HURST(${exitTracker.hurst.toFixed(3)}<${DA_HURST_MIN})` : null,
-                        !gate2Efficiency ? `EFF(${efficiencyExit.toFixed(2)}<${DA_EXIT_EFFICIENCY_MIN}x)` : null,
-                        !gate3ZOfi       ? `Z-OFI(${zOfiExit.toFixed(2)} not ${isLong ? "≥" : "≤"}±${DA_EXIT_ZOFI_MIN}σ)` : null,
-                        !gate4Vpin       ? `VPIN(${exitTracker.vpinRecursive.toFixed(3)}<${DA_EXIT_VPIN_MIN})` : null,
-                      ].filter(Boolean).join(" | ");
-
-                      const flushReason = `CLIMAX_ENDED: ${gatesOpen}/4 CLIMAX gates. Failed: ${failedGates}`;
-                      console.log(`[CLIMAX] 🔴 3/4 FLUSH: ${instrument} | ${flushReason}`);
-                      await davidAtlasFlush(openTrade, instrument, flushReason);
-                    } else {
-                      // All 4 CLIMAX gates still active — hold the position
-                      console.log(`[CLIMAX] 🟡 CLIMAX ACTIVE: ${instrument} ${openTrade.direction} | H=${exitTracker.hurst.toFixed(3)} E=${efficiencyExit.toFixed(1)}x Z=${zOfiExit.toFixed(2)}σ VPIN=${exitTracker.vpinRecursive.toFixed(3)} | HOLDING`);
-                    }
+                    // All 4 CLIMAX gates still active — hold the position
+                    console.log(`[CLIMAX] 🟡 CLIMAX ACTIVE: ${tradePairKey} ${openTrade.direction} | H=${exitTracker.hurst.toFixed(3)} E=${efficiencyExit.toFixed(1)}x Z=${zOfiExit.toFixed(2)}σ VPIN=${exitTracker.vpinRecursive.toFixed(3)} | HOLDING`);
                   }
                 }
               }
             }
+
 
             // ═══════════════════════════════════════════════
             // DAVID & ATLAS — TUNNEL ENTRY SCANNER
@@ -1612,14 +1666,16 @@ Deno.serve(async (req) => {
                 tunnelFires.push(`${tradePair}:${tunnelDirection}`);
 
                 // Register in exitTradeMap immediately to prevent double-entry
+                // BUG FIX: Use the OANDA fill timestamp as created_at (not wall-clock now())
+                // so MIN_HOLD and hold-time calculations are accurate and non-negative.
                 exitTradeMap.set(tradePair, {
                   id: daResult.tradeId,
                   oanda_trade_id: daResult.tradeId,
                   currency_pair: tradePair,
                   direction: tunnelDirection,
                   entry_price: daResult.fillPrice,
-                  created_at: new Date().toISOString(),
-                  environment: "live",
+                  created_at: (daResult as any).openTime || new Date().toISOString(),
+                  environment: "practice",
                 });
 
                 // Audit record
