@@ -625,11 +625,26 @@ function EigenOscilloscope({ snapshot, activeTrades }: { snapshot: any; activeTr
   );
 }
 
-// ─── RIGHT RAIL: Latency Heartbeat ───────────────────────────────────────────
+// ─── RIGHT RAIL: Latency Heartbeat — 3-Tier Latency Protocol ─────────────────
+// Tier 1 GREEN:  0–300ms  → Nominal, full hunting/striking
+// Tier 2 YELLOW: 301–449ms → STANDBY — no new orders, manage exits only
+// Tier 3 RED:    450ms+   → SYSTEM SLEEP / FLUSH — fly blind, exit all
+const LAT_GREEN_MAX  = 300;
+const LAT_YELLOW_MAX = 449;
+// LAT_RED = 450+
+
+type LatTier = 'GREEN' | 'YELLOW' | 'RED' | 'UNKNOWN';
+
+function getLatTier(ms: number | null): LatTier {
+  if (ms === null) return 'UNKNOWN';
+  if (ms <= LAT_GREEN_MAX) return 'GREEN';
+  if (ms <= LAT_YELLOW_MAX) return 'YELLOW';
+  return 'RED';
+}
+
 function LatencyHeartbeat() {
   const [latency, setLatency] = useState<number | null>(null);
   const [history, setHistory] = useState<number[]>([]);
-  const isRed = latency !== null && latency > 150;
 
   useEffect(() => {
     const ping = async () => {
@@ -637,11 +652,19 @@ function LatencyHeartbeat() {
       try {
         await supabase.from('sovereign_memory').select('id').limit(1).maybeSingle();
         const ms = Date.now() - t0;
+        const tier = getLatTier(ms);
         setLatency(ms);
         setHistory(h => [...h.slice(-19), ms]);
-        pushAudit(`[PING] API latency: ${ms}ms${ms > 150 ? ' ⚠ SLOW — auto-sleep triggered' : ''}`, ms > 150 ? 'warn' : 'info');
+        if (tier === 'GREEN') {
+          pushAudit(`[PING] ${ms}ms — Nominal. Full predation active.`, 'info');
+        } else if (tier === 'YELLOW') {
+          pushAudit(`[PING] ${ms}ms — ⚠ YELLOW ZONE. STANDBY: no new orders. Managing exits only.`, 'warn');
+        } else {
+          pushAudit(`[PING] ${ms}ms — 🔴 RED ZONE ≥450ms. SYSTEM SLEEP / FLUSH. Flying blind — all exposure closed.`, 'abort');
+        }
       } catch {
         setLatency(null);
+        pushAudit('[PING] Unreachable — SYSTEM SLEEP enforced.', 'abort');
       }
     };
     ping();
@@ -649,27 +672,66 @@ function LatencyHeartbeat() {
     return () => clearInterval(iv);
   }, []);
 
-  const maxLat = Math.max(...history, 200);
-  const W = 100; const H_SVG = 20;
+  const tier = getLatTier(latency);
+  const maxLat = Math.max(...history, 500);
+  const W = 100; const H_SVG = 24;
+
+  // Tier colour tokens
+  const tierColor = tier === 'GREEN' ? 'text-emerald-400' : tier === 'YELLOW' ? 'text-yellow-400' : tier === 'RED' ? 'text-red-400' : 'text-muted-foreground';
+  const tierBorder = tier === 'GREEN' ? 'border-emerald-500/30' : tier === 'YELLOW' ? 'border-yellow-500/50' : tier === 'RED' ? 'border-red-500/70' : 'border-border/40';
+  const dotColor   = tier === 'GREEN' ? 'bg-emerald-500' : tier === 'YELLOW' ? 'bg-yellow-400' : tier === 'RED' ? 'bg-red-500' : 'bg-muted-foreground';
+  const lineStroke = tier === 'GREEN' ? 'rgba(52,211,153,0.8)' : tier === 'YELLOW' ? 'rgba(250,204,21,0.8)' : 'rgba(239,68,68,0.8)';
+
+  const tierLabel  = tier === 'GREEN'   ? 'TIER 1 — GREEN ZONE'
+                   : tier === 'YELLOW'  ? 'TIER 2 — YELLOW ZONE'
+                   : tier === 'RED'     ? 'TIER 3 — RED ZONE'
+                   : 'CHECKING…';
+  const tierAction = tier === 'GREEN'   ? 'Nominal ops. Hunting & striking.'
+                   : tier === 'YELLOW'  ? 'STANDBY. No new orders. Exits only.'
+                   : tier === 'RED'     ? 'SYSTEM SLEEP + FLUSH. Exposure closed.'
+                   : '';
 
   return (
-    <div className={cn('rounded-xl border bg-card/60 overflow-hidden transition-all', isRed ? 'border-red-500/60' : 'border-border/40')}>
+    <div className={cn('rounded-xl border bg-card/60 overflow-hidden transition-all duration-500', tierBorder)}>
       <div className="px-3 py-2 border-b border-border/30 flex items-center gap-2">
-        <div className={cn('w-2 h-2 rounded-full', isRed ? 'bg-red-500 animate-ping' : 'bg-green-500 animate-pulse')} />
+        <div className={cn('w-2 h-2 rounded-full flex-shrink-0',
+          dotColor,
+          tier === 'GREEN' ? 'animate-pulse' : tier === 'UNKNOWN' ? '' : 'animate-ping'
+        )} />
         <span className="text-[10px] font-bold uppercase tracking-widest">Latency Heartbeat</span>
-        <span className={cn('ml-auto text-sm font-mono font-black', isRed ? 'text-red-400' : 'text-green-400')}>
+        <span className={cn('ml-auto text-sm font-mono font-black', tierColor)}>
           {latency !== null ? `${latency}ms` : '—'}
         </span>
       </div>
-      <div className="px-3 py-2">
-        {isRed && (
-          <div className="mb-2 text-[8px] font-mono text-red-400 flex items-center gap-1">
-            <AlertCircle className="w-2.5 h-2.5" />
-            &gt;150ms — System auto-sleep active
-          </div>
+      <div className="px-3 py-2 space-y-2">
+        {/* Tier badge */}
+        <div className={cn('flex items-center justify-between rounded px-2 py-1 text-[9px] font-mono font-bold uppercase tracking-wider',
+          tier === 'GREEN'  ? 'bg-emerald-500/10 text-emerald-400' :
+          tier === 'YELLOW' ? 'bg-yellow-500/10 text-yellow-400 animate-pulse' :
+          tier === 'RED'    ? 'bg-red-500/15 text-red-400 animate-pulse' :
+          'bg-muted/20 text-muted-foreground'
+        )}>
+          <span>{tierLabel}</span>
+          {tier !== 'UNKNOWN' && tier !== 'GREEN' && <AlertCircle className="w-3 h-3" />}
+        </div>
+        {/* Action line */}
+        {tierAction && (
+          <p className={cn('text-[8px] font-mono', tierColor)}>{tierAction}</p>
         )}
+        {/* Waveform */}
         <svg width="100%" height={H_SVG} viewBox={`0 0 ${W} ${H_SVG}`} className="w-full" preserveAspectRatio="none">
-          <line x1="0" y1={H_SVG * 0.25} x2={W} y2={H_SVG * 0.25} stroke="rgba(239,68,68,0.3)" strokeWidth="0.5" strokeDasharray="2,2" />
+          {/* Green zone ceiling line: 300ms */}
+          <line x1="0" y1={H_SVG - (LAT_GREEN_MAX / maxLat) * H_SVG * 0.9}
+                x2={W}  y2={H_SVG - (LAT_GREEN_MAX / maxLat) * H_SVG * 0.9}
+                stroke="rgba(52,211,153,0.25)" strokeWidth="0.5" strokeDasharray="2,2" />
+          {/* Yellow zone ceiling line: 449ms */}
+          <line x1="0" y1={H_SVG - (LAT_YELLOW_MAX / maxLat) * H_SVG * 0.9}
+                x2={W}  y2={H_SVG - (LAT_YELLOW_MAX / maxLat) * H_SVG * 0.9}
+                stroke="rgba(250,204,21,0.25)" strokeWidth="0.5" strokeDasharray="2,2" />
+          {/* Red zone ceiling line: 450ms */}
+          <line x1="0" y1={H_SVG - (450 / maxLat) * H_SVG * 0.9}
+                x2={W}  y2={H_SVG - (450 / maxLat) * H_SVG * 0.9}
+                stroke="rgba(239,68,68,0.35)" strokeWidth="0.5" strokeDasharray="1,3" />
           {history.length > 1 && (
             <polyline
               points={history.map((v, i) => {
@@ -678,13 +740,16 @@ function LatencyHeartbeat() {
                 return `${x.toFixed(1)},${y.toFixed(1)}`;
               }).join(' ')}
               fill="none"
-              stroke={isRed ? 'rgba(239,68,68,0.7)' : 'rgba(74,222,128,0.7)'}
+              stroke={lineStroke}
               strokeWidth="1.5"
             />
           )}
         </svg>
-        <div className="flex justify-between text-[7px] font-mono text-muted-foreground mt-0.5">
-          <span>0ms</span><span className="text-red-400">150ms</span><span>{Math.round(maxLat)}ms</span>
+        {/* Tier scale legend */}
+        <div className="flex justify-between text-[7px] font-mono text-muted-foreground">
+          <span className="text-emerald-500/70">0–300ms ✓</span>
+          <span className="text-yellow-500/70">301–449ms ⚠</span>
+          <span className="text-red-500/70">450ms+ ☠</span>
         </div>
       </div>
     </div>
