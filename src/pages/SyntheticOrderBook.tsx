@@ -19,7 +19,7 @@ import { cn } from '@/lib/utils';
 // Phase 2 — TARGET ACQUISITION (Laplace + NOI):  |NOI| > 0.8 + ΔP critical → Place limit trap
 // Phase 3 — SIZING ENGINE (Kelly Criterion):     f* = p − q/b · Hard cap: 5% of $307.42 NAV
 // Phase 4 — EXECUTION TRIGGER (SVD Eigen-Signal): E_sig spike → Limit fill · E_sig decay 500ms → abort
-// Phase 5 — WEAPONIZED EXIT (PID Ratchet):       TP=+10p SL=−10p · PID trail at +3p · SVD override
+// Phase 5 — WEAPONIZED EXIT (PID Ratchet):       TP=+10p SL=−10p · PID trail at +3p · Kd directional-aware (zero on adverse moves) · SVD override
 
 // ── True Physics — no proxies ──
 // S/N  = directional tick volume / mean-reverting chop      → Shannon-Hartley regime gate
@@ -299,14 +299,14 @@ function interpretSPPMetrics(p: PairPhysics): MetricMeaning[] {
       label: 'H — PID Ratchet Health (Phase 5)',
       value: H.toFixed(3),
       meaning: H >= 0.75
-        ? `Maximum persistence (H ${H.toFixed(3)}). The 10-pip wave is self-reinforcing. PID Kd (velocity) is suppressed — ratchet trails loosely to capture the full move.`
+        ? `Maximum persistence (H ${H.toFixed(3)}). The 10-pip wave is self-reinforcing. PID Kd (directional velocity) is suppressed — price grinding in-favour, ratchet trails loosely to capture the full move.`
         : H >= HURST_PERSIST
-          ? `Ratchet health confirmed (H ${H.toFixed(3)} ≥ 0.62). PID controller maintaining. At +3.0p the ratchet activates. Ki (time penalty) tightening SL as trade matures.`
+          ? `Ratchet health confirmed (H ${H.toFixed(3)} ≥ 0.62). PID controller active. At +3.0p the ratchet arms. Ki (time penalty) tightening SL as trade matures. Kd only tightens on favorable velocity — adverse wicks ignored.`
           : H >= 0.50
-            ? `Ratchet under stress (H ${H.toFixed(3)}). Momentum degrading — PID Kp is pulling SL closer to current price to lock in gains.`
+            ? `Ratchet under stress (H ${H.toFixed(3)}). Momentum degrading — PID Kp is pulling SL closer to current price. Kd directional check prevents adverse wicks from triggering premature tightening.`
             : `SVD MASTER OVERRIDE TRIGGER. H ${H.toFixed(3)} < 0.45 — Eigen-Signal has dropped below baseline. Rule 5.3 fires: instant MarketClose() overriding TP, SL, and all PID terms.`,
       implication: passing
-        ? 'Phase 5 PID ACTIVE. Ratchet trailing. At +3p: dynamic_trail = 2.5p − P(profit) − I(time) − D(velocity). SL ratchets forward only.'
+        ? 'Phase 5 PID ACTIVE. At +3p: dynamic_trail = 2.5p − P(profit) − I(time) − D(favorable_velocity). Kd ZERO on adverse moves (directional guard). SL ratchets forward only — never retreats.'
         : 'Phase 5 MASTER OVERRIDE: SVD Eigen-Signal below baseline. Rule 5.3: execute MarketClose() immediately. Overrides all PID and bracket logic.',
       status: H >= 0.75 ? 'danger' : passing ? 'good' : H >= 0.50 ? 'warn' : 'neutral',
       passing,
@@ -367,8 +367,8 @@ function buildSPPBrief(pair: string, p: PairPhysics, state: TacticalState): Inte
       headline: `⚡ PHASE 4 — E_sig CONFIRMED · ${pair} ${dir}`,
       situation: `SVD Eigen-Signal spiked above threshold. E=${eff.toFixed(0)}× (vacuum) + |Z|=${Math.abs(zOfi).toFixed(1)}σ (flow) combined into single E_sig. Phase 2 fault line: NOI=${NOI >= 0 ? '+' : ''}${NOI.toFixed(3)}, Ar=${vpin.toFixed(3)}. Whale has hit the wall. Phase 3 Kelly sizing active — hard cap: 5% NAV ($${(KELLY_MAX_RISK * 307.42).toFixed(2)}).`,
       risk: 'Phase 4 Rule 4.2 (Dud Abort): if E_sig decays — E < 50× within 500ms — DGE fires instant MarketClose(). Rule 5.3 also armed: SVD baseline drop → override all TP/SL/PID.',
-      watch: `Phase 5 PID RATCHET: TP=+${PID_TP}p, SL=${PID_SL}p armed. At +${PID_TRAIL_START}p: dynamic_trail = 2.5p − Kp(0.2)×profit − Ki(0.05)×ticks − Kd(0.5)×velocity. SL only moves forward. Rule 5.3 override if H drops below 0.45.`,
-      action: `LIMIT ORDER ${dir} at ${dir === 'LONG' ? 'Bid Wall + 0.1 pip' : 'Ask Ceiling − 0.1 pip'}. Arm TP=+10p / SL=−10p immediately on fill. PID Kd snaps SL tight on high velocity moves.`,
+      watch: `Phase 5 PID RATCHET: TP=+${PID_TP}p, SL=${PID_SL}p armed. At +${PID_TRAIL_START}p: dynamic_trail = 2.5p − Kp(0.2)×profit − Ki(0.05)×ticks − Kd(0.5)×directional_velocity. CRITICAL: Kd is ZERO on adverse price moves (directional guard — prevents wick stop-outs). SL only moves forward. Rule 5.3 override if H drops below 0.45.`,
+      action: `LIMIT ORDER ${dir} at ${dir === 'LONG' ? 'Bid Wall + 0.1 pip' : 'Ask Ceiling − 0.1 pip'}. Arm TP=+10p / SL=−10p immediately on fill. PID Kd snaps SL tight ONLY on favorable velocity spikes. Adverse wicks do NOT trigger Kd — Ratchet Guard holds SL position.`,
     };
   }
 
@@ -407,7 +407,7 @@ function buildSPPBrief(pair: string, p: PairPhysics, state: TacticalState): Inte
   if (state === 'FATIGUE') {
     return {
       headline: `😴 PHASE 5 MASTER OVERRIDE — SVD Baseline Lost · ${pair}`,
-      situation: `H=${H.toFixed(3)} below 0.45 — SVD Eigen-Signal has dropped below its baseline. Rule 5.3 fires: the whale has exhausted their volume. Mean-reversion dominates. PID Kd detects maximum velocity decay — the SL ratchet cannot protect the position.`,
+      situation: `H=${H.toFixed(3)} below 0.45 — SVD Eigen-Signal has dropped below its baseline. Rule 5.3 fires: the whale has exhausted their volume. Mean-reversion dominates. PID directional velocity (Kd) is reading zero favorable momentum — the ratchet has no favorable signal to snap to, and its Ratchet Guard prevents it from retreating.`,
       risk: 'Phase 1 Sleep Switch likely also active (S/N degrading). DGE canceling pending limits. Holding open positions violates Rule 5.3 and Phase 1 Sleep Switch simultaneously.',
       watch: 'H must rebuild above 0.55 before Phase 1 HUNT, and above 0.62 before Phase 5 PID ratchet can operate. Typically 30-90 minutes of consolidation required.',
       action: 'RULE 5.3 MASTER OVERRIDE: Execute MarketClose() immediately. Overrides TP, SL, and all PID terms. DGE returns to STANDBY pending Phase 1 AWAKENING.',
@@ -825,8 +825,8 @@ function SPPExecutionHUD() {
     {
       num: 5, label: 'PID EXIT', icon: Shield, color: 'text-green-400', bg: 'bg-green-500/10 border-green-500/30',
       title: 'Phase 5 — PID Controller Ratchet Exit',
-      conditions: ['Box: TP=+10.0p / SL=−10.0p on fill', 'PID activates at +3.0p: trail = 2.5p − Kp×profit − Ki×time − Kd×velocity', 'Kd(0.5) snaps SL tight on high-velocity spikes', 'Rule 5.3 Master Override: SVD E_sig drops → instant MarketClose() overrides all'],
-      result: 'SL ratchets forward only · never retreats',
+      conditions: ['Box: TP=+10.0p / SL=−10.0p on fill', 'PID activates at +3.0p: trail = 2.5p − Kp×profit − Ki×time − Kd×directional_velocity', 'Kd ZERO on adverse wicks (directional guard) — only snaps on favorable price spikes', 'Rule 5.3 Master Override: SVD E_sig drops → instant MarketClose() overrides all'],
+      result: 'SL ratchets forward only · Kd directional-aware · adverse wicks cannot trigger stop-out',
     },
   ];
 
