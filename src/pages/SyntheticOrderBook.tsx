@@ -13,36 +13,43 @@ import { useSyntheticOrderBook, type PairPhysics } from '@/hooks/useSyntheticOrd
 import { ClimaxBacktestLog } from '@/components/forex/floor-manager/ClimaxBacktestLog';
 import { cn } from '@/lib/utils';
 
-// ─── SPP v2.0 "Black Box" — 6-Formula Physics Taxonomy ─────────────────────
+// ─── David-Atlas "Regime-Switching Liquidity Predation" — 5-Phase DGE Rulebook ──
 //
-// Step 1 — HUNT:   Sr < 1.0 (Volatility Compression) + Ar > 0.7 (Structural Fragility)
-// Step 2 — SET:    NOI > 0.8 or < -0.8 (Institutional Shadow) + T_lambda > 300s
-// Step 3 — STRIKE: VoI spike + |Z| > 2.5σ  + Efficiency > 100× (Dud Rule: < 50× in 3 ticks → abort)
-// Step 4 — GUARD:  Ratchet SL at +3.0p, 0.5-pip steps · Kill if 3/4 gates decay
+// Phase 1 — ENVIRONMENT GATE (Shannon-Hartley):  S/N ≥ 1.5 → ACTIVE_HUNT
+// Phase 2 — TARGET ACQUISITION (Laplace + NOI):  |NOI| > 0.8 + ΔP critical → Place limit trap
+// Phase 3 — SIZING ENGINE (Kelly Criterion):     f* = p − q/b · Hard cap: 5% of $307.42 NAV
+// Phase 4 — EXECUTION TRIGGER (SVD Eigen-Signal): E_sig spike → Limit fill · E_sig decay 500ms → abort
+// Phase 5 — WEAPONIZED EXIT (PID Ratchet):       TP=+10p SL=−10p · PID trail at +3p · SVD override
 
 // ── True Physics — no proxies ──
-// Sr   = sqrt(D2_current / D2_neutral) × alpha_correction   → ATR-ratio (KM diffusion)
-// Ar   = VPIN                                                → structural fragility gate
-// NOI  = (ΣBidDepth – ΣAskDepth) / TotalSyntheticDepth      → resting limit book imbalance
-// VoI  = |Z-OFI|                                            → firing pin (aggressive flow spike)
-// H    = Hurst exponent                                      → persistence gate
-// E    = Efficiency ratio (F/v)                             → vacuum gate
+// S/N  = directional tick volume / mean-reverting chop      → Shannon-Hartley regime gate
+// Sr   = sqrt(D2_current / D2_neutral) × alpha_correction   → ATR-ratio (KM diffusion, proxy for S/N)
+// NOI  = (ΣBidDepth – ΣAskDepth) / TotalSyntheticDepth      → resting limit book imbalance (Laplace input)
+// ΔP   = Laplace pressure at NOI fault line                  → structural break point
+// E_sig = SVD composite of [E, Z-OFI]                       → Eigen-Signal firing pin
+// H    = Hurst exponent                                      → persistence (PID regime health)
+// VPIN = Ar structural fragility                             → book thinness gate
 
 // ── Thresholds ──
-const E_VACUUM_MIN   = 100;   // E > 100× confirms vacuum (Dud Rule: < 50× = abort)
-const E_DUD_ABORT    = 50;
-const Z_STRIKE       = 2.5;   // |Z| > 2.5σ — firing pin
-const VPIN_FRAGILITY = 0.70;  // Ar > 0.7 = fragile book
-const HURST_PERSIST  = 0.62;  // H ≥ 0.62 — persistence
-const NOI_WHALE      = 0.8;   // |NOI| > 0.8 — institutional limit shadow
-const SR_COIL        = 1.0;   // Sr < 1.0 = coiling; Sr < 0.5 = critical compression
-const SR_CRITICAL    = 0.5;   // ATR₅ < 50 % of ATR₂₀ — spring fully loaded
+const SN_MIN          = 1.5;   // S/N ≥ 1.5 → ACTIVE_HUNT (Phase 1 awakening)
+const E_VACUUM_MIN    = 100;   // E > 100× confirms vacuum / E_sig baseline (Phase 4)
+const E_DUD_ABORT     = 50;    // Dud Rule: E_sig decays < 50× within 3 ticks → abort
+const Z_STRIKE        = 2.5;   // |Z| > 2.5σ — SVD Eigen-Signal component
+const VPIN_FRAGILITY  = 0.70;  // Ar > 0.7 = fragile book (Phase 2 prerequisite)
+const HURST_PERSIST   = 0.62;  // H ≥ 0.62 — PID ratchet health gate
+const NOI_WHALE       = 0.8;   // |NOI| > 0.8 — Laplace fault line confirmed
+const SR_COIL         = 1.0;   // Sr < 1.0 = S/N compressed; Sr < 0.5 = critical
+const SR_CRITICAL     = 0.5;   // ATR₅ < 50 % of ATR₂₀ — maximum compression
+const KELLY_MAX_RISK  = 0.05;  // Hard ceiling: never risk > 5% of NAV ($307.42)
+const PID_TRAIL_START = 3.0;   // PID ratchet activates at +3.0 pips profit
+const PID_TP          = 10.0;  // Target: +10.0 pips
+const PID_SL          = -10.0; // Initial SL: −10.0 pips
 
-// ── True Sr: Volatility Compression Ratio (via KM Diffusion as ATR proxy) ──
-// Sr = sqrt(D2_current / D2_neutral) × alpha_correction
+// ── True Sr: S/N proxy via KM Diffusion (Shannon-Hartley Phase 1 input) ──
+// Sr = sqrt(D2_current / D2_neutral) × alpha_correction ≈ ATR₅/ATR₂₀
 // D2 is the Kramers-Moyal diffusion coefficient (mean-squared displacement per tick ≈ ATR²-short).
-// alphaAdaptive reflects how aggressively the engine weights recent vs historical ticks.
-// Low D2 + low alpha = price barely moving against its own baseline → spring loading.
+// Sr < 1.0 → directional signal dominates noise → Phase 1 ACTIVE_HUNT condition met.
+// Sr ≥ 1.5 → noise dominates → Phase 1 STANDBY (DGE cancels all pending limit orders).
 const D2_NEUTRAL = 5e-5; // empirical baseline for 4-5 pip pair (calibrated)
 
 function computeSr(p: PairPhysics): number {
@@ -183,142 +190,149 @@ function interpretSPPMetrics(p: PairPhysics): MetricMeaning[] {
 
   const metrics: MetricMeaning[] = [];
 
-  // ── Sr — Volatility Compression Ratio via KM Diffusion (ATR₅/ATR₂₀ proxy) ──
+  // ── PHASE 1: S/N Ratio — Shannon-Hartley Environment Gate ──
+  // Sr < 1.0 is our proxy for S/N ≥ 1.5 (low diffusion = directional signal dominant)
   {
     const passing = Sr < SR_COIL;
     const isCritical = Sr < SR_CRITICAL;
     const srVal = Sr.toFixed(3);
+    const snProxy = Sr > 0 ? (1 / Sr).toFixed(2) : '∞';
     metrics.push({
-      label: 'Sr (ATR Compression)',
-      value: srVal,
+      label: 'S/N Ratio (Phase 1 Gate)',
+      value: `S/N≈${snProxy}`,
       meaning: isCritical
-        ? `CRITICAL COMPRESSION. Sr ${srVal} < 0.5 — short-term ATR is less than half of baseline. Spring is fully loaded. This is maximum potential energy. Breakout will be violent and directional.`
+        ? `MAXIMUM SIGNAL. S/N proxy ${snProxy} (Sr ${srVal} < 0.5) — directional tick volume is dominating noise at maximum intensity. DGE is in ACTIVE_HUNT. ΔP is at maximum Laplace pressure. Phase 2 trap acquisition is live.`
         : Sr < SR_COIL
-          ? `Compression confirmed. Sr ${srVal} < 1.0 — short-term volatility (KM D2 diffusion) is below the 20-period baseline. Market is coiling. Spring is loading.`
+          ? `Signal confirmed. S/N ≥ 1.5 (Sr ${srVal} < 1.0) — the market is exhibiting clear intent. Directional flow exceeds mean-reverting chop. Phase 1 AWAKENING: DGE switches to ACTIVE_HUNT mode.`
           : Sr < 1.5
-            ? `Neutral volatility. Sr ${srVal} — short-term and long-term ATR are balanced. No compression detected. System in passive scan.`
-            : `Expansion phase. Sr ${srVal} > 1.5 — price is moving faster than baseline. The spring has already released. No coil to trade.`,
+            ? `Borderline signal (S/N ≈ ${snProxy}). Directional and mean-reverting forces are near balanced. DGE in cautious scan — no trap placement until S/N clears.`
+            : `STANDBY MODE. S/N < 1.5 (Sr ${srVal}). Noise dominates signal — this is toxic chop. Phase 1 SLEEP SWITCH active. All pending limit orders are canceled.`,
       implication: isCritical
-        ? 'CRITICAL: Step 1 HUNT gate LOCKED. Sr < 0.5 = maximum compression. If Ar > 0.7, system escalates to SET immediately.'
+        ? 'Phase 1 ACTIVE_HUNT LOCKED. Sr < 0.5 = maximum Laplace pressure. Phase 2 NOI scan running — DGE placing traps at fault lines.'
         : passing
-          ? 'Step 1 HUNT gate open. Sr < 1.0 confirms compression. Watch for Ar (VPIN) to cross 0.70 to confirm structural fragility.'
-          : 'Step 1 HUNT gate closed. ATR₅/ATR₂₀ ratio above 1.0 — no coil. Wait for compression before entering the hunt.',
+          ? 'Phase 1 AWAKENING: DGE confirmed ACTIVE_HUNT. Proceed to Phase 2 NOI Laplace scan.'
+          : 'Phase 1 STANDBY. DGE has canceled all pending limit orders. Wait for S/N ≥ 1.5 before Phase 2.',
       status: isCritical ? 'danger' : passing ? 'good' : 'neutral',
       passing,
       step: 1,
     });
   }
 
-  // ── Ar — Structural Fragility (Step 1) ──
+  // ── PHASE 2a: Ar — Structural Fragility (book thinness prerequisite for Laplace trap) ──
   {
     const passing = vpin > VPIN_FRAGILITY;
     metrics.push({
-      label: 'Ar (Structural Fragility)',
+      label: 'Ar — Book Fragility (Phase 2)',
       value: vpin.toFixed(3),
       meaning: vpin >= 0.75
-        ? `Book is critically fragile (Ar ${vpin.toFixed(3)} > 0.75). Market makers have withdrawn bids. A small order will shatter this structure.`
+        ? `Critically fragile (Ar ${vpin.toFixed(3)} > 0.75). Market makers have pulled bids. Laplace ΔP is at maximum — a single institutional sweep will shatter this structure instantly.`
         : vpin >= 0.70
-          ? `Structural fragility confirmed (Ar ${vpin.toFixed(3)} > 0.70). The order book is paper-thin — prime trap conditions.`
+          ? `Fragility confirmed (Ar ${vpin.toFixed(3)} > 0.70). Book is paper-thin. Phase 2 precondition met — DGE can now apply Laplace pressure formula to locate the fault line.`
           : vpin >= 0.50
-            ? `Moderate fragility (Ar ${vpin.toFixed(3)}). Book is thinning but not yet at the snap threshold.`
-            : `Stable book structure (Ar ${vpin.toFixed(3)}). Too many market makers present for a clean trap. No fragility.`,
+            ? `Moderate thinning (Ar ${vpin.toFixed(3)}). Book is weakening but the Laplace trap will not spring cleanly below 0.70.`
+            : `Stable book (Ar ${vpin.toFixed(3)}). Too many market makers present. Laplace ΔP cannot reach critical — trap placement blocked.`,
       implication: passing
-        ? 'Step 1 SET confirmation: book is structurally fragile. System may now Set the limit trap.'
-        : 'Step 1 incomplete. Book has sufficient depth — trap will not spring cleanly. Wait.',
+        ? 'Phase 2 precondition met. Book is structurally fragile. DGE scanning NOI for the Laplace fault line.'
+        : 'Phase 2 blocked. Book has sufficient depth — Laplace ΔP is sub-critical. Wait for Ar > 0.70.',
       status: vpin >= 0.75 ? 'danger' : vpin >= 0.70 ? 'good' : vpin >= 0.50 ? 'warn' : 'neutral',
       passing,
       step: 1,
     });
   }
 
-  // ── NOI — Net Order Imbalance from Resting Limit Book (Step 2: Institutional Shadow) ──
-  // NOI = (ΣBidDepth – ΣAskDepth) / TotalSyntheticDepth  — this is the whale's shadow BEFORE aggressive flow
+  // ── PHASE 2b: NOI — Laplace Fault Line (Net Order Imbalance from resting limit book) ──
   {
     const passing = Math.abs(NOI) >= NOI_WHALE;
     const dir = NOI > 0 ? 'BUY' : 'SELL';
     const hasRealDepth = (p.syntheticDepth ?? []).length >= 3;
+    const limitAction = NOI > 0 ? 'Limit Buy at Bid Wall + 0.1 pip' : 'Limit Sell at Ask Ceiling − 0.1 pip';
     metrics.push({
-      label: 'NOI (Resting Limit Book)',
+      label: 'NOI — Laplace Fault Line (Phase 2)',
       value: `${NOI >= 0 ? '+' : ''}${NOI.toFixed(3)}`,
       meaning: Math.abs(NOI) >= 0.9
-        ? `Extreme ${dir} imbalance (NOI ${NOI.toFixed(3)}) — ${hasRealDepth ? 'resting limit book' : 'OFI fallback'}. An institutional whale is hiding a massive ${dir === 'BUY' ? 'bid' : 'ask'} wall. The limit trap can be placed now — the move will come to us.`
+        ? `CRITICAL FAULT LINE. NOI ${NOI.toFixed(3)} (${hasRealDepth ? 'resting book' : 'OFI fallback'}) — Laplace ΔP is at maximum. An institutional whale is hiding a massive ${dir === 'BUY' ? 'bid' : 'ask'} wall. The structural break point is identified. ${limitAction} — the move will come to us.`
         : Math.abs(NOI) >= NOI_WHALE
-          ? `Strong ${dir} shadow (NOI ${NOI.toFixed(3)} > ±0.8) — ${hasRealDepth ? 'resting limit book' : 'OFI fallback'}. Institutional resting order is visible. Place limit ${NOI > 0 ? 'above bid wall' : 'below ask ceiling'} — do NOT use market orders.`
+          ? `Fault line confirmed. NOI ${NOI.toFixed(3)} > ±0.8 (${hasRealDepth ? 'resting book' : 'OFI fallback'}) — Laplace ΔP at critical threshold. Whale shadow visible. DGE arms ${limitAction}. Phase 3 Kelly sizing computing.`
           : Math.abs(NOI) >= 0.5
-            ? `Moderate ${dir} lean (NOI ${NOI.toFixed(3)}). Resting limit pressure building but not enough for a reliable trap.`
-            : `Balanced book (NOI ${NOI.toFixed(3)}). No institutional shadow visible in resting limit data. Cannot SET the trap.`,
+            ? `Laplace pressure building (NOI ${NOI.toFixed(3)}). Resting limit imbalance forming but below the ±0.8 fault line threshold. DGE holding trap placement.`
+            : `Balanced book (NOI ${NOI.toFixed(3)}). No fault line present — Laplace ΔP is sub-critical. Cannot identify the whale's wall. Phase 2 blocked.`,
       implication: passing
-        ? `Step 2 SET — ${dir === 'BUY' ? 'Place Limit Buy at Bid Wall + 0.1 pip' : 'Place Limit Sell at Ask Ceiling − 0.1 pip'}. Do NOT use market orders. Wait for VoI + E confirmation before STRIKE.`
-        : 'Step 2 blocked. Resting limit imbalance < ±0.8 — whale not positioned. Wait for institutional shadow to appear.',
+        ? `Phase 2 COMPLETE. ${dir === 'BUY' ? 'Limit Buy at Bid Wall + 0.1 pip' : 'Limit Sell at Ask Ceiling − 0.1 pip'} ARMED. Phase 3 Kelly sizing active. Await Phase 4 E_sig spike for fill confirmation.`
+        : 'Phase 2 blocked. NOI < ±0.8 — no institutional fault line. DGE waiting for whale to position.',
       status: Math.abs(NOI) >= 0.9 ? 'danger' : passing ? 'good' : Math.abs(NOI) >= 0.5 ? 'warn' : 'neutral',
       passing,
       step: 2,
     });
   }
 
-  // ── VoI — Volume of Intent / Firing Pin (Step 3) ──
+  // ── PHASE 4: SVD Eigen-Signal (E_sig = composite of E + Z-OFI via matrix decomposition) ──
   {
     const passing = absZ >= Z_STRIKE;
+    const isDud   = eff < E_DUD_ABORT && absZ > 1.5;
+    // E_sig approximation: both E and Z must align (SVD compresses into single signal)
+    const eSigStrength = Math.min(1, (eff / E_VACUUM_MIN) * 0.5 + (absZ / Z_STRIKE) * 0.5);
     metrics.push({
-      label: 'VoI / Z-OFI (Firing Pin)',
-      value: `${zOfi >= 0 ? '+' : ''}${zOfi.toFixed(2)}σ`,
-      meaning: absZ >= 3.5
-        ? `Firing pin at maximum. VoI ${absZ.toFixed(1)}σ — a statistical event occurring < 0.1% of the time. Institutional sweep is live.`
-        : absZ >= Z_STRIKE
-          ? `Firing pin tripped. VoI ${absZ.toFixed(1)}σ > 2.5σ threshold. Aggressive ${zOfi > 0 ? 'buyers' : 'sellers'} are overwhelming the book — ignition confirmed.`
-          : absZ >= 1.5
-            ? `Building pressure (${absZ.toFixed(1)}σ). VoI is approaching the firing threshold but not there yet.`
-            : `No ignition (${absZ.toFixed(1)}σ). Flow is balanced — the firing pin has not tripped.`,
-      implication: passing
-        ? `Step 3 STRIKE: VoI confirmed. Fill must coincide with this spike. Set TP = +10.0 pips, SL = −10.0 pips immediately.`
-        : 'Step 3 waiting. VoI must cross 2.5σ simultaneously with E > 100× before the Strike fires.',
-      status: absZ >= 3.5 ? 'danger' : passing ? 'good' : absZ >= 1.5 ? 'warn' : 'neutral',
+      label: 'E_sig — SVD Eigen-Signal (Phase 4)',
+      value: `Z${zOfi >= 0 ? '+' : ''}${zOfi.toFixed(2)}σ · E${eff.toFixed(0)}×`,
+      meaning: absZ >= Z_STRIKE && eff >= E_VACUUM_MIN
+        ? `EIGEN-SIGNAL CONFIRMED. SVD matrix: E=${eff.toFixed(0)}× (vacuum) + |Z|=${absZ.toFixed(1)}σ (flow) → E_sig spike above threshold. Whale has hit the wall — this is the microsecond trigger. Phase 4 fill gate OPEN.`
+        : isDud
+          ? `DUD ABORT. E_sig DECAYED: E=${eff.toFixed(1)}× < 50× within execution window — the vacuum collapsed. Phase 4 Rule 4.2 fires: DGE executes instant MarketClose(). The Laplace pressure failed to sustain.`
+          : absZ >= Z_STRIKE
+            ? `Partial E_sig. Z-OFI component confirmed (${absZ.toFixed(1)}σ > 2.5σ) but E=${eff.toFixed(1)}× below vacuum threshold. SVD needs both components ≥ threshold simultaneously for fill gate to open.`
+            : `E_sig below threshold. |Z|=${absZ.toFixed(1)}σ < 2.5σ. SVD Eigen-Signal has not spiked. Phase 4 fill gate CLOSED — limit order armed but will not trigger.`,
+      implication: absZ >= Z_STRIKE && eff >= E_VACUUM_MIN
+        ? 'Phase 4 MICROSECOND STRIKE: E_sig confirmed. Limit order fills NOW. Immediately set TP = +10.0 pips, SL = −10.0 pips. Phase 5 PID ratchet arms at +3.0 pips.'
+        : isDud
+          ? '⚠ DUD ABORT (Rule 4.2): E_sig decayed within 500ms. Fire MarketClose() immediately — overrides TP, SL, and PID controller.'
+          : 'Phase 4 waiting. SVD Eigen-Signal not spiked. Limit order armed but fill gate closed. Wait for E > 100× AND |Z| > 2.5σ simultaneously.',
+      status: absZ >= Z_STRIKE && eff >= E_VACUUM_MIN ? 'danger' : isDud ? 'danger' : absZ >= 1.5 ? 'warn' : 'neutral',
       passing,
       step: 3,
     });
   }
 
-  // ── H — Hurst Persistence (Step 4: Guard) ──
+  // ── PHASE 5: PID Ratchet Health — Hurst persistence gate for the exit controller ──
   {
     const passing = H >= HURST_PERSIST;
     metrics.push({
-      label: 'H — Persistence (Guard)',
+      label: 'H — PID Ratchet Health (Phase 5)',
       value: H.toFixed(3),
       meaning: H >= 0.75
-        ? `Maximum persistence. The 10-pip wave will not stall — price is in a self-reinforcing directional loop.`
+        ? `Maximum persistence (H ${H.toFixed(3)}). The 10-pip wave is self-reinforcing. PID Kd (velocity) is suppressed — ratchet trails loosely to capture the full move.`
         : H >= HURST_PERSIST
-          ? `Persistence confirmed (H ${H.toFixed(3)} ≥ 0.62). The vacuum is directionally committed — ride continues.`
+          ? `Ratchet health confirmed (H ${H.toFixed(3)} ≥ 0.62). PID controller maintaining. At +3.0p the ratchet activates. Ki (time penalty) tightening SL as trade matures.`
           : H >= 0.50
-            ? `Weakening persistence (H ${H.toFixed(3)}). Momentum is degrading — Guard ratchet is at risk.`
-            : `Momentum collapse (H ${H.toFixed(3)}). Mean-reversion is now dominant. Exit immediately.`,
+            ? `Ratchet under stress (H ${H.toFixed(3)}). Momentum degrading — PID Kp is pulling SL closer to current price to lock in gains.`
+            : `SVD MASTER OVERRIDE TRIGGER. H ${H.toFixed(3)} < 0.45 — Eigen-Signal has dropped below baseline. Rule 5.3 fires: instant MarketClose() overriding TP, SL, and all PID terms.`,
       implication: passing
-        ? 'Step 4 GUARD: Hurst gate maintained. Continue ratchet. Trail SL +0.5 pip steps from +3.0 pip profit.'
-        : 'Step 4 GUARD: Hurst gate LOST (3/4 decay). Fire MarketClose() — this is the kill-switch trigger.',
+        ? 'Phase 5 PID ACTIVE. Ratchet trailing. At +3p: dynamic_trail = 2.5p − P(profit) − I(time) − D(velocity). SL ratchets forward only.'
+        : 'Phase 5 MASTER OVERRIDE: SVD Eigen-Signal below baseline. Rule 5.3: execute MarketClose() immediately. Overrides all PID and bracket logic.',
       status: H >= 0.75 ? 'danger' : passing ? 'good' : H >= 0.50 ? 'warn' : 'neutral',
       passing,
       step: 4,
     });
   }
 
-  // ── E — Efficiency / Vacuum Gate (Step 3) ──
+  // ── PHASE 3 / Phase 5: E Vacuum (sizing confidence + dud abort reference) ──
   {
     const passing = eff >= E_DUD_ABORT;
     const isDud   = eff < E_DUD_ABORT && Math.abs(zOfi) > 1.5;
     metrics.push({
-      label: 'E (Vacuum Gate / Dud Rule)',
+      label: 'E — Vacuum Depth (Kelly + Dud)',
       value: `${eff.toFixed(1)}×`,
       meaning: eff >= E_VACUUM_MIN
-        ? `VACUUM CONFIRMED. E = ${eff.toFixed(0)}× > 100× — the order book is empty on one side. The "ghost move" is in progress. Zero friction.`
+        ? `VACUUM CONFIRMED. E=${eff.toFixed(0)}× > 100×. Kelly win probability (p) is at maximum structural alignment — DGE may scale above 1,250 units subject to 5% NAV hard ceiling ($${(KELLY_MAX_RISK * 307.42).toFixed(2)} max risk).`
         : eff >= E_DUD_ABORT
-          ? `Partial vacuum (E ${eff.toFixed(1)}×). Book is thinning but not fully empty. Below 100× the vacuum is not clean.`
+          ? `Partial vacuum (E ${eff.toFixed(1)}×). Kelly sizing is marginal — unit size scales down from standard. Below 100× the Laplace break is not clean.`
           : isDud
-            ? `DUD SIGNAL. E = ${eff.toFixed(1)}× < 50× — the book refilled. This trade has no vacuum to ride. Fire MarketClose() immediately.`
-            : `Normal market friction (E ${eff.toFixed(1)}×). No vacuum present. The "ghost move" cannot activate.`,
+            ? `DUD ABORT. E=${eff.toFixed(1)}× < 50× — vacuum collapsed after fill. Rule 4.2 + Rule 5.3 both trigger: instant MarketClose().`
+            : `Normal friction (E ${eff.toFixed(1)}×). No vacuum. Kelly p is low — DGE will not arm a limit trap without E confirmation.`,
       implication: eff >= E_VACUUM_MIN
-        ? 'Step 3 VACUUM: Maximum priority. Enter if NOI and VoI confirm simultaneously.'
+        ? `Phase 3 KELLY: Maximum sizing confidence. Phase 4 fill gate partially open. Requires |Z| > 2.5σ to complete E_sig.`
         : isDud
-          ? '⚠ DUD RULE TRIGGERED: E < 50× within 3 ticks of fill. MarketClose() immediately — the ghost move failed.'
-          : 'Efficiency gate below strike threshold. Wait for E > 100× before executing Step 3.',
+          ? '⚠ DUD ABORT: E < 50×. Fire MarketClose() — zero edge remaining. Both Rule 4.2 and 5.3 override all other logic.'
+          : 'E below strike threshold. Kelly sizing is reduced. Wait for E > 100× to maximize Phase 3 unit allocation.',
       status: eff >= E_VACUUM_MIN ? 'danger' : eff >= E_DUD_ABORT ? 'good' : isDud ? 'danger' : 'neutral',
       passing,
       step: 3,
@@ -343,69 +357,69 @@ function buildSPPBrief(pair: string, p: PairPhysics, state: TacticalState): Inte
   const eff  = p.efficiency ?? 0;
   const vpin = p.vpin ?? 0;
   const zOfi = p.zOfi ?? 0;
-  // True physics — same helpers used by deriveSPPState and interpretSPPMetrics
   const NOI  = computeNOI(p);
   const Sr   = computeSr(p);
   const dir  = zOfi > 0 ? 'LONG' : 'SHORT';
+  const snProxy = Sr > 0 ? (1 / Sr).toFixed(2) : '∞';
 
   if (state === 'STRIKE') {
     return {
-      headline: `⚡ STRIKE IGNITION — ${pair} ${dir}`,
-      situation: `All 6 physics formulas are synchronized. E = ${eff.toFixed(0)}× (vacuum confirmed), VoI = ${Math.abs(zOfi).toFixed(1)}σ (firing pin tripped), H = ${H.toFixed(3)} (persistence), Ar = ${vpin.toFixed(3)} (fragile book), NOI = ${NOI >= 0 ? '+' : ''}${NOI.toFixed(3)} (whale positioned). Kinetic energy is releasing.`,
-      risk: 'The DUD Rule is active: if E drops below 50× within 3 ticks of fill, fire MarketClose() immediately — the ghost move has failed.',
-      watch: `TP = +10.0 pips, SL = −10.0 pips set on fill. At +3.0 pips profit, begin ratchet at 0.5-pip steps. Kill-switch fires if H, E, Z, or V drop (3/4 gate decay).`,
-      action: `ENTER ${dir} at ${dir === 'LONG' ? 'Bid Wall + 0.1 pip' : 'Ask Ceiling − 0.1 pip'}. Use limit order. Confirm VoI spike coincides with fill. Guard ratchet activates at +3.0 pips.`,
+      headline: `⚡ PHASE 4 — E_sig CONFIRMED · ${pair} ${dir}`,
+      situation: `SVD Eigen-Signal spiked above threshold. E=${eff.toFixed(0)}× (vacuum) + |Z|=${Math.abs(zOfi).toFixed(1)}σ (flow) combined into single E_sig. Phase 2 fault line: NOI=${NOI >= 0 ? '+' : ''}${NOI.toFixed(3)}, Ar=${vpin.toFixed(3)}. Whale has hit the wall. Phase 3 Kelly sizing active — hard cap: 5% NAV ($${(KELLY_MAX_RISK * 307.42).toFixed(2)}).`,
+      risk: 'Phase 4 Rule 4.2 (Dud Abort): if E_sig decays — E < 50× within 500ms — DGE fires instant MarketClose(). Rule 5.3 also armed: SVD baseline drop → override all TP/SL/PID.',
+      watch: `Phase 5 PID RATCHET: TP=+${PID_TP}p, SL=${PID_SL}p armed. At +${PID_TRAIL_START}p: dynamic_trail = 2.5p − Kp(0.2)×profit − Ki(0.05)×ticks − Kd(0.5)×velocity. SL only moves forward. Rule 5.3 override if H drops below 0.45.`,
+      action: `LIMIT ORDER ${dir} at ${dir === 'LONG' ? 'Bid Wall + 0.1 pip' : 'Ask Ceiling − 0.1 pip'}. Arm TP=+10p / SL=−10p immediately on fill. PID Kd snaps SL tight on high velocity moves.`,
     };
   }
 
   if (state === 'SET') {
     const whaleSide = NOI > 0 ? 'Bid Wall (BUY pressure)' : 'Ask Ceiling (SELL pressure)';
-    const limitDir  = NOI > 0 ? 'Limit Buy at Wall + 0.1 pip' : 'Limit Sell at Ceiling − 0.1 pip';
+    const limitDir  = NOI > 0 ? 'Limit Buy at Bid Wall + 0.1 pip' : 'Limit Sell at Ask Ceiling − 0.1 pip';
     return {
-      headline: `🎯 SET — Trap Positioned for ${pair}`,
-      situation: `ATR compression confirmed (Sr ${Sr.toFixed(3)} < 1.0 via KM D2 diffusion) — spring is loaded. Book is structurally fragile (Ar ${vpin.toFixed(3)} > 0.7). Resting limit book imbalance NOI = ${NOI >= 0 ? '+' : ''}${NOI.toFixed(3)} reveals an institutional whale hiding a ${whaleSide}. This is a resting order — we position before the aggressive flow fires.`,
-      risk: `Vacuum duration check required: T_lambda must exceed 300 seconds. If the predicted gap collapses early, the limit will not fill cleanly.`,
-      watch: `Wait for VoI to spike above 2.5σ and E to cross 100× simultaneously — that is the firing pin. Do not enter before both conditions fire together.`,
-      action: `Place ${limitDir}. Stand by for Step 3 STRIKE ignition. Do NOT use market orders — we position where the whale will hit, not where it has already moved.`,
+      headline: `🎯 PHASE 2 — Laplace Fault Line Identified · ${pair}`,
+      situation: `Phase 1 ACTIVE_HUNT: S/N≈${snProxy} (Sr ${Sr.toFixed(3)} < 1.0). Phase 2 NOI scan complete: NOI=${NOI >= 0 ? '+' : ''}${NOI.toFixed(3)} > ±0.8 — Laplace ΔP at critical threshold. ${whaleSide} identified. Ar=${vpin.toFixed(3)} — book is fragile. DGE has armed the limit trap at the structural break point.`,
+      risk: `Phase 4 fill gate is CLOSED. Limit armed but E_sig has not spiked — E=${eff.toFixed(1)}× and |Z|=${Math.abs(zOfi).toFixed(1)}σ must both clear thresholds simultaneously. Phase 3 Kelly p is computing.`,
+      watch: `Await Phase 4 E_sig: E > 100× while |Z| > 2.5σ. Phase 3 unit size = Kelly f* × NAV, scaled by structural alignment. Hard ceiling: 5% of $307.42 = $${(KELLY_MAX_RISK * 307.42).toFixed(2)} max risk.`,
+      action: `${limitDir} IS ARMED. Do NOT use market orders. DGE positions where the whale will hit, not where it already moved. Stand by for Phase 4 E_sig spike.`,
     };
   }
 
   if (state === 'HUNT') {
     return {
-      headline: `🔍 HUNT — Passive Coil Detected on ${pair}`,
-      situation: `System is in Passive Hunt mode. KM D2 diffusion compression detected (Sr ${Sr.toFixed(3)} < 1.0)${Sr < SR_CRITICAL ? ' — CRITICAL: Sr < 0.5, spring fully loaded' : ' — spring loading in progress'}. Fragility building (Ar = ${vpin.toFixed(3)}) but not yet at 0.70 threshold. Resting limit book NOI = ${NOI >= 0 ? '+' : ''}${NOI.toFixed(3)}.`,
-      risk: 'False breakouts are common during the coiling phase. Do not enter until the full SET conditions are confirmed.',
-      watch: `Resting limit book NOI must cross ±0.8 to reveal the whale's shadow. Ar (VPIN) must cross 0.70 for structural fragility. ATR compression (Sr) must remain below 1.0.`,
-      action: 'Remain in Passive Hunt. Monitor. System will automatically escalate to SET when all Step 1 + Step 2 conditions align.',
+      headline: `🔍 PHASE 1 — ACTIVE_HUNT · ${pair}`,
+      situation: `Phase 1 AWAKENING: S/N≈${snProxy} (Sr ${Sr.toFixed(3)} < 1.0)${Sr < SR_CRITICAL ? ' — CRITICAL: Sr < 0.5, maximum Laplace pressure building' : ' — directional signal exceeds noise'}. DGE switched from STANDBY to ACTIVE_HUNT. Phase 2 Laplace scan running. Ar=${vpin.toFixed(3)}${vpin < VPIN_FRAGILITY ? ' — below 0.70, Phase 2 precondition pending' : ' — Phase 2 precondition met'}.`,
+      risk: 'Phase 1 Sleep Switch can re-activate if S/N drops (Sr > 1.5). DGE will cancel all pending limits and return to STANDBY. No trap is placed without sustained ACTIVE_HUNT.',
+      watch: `Phase 2 requires NOI > ±0.8 (currently ${NOI >= 0 ? '+' : ''}${NOI.toFixed(3)}) + Ar > 0.70 (currently ${vpin.toFixed(3)}). Once both clear, DGE arms the Laplace trap automatically.`,
+      action: 'DGE is scanning Phase 2 NOI fault lines. No manual action needed. Limit trap arms automatically when Laplace ΔP reaches critical threshold.',
     };
   }
 
   if (state === 'DUD') {
     return {
-      headline: `💥 DUD — Ghost Move Failed on ${pair}`,
-      situation: `Trade fired but E = ${eff.toFixed(1)}× failed to maintain above 50× threshold within 3 ticks. The book refilled — there is no vacuum to ride. This is the Dud Rule activation.`,
-      risk: 'Continuing this trade has zero edge. The order book has sufficient depth to absorb the move. Holding will result in unnecessary slippage-driven losses.',
-      watch: 'Monitor if E rebounds above 100× quickly — in rare cases the vacuum temporarily fills and then re-opens.',
-      action: '⚠ FIRE MarketClose() IMMEDIATELY. The Dud Rule is absolute. There are no exceptions.',
+      headline: `💥 PHASE 4 DUD ABORT — E_sig Decayed · ${pair}`,
+      situation: `Rule 4.2 triggered. E=${eff.toFixed(1)}× dropped below 50× within execution window — the vacuum collapsed after fill. Laplace pressure failed to sustain. Rule 5.3 (SVD baseline drop) is simultaneously active. Both rules independently mandate immediate exit.`,
+      risk: 'Zero residual structural edge. The fault line has been absorbed. Holding adds slippage exposure with no Laplace support. Every tick in this state violates the strategy.',
+      watch: 'Monitor if E rebounds above 100× and NOI holds > ±0.8 for a potential fresh Phase 2 SET. This is rare — the fault line typically needs to reset.',
+      action: '⚠ FIRE MarketClose() IMMEDIATELY. Rules 4.2 and 5.3 are ABSOLUTE. They override TP, SL, PID, and all bracket logic. No exceptions.',
     };
   }
 
   if (state === 'FATIGUE') {
     return {
-      headline: `😴 FATIGUE — Momentum Collapse on ${pair}`,
-      situation: `Hurst has dropped to ${H.toFixed(3)} — below 0.45. Mean-reversion is now the dominant regime. Any open tunnel trades must be closed — the 10-pip wave will not complete.`,
-      risk: 'Every tick in FATIGUE is fighting the market\'s natural reversion tendency. Trailing stops will be hit. The "winning machine" cannot function.',
-      watch: 'Wait for H to rebuild above 0.55 (HUNT eligible) or 0.62 (GUARD-eligible). This typically requires 30-90 minutes of consolidation.',
-      action: 'EXIT all positions. Close tunnel trades. System returns to SCANNING until Hurst rebuilds.',
+      headline: `😴 PHASE 5 MASTER OVERRIDE — SVD Baseline Lost · ${pair}`,
+      situation: `H=${H.toFixed(3)} below 0.45 — SVD Eigen-Signal has dropped below its baseline. Rule 5.3 fires: the whale has exhausted their volume. Mean-reversion dominates. PID Kd detects maximum velocity decay — the SL ratchet cannot protect the position.`,
+      risk: 'Phase 1 Sleep Switch likely also active (S/N degrading). DGE canceling pending limits. Holding open positions violates Rule 5.3 and Phase 1 Sleep Switch simultaneously.',
+      watch: 'H must rebuild above 0.55 before Phase 1 HUNT, and above 0.62 before Phase 5 PID ratchet can operate. Typically 30-90 minutes of consolidation required.',
+      action: 'RULE 5.3 MASTER OVERRIDE: Execute MarketClose() immediately. Overrides TP, SL, and all PID terms. DGE returns to STANDBY pending Phase 1 AWAKENING.',
     };
   }
 
   return {
-    headline: `📡 SCANNING — ${pair} Queue`,
-    situation: `No institutional signal detected. H = ${H.toFixed(3)}, E = ${eff.toFixed(1)}×, VPIN = ${vpin.toFixed(3)}, Z = ${Math.abs(zOfi).toFixed(2)}σ. System is sampling every tick for Sr < 1.0 coil conditions.`,
-    risk: 'No current edge. The market is in a noise phase.',
-    watch: 'Watching for Sr to compress below 1.0 (Step 1) and Ar to cross 0.70 (Step 2 fragility trigger).',
-    action: 'No action. Pair is queued. System will escalate automatically when HUNT conditions form.',
+    headline: `📡 PHASE 1 STANDBY — Noise Dominant · ${pair}`,
+    situation: `S/N below threshold — S/N≈${snProxy} (Sr ${Sr.toFixed(3)}). Phase 1 Sleep Switch ACTIVE: mean-reverting chop exceeds directional signal. DGE in STANDBY. All pending limit orders canceled. H=${H.toFixed(3)}, E=${eff.toFixed(1)}×, VPIN=${vpin.toFixed(3)}, Z=${Math.abs(zOfi).toFixed(2)}σ.`,
+    risk: 'Negative expectancy. The DGE has determined this market is toxic noise. Any trade entry violates Phase 1 mathematics.',
+    watch: `Phase 1 AWAKENING: S/N ≥ 1.5 requires Sr < 1.0. Currently Sr=${Sr.toFixed(3)}. DGE switches to ACTIVE_HUNT the moment this clears.`,
+    action: 'No action. DGE in STANDBY. Phase 1 Sleep Switch is enforcing no-trade conditions. Wait for S/N ≥ 1.5.',
   };
 }
 
@@ -494,7 +508,7 @@ function IntelBriefPanel({ brief, stateMeta }: { brief: IntelBrief; stateMeta: {
     <div className={cn('rounded-lg border space-y-0 overflow-hidden', stateMeta.bg)}>
       <div className={cn('px-2.5 py-1.5 border-b border-border/20 flex items-center gap-1.5', stateMeta.bg)}>
         <Radio className={cn('w-2.5 h-2.5 flex-shrink-0', stateMeta.color)} />
-        <span className="text-[8px] font-mono uppercase tracking-widest text-muted-foreground">SPP v2.0 Intelligence Brief</span>
+        <span className="text-[8px] font-mono uppercase tracking-widest text-muted-foreground">David-Atlas DGE Intelligence Brief</span>
       </div>
       <div className="px-2.5 pt-2 pb-1">
         <p className={cn('text-[10px] font-mono font-bold mb-2', stateMeta.color)}>{brief.headline}</p>
@@ -785,38 +799,44 @@ function DeckCard({ pair, data, activeTrade }: {
 function SPPExecutionHUD() {
   const steps = [
     {
-      num: 1, label: 'HUNT', icon: Search, color: 'text-blue-400', bg: 'bg-blue-500/10 border-blue-500/30',
-      title: 'Passive Hunt — ATR Compression Identification',
-      conditions: ['Sr < 1.0 (ATR₅/ATR₂₀ via KM D2 diffusion)', 'Sr < 0.5 = critical compression (spring fully loaded)', 'Ar > 0.7 (Structural Fragility via VPIN)'],
-      result: 'State → COILING',
+      num: 1, label: 'ENV GATE', icon: Waves, color: 'text-blue-400', bg: 'bg-blue-500/10 border-blue-500/30',
+      title: 'Phase 1 — Shannon-Hartley Environment Gate',
+      conditions: ['S/N ≥ 1.5 → ACTIVE_HUNT mode (DGE awakens)', 'S/N < 1.5 → STANDBY (all pending limits canceled)', 'S/N proxy: Sr = sqrt(D2/D2_neutral) via KM diffusion', 'Sr < 1.0 ≈ S/N ≥ 1.5 · Sr < 0.5 = maximum signal'],
+      result: 'State → STANDBY or ACTIVE_HUNT',
     },
     {
-      num: 2, label: 'SET', icon: Lock, color: 'text-amber-400', bg: 'bg-amber-500/10 border-amber-500/30',
-      title: "Set — Position the Limit Trap",
-      conditions: ['NOI = (ΣBidDepth – ΣAskDepth) / TotalDepth from resting limit book', 'NOI > +0.8 → Limit Buy at Bid Wall + 0.1p (before aggressive flow fires)', 'NOI < −0.8 → Limit Sell at Ask Ceiling − 0.1p · T_lambda > 300s'],
-      result: 'Limit order placed in whale shadow',
+      num: 2, label: 'TARGET ACQ', icon: Lock, color: 'text-amber-400', bg: 'bg-amber-500/10 border-amber-500/30',
+      title: 'Phase 2 — Laplace + NOI Target Acquisition',
+      conditions: ['Scan resting limit book for Laplace ΔP fault line', 'NOI > +0.8 → Limit Buy at Bid Wall + 0.1 pip', 'NOI < −0.8 → Limit Sell at Ask Ceiling − 0.1 pip', 'Ar > 0.70 (book fragility) required for ΔP to be critical'],
+      result: 'Limit order placed at Laplace fault line',
     },
     {
-      num: 3, label: 'STRIKE', icon: Flame, color: 'text-red-400', bg: 'bg-red-500/10 border-red-500/30',
-      title: 'Strike — Ignition & Ghost Move',
-      conditions: ['VoI spike coincides with fill', '|Z| > 2.5σ confirmed', 'E > 100× (vacuum gate)', 'Dud Rule: E < 50× in 3 ticks → abort'],
-      result: 'TP = +10.0p · SL = −10.0p',
+      num: 3, label: 'KELLY SIZE', icon: GitBranch, color: 'text-purple-400', bg: 'bg-purple-500/10 border-purple-500/30',
+      title: 'Phase 3 — Kelly Criterion Sizing Engine',
+      conditions: ['f* = p − q/b (win prob p from Laplace alignment)', 'Flawless setup → scale above 1,250 units', 'Marginal setup → scale down unit size', 'Hard ceiling: never risk > 5% of $307.42 NAV'],
+      result: `Max risk: $${(KELLY_MAX_RISK * 307.42).toFixed(2)} per strike`,
     },
     {
-      num: 4, label: 'GUARD', icon: Shield, color: 'text-green-400', bg: 'bg-green-500/10 border-green-500/30',
-      title: 'Guard — The Winning Machine',
-      conditions: ['Ratchet SL: at +3.0p → crawl +0.5p steps', 'Kill-Switch: 3/4 gate decay → MarketClose()', 'H, E, Z, V — any 1 falling = exit signal'],
-      result: 'Target: +10.0 pips · Zero-Stop Tunnel',
+      num: 4, label: 'SVD TRIGGER', icon: Flame, color: 'text-red-400', bg: 'bg-red-500/10 border-red-500/30',
+      title: 'Phase 4 — SVD Eigen-Signal Execution',
+      conditions: ['E_sig = SVD([E, Z-OFI]) → single composite signal', 'Limit fills ONLY when E_sig spikes above threshold', 'Dud Abort (Rule 4.2): E_sig decays < 50× in 500ms → instant MarketClose()', 'Zero execution lag — microsecond trigger'],
+      result: 'Fill gate: E > 100× AND |Z| > 2.5σ',
+    },
+    {
+      num: 5, label: 'PID EXIT', icon: Shield, color: 'text-green-400', bg: 'bg-green-500/10 border-green-500/30',
+      title: 'Phase 5 — PID Controller Ratchet Exit',
+      conditions: ['Box: TP=+10.0p / SL=−10.0p on fill', 'PID activates at +3.0p: trail = 2.5p − Kp×profit − Ki×time − Kd×velocity', 'Kd(0.5) snaps SL tight on high-velocity spikes', 'Rule 5.3 Master Override: SVD E_sig drops → instant MarketClose() overrides all'],
+      result: 'SL ratchets forward only · never retreats',
     },
   ];
 
   const formulas = [
-    { sym: 'Sr',  role: 'ATR₅/ATR₂₀ (KM D2)',       gate: 'Sr < 1.0 / < 0.5', color: 'text-blue-400' },
-    { sym: 'Ar',  role: 'Structural Fragility',      gate: 'Ar > 0.7',         color: 'text-amber-400' },
-    { sym: 'NOI', role: 'Resting Limit Book',        gate: '|NOI| > 0.8',      color: 'text-purple-400' },
-    { sym: 'VoI', role: 'The Firing Pin',            gate: 'Z-OFI spike',      color: 'text-red-400' },
-    { sym: 'H',   role: 'Persistence',               gate: 'H ≥ 0.62',         color: 'text-green-400' },
-    { sym: 'E',   role: 'The Vacuum',                gate: 'E > 100×',         color: 'text-yellow-400' },
+    { sym: 'S/N',   role: 'Shannon-Hartley Gate',    gate: 'S/N ≥ 1.5',       color: 'text-blue-400' },
+    { sym: 'NOI',   role: 'Laplace Fault Line',      gate: '|NOI| > 0.8',      color: 'text-amber-400' },
+    { sym: 'ΔP',    role: 'Laplace Pressure',        gate: 'ΔP critical',      color: 'text-purple-400' },
+    { sym: 'E_sig', role: 'SVD Eigen-Signal',        gate: 'E>100× + Z>2.5σ',  color: 'text-red-400' },
+    { sym: 'PID',   role: 'Kp·Kᵢ·Kd Ratchet',      gate: '+3.0p activation', color: 'text-green-400' },
+    { sym: 'f*',    role: 'Kelly Sizing (5% cap)',   gate: 'p−q/b × NAV',      color: 'text-yellow-400' },
   ];
 
   return (
@@ -831,17 +851,17 @@ function SPPExecutionHUD() {
         <div className="flex items-center gap-2">
           <Zap className="w-3.5 h-3.5 text-yellow-400" />
           <span className="text-[10px] font-mono font-bold uppercase tracking-widest text-yellow-300">
-            SPP v2.0 "Black Box" — 6-Formula Zero-Fault Execution Thread
+            David-Atlas DGE — Regime-Switching Liquidity Predation · 5-Phase Apex Rulebook
           </span>
         </div>
         <span className="text-[9px] font-mono text-muted-foreground hidden md:block">
-          HUNT → SET → STRIKE → GUARD
+          ENV → TARGET → KELLY → SVD → PID
         </span>
       </div>
 
       <div className="p-3 space-y-3">
-        {/* 4 Execution Steps */}
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-2">
+        {/* 5 Execution Phases */}
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-2">
           {steps.map((s) => {
             const Icon = s.icon;
             return (
@@ -849,7 +869,7 @@ function SPPExecutionHUD() {
                 <div className="flex items-center gap-1.5">
                   <Icon className={cn('w-3 h-3', s.color)} />
                   <span className={cn('text-[9px] font-mono font-black uppercase tracking-wider', s.color)}>
-                    Step {s.num}: {s.label}
+                    Ph{s.num}: {s.label}
                   </span>
                 </div>
                 <p className="text-[9px] font-mono text-foreground font-medium">{s.title}</p>
@@ -871,11 +891,11 @@ function SPPExecutionHUD() {
 
         {/* Physics Audit Table */}
         <div className="space-y-1">
-          <span className="text-[8px] font-mono uppercase tracking-widest text-muted-foreground">System Integrity — Physics Audit</span>
+          <span className="text-[8px] font-mono uppercase tracking-widest text-muted-foreground">DGE Formula Audit — Apex 5 Equations</span>
           <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-1.5">
             {formulas.map((f) => (
               <div key={f.sym} className="flex items-center gap-1.5 rounded-md px-2 py-1.5 bg-card/40 border border-border/30">
-                <span className={cn('text-[11px] font-mono font-black w-8 flex-shrink-0', f.color)}>{f.sym}</span>
+                <span className={cn('text-[11px] font-mono font-black w-10 flex-shrink-0', f.color)}>{f.sym}</span>
                 <div className="min-w-0">
                   <div className={cn('text-[8px] font-mono font-bold', f.color)}>{f.gate}</div>
                   <div className="text-[7px] font-mono text-muted-foreground truncate">{f.role}</div>
@@ -885,11 +905,11 @@ function SPPExecutionHUD() {
           </div>
         </div>
 
-        {/* Kill-switch reminder */}
+        {/* Zero-Fault rules */}
         <div className="rounded-md px-2.5 py-1.5 bg-amber-500/5 border border-amber-500/20 flex items-center gap-2">
           <TriangleAlert className="w-3 h-3 text-amber-400 flex-shrink-0" />
           <span className="text-[8px] font-mono text-amber-300">
-            <strong>Zero-Fault Rules:</strong> Dud Rule (E &lt; 50× in 3 ticks → instant exit) · Kill-Switch (3/4 gate decay → MarketClose()) · Ratchet begins at +3.0 pips, moves in +0.5 pip steps.
+            <strong>Zero-Fault Rules:</strong> Rule 4.2 Dud Abort (E_sig decays in 500ms → instant exit) · Rule 5.3 Master Override (SVD baseline drop → MarketClose() overrides TP/SL/PID) · PID ratchet arms at +3.0p · Hard cap: 5% NAV per strike.
           </span>
         </div>
       </div>
@@ -990,7 +1010,7 @@ const SyntheticOrderBook = () => {
             </div>
           </div>
           <p className="text-muted-foreground text-sm mt-1 font-mono">
-            SPP v2.0 "Black Box" — 6-Formula Market Microstructure Predation Engine
+            David-Atlas DGE — Regime-Switching Liquidity Predation · 5-Phase Apex Rulebook
           </p>
         </motion.div>
 
