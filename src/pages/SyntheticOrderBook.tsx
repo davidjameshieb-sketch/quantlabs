@@ -116,7 +116,7 @@ const OPS_STATE_DESC: Record<TacticalState, string> = {
   SCANNING: 'Business as usual. Normal warehouse activity. No special opportunity yet.',
 };
 
-// ─── LEFT RAIL: Global Radar ──────────────────────────────────────────────────
+// ─── LEFT RAIL: The Yard — Docking Radar ─────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════════════
 const RADAR_PAIRS = [
   'EUR_USD','GBP_USD','USD_JPY','USD_CHF','AUD_USD','USD_CAD',
@@ -143,8 +143,8 @@ function GlobalRadar({ pairs, activeTrades }: {
     <div className="rounded-xl border border-border/40 bg-card/60 overflow-hidden">
       <div className="px-3 py-2 border-b border-border/30 flex items-center gap-2">
         <Radio className="w-3.5 h-3.5 text-primary animate-pulse" />
-        <span className="text-[10px] font-bold uppercase tracking-widest">Warehouse Floor — 20 Bays</span>
-        <span className="ml-auto text-[7px] font-mono text-muted-foreground">💤 Normal · 🔍 Scanning · ⚡ Breakthrough</span>
+        <span className="text-[10px] font-bold uppercase tracking-widest">The Yard — 20 Dock Bays</span>
+        <span className="ml-auto text-[7px] font-mono text-muted-foreground">💤 Quiet · 🔍 Trucks arriving · ⚡ Surge</span>
       </div>
       <div className="p-2 grid grid-cols-4 gap-1">
         {RADAR_PAIRS.map(rp => {
@@ -163,7 +163,7 @@ function GlobalRadar({ pairs, activeTrades }: {
           return (
             <div
               key={rp}
-              title={OPS_STATE_DESC[state]}
+              title={`Bay: ${rp} — ${OPS_STATE_DESC[state]}`}
               className={cn('rounded-md border px-1.5 py-1 transition-all duration-500 cursor-help', c.bg, c.border)}
               style={{ boxShadow: state !== 'SCANNING' ? c.glow : 'none' }}
             >
@@ -180,7 +180,7 @@ function GlobalRadar({ pairs, activeTrades }: {
   );
 }
 
-// ─── LEFT RAIL: Treasury ─────────────────────────────────────────────────────
+// ─── LEFT RAIL: Operating Budget ─────────────────────────────────────────────
 function TreasuryPanel({ nav, unrealizedPL, openTradeCount, snapshot }: {
   nav: number;
   unrealizedPL: number;
@@ -196,7 +196,6 @@ function TreasuryPanel({ nav, unrealizedPL, openTradeCount, snapshot }: {
     const key = Object.keys(pairs)[i];
     return deriveSPPState(p, key) === 'STRIKE';
   });
-  // Kelly f* approx from strike pairs
   const avgVpin = pairList.length > 0 ? pairList.reduce((s, p) => s + (p.vpin ?? 0), 0) / pairList.length : 0;
   const kellyF = Math.max(0, Math.min(0.2, avgVpin - 0.5));
 
@@ -204,13 +203,13 @@ function TreasuryPanel({ nav, unrealizedPL, openTradeCount, snapshot }: {
     <div className="rounded-xl border border-border/40 bg-card/60 overflow-hidden">
       <div className="px-3 py-2 border-b border-border/30 flex items-center gap-2">
         <Gauge className="w-3.5 h-3.5 text-primary" />
-        <span className="text-[10px] font-bold uppercase tracking-widest">Capital Reserve</span>
-        <span className="ml-auto text-[7px] font-mono text-muted-foreground">Your operating budget</span>
+        <span className="text-[10px] font-bold uppercase tracking-widest">Operating Budget</span>
+        <span className="ml-auto text-[7px] font-mono text-muted-foreground">Cash available for strikes</span>
       </div>
       <div className="p-3 space-y-3">
         {/* NAV */}
         <div>
-          <div className="text-[9px] text-muted-foreground font-mono uppercase">Warehouse Budget (NAV)</div>
+          <div className="text-[9px] text-muted-foreground font-mono uppercase">Available Cash (NAV)</div>
           <div className="text-xl font-mono font-black text-foreground">${nav.toFixed(2)}</div>
           <div className="mt-1 h-1.5 bg-muted/20 rounded-full overflow-hidden">
             <div
@@ -225,10 +224,10 @@ function TreasuryPanel({ nav, unrealizedPL, openTradeCount, snapshot }: {
         {/* Stats */}
         <div className="grid grid-cols-2 gap-2">
           {[
-            { label: 'Unrealized Freight', value: `${unrealizedPL >= 0 ? '+' : ''}$${unrealizedPL.toFixed(2)}`, pos: unrealizedPL >= 0, tip: 'Open P&L: value of shipments currently in transit' },
-            { label: 'Active Shipments', value: openTradeCount, pos: null, tip: 'Number of pallets currently moving on the warehouse floor' },
-            { label: 'Max Pallet Size', value: `$${maxRisk.toFixed(2)}`, pos: null, tip: 'Kelly-capped maximum budget per strike (5% of NAV)' },
-            { label: 'Pallet Allocation (f*)', value: `${(kellyF * 100).toFixed(1)}%`, pos: kellyF > 0.05, tip: 'Kelly f*: how much of your budget to put on the next pallet based on win probability' },
+            { label: 'Freight In Transit', value: `${unrealizedPL >= 0 ? '+' : ''}$${unrealizedPL.toFixed(2)}`, pos: unrealizedPL >= 0, tip: 'Open P&L: dollar value of pallets currently on a forklift' },
+            { label: 'Active Shipments', value: openTradeCount, pos: null, tip: 'How many 1,250-unit pallets are currently in motion on the floor' },
+            { label: 'Max Pallet Budget', value: `$${maxRisk.toFixed(2)}`, pos: null, tip: 'Kelly-capped maximum capital per strike — 5% of NAV so you never over-load the truck' },
+            { label: 'Pallet Allocation f*', value: `${(kellyF * 100).toFixed(1)}%`, pos: kellyF > 0.05, tip: 'Kelly f*: the optimal fraction of your cash to put on the next pallet based on current win probability' },
           ].map(({ label, value, pos, tip }) => (
             <div key={label} title={tip} className="rounded-lg bg-muted/20 border border-border/20 px-2 py-1.5 cursor-help">
               <div className="text-[8px] text-muted-foreground font-mono">{label}</div>
@@ -242,7 +241,7 @@ function TreasuryPanel({ nav, unrealizedPL, openTradeCount, snapshot }: {
         {strikePairs.length > 0 && (
           <div className="rounded-lg bg-yellow-500/10 border border-yellow-500/30 px-2 py-1.5 flex items-center gap-1.5">
             <Flame className="w-3 h-3 text-yellow-400 animate-pulse" />
-            <span className="text-[9px] font-mono text-yellow-300 font-bold">🚀 LOGISTICS BREAKTHROUGH — {strikePairs.length} bay{strikePairs.length > 1 ? 's' : ''} fully aligned</span>
+            <span className="text-[9px] font-mono text-yellow-300 font-bold">🚀 SURGE DETECTED — {strikePairs.length} bay{strikePairs.length > 1 ? 's' : ''} ready to ship</span>
           </div>
         )}
       </div>
@@ -251,7 +250,7 @@ function TreasuryPanel({ nav, unrealizedPL, openTradeCount, snapshot }: {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ─── CENTER: Synthetic Depth Map (NOI Heatmap) ────────────────────────────────
+// ─── CENTER TOP: Floor Heatmap — The Shipping Bay ────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════════════
 function SyntheticDepthMap({ snapshot, activeTrades }: { snapshot: any; activeTrades: any[] }) {
   const pairs = snapshot?.pairs ?? {};
@@ -267,7 +266,7 @@ function SyntheticDepthMap({ snapshot, activeTrades }: { snapshot: any; activeTr
   if (ranked.length === 0) {
     return (
       <div className="rounded-xl border border-border/40 bg-card/60 p-6 flex items-center justify-center">
-        <span className="text-xs text-muted-foreground font-mono">Awaiting depth data from engine...</span>
+        <span className="text-xs text-muted-foreground font-mono">Awaiting floor telemetry from engine...</span>
       </div>
     );
   }
@@ -276,8 +275,8 @@ function SyntheticDepthMap({ snapshot, activeTrades }: { snapshot: any; activeTr
     <div className="rounded-xl border border-border/40 bg-card/60 overflow-hidden">
       <div className="px-4 py-2.5 border-b border-border/30 flex items-center gap-2">
         <Layers className="w-3.5 h-3.5 text-primary" />
-        <span className="text-[10px] font-bold uppercase tracking-widest">Loading Docks — Whale Wall Map</span>
-        <span className="ml-auto text-[8px] font-mono text-muted-foreground">Dock Pressure · Institutional Freight</span>
+        <span className="text-[10px] font-bold uppercase tracking-widest">Floor Heatmap — Shipping Bay</span>
+        <span className="ml-auto text-[8px] font-mono text-muted-foreground">Whale Containers · Laplace Pressure · Pre-Staged Pallets</span>
       </div>
       <div className="p-3 space-y-1.5">
         {ranked.map(({ pair, p, noi, eff }) => {
@@ -375,11 +374,11 @@ function SyntheticDepthMap({ snapshot, activeTrades }: { snapshot: any; activeTr
                 </div>
               )}
 
-              {/* Trap label */}
+              {/* Pre-staged pallet marker */}
               {(isStrike || isSet) && (
                 <div className="mt-1 text-[7px] font-mono text-yellow-400 flex items-center gap-1">
                   <Crosshair className="w-2 h-2" />
-                  <span>LIMIT TRAP: {limitPrice} · GTD 60s</span>
+                  <span>PRE-STAGED PALLET: {limitPrice} · LIMIT ORDER GTD 60s</span>
                 </div>
               )}
             </div>
@@ -390,7 +389,7 @@ function SyntheticDepthMap({ snapshot, activeTrades }: { snapshot: any; activeTr
   );
 }
 
-// ─── CENTER: PID Ratchet Console ──────────────────────────────────────────────
+// ─── CENTER BOTTOM: Outbound Conveyor — The Ratchet ──────────────────────────
 function PIDRatchetConsole({ activeTrades, snapshot }: { activeTrades: any[]; snapshot: any }) {
   const pairs = snapshot?.pairs ?? {};
   const openTrades = activeTrades.filter(t => t.status === 'filled' || t.status === 'open');
@@ -400,11 +399,11 @@ function PIDRatchetConsole({ activeTrades, snapshot }: { activeTrades: any[]; sn
       <div className="rounded-xl border border-border/40 bg-card/60 overflow-hidden">
         <div className="px-4 py-2.5 border-b border-border/30 flex items-center gap-2">
           <Activity className="w-3.5 h-3.5 text-primary" />
-          <span className="text-[10px] font-bold uppercase tracking-widest">Shipment Ratchet — Cybernetic Trailer Lock</span>
+          <span className="text-[10px] font-bold uppercase tracking-widest">Outbound Conveyor — Ratchet Idle</span>
         </div>
         <div className="p-6 text-center text-xs text-muted-foreground font-mono">
           <Shield className="w-6 h-6 mx-auto mb-2 opacity-30" />
-          No shipments in transit — ratchet idle. Floor is clear.
+          No pallets moving — conveyor belt idle. Dock doors clear.
         </div>
       </div>
     );
@@ -414,8 +413,8 @@ function PIDRatchetConsole({ activeTrades, snapshot }: { activeTrades: any[]; sn
     <div className="rounded-xl border border-border/40 bg-card/60 overflow-hidden">
       <div className="px-4 py-2.5 border-b border-border/30 flex items-center gap-2">
         <Activity className="w-3.5 h-3.5 text-green-400 animate-pulse" />
-        <span className="text-[10px] font-bold uppercase tracking-widest text-green-400">Shipment Ratchet — TRAILER MOVING</span>
-        <Badge className="ml-auto text-[8px] bg-green-500/20 text-green-400 border-green-500/30">{openTrades.length} IN TRANSIT</Badge>
+        <span className="text-[10px] font-bold uppercase tracking-widest text-green-400">Outbound Conveyor — PALLET IN MOTION</span>
+        <Badge className="ml-auto text-[8px] bg-green-500/20 text-green-400 border-green-500/30">{openTrades.length} SHIPPING</Badge>
       </div>
       <div className="p-3 space-y-3">
         {openTrades.map(trade => {
@@ -532,7 +531,7 @@ function PIDRatchetConsole({ activeTrades, snapshot }: { activeTrades: any[]; sn
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ─── RIGHT RAIL: Eigen-Signal Oscilloscope ───────────────────────────────────
+// ─── RIGHT RAIL: Flow Meter (SVD) — LANE CLEAR Indicator ────────────────────
 // ═══════════════════════════════════════════════════════════════════════════════
 interface OscilloPoint { z: number; e: number; t: number }
 const oscilloBuffers = new Map<string, OscilloPoint[]>();
@@ -563,15 +562,29 @@ function EigenOscilloscope({ snapshot, activeTrades }: { snapshot: any; activeTr
     return hasTrade || deriveSPPState(p, pair) === 'STRIKE';
   });
 
+  // LANE CLEAR: all 4 gates passed on at least one pair
+  const laneClear = ranked.some(([pair, p]) => {
+    const Z = p.zOfi ?? 0;
+    const E = p.efficiency ?? 0;
+    const H = p.hurst?.H ?? 0;
+    const vpin = p.vpin ?? 0;
+    return Math.abs(Z) > Z_STRIKE && E >= 7 && H >= HURST_PERSIST && vpin > 0.60;
+  });
+
   return (
-    <div className="rounded-xl border border-border/40 bg-card/60 overflow-hidden">
+    <div className={cn('rounded-xl border bg-card/60 overflow-hidden transition-all duration-500', laneClear ? 'border-green-400/60' : 'border-border/40')}>
       <div className="px-3 py-2 border-b border-border/30 flex items-center gap-2">
         <Zap className={cn('w-3.5 h-3.5', strikeActive ? 'text-yellow-400 animate-pulse' : 'text-primary')} />
-        <span className="text-[10px] font-bold uppercase tracking-widest">Dock Surge Scope</span>
-        <span className="ml-1 text-[7px] font-mono text-muted-foreground">🚛 Truck arrivals · 🏭 Floor polish</span>
-        {strikeActive && (
+        <span className="text-[10px] font-bold uppercase tracking-widest">Flow Meter (SVD)</span>
+        <span className="ml-1 text-[7px] font-mono text-muted-foreground">🚛 Surges · 🏭 Floor</span>
+        {laneClear ? (
+          <div className="ml-auto flex items-center gap-1">
+            <div className="w-2 h-2 rounded-full bg-green-400 animate-ping" />
+            <span className="text-[8px] font-mono font-black text-green-400 animate-pulse">LANE CLEAR: SHIP IT</span>
+          </div>
+        ) : strikeActive ? (
           <div className="ml-auto w-2 h-2 rounded-full bg-yellow-400 animate-ping" />
-        )}
+        ) : null}
       </div>
       <div className="p-2 space-y-2">
         {ranked.length === 0 && (
@@ -734,7 +747,7 @@ function LatencyHeartbeat() {
           dotColor,
           tier === 'GREEN' ? 'animate-pulse' : tier === 'UNKNOWN' ? '' : 'animate-ping'
         )} />
-        <span className="text-[10px] font-bold uppercase tracking-widest">Latency Heartbeat</span>
+        <span className="text-[10px] font-bold uppercase tracking-widest">Truck Arrival Latency</span>
         <span className={cn('ml-auto text-sm font-mono font-black', tierColor)}>
           {latency !== null ? `${latency}ms` : '—'}
         </span>
@@ -792,6 +805,52 @@ function LatencyHeartbeat() {
   );
 }
 
+// ─── RIGHT RAIL: Pick-Rate Monitor (Hurst) ────────────────────────────────────
+function PickRateMonitor({ snapshot }: { snapshot: any }) {
+  const pairs = snapshot?.pairs ?? {};
+  const pairList = (Object.entries(pairs) as [string, PairPhysics][])
+    .filter(([, p]) => (p.ticksAnalyzed ?? 0) > 5)
+    .map(([pair, p]) => ({ pair, H: p.hurst?.H ?? 0, regime: p.hurst?.regime ?? 'RANDOM_WALK' }))
+    .sort((a, b) => b.H - a.H)
+    .slice(0, 6);
+
+  return (
+    <div className="rounded-xl border border-border/40 bg-card/60 overflow-hidden">
+      <div className="px-3 py-2 border-b border-border/30 flex items-center gap-2">
+        <Activity className="w-3.5 h-3.5 text-primary" />
+        <span className="text-[10px] font-bold uppercase tracking-widest">Pick-Rate Monitor</span>
+        <span className="ml-1 text-[7px] font-mono text-muted-foreground">🚶 Workflow Rhythm (Hurst)</span>
+      </div>
+      <div className="p-2 space-y-1">
+        {pairList.length === 0 && (
+          <div className="text-center py-3 text-[9px] text-muted-foreground font-mono">No rhythm data</div>
+        )}
+        {pairList.map(({ pair, H, regime }) => {
+          const isStraight = H >= HURST_PERSIST;
+          const isLost = H < 0.45;
+          const pct = Math.min(100, H * 100 * 1.4);
+          return (
+            <div key={pair} className="flex items-center gap-2"
+              title={isStraight ? `${pair}: Workers walking in straight lines — H=${H.toFixed(2)} ≥0.62. Flow is continuous.` : isLost ? `${pair}: Workers driving in circles — H=${H.toFixed(2)} <0.45. Rule 5.3 abort if in trade.` : `${pair}: Workers moving but not efficiently — H=${H.toFixed(2)}`}>
+              <span className={cn('text-[8px] font-mono font-bold w-16 flex-shrink-0', isStraight ? 'text-green-400' : isLost ? 'text-red-400' : 'text-muted-foreground')}>{pair.split('_')[0]}/{pair.split('_')[1]}</span>
+              <div className="flex-1 h-1.5 bg-muted/20 rounded-full overflow-hidden">
+                <div className={cn('h-full rounded-full transition-all', isStraight ? 'bg-green-400/70' : isLost ? 'bg-red-400/70' : 'bg-muted-foreground/40')} style={{ width: `${pct}%` }} />
+              </div>
+              <span className={cn('text-[7px] font-mono w-8 text-right flex-shrink-0', isStraight ? 'text-green-400' : isLost ? 'text-red-400' : 'text-muted-foreground')}>{H.toFixed(2)}</span>
+              <span className={cn('text-[6px] font-mono flex-shrink-0', isStraight ? 'text-green-400' : isLost ? 'text-red-400' : 'text-muted-foreground/50')}>
+                {isStraight ? '→→→' : isLost ? '↯↯↯' : '～'}
+              </span>
+            </div>
+          );
+        })}
+        <div className="flex justify-between text-[6px] font-mono text-muted-foreground/50 pt-1 border-t border-border/20">
+          <span>↯ Lost &lt;0.45</span><span>～ Drift</span><span>→ Straight ≥0.62</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── RIGHT RAIL: Audit Terminal ───────────────────────────────────────────────
 function AuditTerminal({ snapshot, activeTrades }: { snapshot: any; activeTrades: any[] }) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -842,7 +901,7 @@ function AuditTerminal({ snapshot, activeTrades }: { snapshot: any; activeTrades
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ─── BOTTOM BAR: Nuclear Codes ────────────────────────────────────────────────
+// ─── BOTTOM BAR: Master Overrides ────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════════════
 function NuclearCodes({ onStandby, onFlush, standbyActive }: {
   onStandby: () => void;
@@ -856,10 +915,10 @@ function NuclearCodes({ onStandby, onFlush, standbyActive }: {
       <div className="px-4 py-3 flex items-center gap-4 flex-wrap">
         <div className="flex items-center gap-2">
           <div className="w-2 h-2 rounded-full bg-red-500" />
-          <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Ops Override Controls</span>
+          <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Master Overrides</span>
         </div>
         <div className="flex items-center gap-3 flex-1 flex-wrap">
-          {/* STANDBY */}
+          {/* STANDBY — End of Shift */}
           <button
             onClick={onStandby}
             className={cn(
@@ -868,30 +927,30 @@ function NuclearCodes({ onStandby, onFlush, standbyActive }: {
                 ? 'bg-amber-500/20 border-amber-500/60 text-amber-300 shadow-lg shadow-amber-500/10'
                 : 'bg-muted/20 border-border/40 text-muted-foreground hover:bg-amber-500/10 hover:border-amber-500/30 hover:text-amber-400'
             )}
-            title="STANDBY: Belt speed set to 0. All resting limit traps canceled. Engine watches but does not pick."
+            title="END OF SHIFT: Belt speed drops to zero. All pre-staged pallets canceled. Team goes to the breakroom — engine watches but does not pick."
           >
             <Power className="w-3.5 h-3.5" />
-            {standbyActive ? '● FLOOR STANDBY — WATCHING' : '⏸ STANDBY — Stop Picking'}
+            {standbyActive ? '● END OF SHIFT — TEAM WATCHING' : '⏸ END OF SHIFT'}
           </button>
 
-          {/* FLUSH */}
+          {/* FLUSH — Emergency Eject */}
           {!flushConfirm ? (
             <button
               onClick={() => setFlushConfirm(true)}
               className="flex items-center gap-2 px-4 py-2 rounded-lg border border-red-500/40 bg-red-500/10 text-red-400 font-mono text-xs font-bold uppercase tracking-widest hover:bg-red-500/20 hover:border-red-500/60 transition-all"
-              title="FLUSH: Emergency dock clear. Drops all pallets instantly. All shipments in transit are closed at market price."
+              title="EMERGENCY EJECT: Instantly drops all pallets on forklifts and closes dock doors. All active shipments closed at market price."
             >
               <Siren className="w-3.5 h-3.5" />
-              🚨 EMERGENCY DOCK CLEAR
+              🚨 EMERGENCY EJECT — Drop All Pallets
             </button>
           ) : (
             <div className="flex items-center gap-2">
-              <span className="text-[9px] font-mono text-red-400 animate-pulse">CONFIRM: DROP ALL PALLETS + CLOSE ALL SHIPMENTS?</span>
+              <span className="text-[9px] font-mono text-red-400 animate-pulse">CONFIRM: DROP ALL PALLETS + CLOSE ALL DOCK DOORS?</span>
               <button
                 onClick={() => { onFlush(); setFlushConfirm(false); }}
                 className="px-3 py-1.5 rounded-lg border border-red-500/80 bg-red-500/30 text-red-300 font-mono text-[10px] font-black uppercase hover:bg-red-500/50 transition-all"
               >
-                CONFIRM CLEAR
+                CONFIRM EJECT
               </button>
               <button
                 onClick={() => setFlushConfirm(false)}
@@ -904,13 +963,12 @@ function NuclearCodes({ onStandby, onFlush, standbyActive }: {
         </div>
 
         <div className="text-[8px] font-mono text-muted-foreground">
-          STANDBY → Belt stops · limit traps lifted · engine watches only&nbsp;&nbsp;|&nbsp;&nbsp;DOCK CLEAR → all shipments closed at market price
+          END OF SHIFT → Belt stops · pre-staged pallets canceled · team watches only&nbsp;&nbsp;|&nbsp;&nbsp;EMERGENCY EJECT → all pallets dropped · dock doors closed at market
         </div>
       </div>
     </div>
   );
 }
-
 // ═══════════════════════════════════════════════════════════════════════════════
 // ─── MAIN PAGE ────────────────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -968,11 +1026,11 @@ const SyntheticOrderBook = () => {
             <div className="flex items-center gap-3">
               <Siren className="w-5 h-5 text-yellow-400" />
               <h1 className="font-display text-lg md:text-xl font-black tracking-widest text-gradient-neural uppercase">
-                David-Atlas Operations Center
+                David-Atlas Distribution Terminal
               </h1>
               <IntelligenceModeBadge />
               {standbyActive && (
-                <Badge className="bg-amber-500/20 text-amber-400 border-amber-500/40 animate-pulse text-[8px]">⏸ FLOOR STANDBY</Badge>
+                <Badge className="bg-amber-500/20 text-amber-400 border-amber-500/40 animate-pulse text-[8px]">⏸ END OF SHIFT</Badge>
               )}
             </div>
             <div className="flex items-center gap-2">
@@ -997,7 +1055,7 @@ const SyntheticOrderBook = () => {
             </div>
           </div>
           <p className="text-muted-foreground text-xs mt-1 font-mono">
-            Operations Manager View · You are not guessing — you are reading the manifest · Conveyor Belt · Docks · Floor Friction · Rhythm · VIP Override
+            Senior Ops View · You don't guess if trucks are coming — you read the manifest · Belt · Docks · Floor · Rhythm · VIP · Climax Protocol v2.0
           </p>
         </motion.div>
 
@@ -1033,6 +1091,7 @@ const SyntheticOrderBook = () => {
               {/* ── RIGHT RAIL ── */}
               <div className="space-y-3">
                 <EigenOscilloscope snapshot={snapshot} activeTrades={activeTrades} />
+                <PickRateMonitor snapshot={snapshot} />
                 <LatencyHeartbeat />
                 <AuditTerminal snapshot={snapshot} activeTrades={activeTrades} />
               </div>
