@@ -941,7 +941,7 @@ Deno.serve(async (req) => {
       );
     }
 
-    console.log(`[CLIMAX] ⚡ SPP v2.0 ACTIVE | ${instruments.size} pairs | ENTRY: Hurst≥${DA_HURST_MIN} | Eff≥${DA_EFFICIENCY_MIN}x | |Z-OFI|>${DA_ZOFI_MIN}σ | VPIN>${DA_VPIN_MIN} | Rule-of-${DA_RULE_OF_2} | EXIT: 3/4 gate drop = instant flush`);
+    console.log(`[DA-5PHASE] ⚡ DAVID-ATLAS DGE ACTIVE | ${instruments.size} pairs | PH1:S/N≥1.5 | PH2:|NOI|>0.8 | PH3:Kelly-5%NAV | PH4:Esig(Hurst≥${DA_HURST_MIN}|Eff≥${DA_EFFICIENCY_MIN}x||Z|>${DA_ZOFI_MIN}σ|VPIN>${DA_VPIN_MIN}) | PH5:TP=+10p SL=-10p PID@+3p`);
 
     // ─── 4. Open OANDA stream ───
     // CRITICAL BUG FIX: OANDA practice streaming has a limit of ~20 instruments per connection.
@@ -1782,7 +1782,7 @@ Deno.serve(async (req) => {
               // ─── GATE 4: VPIN > 0.60 — MM toxicity threshold ───
               // MMs about to withdraw liquidity → violent price reversal / Climax
               if (daTracker.vpinRecursive < DA_VPIN_GHOST_MAX) {
-                console.log(`[CLIMAX] 👻 GHOST MOVE BLOCKED: ${tradePair} VPIN=${daTracker.vpinRecursive.toFixed(3)}`);
+                console.log(`[DA-PHASE4] 👻 GHOST MOVE BLOCKED: ${tradePair} VPIN=${daTracker.vpinRecursive.toFixed(3)} < ghost_max=${DA_VPIN_GHOST_MAX} — E_sig invalid`);
                 daState.consecutivePassCount = 0; gateDiag.vpin++; continue;
               }
               if (daTracker.vpinRecursive < DA_VPIN_MIN) {
@@ -1814,7 +1814,7 @@ Deno.serve(async (req) => {
 
               daState.lastFireTs = tickTs;
 
-              console.log(`[CLIMAX] 🎯 CLIMAX STRIKE: ${tunnelDirection.toUpperCase()} ${baseUnits} ${tradePair} | H=${daTracker.hurst.toFixed(3)} E=${efficiencyDA.toFixed(1)}x Z=${zOfiDA.toFixed(2)}σ VPIN=${daTracker.vpinRecursive.toFixed(3)} | 4/4 CLIMAX GATES — NO SL | NO TP | HOLD UNTIL CLIMAX ENDS`);
+              console.log(`[DA-PHASE4] 🎯 EIGEN-SIGNAL CONFIRMED: ${tunnelDirection.toUpperCase()} ${baseUnits} ${tradePair} | H=${daTracker.hurst.toFixed(3)} E=${efficiencyDA.toFixed(1)}x Z=${zOfiDA.toFixed(2)}σ VPIN=${daTracker.vpinRecursive.toFixed(3)} | 4/4 ESIG GATES | PH5: TP=+10p SL=-10p PID-RATCHET@+3p Kp=${PID_KP} Ki=${PID_KI} Kd=${PID_KD}(directional)`);
 
               const daResult = await davidAtlasEnter(tradePair, tunnelDirection, baseUnits, tradePrice, {
                 hurst: daTracker.hurst,
