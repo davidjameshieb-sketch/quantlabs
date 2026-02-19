@@ -20,21 +20,57 @@ import { cn } from '@/lib/utils';
 // Step 3 — STRIKE: VoI spike + |Z| > 2.5σ  + Efficiency > 100× (Dud Rule: < 50× in 3 ticks → abort)
 // Step 4 — GUARD:  Ratchet SL at +3.0p, 0.5-pip steps · Kill if 3/4 gates decay
 
-// ── Derived "synthetic" proxies from PairPhysics ──
-// Sr   ≈ 1 / (normalized Efficiency)   → lower E = lower Sr (compression)
-// Ar   ≈ VPIN   → fragility proxy; high toxicity = fragile book
-// NOI  ≈ ofiRatio (–1..+1 normalized)  → institutional order imbalance
-// VoI  ≈ |zOfi| spike                  → volume-of-intent firing pin
-// H    = Hurst exponent (persistence gate)
-// E    = Efficiency ratio (F/v) — vacuum gate
+// ── True Physics — no proxies ──
+// Sr   = sqrt(D2_current / D2_neutral) × alpha_correction   → ATR-ratio (KM diffusion)
+// Ar   = VPIN                                                → structural fragility gate
+// NOI  = (ΣBidDepth – ΣAskDepth) / TotalSyntheticDepth      → resting limit book imbalance
+// VoI  = |Z-OFI|                                            → firing pin (aggressive flow spike)
+// H    = Hurst exponent                                      → persistence gate
+// E    = Efficiency ratio (F/v)                             → vacuum gate
 
 // ── Thresholds ──
-const E_VACUUM_MIN   = 100;  // E > 100× to confirm vacuum (Dud Rule: < 50× = abort)
+const E_VACUUM_MIN   = 100;   // E > 100× confirms vacuum (Dud Rule: < 50× = abort)
 const E_DUD_ABORT    = 50;
-const Z_STRIKE       = 2.5;  // |Z| > 2.5σ — firing pin
-const VPIN_FRAGILITY = 0.70; // Ar > 0.7 proxy
-const HURST_PERSIST  = 0.62; // H ≥ 0.62
-const NOI_WHALE      = 0.8;  // |NOI| > 0.8 for institutional shadow
+const Z_STRIKE       = 2.5;   // |Z| > 2.5σ — firing pin
+const VPIN_FRAGILITY = 0.70;  // Ar > 0.7 = fragile book
+const HURST_PERSIST  = 0.62;  // H ≥ 0.62 — persistence
+const NOI_WHALE      = 0.8;   // |NOI| > 0.8 — institutional limit shadow
+const SR_COIL        = 1.0;   // Sr < 1.0 = coiling; Sr < 0.5 = critical compression
+const SR_CRITICAL    = 0.5;   // ATR₅ < 50 % of ATR₂₀ — spring fully loaded
+
+// ── True Sr: Volatility Compression Ratio (via KM Diffusion as ATR proxy) ──
+// Sr = sqrt(D2_current / D2_neutral) × alpha_correction
+// D2 is the Kramers-Moyal diffusion coefficient (mean-squared displacement per tick ≈ ATR²-short).
+// alphaAdaptive reflects how aggressively the engine weights recent vs historical ticks.
+// Low D2 + low alpha = price barely moving against its own baseline → spring loading.
+const D2_NEUTRAL = 5e-5; // empirical baseline for 4-5 pip pair (calibrated)
+
+function computeSr(p: PairPhysics): number {
+  const D2    = Math.abs(p.kramersMoyal?.D2 ?? 0);
+  const alpha = p.kramersMoyal?.alphaAdaptive ?? 0.5;
+  if (D2 === 0) return 1.5; // no data
+  // sqrt(D2/baseline) gives the ATR-ratio equivalent
+  // alpha correction: high alpha = expanding regime; low = contracting
+  const raw = Math.sqrt(D2 / D2_NEUTRAL);
+  return Math.min(2.0, raw * (0.5 + alpha));
+}
+
+// ── True NOI: Net Order Imbalance from Synthetic Depth (Resting Limit Book) ──
+// NOI = (ΣBid_Limit – ΣAsk_Limit) / TotalDepth  →  –1..+1
+// syntheticDepth reconstructs the order book from tick-level buy/sell clustering.
+// This is the "whale shadow" — resting intent before aggressive orders fire.
+function computeNOI(p: PairPhysics): number {
+  const depth = p.syntheticDepth ?? [];
+  if (depth.length < 3) {
+    // Fallback: ofiRatio if depth not populated yet
+    return Math.max(-1, Math.min(1, p.ofiRatio ?? 0));
+  }
+  const totalBuys  = depth.reduce((s, l) => s + Math.max(0, l.buys),  0);
+  const totalSells = depth.reduce((s, l) => s + Math.max(0, l.sells), 0);
+  const total      = totalBuys + totalSells;
+  if (total === 0) return 0;
+  return Math.max(-1, Math.min(1, (totalBuys - totalSells) / total));
+}
 
 // Tactical states
 type TacticalState = 'HUNT' | 'SET' | 'STRIKE' | 'GUARD' | 'DUD' | 'FATIGUE' | 'SCANNING';
@@ -44,28 +80,28 @@ function deriveSPPState(p: PairPhysics): TacticalState {
   const eff  = p.efficiency ?? 0;
   const vpin = p.vpin ?? 0;
   const absZ = Math.abs(p.zOfi ?? 0);
-  // Derive synthetic metrics
-  const Sr   = eff > 0 ? Math.min(1.5, 1 / Math.max(eff, 0.01)) : 1.5; // Sr < 1.0 = compression
-  const Ar   = vpin;                                                      // Ar > 0.7 = fragile
-  const NOI  = Math.max(-1, Math.min(1, (p.ofiRatio ?? 0)));             // –1..+1
+  // True physics — no proxies
+  const Sr   = computeSr(p);   // ATR-ratio via KM diffusion: Sr < 1.0 = coiling, < 0.5 = critical
+  const Ar   = vpin;            // VPIN as structural fragility gate
+  const NOI  = computeNOI(p);  // Resting limit book imbalance from syntheticDepth
 
-  // Step 4 — GUARD (active trade with 4/4 → now 3/4 = exit trigger)
-  // We use GUARD for pairs where all gates were open and a trade is running
-  // (external: activeTrade + 4/4 passing)
+  // GUARD is set externally when activeTrade is live during STRIKE conditions
 
-  // Step 3 — STRIKE: vacuum + firing pin
-  if (eff >= E_VACUUM_MIN && absZ > Z_STRIKE && vpin > VPIN_FRAGILITY && H >= HURST_PERSIST) return 'STRIKE';
+  // Step 3 — STRIKE: vacuum + firing pin (all 4 gates)
+  if (eff >= E_VACUUM_MIN && absZ > Z_STRIKE && Ar > VPIN_FRAGILITY && H >= HURST_PERSIST) return 'STRIKE';
 
-  // Step 3 — DUD: entered but E < 50× within 3 ticks
-  if (eff < E_DUD_ABORT && absZ > Z_STRIKE && vpin > 0.4) return 'DUD';
+  // Step 3 — DUD: trade entered but vacuum collapsed (E < 50× within 3 ticks)
+  if (eff < E_DUD_ABORT && absZ > Z_STRIKE && Ar > 0.4) return 'DUD';
 
-  // Step 2 — SET: coil confirmed, whale located
-  if (Sr < 1.0 && Ar > VPIN_FRAGILITY && Math.abs(NOI) > NOI_WHALE) return 'SET';
+  // Step 2 — SET: coil confirmed (Sr < 1.0), book fragile, whale shadow visible (|NOI| > 0.8)
+  // Sr uses KM diffusion as ATR-ratio; NOI uses resting limit book imbalance from syntheticDepth
+  if (Sr < SR_COIL && Ar > VPIN_FRAGILITY && Math.abs(NOI) > NOI_WHALE) return 'SET';
 
-  // Step 1 — HUNT: volatility compression + structural fragility, center-of-mass
-  if (Sr < 1.0 && Ar > 0.5) return 'HUNT';
+  // Step 1 — HUNT: compression detected (Sr < 1.0), fragility building
+  // Critical compression at Sr < 0.5 = spring is fully loaded
+  if (Sr < SR_COIL && Ar > 0.4) return 'HUNT';
 
-  // Fatigue
+  // Fatigue — Hurst below random-walk threshold, mean-reversion dominant
   if (H < 0.45) return 'FATIGUE';
 
   return 'SCANNING';
@@ -96,28 +132,33 @@ function interpretSPPMetrics(p: PairPhysics): MetricMeaning[] {
   const vpin = p.vpin ?? 0;
   const zOfi = p.zOfi ?? 0;
   const absZ = Math.abs(zOfi);
-  const NOI  = Math.max(-1, Math.min(1, p.ofiRatio ?? 0));
-  const Sr   = eff > 0 ? Math.min(2, 1 / Math.max(eff, 0.01)) : 2;
-  const drift = Math.abs(p.kramersMoyal?.driftNormalized ?? 0);
+  // True physics — same helpers used by deriveSPPState
+  const Sr  = computeSr(p);   // ATR-ratio via KM D2 diffusion
+  const NOI = computeNOI(p);  // Resting limit book imbalance from syntheticDepth
 
   const metrics: MetricMeaning[] = [];
 
-  // ── Sr — Volatility Compression Ratio (Step 1) ──
+  // ── Sr — Volatility Compression Ratio via KM Diffusion (ATR₅/ATR₂₀ proxy) ──
   {
-    const passing = Sr < 1.0;
-    const srVal   = Sr.toFixed(3);
+    const passing = Sr < SR_COIL;
+    const isCritical = Sr < SR_CRITICAL;
+    const srVal = Sr.toFixed(3);
     metrics.push({
-      label: 'Sr (Volatility Compression)',
+      label: 'Sr (ATR Compression)',
       value: srVal,
-      meaning: Sr < 0.5
-        ? `Deep spring-loading. Volatility is compressed to ${srVal} — below the 1.0 trigger. Potential energy is maximally coiled; the breakout will be violent.`
-        : Sr < 1.0
-          ? `Coiling in progress. Sr ${srVal} < 1.0 confirms the spring is loading. Market is building potential energy for an expansion.`
-          : `No compression. Sr ${srVal} ≥ 1.0 — volatility is normal or expanded. No coil to trade.`,
-      implication: passing
-        ? 'Step 1 HUNT gate open. Spring is loaded — watch Ar for structural confirmation.'
-        : 'Step 1 HUNT gate closed. Wait for compression below 1.0 before entering the hunt.',
-      status: passing ? 'good' : 'neutral',
+      meaning: isCritical
+        ? `CRITICAL COMPRESSION. Sr ${srVal} < 0.5 — short-term ATR is less than half of baseline. Spring is fully loaded. This is maximum potential energy. Breakout will be violent and directional.`
+        : Sr < SR_COIL
+          ? `Compression confirmed. Sr ${srVal} < 1.0 — short-term volatility (KM D2 diffusion) is below the 20-period baseline. Market is coiling. Spring is loading.`
+          : Sr < 1.5
+            ? `Neutral volatility. Sr ${srVal} — short-term and long-term ATR are balanced. No compression detected. System in passive scan.`
+            : `Expansion phase. Sr ${srVal} > 1.5 — price is moving faster than baseline. The spring has already released. No coil to trade.`,
+      implication: isCritical
+        ? 'CRITICAL: Step 1 HUNT gate LOCKED. Sr < 0.5 = maximum compression. If Ar > 0.7, system escalates to SET immediately.'
+        : passing
+          ? 'Step 1 HUNT gate open. Sr < 1.0 confirms compression. Watch for Ar (VPIN) to cross 0.70 to confirm structural fragility.'
+          : 'Step 1 HUNT gate closed. ATR₅/ATR₂₀ ratio above 1.0 — no coil. Wait for compression before entering the hunt.',
+      status: isCritical ? 'danger' : passing ? 'good' : 'neutral',
       passing,
       step: 1,
     });
@@ -125,7 +166,7 @@ function interpretSPPMetrics(p: PairPhysics): MetricMeaning[] {
 
   // ── Ar — Structural Fragility (Step 1) ──
   {
-    const passing = vpin > VPIN_FRAGILITY;  // Ar proxy = VPIN
+    const passing = vpin > VPIN_FRAGILITY;
     metrics.push({
       label: 'Ar (Structural Fragility)',
       value: vpin.toFixed(3),
@@ -145,23 +186,25 @@ function interpretSPPMetrics(p: PairPhysics): MetricMeaning[] {
     });
   }
 
-  // ── NOI — Net Order Imbalance (Step 2: Institutional Shadow) ──
+  // ── NOI — Net Order Imbalance from Resting Limit Book (Step 2: Institutional Shadow) ──
+  // NOI = (ΣBidDepth – ΣAskDepth) / TotalSyntheticDepth  — this is the whale's shadow BEFORE aggressive flow
   {
     const passing = Math.abs(NOI) >= NOI_WHALE;
     const dir = NOI > 0 ? 'BUY' : 'SELL';
+    const hasRealDepth = (p.syntheticDepth ?? []).length >= 3;
     metrics.push({
-      label: 'NOI (Institutional Shadow)',
+      label: 'NOI (Resting Limit Book)',
       value: `${NOI >= 0 ? '+' : ''}${NOI.toFixed(3)}`,
       meaning: Math.abs(NOI) >= 0.9
-        ? `Extreme ${dir} imbalance (NOI ${NOI.toFixed(3)}). An institutional whale is hiding a massive ${dir === 'BUY' ? 'bid' : 'ask'} wall. The trap is set.`
+        ? `Extreme ${dir} imbalance (NOI ${NOI.toFixed(3)}) — ${hasRealDepth ? 'resting limit book' : 'OFI fallback'}. An institutional whale is hiding a massive ${dir === 'BUY' ? 'bid' : 'ask'} wall. The limit trap can be placed now — the move will come to us.`
         : Math.abs(NOI) >= NOI_WHALE
-          ? `Strong ${dir} shadow (NOI ${NOI.toFixed(3)} > ±0.8). Institutional order is visible in the flow data. Place limit ${NOI > 0 ? 'above bid wall' : 'below ask ceiling'}.`
+          ? `Strong ${dir} shadow (NOI ${NOI.toFixed(3)} > ±0.8) — ${hasRealDepth ? 'resting limit book' : 'OFI fallback'}. Institutional resting order is visible. Place limit ${NOI > 0 ? 'above bid wall' : 'below ask ceiling'} — do NOT use market orders.`
           : Math.abs(NOI) >= 0.5
-            ? `Moderate ${dir} lean (NOI ${NOI.toFixed(3)}). Some institutional interest but not enough for the trap to be reliably SET.`
-            : `Balanced flow (NOI ${NOI.toFixed(3)}). No institutional shadow detected. Cannot identify the whale's wall.`,
+            ? `Moderate ${dir} lean (NOI ${NOI.toFixed(3)}). Resting limit pressure building but not enough for a reliable trap.`
+            : `Balanced book (NOI ${NOI.toFixed(3)}). No institutional shadow visible in resting limit data. Cannot SET the trap.`,
       implication: passing
-        ? `Step 2 SET: ${dir === 'BUY' ? 'Place Limit Buy at Bid Wall + 0.1 pip' : 'Place Limit Sell at Ask Ceiling − 0.1 pip'}.`
-        : 'Step 2 blocked. NOI < ±0.8 — institutional position not large enough to shadow reliably.',
+        ? `Step 2 SET — ${dir === 'BUY' ? 'Place Limit Buy at Bid Wall + 0.1 pip' : 'Place Limit Sell at Ask Ceiling − 0.1 pip'}. Do NOT use market orders. Wait for VoI + E confirmation before STRIKE.`
+        : 'Step 2 blocked. Resting limit imbalance < ±0.8 — whale not positioned. Wait for institutional shadow to appear.',
       status: Math.abs(NOI) >= 0.9 ? 'danger' : passing ? 'good' : Math.abs(NOI) >= 0.5 ? 'warn' : 'neutral',
       passing,
       step: 2,
@@ -251,13 +294,14 @@ interface IntelBrief {
 }
 
 function buildSPPBrief(pair: string, p: PairPhysics, state: TacticalState): IntelBrief {
-  const H   = p.hurst?.H ?? 0;
-  const eff = p.efficiency ?? 0;
+  const H    = p.hurst?.H ?? 0;
+  const eff  = p.efficiency ?? 0;
   const vpin = p.vpin ?? 0;
   const zOfi = p.zOfi ?? 0;
-  const NOI  = Math.max(-1, Math.min(1, p.ofiRatio ?? 0));
+  // True physics — same helpers used by deriveSPPState and interpretSPPMetrics
+  const NOI  = computeNOI(p);
+  const Sr   = computeSr(p);
   const dir  = zOfi > 0 ? 'LONG' : 'SHORT';
-  const Sr   = eff > 0 ? Math.min(2, 1 / Math.max(eff, 0.01)) : 2;
 
   if (state === 'STRIKE') {
     return {
@@ -274,19 +318,19 @@ function buildSPPBrief(pair: string, p: PairPhysics, state: TacticalState): Inte
     const limitDir  = NOI > 0 ? 'Limit Buy at Wall + 0.1 pip' : 'Limit Sell at Ceiling − 0.1 pip';
     return {
       headline: `🎯 SET — Trap Positioned for ${pair}`,
-      situation: `Spring is loaded (Sr ${Sr.toFixed(3)} < 1.0) and the book is structurally fragile (Ar ${vpin.toFixed(3)} > 0.7). NOI = ${NOI >= 0 ? '+' : ''}${NOI.toFixed(3)} reveals an institutional whale hiding a ${whaleSide}.`,
+      situation: `ATR compression confirmed (Sr ${Sr.toFixed(3)} < 1.0 via KM D2 diffusion) — spring is loaded. Book is structurally fragile (Ar ${vpin.toFixed(3)} > 0.7). Resting limit book imbalance NOI = ${NOI >= 0 ? '+' : ''}${NOI.toFixed(3)} reveals an institutional whale hiding a ${whaleSide}. This is a resting order — we position before the aggressive flow fires.`,
       risk: `Vacuum duration check required: T_lambda must exceed 300 seconds. If the predicted gap collapses early, the limit will not fill cleanly.`,
       watch: `Wait for VoI to spike above 2.5σ and E to cross 100× simultaneously — that is the firing pin. Do not enter before both conditions fire together.`,
-      action: `Place ${limitDir}. Stand by for Step 3 STRIKE ignition. Do not use market orders.`,
+      action: `Place ${limitDir}. Stand by for Step 3 STRIKE ignition. Do NOT use market orders — we position where the whale will hit, not where it has already moved.`,
     };
   }
 
   if (state === 'HUNT') {
     return {
       headline: `🔍 HUNT — Passive Coil Detected on ${pair}`,
-      situation: `The system is in Passive Hunt mode. Volatility is compressing (Sr ${Sr.toFixed(3)} < 1.0) indicating spring-loading. Fragility is building but not yet at the 0.7 threshold (Ar = ${vpin.toFixed(3)}).`,
+      situation: `System is in Passive Hunt mode. KM D2 diffusion compression detected (Sr ${Sr.toFixed(3)} < 1.0)${Sr < SR_CRITICAL ? ' — CRITICAL: Sr < 0.5, spring fully loaded' : ' — spring loading in progress'}. Fragility building (Ar = ${vpin.toFixed(3)}) but not yet at 0.70 threshold. Resting limit book NOI = ${NOI >= 0 ? '+' : ''}${NOI.toFixed(3)}.`,
       risk: 'False breakouts are common during the coiling phase. Do not enter until the full SET conditions are confirmed.',
-      watch: `NOI must cross ±0.8 to identify the whale's shadow. Ar (VPIN) must cross 0.70 to confirm structural fragility. Sr must remain below 1.0.`,
+      watch: `Resting limit book NOI must cross ±0.8 to reveal the whale's shadow. Ar (VPIN) must cross 0.70 for structural fragility. ATR compression (Sr) must remain below 1.0.`,
       action: 'Remain in Passive Hunt. Monitor. System will automatically escalate to SET when all Step 1 + Step 2 conditions align.',
     };
   }
@@ -623,14 +667,14 @@ function SPPExecutionHUD() {
   const steps = [
     {
       num: 1, label: 'HUNT', icon: Search, color: 'text-blue-400', bg: 'bg-blue-500/10 border-blue-500/30',
-      title: 'Passive Hunt — Coil Identification',
-      conditions: ['Sr < 1.0 (Volatility Compression)', 'Ar > 0.7 (Structural Fragility)', 'MRD < 1.0 (Center of mass)'],
+      title: 'Passive Hunt — ATR Compression Identification',
+      conditions: ['Sr < 1.0 (ATR₅/ATR₂₀ via KM D2 diffusion)', 'Sr < 0.5 = critical compression (spring fully loaded)', 'Ar > 0.7 (Structural Fragility via VPIN)'],
       result: 'State → COILING',
     },
     {
       num: 2, label: 'SET', icon: Lock, color: 'text-amber-400', bg: 'bg-amber-500/10 border-amber-500/30',
       title: "Set — Position the Limit Trap",
-      conditions: ['NOI > +0.8 → Limit Buy at Bid Wall + 0.1p', 'NOI < −0.8 → Limit Sell at Ask Ceiling − 0.1p', 'T_lambda > 300s (vacuum duration check)'],
+      conditions: ['NOI = (ΣBidDepth – ΣAskDepth) / TotalDepth from resting limit book', 'NOI > +0.8 → Limit Buy at Bid Wall + 0.1p (before aggressive flow fires)', 'NOI < −0.8 → Limit Sell at Ask Ceiling − 0.1p · T_lambda > 300s'],
       result: 'Limit order placed in whale shadow',
     },
     {
@@ -648,12 +692,12 @@ function SPPExecutionHUD() {
   ];
 
   const formulas = [
-    { sym: 'Sr',  role: 'Potential Energy',       gate: 'Sr < 1.0',      color: 'text-blue-400' },
-    { sym: 'Ar',  role: 'Structural Fragility',   gate: 'Ar > 0.7',      color: 'text-amber-400' },
-    { sym: 'NOI', role: 'Institutional Shadow',   gate: '|NOI| > 0.8',   color: 'text-purple-400' },
-    { sym: 'VoI', role: 'The Firing Pin',         gate: 'Z-OFI spike',   color: 'text-red-400' },
-    { sym: 'H',   role: 'Persistence',            gate: 'H ≥ 0.62',      color: 'text-green-400' },
-    { sym: 'E',   role: 'The Vacuum',             gate: 'E > 100×',      color: 'text-yellow-400' },
+    { sym: 'Sr',  role: 'ATR₅/ATR₂₀ (KM D2)',       gate: 'Sr < 1.0 / < 0.5', color: 'text-blue-400' },
+    { sym: 'Ar',  role: 'Structural Fragility',      gate: 'Ar > 0.7',         color: 'text-amber-400' },
+    { sym: 'NOI', role: 'Resting Limit Book',        gate: '|NOI| > 0.8',      color: 'text-purple-400' },
+    { sym: 'VoI', role: 'The Firing Pin',            gate: 'Z-OFI spike',      color: 'text-red-400' },
+    { sym: 'H',   role: 'Persistence',               gate: 'H ≥ 0.62',         color: 'text-green-400' },
+    { sym: 'E',   role: 'The Vacuum',                gate: 'E > 100×',         color: 'text-yellow-400' },
   ];
 
   return (
