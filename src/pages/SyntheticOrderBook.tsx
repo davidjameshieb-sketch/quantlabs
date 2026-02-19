@@ -248,8 +248,8 @@ function SyntheticDepthMap({ snapshot, activeTrades }: { snapshot: any; activeTr
     <div className="rounded-xl border border-border/40 bg-card/60 overflow-hidden">
       <div className="px-4 py-2.5 border-b border-border/30 flex items-center gap-2">
         <Layers className="w-3.5 h-3.5 text-primary" />
-        <span className="text-[10px] font-bold uppercase tracking-widest">Synthetic Depth Map — NOI Heatmap</span>
-        <span className="ml-auto text-[8px] font-mono text-muted-foreground">Laplace ΔP · Institutional Walls</span>
+        <span className="text-[10px] font-bold uppercase tracking-widest">Loading Docks — Whale Wall Map</span>
+        <span className="ml-auto text-[8px] font-mono text-muted-foreground">Dock Pressure · Institutional Freight</span>
       </div>
       <div className="p-3 space-y-1.5">
         {ranked.map(({ pair, p, noi, eff }) => {
@@ -466,32 +466,33 @@ function PIDRatchetConsole({ activeTrades, snapshot }: { activeTrades: any[]; sn
               {/* PID terms */}
               <div className="grid grid-cols-3 gap-1">
                 {[
-                  { label: 'Kp×dist', val: `${Kp}`, color: 'text-blue-400' },
-                  { label: 'Ki×time', val: `${(Ki * elapsed / 60).toFixed(3)}`, color: 'text-purple-400' },
-                  { label: 'Kd×vel', val: `${Kd}`, color: 'text-yellow-400' },
-                ].map(({ label, val, color }) => (
+                  { label: 'Distance', sublabel: 'Tighten as profit grows', val: `${Kp}`, color: 'text-blue-400' },
+                  { label: 'Time', sublabel: 'Suffocate stalling trade', val: `${(Ki * elapsed / 60).toFixed(3)}`, color: 'text-purple-400' },
+                  { label: 'Velocity', sublabel: 'Snap fwd on price surge', val: `${Kd}`, color: 'text-yellow-400' },
+                ].map(({ label, sublabel, val, color }) => (
                   <div key={label} className="rounded bg-muted/20 px-1.5 py-1 text-center">
                     <div className="text-[7px] text-muted-foreground font-mono">{label}</div>
                     <div className={cn('text-[9px] font-mono font-bold', color)}>{val}</div>
+                    <div className="text-[6px] text-muted-foreground/60 font-mono leading-tight mt-0.5">{sublabel}</div>
                   </div>
                 ))}
               </div>
 
-              {/* Override monitors */}
-              <div className="flex items-center gap-2">
+              {/* Override monitors — supply chain language */}
+              <div className="flex items-center gap-2 flex-wrap">
                 <div className={cn('flex items-center gap-1 text-[7px] font-mono px-1.5 py-0.5 rounded border',
                   H < 0.45 ? 'bg-red-500/20 text-red-400 border-red-500/40' : 'bg-muted/20 text-muted-foreground border-border/30')}>
-                  <span>H={H.toFixed(2)}</span>
-                  {H < 0.45 && <span className="font-bold">⚠ OVERRIDE</span>}
+                  <span title="Workflow Rhythm — workers walking straight (≥0.55) or lost (<0.45)">🚶 Rhythm={H.toFixed(2)}</span>
+                  {H < 0.45 && <span className="font-bold">⚠ COLLAPSE</span>}
                 </div>
                 <div className={cn('flex items-center gap-1 text-[7px] font-mono px-1.5 py-0.5 rounded border',
                   eff < E_DUD_ABORT ? 'bg-red-500/20 text-red-400 border-red-500/40' : 'bg-muted/20 text-muted-foreground border-border/30')}>
-                  <span>E={eff.toFixed(0)}×</span>
+                  <span title="Floor Friction — polished epoxy (>100×) vs cracked concrete (<50×)">🏭 Friction={eff.toFixed(0)}×</span>
                   {eff < E_DUD_ABORT && <span className="font-bold">DUD</span>}
                 </div>
                 <div className={cn('flex items-center gap-1 text-[7px] font-mono px-1.5 py-0.5 rounded border ml-auto',
-                  Math.abs(Z) < 0 ? 'bg-red-500/20 text-red-400 border-red-500/40' : 'bg-muted/20 text-muted-foreground border-border/30')}>
-                  <span>Z={Z >= 0 ? '+' : ''}{Z.toFixed(1)}σ</span>
+                  Math.abs(Z) > Z_STRIKE ? 'bg-yellow-500/10 text-yellow-400 border-yellow-500/30' : 'bg-muted/20 text-muted-foreground border-border/30')}>
+                  <span title="Loading Docks — 40 outbound trucks (>2.5σ) = Whale arrived">🚛 Docks={Z >= 0 ? '+' : ''}{Z.toFixed(1)}σ</span>
                 </div>
               </div>
             </div>
@@ -538,7 +539,7 @@ function EigenOscilloscope({ snapshot, activeTrades }: { snapshot: any; activeTr
     <div className="rounded-xl border border-border/40 bg-card/60 overflow-hidden">
       <div className="px-3 py-2 border-b border-border/30 flex items-center gap-2">
         <Zap className={cn('w-3.5 h-3.5', strikeActive ? 'text-yellow-400 animate-pulse' : 'text-primary')} />
-        <span className="text-[10px] font-bold uppercase tracking-widest">Eigen-Signal Telemetry</span>
+        <span className="text-[10px] font-bold uppercase tracking-widest">Eigen-Signal — Dock & Friction Scope</span>
         {strikeActive && (
           <div className="ml-auto w-2 h-2 rounded-full bg-yellow-400 animate-ping" />
         )}
@@ -581,11 +582,17 @@ function EigenOscilloscope({ snapshot, activeTrades }: { snapshot: any; activeTr
               <div className="flex items-center justify-between">
                 <span className={cn('text-[9px] font-mono font-black', isHot ? 'text-yellow-300' : 'text-foreground')}>{pair}</span>
                 <div className="flex items-center gap-1.5">
-                  <span className={cn('text-[8px] font-mono font-bold', Math.abs(Z) > Z_STRIKE ? 'text-red-400' : 'text-muted-foreground')}>
-                    Z{Z >= 0 ? '+' : ''}{Z.toFixed(1)}σ
+                  <span
+                    title="Loading Docks: outbound truck surge (>+2.5σ = Whale buy, <-2.5σ = Whale sell)"
+                    className={cn('text-[8px] font-mono font-bold', Math.abs(Z) > Z_STRIKE ? 'text-red-400' : 'text-muted-foreground')}
+                  >
+                    🚛{Z >= 0 ? '+' : ''}{Z.toFixed(1)}σ
                   </span>
-                  <span className={cn('text-[8px] font-mono font-bold', E > E_VACUUM_MIN ? 'text-yellow-400' : 'text-muted-foreground')}>
-                    E{E.toFixed(0)}×
+                  <span
+                    title="Floor Friction: >100× = polished epoxy vacuum, <50× = broken pallet on concrete"
+                    className={cn('text-[8px] font-mono font-bold', E > E_VACUUM_MIN ? 'text-yellow-400' : 'text-muted-foreground')}
+                  >
+                    🏭{E.toFixed(0)}×
                   </span>
                   {isHot && <div className="w-1.5 h-1.5 rounded-full bg-yellow-400 animate-pulse" />}
                   {isDud && <div className="w-1.5 h-1.5 rounded-full bg-red-500 animate-ping" />}
@@ -1153,16 +1160,16 @@ function TacticalUnitCard({ pair, data, activeTrade }: { pair: string; data: Pai
           <Badge variant="outline" className={cn('text-[7px] font-mono font-bold', stateMeta.color)}>{stateMeta.label}</Badge>
         </div>
 
-        {/* Gate bar */}
-        <div className="flex items-center gap-1.5">
+        {/* Gate bar — supply chain phase gates */}
+        <div className="flex items-center gap-1 flex-wrap">
           {[
-            { pass: Sr < SR_COIL, label: 'S/N' },
-            { pass: Math.abs(NOI) > NOI_WHALE, label: 'NOI' },
-            { pass: Math.abs(Z) > Z_STRIKE, label: 'Z' },
-            { pass: E > E_VACUUM_MIN, label: 'E' },
-            { pass: H >= HURST_PERSIST, label: 'H' },
-          ].map(({ pass, label }) => (
-            <div key={label} className={cn('text-[6px] font-mono font-bold px-1 py-0.5 rounded border',
+            { pass: Sr < SR_COIL,               label: '🎚 Belt',   title: 'Conveyor Belt S/N ≥1.5: smooth belt movement, low vibration' },
+            { pass: Math.abs(NOI) > NOI_WHALE,  label: '🚛 Docks',  title: 'Loading Docks NOI >0.8: 40 outbound trucks — Whale arrived' },
+            { pass: Math.abs(Z) > Z_STRIKE,     label: '⚡ Force',   title: 'Dock Z-score >2.5σ: sudden priority manifest surge' },
+            { pass: E > E_VACUUM_MIN,           label: '🏭 Floor',   title: 'Floor Friction >100×: polished epoxy — zero resistance vacuum' },
+            { pass: H >= HURST_PERSIST,         label: '🚶 Rhythm',  title: 'Workflow Rhythm H ≥0.62: workers walking in straight lines' },
+          ].map(({ pass, label, title }) => (
+            <div key={label} title={title} className={cn('text-[6px] font-mono font-bold px-1 py-0.5 rounded border cursor-help',
               pass ? 'bg-green-500/20 text-green-400 border-green-500/30' : 'bg-muted/10 text-muted-foreground/40 border-border/20')}>
               {label}
             </div>
@@ -1170,16 +1177,17 @@ function TacticalUnitCard({ pair, data, activeTrade }: { pair: string; data: Pai
           <span className={cn('ml-auto text-[9px] font-mono font-bold', biasColor)}>{p.bias}</span>
         </div>
 
-        {/* Key metrics */}
+        {/* Key metrics — plain English */}
         <div className="grid grid-cols-3 gap-1 text-center">
           {[
-            { label: 'Z-OFI', value: `${Z >= 0 ? '+' : ''}${Z.toFixed(1)}σ`, hot: Math.abs(Z) > Z_STRIKE },
-            { label: 'E', value: `${E.toFixed(0)}×`, hot: E > E_VACUUM_MIN },
-            { label: 'H', value: H.toFixed(2), hot: H >= HURST_PERSIST },
-          ].map(({ label, value, hot }) => (
-            <div key={label} className="rounded bg-muted/20 px-1 py-1">
+            { label: 'Docks', sublabel: 'Whale trucks', value: `${Z >= 0 ? '+' : ''}${Z.toFixed(1)}σ`, hot: Math.abs(Z) > Z_STRIKE, title: 'Loading Docks Z-OFI: >+2.5σ = massive buy surge, <-2.5σ = sell flood' },
+            { label: 'Friction', sublabel: 'Floor polish', value: `${E.toFixed(0)}×`, hot: E > E_VACUUM_MIN, title: 'Floor Friction Efficiency: >100× = zero resistance vacuum, <50× = broken pallet' },
+            { label: 'Rhythm', sublabel: 'Workflow', value: H.toFixed(2), hot: H >= HURST_PERSIST, title: 'Workflow Rhythm Hurst: ≥0.62 = walking in straight lines, <0.45 = lost workers (exit)' },
+          ].map(({ label, sublabel, value, hot, title }) => (
+            <div key={label} title={title} className="rounded bg-muted/20 px-1 py-1 cursor-help">
               <div className="text-[7px] text-muted-foreground font-mono">{label}</div>
               <div className={cn('text-[9px] font-mono font-bold', hot ? 'text-yellow-400' : 'text-foreground')}>{value}</div>
+              <div className="text-[6px] text-muted-foreground/50 font-mono">{sublabel}</div>
             </div>
           ))}
         </div>
@@ -1205,16 +1213,49 @@ function TacticalUnitCard({ pair, data, activeTrade }: { pair: string; data: Pai
         </button>
 
         {showDetails && (
-          <div className="pt-1 space-y-1 border-t border-border/20">
+          <div className="pt-1 space-y-1.5 border-t border-border/20">
             {[
-              { label: 'Sr (S/N proxy)', value: Sr.toFixed(3), pass: Sr < SR_COIL },
-              { label: 'NOI (Laplace)', value: `${NOI >= 0 ? '+' : ''}${NOI.toFixed(3)}`, pass: Math.abs(NOI) > NOI_WHALE },
-              { label: 'VPIN (Ar)', value: (p.vpin ?? 0).toFixed(3), pass: (p.vpin ?? 0) > VPIN_FRAGILITY },
-              { label: 'KM D1 (drift)', value: (p.kramersMoyal?.D1 ?? 0).toExponential(2), pass: true },
-              { label: 'KM D2 (diffusion)', value: (p.kramersMoyal?.D2 ?? 0).toExponential(2), pass: true },
-            ].map(({ label, value, pass }) => (
-              <div key={label} className="flex items-center justify-between">
-                <span className="text-[7px] font-mono text-muted-foreground">{label}</span>
+              {
+                label: '🎚 Belt Speed (S/N)',
+                desc: 'Conveyor smooth?',
+                value: Sr.toFixed(3),
+                pass: Sr < SR_COIL,
+                tip: `D1/√D2 = ${Sr.toFixed(3)}. Belt is ${Sr < SR_COIL ? 'smooth — belt running (<1.0)' : 'vibrating — jitter too high'}`,
+              },
+              {
+                label: '🚛 Dock Pressure (NOI)',
+                desc: 'Whale truck surge',
+                value: `${NOI >= 0 ? '+' : ''}${NOI.toFixed(3)}`,
+                pass: Math.abs(NOI) > NOI_WHALE,
+                tip: `Net Order Imbalance = ${NOI.toFixed(3)}. ${Math.abs(NOI) > NOI_WHALE ? '40+ trucks docked — Whale wall active' : 'Normal dock traffic'}`,
+              },
+              {
+                label: '🏗 VIP Override (VPIN)',
+                desc: 'Floor managers fleeing?',
+                value: (p.vpin ?? 0).toFixed(3),
+                pass: (p.vpin ?? 0) > VPIN_FRAGILITY,
+                tip: `VPIN = ${(p.vpin??0).toFixed(3)}. ${(p.vpin??0) > VPIN_FRAGILITY ? 'VIP corporate truck arrived — market makers pulling out' : 'Normal floor traffic'}`,
+              },
+              {
+                label: '⚡ Belt Velocity (D1)',
+                desc: 'Freight speed',
+                value: (p.kramersMoyal?.D1 ?? 0).toExponential(2),
+                pass: true,
+                tip: 'KM Drift D1: actual forward speed of the price conveyor belt',
+              },
+              {
+                label: '📳 Belt Vibration (D2)',
+                desc: 'Noise floor',
+                value: (p.kramersMoyal?.D2 ?? 0).toExponential(2),
+                pass: true,
+                tip: 'KM Diffusion D2: vibration of the belt — high = boxes falling off',
+              },
+            ].map(({ label, desc, value, pass, tip }) => (
+              <div key={label} title={tip} className="flex items-center justify-between cursor-help group">
+                <div>
+                  <span className="text-[7px] font-mono text-muted-foreground group-hover:text-foreground/70 transition-colors">{label}</span>
+                  <div className="text-[6px] font-mono text-muted-foreground/50">{desc}</div>
+                </div>
                 <span className={cn('text-[8px] font-mono font-bold', pass ? 'text-green-400' : 'text-muted-foreground')}>{value}</span>
               </div>
             ))}
