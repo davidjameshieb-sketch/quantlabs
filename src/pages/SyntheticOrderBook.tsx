@@ -1,10 +1,11 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { motion } from 'framer-motion';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
 import {
   BookOpen, Activity, Zap, Eye, Shield, TrendingUp, Waves,
   RefreshCw, Crosshair, Radio, Siren, Brain, Target,
   ArrowUp, ArrowDown, Minus, ChevronRight, AlertTriangle,
-  Lock, Flame, Search, GitBranch, TriangleAlert,
+  Lock, Flame, Search, GitBranch, TriangleAlert, Power,
+  Cpu, Clock, Terminal, Layers, Gauge, AlertCircle,
 } from 'lucide-react';
 import { DashboardLayout } from '@/components/dashboard/DashboardLayout';
 import { IntelligenceModeBadge } from '@/components/dashboard/IntelligenceModeBadge';
@@ -12,107 +13,45 @@ import { Badge } from '@/components/ui/badge';
 import { useSyntheticOrderBook, type PairPhysics } from '@/hooks/useSyntheticOrderBook';
 import { ClimaxBacktestLog } from '@/components/forex/floor-manager/ClimaxBacktestLog';
 import { cn } from '@/lib/utils';
+import { supabase } from '@/integrations/supabase/client';
 
-// ─── David-Atlas "Regime-Switching Liquidity Predation" — 5-Phase DGE Rulebook ──
-//
-// Phase 1 — ENVIRONMENT GATE (Shannon-Hartley):  S/N ≥ 1.5 → ACTIVE_HUNT
-// Phase 2 — TARGET ACQUISITION (Laplace + NOI):  |NOI| > 0.8 + ΔP critical → Place limit trap
-// Phase 3 — SIZING ENGINE (Kelly Criterion):     f* = p − q/b · Hard cap: 5% of $307.42 NAV
-// Phase 4 — EXECUTION TRIGGER (SVD Eigen-Signal): E_sig spike → Limit fill · E_sig decay 500ms → abort
-// Phase 5 — WEAPONIZED EXIT (PID Ratchet):       TP=+10p SL=−10p · PID trail at +3p · Kd directional-aware (zero on adverse moves) · SVD override
-
-// ── True Physics — no proxies ──
-// S/N  = directional tick volume / mean-reverting chop      → Shannon-Hartley regime gate
-// Sr   = sqrt(D2_current / D2_neutral) × alpha_correction   → ATR-ratio (KM diffusion, proxy for S/N)
-// NOI  = (ΣBidDepth – ΣAskDepth) / TotalSyntheticDepth      → resting limit book imbalance (Laplace input)
-// ΔP   = Laplace pressure at NOI fault line                  → structural break point
-// E_sig = SVD composite of [E, Z-OFI]                       → Eigen-Signal firing pin
-// H    = Hurst exponent                                      → persistence (PID regime health)
-// VPIN = Ar structural fragility                             → book thinness gate
-
-// ── Thresholds ──
-const SN_MIN          = 1.5;   // S/N ≥ 1.5 → ACTIVE_HUNT (Phase 1 awakening)
-const E_VACUUM_MIN    = 100;   // E > 100× confirms vacuum / E_sig baseline (Phase 4)
-const E_DUD_ABORT     = 50;    // Dud Rule: E_sig decays < 50× within 3 ticks → abort
-const Z_STRIKE        = 2.5;   // |Z| > 2.5σ — SVD Eigen-Signal component
-const VPIN_FRAGILITY  = 0.70;  // Ar > 0.7 = fragile book (Phase 2 prerequisite)
-const HURST_PERSIST   = 0.62;  // H ≥ 0.62 — PID ratchet health gate
-const NOI_WHALE       = 0.8;   // |NOI| > 0.8 — Laplace fault line confirmed
-const SR_COIL         = 1.0;   // Sr < 1.0 = S/N compressed; Sr < 0.5 = critical
-const SR_CRITICAL     = 0.5;   // ATR₅ < 50 % of ATR₂₀ — maximum compression
-const KELLY_MAX_RISK  = 0.05;  // Hard ceiling: never risk > 5% of NAV ($307.42)
-const PID_TRAIL_START = 3.0;   // PID ratchet activates at +3.0 pips profit
-const PID_TP          = 10.0;  // Target: +10.0 pips
-const PID_SL          = -10.0; // Initial SL: −10.0 pips
-
-// ── True Sr: S/N proxy via KM Diffusion (Shannon-Hartley Phase 1 input) ──
-// Sr = sqrt(D2_current / D2_neutral) × alpha_correction ≈ ATR₅/ATR₂₀
-// D2 is the Kramers-Moyal diffusion coefficient (mean-squared displacement per tick ≈ ATR²-short).
-// Sr < 1.0 → directional signal dominates noise → Phase 1 ACTIVE_HUNT condition met.
-// Sr ≥ 1.5 → noise dominates → Phase 1 STANDBY (DGE cancels all pending limit orders).
-const D2_NEUTRAL = 5e-5; // empirical baseline for 4-5 pip pair (calibrated)
+// ─── David-Atlas SPP v2.0 — Thresholds ────────────────────────────────────────
+const SN_MIN          = 1.5;
+const E_VACUUM_MIN    = 100;
+const E_DUD_ABORT     = 50;
+const Z_STRIKE        = 2.5;
+const VPIN_FRAGILITY  = 0.70;
+const HURST_PERSIST   = 0.62;
+const NOI_WHALE       = 0.8;
+const SR_COIL         = 1.0;
+const SR_CRITICAL     = 0.5;
+const KELLY_MAX_RISK  = 0.05;
+const PID_TRAIL_START = 3.0;
+const PID_TP          = 10.0;
+const PID_SL          = -10.0;
+const D2_NEUTRAL      = 5e-5;
 
 function computeSr(p: PairPhysics): number {
-  const D2    = Math.abs(p.kramersMoyal?.D2 ?? 0);
+  const D2 = Math.abs(p.kramersMoyal?.D2 ?? 0);
   const alpha = p.kramersMoyal?.alphaAdaptive ?? 0.5;
-  if (D2 === 0) return 1.5; // no data
-  // sqrt(D2/baseline) gives the ATR-ratio equivalent
-  // alpha correction: high alpha = expanding regime; low = contracting
-  const raw = Math.sqrt(D2 / D2_NEUTRAL);
-  return Math.min(2.0, raw * (0.5 + alpha));
+  if (D2 === 0) return 1.5;
+  return Math.min(2.0, Math.sqrt(D2 / D2_NEUTRAL) * (0.5 + alpha));
 }
 
-// ── True NOI: Net Order Imbalance from Synthetic Depth (Resting Limit Book) ──
-// NOI = (ΣBid_Limit – ΣAsk_Limit) / TotalDepth  →  –1..+1
-// syntheticDepth reconstructs the order book from tick-level buy/sell clustering.
-// This is the "whale shadow" — resting intent before aggressive orders fire.
 function computeNOI(p: PairPhysics): number {
   const depth = p.syntheticDepth ?? [];
-  if (depth.length < 3) {
-    // Fallback: ofiRatio if depth not populated yet
-    return Math.max(-1, Math.min(1, p.ofiRatio ?? 0));
-  }
+  if (depth.length < 3) return Math.max(-1, Math.min(1, p.ofiRatio ?? 0));
   const totalBuys  = depth.reduce((s, l) => s + Math.max(0, l.buys),  0);
   const totalSells = depth.reduce((s, l) => s + Math.max(0, l.sells), 0);
-  const total      = totalBuys + totalSells;
+  const total = totalBuys + totalSells;
   if (total === 0) return 0;
   return Math.max(-1, Math.min(1, (totalBuys - totalSells) / total));
 }
 
-// ─── Per-pair Dud Rule anchor ────────────────────────────────────────────────
-// Tracks when each pair entered STRIKE state (first tick of STRIKE window).
-// DUD only fires within DUD_WINDOW_TICKS ticks of STRIKE onset.
-// Without this, DUD fires stale — any pair with E<50× after the vacuum closes
-// would show DUD even if the trade already exited 20 minutes ago. Bug #4.
-const strikeOnsetMap = new Map<string, { tick: number; ts: number }>();
-let globalTickCounter = 0; // increments every snapshot poll
-
-// ─── Per-pair sparkline ring-buffer (last 10 snapshot ticks) ─────────────────
-// Stores snapshots of key formulas for trend arrows and mini-sparklines.
-interface SparkPoint { Sr: number; NOI: number; E: number; Z: number; H: number }
-const sparklineBuffers = new Map<string, SparkPoint[]>();
-const SPARKLINE_MAX = 10;
-
-function updateSparkline(pair: string, p: PairPhysics): SparkPoint[] {
-  const buf = sparklineBuffers.get(pair) ?? [];
-  buf.push({ Sr: computeSr(p), NOI: computeNOI(p), E: p.efficiency ?? 0, Z: p.zOfi ?? 0, H: p.hurst?.H ?? 0 });
-  if (buf.length > SPARKLINE_MAX) buf.shift();
-  sparklineBuffers.set(pair, buf);
-  return buf;
-}
-
-function getTrend(buf: SparkPoint[], key: keyof SparkPoint): 'up' | 'down' | 'flat' {
-  if (buf.length < 2) return 'flat';
-  const delta = buf[buf.length - 1][key] - buf[0][key];
-  if (delta > 0.05) return 'up';
-  if (delta < -0.05) return 'down';
-  return 'flat';
-}
-
-// Tactical states
 type TacticalState = 'HUNT' | 'SET' | 'STRIKE' | 'GUARD' | 'DUD' | 'FATIGUE' | 'SCANNING';
 
-// DUD_WINDOW_TICKS: DUD only fires within this many snapshot polls of STRIKE onset
+const strikeOnsetMap = new Map<string, { tick: number; ts: number }>();
+let globalTickCounter = 0;
 const DUD_WINDOW_TICKS = 3;
 
 function deriveSPPState(p: PairPhysics, pair?: string): TacticalState {
@@ -121,1118 +60,984 @@ function deriveSPPState(p: PairPhysics, pair?: string): TacticalState {
   const vpin = p.vpin ?? 0;
   const absZ = Math.abs(p.zOfi ?? 0);
   const Sr   = computeSr(p);
-  const Ar   = vpin;
   const NOI  = computeNOI(p);
 
-  // Step 3 — STRIKE: vacuum + firing pin (all 4 gates)
-  if (eff >= E_VACUUM_MIN && absZ > Z_STRIKE && Ar > VPIN_FRAGILITY && H >= HURST_PERSIST) {
-    // Anchor the Dud Rule window: record first STRIKE tick timestamp per pair
-    if (pair && !strikeOnsetMap.has(pair)) {
-      strikeOnsetMap.set(pair, { tick: globalTickCounter, ts: Date.now() });
-    }
+  if (eff >= E_VACUUM_MIN && absZ > Z_STRIKE && vpin > VPIN_FRAGILITY && H >= HURST_PERSIST) {
+    if (pair && !strikeOnsetMap.has(pair)) strikeOnsetMap.set(pair, { tick: globalTickCounter, ts: Date.now() });
     return 'STRIKE';
   }
-
-  // Step 3 — DUD RULE (timestamp-anchored): vacuum collapsed within DUD_WINDOW_TICKS of STRIKE onset
-  // FIX #4: Without the anchor, DUD fires stale — any pair with E<50× long after trade exit shows DUD.
   if (pair) {
     const onset = strikeOnsetMap.get(pair);
     if (onset) {
       if ((globalTickCounter - onset.tick) <= DUD_WINDOW_TICKS) {
-        if (eff < E_DUD_ABORT && absZ > Z_STRIKE && Ar > 0.4) return 'DUD';
+        if (eff < E_DUD_ABORT && absZ > Z_STRIKE && vpin > 0.4) return 'DUD';
       } else {
-        // Window expired — clear so it can re-arm on a fresh STRIKE
         strikeOnsetMap.delete(pair);
       }
     }
   }
-
-  // Step 2 — SET
-  if (Sr < SR_COIL && Ar > VPIN_FRAGILITY && Math.abs(NOI) > NOI_WHALE) return 'SET';
-
-  // Step 1 — HUNT
-  if (Sr < SR_COIL && Ar > 0.4) return 'HUNT';
-
-  // Fatigue
-  if (H < 0.45) return 'FATIGUE';
-
+  if (Sr < SR_COIL && vpin > VPIN_FRAGILITY && Math.abs(NOI) > NOI_WHALE) return 'SET';
+  if (Sr < SR_COIL && vpin > 0.4) return 'HUNT';
+  if ((p.hurst?.H ?? 0) < 0.45) return 'FATIGUE';
   return 'SCANNING';
 }
 
-function getPulseSpeed(state: TacticalState, zOfi: number): string {
-  if (state === 'STRIKE') return '0.4s';
-  if (state === 'SET')    return '0.8s';
-  if (Math.abs(zOfi) > 2.5) return '0.5s';
-  return '2.0s';
+// ─── Audit Log ───────────────────────────────────────────────────────────────
+interface AuditEntry { ts: number; msg: string; level: 'info' | 'warn' | 'strike' | 'abort' }
+const auditLog: AuditEntry[] = [];
+const MAX_AUDIT = 80;
+function pushAudit(msg: string, level: AuditEntry['level'] = 'info') {
+  auditLog.unshift({ ts: Date.now(), msg, level });
+  if (auditLog.length > MAX_AUDIT) auditLog.length = MAX_AUDIT;
 }
 
-// ─── SPP Metric Interpretation Engine ───────────────────────────────────────
+// ─── Latency tracker ─────────────────────────────────────────────────────────
+let latencyHistory: number[] = [];
 
-interface MetricMeaning {
-  label: string;
-  value: string;
-  meaning: string;
-  implication: string;
-  status: 'good' | 'warn' | 'danger' | 'neutral';
-  passing: boolean;
-  step: 1 | 2 | 3 | 4 | 0;  // which execution step this feeds
+// ═══════════════════════════════════════════════════════════════════════════════
+// ─── LEFT RAIL: Global Radar ──────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+const RADAR_PAIRS = [
+  'EUR_USD','GBP_USD','USD_JPY','USD_CHF','AUD_USD','USD_CAD',
+  'NZD_USD','EUR_GBP','EUR_JPY','GBP_JPY','AUD_JPY','CAD_JPY',
+  'CHF_JPY','EUR_CHF','EUR_AUD','GBP_CHF','AUD_NZD','NZD_JPY',
+  'GBP_AUD','EUR_NZD',
+];
+
+function radarColor(state: TacticalState) {
+  if (state === 'STRIKE') return { bg: 'bg-yellow-400/20', border: 'border-yellow-400/80', text: 'text-yellow-300', glow: '0 0 8px rgba(250,204,21,0.6)' };
+  if (state === 'SET')    return { bg: 'bg-amber-400/15',  border: 'border-amber-400/60',  text: 'text-amber-300',  glow: '0 0 5px rgba(251,191,36,0.4)' };
+  if (state === 'HUNT')   return { bg: 'bg-blue-400/12',   border: 'border-blue-400/50',   text: 'text-blue-300',   glow: '0 0 4px rgba(96,165,250,0.3)' };
+  if (state === 'GUARD')  return { bg: 'bg-green-400/20',  border: 'border-green-400/70',  text: 'text-green-300',  glow: '0 0 8px rgba(74,222,128,0.5)' };
+  if (state === 'DUD')    return { bg: 'bg-red-500/20',    border: 'border-red-500/70',    text: 'text-red-300',    glow: '0 0 6px rgba(239,68,68,0.5)' };
+  return { bg: 'bg-muted/10', border: 'border-border/30', text: 'text-muted-foreground', glow: 'none' };
 }
 
-function interpretSPPMetrics(p: PairPhysics): MetricMeaning[] {
-  const H    = p.hurst?.H ?? 0;
-  const eff  = p.efficiency ?? 0;
-  const vpin = p.vpin ?? 0;
-  const zOfi = p.zOfi ?? 0;
-  const absZ = Math.abs(zOfi);
-  // True physics — same helpers used by deriveSPPState
-  const Sr  = computeSr(p);   // ATR-ratio via KM D2 diffusion
-  const NOI = computeNOI(p);  // Resting limit book imbalance from syntheticDepth
-
-  const metrics: MetricMeaning[] = [];
-
-  // ── PHASE 1: S/N Ratio — Shannon-Hartley Environment Gate ──
-  // Sr < 1.0 is our proxy for S/N ≥ 1.5 (low diffusion = directional signal dominant)
-  {
-    const passing = Sr < SR_COIL;
-    const isCritical = Sr < SR_CRITICAL;
-    const srVal = Sr.toFixed(3);
-    const snProxy = Sr > 0 ? (1 / Sr).toFixed(2) : '∞';
-    metrics.push({
-      label: 'S/N Ratio (Phase 1 Gate)',
-      value: `S/N≈${snProxy}`,
-      meaning: isCritical
-        ? `MAXIMUM SIGNAL. S/N proxy ${snProxy} (Sr ${srVal} < 0.5) — directional tick volume is dominating noise at maximum intensity. DGE is in ACTIVE_HUNT. ΔP is at maximum Laplace pressure. Phase 2 trap acquisition is live.`
-        : Sr < SR_COIL
-          ? `Signal confirmed. S/N ≥ 1.5 (Sr ${srVal} < 1.0) — the market is exhibiting clear intent. Directional flow exceeds mean-reverting chop. Phase 1 AWAKENING: DGE switches to ACTIVE_HUNT mode.`
-          : Sr < 1.5
-            ? `Borderline signal (S/N ≈ ${snProxy}). Directional and mean-reverting forces are near balanced. DGE in cautious scan — no trap placement until S/N clears.`
-            : `STANDBY MODE. S/N < 1.5 (Sr ${srVal}). Noise dominates signal — this is toxic chop. Phase 1 SLEEP SWITCH active. All pending limit orders are canceled.`,
-      implication: isCritical
-        ? 'Phase 1 ACTIVE_HUNT LOCKED. Sr < 0.5 = maximum Laplace pressure. Phase 2 NOI scan running — DGE placing traps at fault lines.'
-        : passing
-          ? 'Phase 1 AWAKENING: DGE confirmed ACTIVE_HUNT. Proceed to Phase 2 NOI Laplace scan.'
-          : 'Phase 1 STANDBY. DGE has canceled all pending limit orders. Wait for S/N ≥ 1.5 before Phase 2.',
-      status: isCritical ? 'danger' : passing ? 'good' : 'neutral',
-      passing,
-      step: 1,
-    });
-  }
-
-  // ── PHASE 2a: Ar — Structural Fragility (book thinness prerequisite for Laplace trap) ──
-  {
-    const passing = vpin > VPIN_FRAGILITY;
-    metrics.push({
-      label: 'Ar — Book Fragility (Phase 2)',
-      value: vpin.toFixed(3),
-      meaning: vpin >= 0.75
-        ? `Critically fragile (Ar ${vpin.toFixed(3)} > 0.75). Market makers have pulled bids. Laplace ΔP is at maximum — a single institutional sweep will shatter this structure instantly.`
-        : vpin >= 0.70
-          ? `Fragility confirmed (Ar ${vpin.toFixed(3)} > 0.70). Book is paper-thin. Phase 2 precondition met — DGE can now apply Laplace pressure formula to locate the fault line.`
-          : vpin >= 0.50
-            ? `Moderate thinning (Ar ${vpin.toFixed(3)}). Book is weakening but the Laplace trap will not spring cleanly below 0.70.`
-            : `Stable book (Ar ${vpin.toFixed(3)}). Too many market makers present. Laplace ΔP cannot reach critical — trap placement blocked.`,
-      implication: passing
-        ? 'Phase 2 precondition met. Book is structurally fragile. DGE scanning NOI for the Laplace fault line.'
-        : 'Phase 2 blocked. Book has sufficient depth — Laplace ΔP is sub-critical. Wait for Ar > 0.70.',
-      status: vpin >= 0.75 ? 'danger' : vpin >= 0.70 ? 'good' : vpin >= 0.50 ? 'warn' : 'neutral',
-      passing,
-      step: 1,
-    });
-  }
-
-  // ── PHASE 2b: NOI — Laplace Fault Line (Net Order Imbalance from resting limit book) ──
-  {
-    const passing = Math.abs(NOI) >= NOI_WHALE;
-    const dir = NOI > 0 ? 'BUY' : 'SELL';
-    const hasRealDepth = (p.syntheticDepth ?? []).length >= 3;
-    const limitAction = NOI > 0 ? 'Limit Buy at Bid Wall + 0.1 pip' : 'Limit Sell at Ask Ceiling − 0.1 pip';
-    metrics.push({
-      label: 'NOI — Laplace Fault Line (Phase 2)',
-      value: `${NOI >= 0 ? '+' : ''}${NOI.toFixed(3)}`,
-      meaning: Math.abs(NOI) >= 0.9
-        ? `CRITICAL FAULT LINE. NOI ${NOI.toFixed(3)} (${hasRealDepth ? 'resting book' : 'OFI fallback'}) — Laplace ΔP is at maximum. An institutional whale is hiding a massive ${dir === 'BUY' ? 'bid' : 'ask'} wall. The structural break point is identified. ${limitAction} — the move will come to us.`
-        : Math.abs(NOI) >= NOI_WHALE
-          ? `Fault line confirmed. NOI ${NOI.toFixed(3)} > ±0.8 (${hasRealDepth ? 'resting book' : 'OFI fallback'}) — Laplace ΔP at critical threshold. Whale shadow visible. DGE arms ${limitAction}. Phase 3 Kelly sizing computing.`
-          : Math.abs(NOI) >= 0.5
-            ? `Laplace pressure building (NOI ${NOI.toFixed(3)}). Resting limit imbalance forming but below the ±0.8 fault line threshold. DGE holding trap placement.`
-            : `Balanced book (NOI ${NOI.toFixed(3)}). No fault line present — Laplace ΔP is sub-critical. Cannot identify the whale's wall. Phase 2 blocked.`,
-      implication: passing
-        ? `Phase 2 COMPLETE. ${dir === 'BUY' ? 'Limit Buy at Bid Wall + 0.1 pip' : 'Limit Sell at Ask Ceiling − 0.1 pip'} ARMED. Phase 3 Kelly sizing active. Await Phase 4 E_sig spike for fill confirmation.`
-        : 'Phase 2 blocked. NOI < ±0.8 — no institutional fault line. DGE waiting for whale to position.',
-      status: Math.abs(NOI) >= 0.9 ? 'danger' : passing ? 'good' : Math.abs(NOI) >= 0.5 ? 'warn' : 'neutral',
-      passing,
-      step: 2,
-    });
-  }
-
-  // ── PHASE 4: SVD Eigen-Signal (E_sig = composite of E + Z-OFI via matrix decomposition) ──
-  {
-    const passing = absZ >= Z_STRIKE;
-    const isDud   = eff < E_DUD_ABORT && absZ > 1.5;
-    // E_sig approximation: both E and Z must align (SVD compresses into single signal)
-    const eSigStrength = Math.min(1, (eff / E_VACUUM_MIN) * 0.5 + (absZ / Z_STRIKE) * 0.5);
-    metrics.push({
-      label: 'E_sig — SVD Eigen-Signal (Phase 4)',
-      value: `Z${zOfi >= 0 ? '+' : ''}${zOfi.toFixed(2)}σ · E${eff.toFixed(0)}×`,
-      meaning: absZ >= Z_STRIKE && eff >= E_VACUUM_MIN
-        ? `EIGEN-SIGNAL CONFIRMED. SVD matrix: E=${eff.toFixed(0)}× (vacuum) + |Z|=${absZ.toFixed(1)}σ (flow) → E_sig spike above threshold. Whale has hit the wall — this is the microsecond trigger. Phase 4 fill gate OPEN.`
-        : isDud
-          ? `DUD ABORT. E_sig DECAYED: E=${eff.toFixed(1)}× < 50× within execution window — the vacuum collapsed. Phase 4 Rule 4.2 fires: DGE executes instant MarketClose(). The Laplace pressure failed to sustain.`
-          : absZ >= Z_STRIKE
-            ? `Partial E_sig. Z-OFI component confirmed (${absZ.toFixed(1)}σ > 2.5σ) but E=${eff.toFixed(1)}× below vacuum threshold. SVD needs both components ≥ threshold simultaneously for fill gate to open.`
-            : `E_sig below threshold. |Z|=${absZ.toFixed(1)}σ < 2.5σ. SVD Eigen-Signal has not spiked. Phase 4 fill gate CLOSED — limit order armed but will not trigger.`,
-      implication: absZ >= Z_STRIKE && eff >= E_VACUUM_MIN
-        ? 'Phase 4 MICROSECOND STRIKE: E_sig confirmed. Limit order fills NOW. Immediately set TP = +10.0 pips, SL = −10.0 pips. Phase 5 PID ratchet arms at +3.0 pips.'
-        : isDud
-          ? '⚠ DUD ABORT (Rule 4.2): E_sig decayed within 500ms. Fire MarketClose() immediately — overrides TP, SL, and PID controller.'
-          : 'Phase 4 waiting. SVD Eigen-Signal not spiked. Limit order armed but fill gate closed. Wait for E > 100× AND |Z| > 2.5σ simultaneously.',
-      status: absZ >= Z_STRIKE && eff >= E_VACUUM_MIN ? 'danger' : isDud ? 'danger' : absZ >= 1.5 ? 'warn' : 'neutral',
-      passing,
-      step: 3,
-    });
-  }
-
-  // ── PHASE 5: PID Ratchet Health — Hurst persistence gate for the exit controller ──
-  {
-    const passing = H >= HURST_PERSIST;
-    metrics.push({
-      label: 'H — PID Ratchet Health (Phase 5)',
-      value: H.toFixed(3),
-      meaning: H >= 0.75
-        ? `Maximum persistence (H ${H.toFixed(3)}). The 10-pip wave is self-reinforcing. PID Kd (directional velocity) is suppressed — price grinding in-favour, ratchet trails loosely to capture the full move.`
-        : H >= HURST_PERSIST
-          ? `Ratchet health confirmed (H ${H.toFixed(3)} ≥ 0.62). PID controller active. At +3.0p the ratchet arms. Ki (time penalty) tightening SL as trade matures. Kd only tightens on favorable velocity — adverse wicks ignored.`
-          : H >= 0.50
-            ? `Ratchet under stress (H ${H.toFixed(3)}). Momentum degrading — PID Kp is pulling SL closer to current price. Kd directional check prevents adverse wicks from triggering premature tightening.`
-            : `SVD MASTER OVERRIDE TRIGGER. H ${H.toFixed(3)} < 0.45 — Eigen-Signal has dropped below baseline. Rule 5.3 fires: instant MarketClose() overriding TP, SL, and all PID terms.`,
-      implication: passing
-        ? 'Phase 5 PID ACTIVE. At +3p: dynamic_trail = 2.5p − P(profit) − I(time) − D(favorable_velocity). Kd ZERO on adverse moves (directional guard). SL ratchets forward only — never retreats.'
-        : 'Phase 5 MASTER OVERRIDE: SVD Eigen-Signal below baseline. Rule 5.3: execute MarketClose() immediately. Overrides all PID and bracket logic.',
-      status: H >= 0.75 ? 'danger' : passing ? 'good' : H >= 0.50 ? 'warn' : 'neutral',
-      passing,
-      step: 4,
-    });
-  }
-
-  // ── PHASE 3 / Phase 5: E Vacuum (sizing confidence + dud abort reference) ──
-  {
-    const passing = eff >= E_DUD_ABORT;
-    const isDud   = eff < E_DUD_ABORT && Math.abs(zOfi) > 1.5;
-    metrics.push({
-      label: 'E — Vacuum Depth (Kelly + Dud)',
-      value: `${eff.toFixed(1)}×`,
-      meaning: eff >= E_VACUUM_MIN
-        ? `VACUUM CONFIRMED. E=${eff.toFixed(0)}× > 100×. Kelly win probability (p) is at maximum structural alignment — DGE may scale above 1,250 units subject to 5% NAV hard ceiling ($${(KELLY_MAX_RISK * 307.42).toFixed(2)} max risk).`
-        : eff >= E_DUD_ABORT
-          ? `Partial vacuum (E ${eff.toFixed(1)}×). Kelly sizing is marginal — unit size scales down from standard. Below 100× the Laplace break is not clean.`
-          : isDud
-            ? `DUD ABORT. E=${eff.toFixed(1)}× < 50× — vacuum collapsed after fill. Rule 4.2 + Rule 5.3 both trigger: instant MarketClose().`
-            : `Normal friction (E ${eff.toFixed(1)}×). No vacuum. Kelly p is low — DGE will not arm a limit trap without E confirmation.`,
-      implication: eff >= E_VACUUM_MIN
-        ? `Phase 3 KELLY: Maximum sizing confidence. Phase 4 fill gate partially open. Requires |Z| > 2.5σ to complete E_sig.`
-        : isDud
-          ? '⚠ DUD ABORT: E < 50×. Fire MarketClose() — zero edge remaining. Both Rule 4.2 and 5.3 override all other logic.'
-          : 'E below strike threshold. Kelly sizing is reduced. Wait for E > 100× to maximize Phase 3 unit allocation.',
-      status: eff >= E_VACUUM_MIN ? 'danger' : eff >= E_DUD_ABORT ? 'good' : isDud ? 'danger' : 'neutral',
-      passing,
-      step: 3,
-    });
-  }
-
-  return metrics;
-}
-
-// ─── SPP Intelligence Brief ──────────────────────────────────────────────────
-
-interface IntelBrief {
-  headline: string;
-  situation: string;
-  risk: string;
-  watch: string;
-  action: string;
-}
-
-function buildSPPBrief(pair: string, p: PairPhysics, state: TacticalState): IntelBrief {
-  const H    = p.hurst?.H ?? 0;
-  const eff  = p.efficiency ?? 0;
-  const vpin = p.vpin ?? 0;
-  const zOfi = p.zOfi ?? 0;
-  const NOI  = computeNOI(p);
-  const Sr   = computeSr(p);
-  const dir  = zOfi > 0 ? 'LONG' : 'SHORT';
-  const snProxy = Sr > 0 ? (1 / Sr).toFixed(2) : '∞';
-
-  if (state === 'STRIKE') {
-    return {
-      headline: `⚡ PHASE 4 — E_sig CONFIRMED · ${pair} ${dir}`,
-      situation: `SVD Eigen-Signal spiked above threshold. E=${eff.toFixed(0)}× (vacuum) + |Z|=${Math.abs(zOfi).toFixed(1)}σ (flow) combined into single E_sig. Phase 2 fault line: NOI=${NOI >= 0 ? '+' : ''}${NOI.toFixed(3)}, Ar=${vpin.toFixed(3)}. Whale has hit the wall. Phase 3 Kelly sizing active — hard cap: 5% NAV ($${(KELLY_MAX_RISK * 307.42).toFixed(2)}).`,
-      risk: 'Phase 4 Rule 4.2 (Dud Abort): if E_sig decays — E < 50× within 500ms — DGE fires instant MarketClose(). Rule 5.3 also armed: SVD baseline drop → override all TP/SL/PID.',
-      watch: `Phase 5 PID RATCHET: TP=+${PID_TP}p, SL=${PID_SL}p armed. At +${PID_TRAIL_START}p: dynamic_trail = 2.5p − Kp(0.2)×profit − Ki(0.05)×ticks − Kd(0.5)×directional_velocity. CRITICAL: Kd is ZERO on adverse price moves (directional guard — prevents wick stop-outs). SL only moves forward. Rule 5.3 override if H drops below 0.45.`,
-      action: `LIMIT ORDER ${dir} at ${dir === 'LONG' ? 'Bid Wall + 0.1 pip' : 'Ask Ceiling − 0.1 pip'}. Arm TP=+10p / SL=−10p immediately on fill. PID Kd snaps SL tight ONLY on favorable velocity spikes. Adverse wicks do NOT trigger Kd — Ratchet Guard holds SL position.`,
-    };
-  }
-
-  if (state === 'SET') {
-    const whaleSide = NOI > 0 ? 'Bid Wall (BUY pressure)' : 'Ask Ceiling (SELL pressure)';
-    const limitDir  = NOI > 0 ? 'Limit Buy at Bid Wall + 0.1 pip' : 'Limit Sell at Ask Ceiling − 0.1 pip';
-    return {
-      headline: `🎯 PHASE 2 — Laplace Fault Line Identified · ${pair}`,
-      situation: `Phase 1 ACTIVE_HUNT: S/N≈${snProxy} (Sr ${Sr.toFixed(3)} < 1.0). Phase 2 NOI scan complete: NOI=${NOI >= 0 ? '+' : ''}${NOI.toFixed(3)} > ±0.8 — Laplace ΔP at critical threshold. ${whaleSide} identified. Ar=${vpin.toFixed(3)} — book is fragile. DGE has armed the limit trap at the structural break point.`,
-      risk: `Phase 4 fill gate is CLOSED. Limit armed but E_sig has not spiked — E=${eff.toFixed(1)}× and |Z|=${Math.abs(zOfi).toFixed(1)}σ must both clear thresholds simultaneously. Phase 3 Kelly p is computing.`,
-      watch: `Await Phase 4 E_sig: E > 100× while |Z| > 2.5σ. Phase 3 unit size = Kelly f* × NAV, scaled by structural alignment. Hard ceiling: 5% of $307.42 = $${(KELLY_MAX_RISK * 307.42).toFixed(2)} max risk.`,
-      action: `${limitDir} IS ARMED. Do NOT use market orders. DGE positions where the whale will hit, not where it already moved. Stand by for Phase 4 E_sig spike.`,
-    };
-  }
-
-  if (state === 'HUNT') {
-    return {
-      headline: `🔍 PHASE 1 — ACTIVE_HUNT · ${pair}`,
-      situation: `Phase 1 AWAKENING: S/N≈${snProxy} (Sr ${Sr.toFixed(3)} < 1.0)${Sr < SR_CRITICAL ? ' — CRITICAL: Sr < 0.5, maximum Laplace pressure building' : ' — directional signal exceeds noise'}. DGE switched from STANDBY to ACTIVE_HUNT. Phase 2 Laplace scan running. Ar=${vpin.toFixed(3)}${vpin < VPIN_FRAGILITY ? ' — below 0.70, Phase 2 precondition pending' : ' — Phase 2 precondition met'}.`,
-      risk: 'Phase 1 Sleep Switch can re-activate if S/N drops (Sr > 1.5). DGE will cancel all pending limits and return to STANDBY. No trap is placed without sustained ACTIVE_HUNT.',
-      watch: `Phase 2 requires NOI > ±0.8 (currently ${NOI >= 0 ? '+' : ''}${NOI.toFixed(3)}) + Ar > 0.70 (currently ${vpin.toFixed(3)}). Once both clear, DGE arms the Laplace trap automatically.`,
-      action: 'DGE is scanning Phase 2 NOI fault lines. No manual action needed. Limit trap arms automatically when Laplace ΔP reaches critical threshold.',
-    };
-  }
-
-  if (state === 'DUD') {
-    return {
-      headline: `💥 PHASE 4 DUD ABORT — E_sig Decayed · ${pair}`,
-      situation: `Rule 4.2 triggered. E=${eff.toFixed(1)}× dropped below 50× within execution window — the vacuum collapsed after fill. Laplace pressure failed to sustain. Rule 5.3 (SVD baseline drop) is simultaneously active. Both rules independently mandate immediate exit.`,
-      risk: 'Zero residual structural edge. The fault line has been absorbed. Holding adds slippage exposure with no Laplace support. Every tick in this state violates the strategy.',
-      watch: 'Monitor if E rebounds above 100× and NOI holds > ±0.8 for a potential fresh Phase 2 SET. This is rare — the fault line typically needs to reset.',
-      action: '⚠ FIRE MarketClose() IMMEDIATELY. Rules 4.2 and 5.3 are ABSOLUTE. They override TP, SL, PID, and all bracket logic. No exceptions.',
-    };
-  }
-
-  if (state === 'FATIGUE') {
-    return {
-      headline: `😴 PHASE 5 MASTER OVERRIDE — SVD Baseline Lost · ${pair}`,
-      situation: `H=${H.toFixed(3)} below 0.45 — SVD Eigen-Signal has dropped below its baseline. Rule 5.3 fires: the whale has exhausted their volume. Mean-reversion dominates. PID directional velocity (Kd) is reading zero favorable momentum — the ratchet has no favorable signal to snap to, and its Ratchet Guard prevents it from retreating.`,
-      risk: 'Phase 1 Sleep Switch likely also active (S/N degrading). DGE canceling pending limits. Holding open positions violates Rule 5.3 and Phase 1 Sleep Switch simultaneously.',
-      watch: 'H must rebuild above 0.55 before Phase 1 HUNT, and above 0.62 before Phase 5 PID ratchet can operate. Typically 30-90 minutes of consolidation required.',
-      action: 'RULE 5.3 MASTER OVERRIDE: Execute MarketClose() immediately. Overrides TP, SL, and all PID terms. DGE returns to STANDBY pending Phase 1 AWAKENING.',
-    };
-  }
-
-  return {
-    headline: `📡 PHASE 1 STANDBY — Noise Dominant · ${pair}`,
-    situation: `S/N below threshold — S/N≈${snProxy} (Sr ${Sr.toFixed(3)}). Phase 1 Sleep Switch ACTIVE: mean-reverting chop exceeds directional signal. DGE in STANDBY. All pending limit orders canceled. H=${H.toFixed(3)}, E=${eff.toFixed(1)}×, VPIN=${vpin.toFixed(3)}, Z=${Math.abs(zOfi).toFixed(2)}σ.`,
-    risk: 'Negative expectancy. The DGE has determined this market is toxic noise. Any trade entry violates Phase 1 mathematics.',
-    watch: `Phase 1 AWAKENING: S/N ≥ 1.5 requires Sr < 1.0. Currently Sr=${Sr.toFixed(3)}. DGE switches to ACTIVE_HUNT the moment this clears.`,
-    action: 'No action. DGE in STANDBY. Phase 1 Sleep Switch is enforcing no-trade conditions. Wait for S/N ≥ 1.5.',
-  };
-}
-
-// ─── LightningSVG ────────────────────────────────────────────────────────────
-
-function LightningSVG({ speed }: { speed: string }) {
+function GlobalRadar({ pairs, activeTrades }: {
+  pairs: Record<string, PairPhysics>;
+  activeTrades: { currency_pair: string; direction: string; status: string }[];
+}) {
+  const normPair = (p: string) => p.replace(/\//g, '_').replace(/-/g, '_');
   return (
-    <svg width="18" height="32" viewBox="0 0 18 32"
-      className="absolute -top-1 -right-1 opacity-80" aria-hidden="true">
-      <polyline
-        points="10,0 4,14 9,14 8,32 14,16 9,16 10,0"
-        fill="none" stroke="hsl(50 100% 60%)" strokeWidth="1.5" strokeLinejoin="round"
-        className="lightning-path"
-        style={{ '--pulse-speed': speed } as React.CSSProperties}
-      />
-    </svg>
-  );
-}
-
-// ─── Metric Row ──────────────────────────────────────────────────────────────
-
-function MetricRow({ m }: { m: MetricMeaning }) {
-  const [open, setOpen] = useState(false);
-  const stepLabel = m.step > 0
-    ? { 1: 'HUNT', 2: 'SET', 3: 'STRIKE', 4: 'GUARD' }[m.step] ?? ''
-    : '';
-  const stepColors: Record<number, string> = {
-    1: 'bg-blue-500/10 text-blue-400 border-blue-500/30',
-    2: 'bg-amber-500/10 text-amber-400 border-amber-500/30',
-    3: 'bg-red-500/10 text-red-400 border-red-500/30',
-    4: 'bg-green-500/10 text-green-400 border-green-500/30',
-    0: 'bg-muted/10 text-muted-foreground border-border/20',
-  };
-
-  const statusColors = {
-    good:    { bar: 'bg-green-500',   text: 'text-green-400',   badge: 'bg-green-500/15 border-green-500/30 text-green-400' },
-    warn:    { bar: 'bg-amber-500',   text: 'text-amber-400',   badge: 'bg-amber-500/15 border-amber-500/30 text-amber-400' },
-    danger:  { bar: 'bg-red-500',     text: 'text-red-400',     badge: 'bg-red-500/15 border-red-500/30 text-red-400' },
-    neutral: { bar: 'bg-muted-foreground/40', text: 'text-muted-foreground', badge: 'bg-muted/20 border-border/30 text-muted-foreground' },
-  }[m.status];
-
-  return (
-    <div className="space-y-1">
-      <button onClick={() => setOpen(v => !v)} className="w-full flex items-center justify-between gap-2 group">
-        <div className="flex items-center gap-2 min-w-0">
-          <div className={cn('w-1.5 h-1.5 rounded-full flex-shrink-0', m.passing ? 'bg-green-500' : 'bg-muted/40 border border-border/50')} />
-          <span className="text-[9px] font-mono uppercase tracking-wide text-muted-foreground group-hover:text-foreground transition-colors truncate">{m.label}</span>
-          {stepLabel && (
-            <span className={cn('text-[7px] font-mono border px-1 rounded', stepColors[m.step])}>{stepLabel}</span>
-          )}
-        </div>
-        <div className="flex items-center gap-2 flex-shrink-0">
-          <span className={cn('text-[10px] font-mono font-bold', statusColors.text)}>{m.value}</span>
-          <ChevronRight className={cn('w-3 h-3 text-muted-foreground/50 transition-transform', open && 'rotate-90')} />
-        </div>
-      </button>
-
-      <div className="h-0.5 bg-muted/20 rounded-full overflow-hidden ml-3.5">
-        <div className={cn('h-full rounded-full transition-all duration-700', statusColors.bar)} style={{ width: m.passing ? '100%' : '30%' }} />
+    <div className="rounded-xl border border-border/40 bg-card/60 overflow-hidden">
+      <div className="px-3 py-2 border-b border-border/30 flex items-center gap-2">
+        <Radio className="w-3.5 h-3.5 text-primary animate-pulse" />
+        <span className="text-[10px] font-bold uppercase tracking-widest">Global Radar — 20 Pairs</span>
       </div>
-
-      {open && (
-        <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} className="ml-3.5 space-y-1.5 pt-1">
-          <div className={cn('text-[9px] font-mono leading-relaxed rounded px-2 py-1.5 border', statusColors.badge)}>{m.meaning}</div>
-          <div className="flex items-start gap-1.5">
-            <ChevronRight className="w-2.5 h-2.5 text-primary flex-shrink-0 mt-0.5" />
-            <span className="text-[8px] font-mono text-primary leading-relaxed">{m.implication}</span>
-          </div>
-        </motion.div>
-      )}
+      <div className="p-2 grid grid-cols-4 gap-1">
+        {RADAR_PAIRS.map(rp => {
+          const data = pairs[rp] || pairs[rp.replace('_', '/')] || null;
+          const hasTrade = activeTrades.some(t =>
+            normPair(t.currency_pair) === rp &&
+            (t.status === 'filled' || t.status === 'pending' || t.status === 'open')
+          );
+          const state = hasTrade ? 'GUARD' : (data ? deriveSPPState(data, rp) : 'SCANNING');
+          const c = radarColor(state);
+          const label = rp.split('_');
+          return (
+            <div
+              key={rp}
+              className={cn('rounded-md border px-1.5 py-1 transition-all duration-500', c.bg, c.border)}
+              style={{ boxShadow: state !== 'SCANNING' ? c.glow : 'none' }}
+            >
+              <div className={cn('text-[8px] font-mono font-black truncate', c.text)}>{label[0]}</div>
+              <div className={cn('text-[7px] font-mono opacity-70', c.text)}>{label[1]}</div>
+              {state !== 'SCANNING' && (
+                <div className={cn('text-[6px] font-mono font-bold', c.text)}>{state}</div>
+              )}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
 
-// ─── Intel Brief Panel ───────────────────────────────────────────────────────
-
-function IntelBriefPanel({ brief, stateMeta }: { brief: IntelBrief; stateMeta: { color: string; bg: string } }) {
-  const sections = [
-    { icon: Brain,         label: 'Situation', text: brief.situation, textColor: 'text-foreground' },
-    { icon: AlertTriangle, label: 'Risk',      text: brief.risk,      textColor: 'text-amber-400' },
-    { icon: Eye,           label: 'Watch For', text: brief.watch,     textColor: 'text-muted-foreground' },
-    { icon: Target,        label: 'Action',    text: brief.action,    textColor: 'text-primary' },
-  ];
+// ─── LEFT RAIL: Treasury ─────────────────────────────────────────────────────
+function TreasuryPanel({ nav, unrealizedPL, openTradeCount, snapshot }: {
+  nav: number;
+  unrealizedPL: number;
+  openTradeCount: number;
+  snapshot: any;
+}) {
+  const TARGET = 500;
+  const progress = Math.min(100, (nav / TARGET) * 100);
+  const maxRisk = KELLY_MAX_RISK * nav;
+  const pairs = snapshot?.pairs ?? {};
+  const pairList = Object.values(pairs) as PairPhysics[];
+  const strikePairs = pairList.filter((p, i) => {
+    const key = Object.keys(pairs)[i];
+    return deriveSPPState(p, key) === 'STRIKE';
+  });
+  // Kelly f* approx from strike pairs
+  const avgVpin = pairList.length > 0 ? pairList.reduce((s, p) => s + (p.vpin ?? 0), 0) / pairList.length : 0;
+  const kellyF = Math.max(0, Math.min(0.2, avgVpin - 0.5));
 
   return (
-    <div className={cn('rounded-lg border space-y-0 overflow-hidden', stateMeta.bg)}>
-      <div className={cn('px-2.5 py-1.5 border-b border-border/20 flex items-center gap-1.5', stateMeta.bg)}>
-        <Radio className={cn('w-2.5 h-2.5 flex-shrink-0', stateMeta.color)} />
-        <span className="text-[8px] font-mono uppercase tracking-widest text-muted-foreground">David-Atlas DGE Intelligence Brief</span>
+    <div className="rounded-xl border border-border/40 bg-card/60 overflow-hidden">
+      <div className="px-3 py-2 border-b border-border/30 flex items-center gap-2">
+        <Gauge className="w-3.5 h-3.5 text-primary" />
+        <span className="text-[10px] font-bold uppercase tracking-widest">Treasury</span>
       </div>
-      <div className="px-2.5 pt-2 pb-1">
-        <p className={cn('text-[10px] font-mono font-bold mb-2', stateMeta.color)}>{brief.headline}</p>
-        <div className="space-y-2">
-          {sections.map(({ icon: Icon, label, text, textColor }) => (
-            <div key={label} className="flex gap-2">
-              <div className="flex-shrink-0 w-3.5 pt-0.5">
-                <Icon className="w-2.5 h-2.5 text-muted-foreground/60" />
-              </div>
-              <div className="min-w-0">
-                <span className="text-[8px] font-mono uppercase tracking-wider text-muted-foreground/60 block">{label}</span>
-                <span className={cn('text-[9px] font-mono leading-relaxed', textColor)}>{text}</span>
+      <div className="p-3 space-y-3">
+        {/* NAV */}
+        <div>
+          <div className="text-[9px] text-muted-foreground font-mono uppercase">Live NAV</div>
+          <div className="text-xl font-mono font-black text-foreground">${nav.toFixed(2)}</div>
+          <div className="mt-1 h-1.5 bg-muted/20 rounded-full overflow-hidden">
+            <div
+              className="h-full bg-gradient-to-r from-primary/70 to-primary rounded-full transition-all duration-1000"
+              style={{ width: `${progress}%` }}
+            />
+          </div>
+          <div className="flex justify-between text-[8px] font-mono text-muted-foreground mt-0.5">
+            <span>$0</span><span className="text-primary font-bold">${TARGET}</span>
+          </div>
+        </div>
+        {/* Stats */}
+        <div className="grid grid-cols-2 gap-2">
+          {[
+            { label: 'Open P&L', value: `${unrealizedPL >= 0 ? '+' : ''}$${unrealizedPL.toFixed(2)}`, pos: unrealizedPL >= 0 },
+            { label: 'Open Trades', value: openTradeCount, pos: null },
+            { label: 'Max Risk/Strike', value: `$${maxRisk.toFixed(2)}`, pos: null },
+            { label: 'Kelly f*', value: `${(kellyF * 100).toFixed(1)}%`, pos: kellyF > 0.05 },
+          ].map(({ label, value, pos }) => (
+            <div key={label} className="rounded-lg bg-muted/20 border border-border/20 px-2 py-1.5">
+              <div className="text-[8px] text-muted-foreground font-mono">{label}</div>
+              <div className={cn('text-sm font-mono font-bold', pos === true ? 'text-emerald-400' : pos === false ? 'text-red-400' : 'text-foreground')}>
+                {value}
               </div>
             </div>
           ))}
         </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── SPP Step Badge ───────────────────────────────────────────────────────────
-
-function SPPStepBadge({ step, active }: { step: 1 | 2 | 3 | 4; active: boolean }) {
-  const cfg = {
-    1: { label: 'HUNT', icon: Search,      color: active ? 'bg-blue-500/20 text-blue-300 border-blue-500/40'  : 'bg-muted/10 text-muted-foreground/30 border-border/20' },
-    2: { label: 'SET',  icon: Lock,        color: active ? 'bg-amber-500/20 text-amber-300 border-amber-500/40' : 'bg-muted/10 text-muted-foreground/30 border-border/20' },
-    3: { label: 'STRIKE', icon: Flame,     color: active ? 'bg-red-500/20 text-red-300 border-red-500/40'    : 'bg-muted/10 text-muted-foreground/30 border-border/20' },
-    4: { label: 'GUARD', icon: Shield,     color: active ? 'bg-green-500/20 text-green-300 border-green-500/40' : 'bg-muted/10 text-muted-foreground/30 border-border/20' },
-  }[step];
-  const Icon = cfg.icon;
-  return (
-    <div className={cn('flex items-center gap-1 px-1.5 py-0.5 rounded border text-[7px] font-mono font-bold', cfg.color)}>
-      <Icon className="w-2 h-2" />{cfg.label}
-    </div>
-  );
-}
-
-// ─── Tactical Unit Card (SPP v2.0) ───────────────────────────────────────────
-
-function TacticalUnit({ pair, data, activeTrade }: {
-  pair: string;
-  data: PairPhysics;
-  activeTrade?: { direction: string; created_at: string } | null;
-}) {
-  const p = data;
-  const [showBrief, setShowBrief] = useState(false);
-
-  // Pass pair to deriveSPPState for DUD Rule timestamp anchor (Fix #4)
-  const physicsState = deriveSPPState(p, pair);
-  // Update sparkline ring-buffer on every render (3s poll)
-  const sparkBuf = updateSparkline(pair, p);
-
-  // GUARD FIX: Force GUARD when a live trade is open — regardless of momentary physics dip.
-  const state: TacticalState = activeTrade ? 'GUARD' : physicsState;
-
-  const pulseSpeed = getPulseSpeed(state, p.zOfi ?? 0);
-
-  const stateMeta = {
-    STRIKE:  { label: '⚡ STRIKE',      color: 'text-yellow-300', bg: 'bg-yellow-500/10 border-yellow-500/30', border: 'border-yellow-500/60' },
-    GUARD:   { label: '🛡 GUARD',       color: 'text-green-300',  bg: 'bg-green-500/10 border-green-500/30',  border: 'border-green-500/60' },
-    SET:     { label: '🎯 SET',         color: 'text-amber-300',  bg: 'bg-amber-500/10 border-amber-500/30',  border: 'border-amber-500/40' },
-    HUNT:    { label: '🔍 HUNT',        color: 'text-blue-300',   bg: 'bg-blue-500/10 border-blue-500/20',    border: 'border-blue-500/30' },
-    DUD:     { label: '💥 DUD',         color: 'text-red-400',    bg: 'bg-red-900/20 border-red-800/40',      border: 'border-red-700/50' },
-    FATIGUE: { label: '😴 FATIGUE',     color: 'text-red-400',    bg: 'bg-red-900/20 border-red-800/40',      border: 'border-red-700/40' },
-    SCANNING:{ label: 'SCANNING',       color: 'text-muted-foreground', bg: 'bg-muted/20 border-border/20', border: 'border-border/30' },
-  }[state];
-
-  const stepStates: Record<TacticalState, (1|2|3|4)[]> = {
-    HUNT:    [1],
-    SET:     [1, 2],
-    STRIKE:  [1, 2, 3],
-    GUARD:   [1, 2, 3, 4],
-    DUD:     [],
-    FATIGUE: [],
-    SCANNING:[],
-  };
-  const activeSteps = stepStates[state] ?? [];
-
-  const metrics = interpretSPPMetrics(p);
-  const brief   = buildSPPBrief(pair, p, state);
-
-  const biasColor = p.bias === 'BUY' ? 'text-green-400' : p.bias === 'SELL' ? 'text-red-400' : 'text-muted-foreground';
-  const BiasIcon  = p.bias === 'BUY' ? ArrowUp : p.bias === 'SELL' ? ArrowDown : Minus;
-
-  const showLightning = state === 'STRIKE' || state === 'GUARD';
-
-  return (
-    <motion.div
-      initial={{ opacity: 0, scale: 0.96 }}
-      animate={{ opacity: 1, scale: 1 }}
-      transition={{ duration: 0.3 }}
-      className={cn(
-        'relative rounded-xl border-2 bg-card/70 backdrop-blur-sm overflow-hidden transition-colors',
-        stateMeta.border,
-        state === 'SCANNING' && 'border-border/30'
-      )}
-      style={{ '--pulse-speed': pulseSpeed } as React.CSSProperties}
-    >
-      {showLightning && <LightningSVG speed={pulseSpeed} />}
-
-      {/* ── Active Trade Banner ── */}
-      {activeTrade && (
-        <div className={cn(
-          'flex items-center justify-between px-3 py-1.5 text-[9px] font-mono font-bold tracking-widest uppercase border-b',
-          activeTrade.direction === 'long'
-            ? 'bg-green-500/20 text-green-300 border-green-500/30'
-            : 'bg-red-500/20 text-red-300 border-red-500/30'
-        )}>
-          <span>🛡 TUNNEL GUARD — {activeTrade.direction.toUpperCase()}</span>
-          <span>{Math.round((Date.now() - new Date(activeTrade.created_at).getTime()) / 1000)}s</span>
-        </div>
-      )}
-
-      {/* ── Header ── */}
-      <div className="px-4 pt-4 pb-3 space-y-1.5">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Crosshair className={cn('w-3.5 h-3.5', stateMeta.color)} />
-            <span className="font-display font-black text-base tracking-widest">{pair}</span>
-          </div>
-          <Badge variant="outline" className={cn('text-[8px] font-mono font-bold border uppercase', stateMeta.bg, stateMeta.color)}>
-            {stateMeta.label}
-          </Badge>
-        </div>
-
-        {/* SPP Step pipeline */}
-        <div className="flex items-center gap-1">
-          {([1, 2, 3, 4] as const).map(s => (
-            <SPPStepBadge key={s} step={s} active={activeSteps.includes(s)} />
-          ))}
-          <div className="ml-auto flex items-center gap-1.5">
-            <BiasIcon className={cn('w-3 h-3', biasColor)} />
-            <span className={cn('text-[10px] font-mono font-bold', biasColor)}>{p.bias}</span>
-          </div>
-        </div>
-
-        {p.hiddenPlayer && (
-          <div className="flex items-center gap-1.5">
-            {p.hiddenPlayer.type === 'LIQUIDITY_HOLE' ? (
-              <Badge className="text-[7px] gap-0.5 bg-orange-500/20 text-orange-400 border border-orange-500/30 px-1.5">⚡ LIQUIDITY HOLE</Badge>
-            ) : (
-              <Badge variant="destructive" className="text-[7px] gap-0.5 px-1.5">
-                🐋 {p.hiddenPlayer.type === 'HIDDEN_LIMIT_SELLER' ? 'HIDDEN LIMIT SELL' : 'HIDDEN LIMIT BUY'}
-              </Badge>
-            )}
-            <span className="text-[8px] font-mono text-muted-foreground">Force {p.hiddenPlayer.force?.toFixed(2)}</span>
+        {/* Strike alert */}
+        {strikePairs.length > 0 && (
+          <div className="rounded-lg bg-yellow-500/10 border border-yellow-500/30 px-2 py-1.5 flex items-center gap-1.5">
+            <Flame className="w-3 h-3 text-yellow-400 animate-pulse" />
+            <span className="text-[9px] font-mono text-yellow-300 font-bold">{strikePairs.length} STRIKE pair{strikePairs.length > 1 ? 's' : ''} — E_sig HOT</span>
           </div>
         )}
-
-        {/* Gate bar — 4 physics gates */}
-        <div className="flex items-center gap-1.5">
-          {metrics.slice(0, 4).map((m, i) => (
-            <div key={i} className={cn('w-1.5 h-1.5 rounded-full', m.passing ? 'bg-green-500' : 'bg-muted/40 border border-border/40')} />
-          ))}
-          <span className="text-[8px] font-mono text-muted-foreground ml-0.5">
-            {metrics.filter(m => m.passing).length}/{metrics.length} formulas passing
-          </span>
-          <span className="text-[8px] font-mono text-muted-foreground ml-auto">{p.ticksAnalyzed?.toLocaleString()} ticks</span>
-        </div>
       </div>
-
-      {/* ── Buy/Sell Pressure ── */}
-      <div className="px-4 pb-3 space-y-1">
-        <div className="flex items-center justify-between text-[9px] font-mono">
-          <span className="text-green-400">BUY {p.buyPct}%</span>
-          <span className="text-red-400">SELL {p.sellPct}%</span>
-        </div>
-        <div className="h-1.5 bg-muted/20 rounded-full overflow-hidden flex">
-          <div className="bg-green-500/70 h-full transition-all duration-500" style={{ width: `${p.buyPct}%` }} />
-          <div className="bg-red-500/70 h-full transition-all duration-500" style={{ width: `${p.sellPct}%` }} />
-        </div>
-      </div>
-
-      <div className="border-t border-border/20" />
-
-      {/* ── Physics Metrics ── */}
-      <div className="px-4 py-3 space-y-2">
-        <div className="flex items-center justify-between mb-1">
-          <span className="text-[8px] font-mono uppercase tracking-widest text-muted-foreground">SPP v2.0 Physics</span>
-          <span className="text-[8px] font-mono text-primary cursor-default">tap to decode ↓</span>
-        </div>
-        {metrics.map((m) => <MetricRow key={m.label} m={m} />)}
-      </div>
-
-      <div className="border-t border-border/20" />
-
-      {/* ── Intelligence Brief Toggle ── */}
-      <div className="px-4 py-2">
-        <button
-          onClick={() => setShowBrief(v => !v)}
-          className={cn(
-            'w-full flex items-center justify-between text-[9px] font-mono uppercase tracking-widest transition-colors',
-            showBrief ? stateMeta.color : 'text-muted-foreground hover:text-foreground'
-          )}
-        >
-          <div className="flex items-center gap-1.5">
-            <Brain className="w-3 h-3" />
-            Intelligence Brief
-          </div>
-          <ChevronRight className={cn('w-3 h-3 transition-transform', showBrief && 'rotate-90')} />
-        </button>
-      </div>
-
-      {showBrief && (
-        <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} className="px-4 pb-4">
-          <IntelBriefPanel brief={brief} stateMeta={stateMeta} />
-        </motion.div>
-      )}
-    </motion.div>
+    </div>
   );
 }
 
-// ─── Deck Card — Compact "face-down" card for SCANNING/FATIGUE pairs ────────
-// Shows only the pair name, state badge, and 4 gate dots so ~60 pairs
-// can coexist on screen without noise. Tapping expands to TacticalUnit.
+// ═══════════════════════════════════════════════════════════════════════════════
+// ─── CENTER: Synthetic Depth Map (NOI Heatmap) ────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+function SyntheticDepthMap({ snapshot, activeTrades }: { snapshot: any; activeTrades: any[] }) {
+  const pairs = snapshot?.pairs ?? {};
+  const normPair = (p: string) => p.replace(/\//g, '_').replace(/-/g, '_');
 
-function DeckCard({ pair, data, activeTrade }: {
-  pair: string;
-  data: PairPhysics;
-  activeTrade?: { direction: string; created_at: string } | null;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const p = data;
-  const physicsState = deriveSPPState(p, pair);
-  const state: TacticalState = activeTrade ? 'GUARD' : physicsState;
+  // Top 8 pairs sorted by |NOI|
+  const ranked = (Object.entries(pairs) as [string, PairPhysics][])
+    .filter(([, p]) => (p.ticksAnalyzed ?? 0) > 5)
+    .map(([pair, p]) => ({ pair, p, noi: computeNOI(p), eff: p.efficiency ?? 0 }))
+    .sort((a, b) => Math.abs(b.noi) - Math.abs(a.noi))
+    .slice(0, 8);
 
-  if (expanded) {
+  if (ranked.length === 0) {
     return (
-      <div className="col-span-full md:col-span-1">
-        <TacticalUnit pair={pair} data={data} activeTrade={activeTrade} />
-        <button
-          onClick={() => setExpanded(false)}
-          className="w-full mt-1 text-[8px] font-mono text-muted-foreground hover:text-foreground text-center py-1 transition-colors"
-        >
-          ▲ collapse
-        </button>
+      <div className="rounded-xl border border-border/40 bg-card/60 p-6 flex items-center justify-center">
+        <span className="text-xs text-muted-foreground font-mono">Awaiting depth data from engine...</span>
       </div>
     );
   }
 
-  const metrics = interpretSPPMetrics(p);
-  const passCount = metrics.filter(m => m.passing).length;
-  const biasColor = p.bias === 'BUY' ? 'text-green-400' : p.bias === 'SELL' ? 'text-red-400' : 'text-muted-foreground';
-  const stateMeta = {
-    STRIKE:  { color: 'text-yellow-300', dot: 'bg-yellow-400' },
-    GUARD:   { color: 'text-green-300',  dot: 'bg-green-400' },
-    SET:     { color: 'text-amber-300',  dot: 'bg-amber-400' },
-    HUNT:    { color: 'text-blue-300',   dot: 'bg-blue-400' },
-    DUD:     { color: 'text-red-400',    dot: 'bg-red-500' },
-    FATIGUE: { color: 'text-red-400',    dot: 'bg-red-800' },
-    SCANNING:{ color: 'text-muted-foreground', dot: 'bg-muted/40' },
-  }[state];
-
   return (
-    <button
-      onClick={() => setExpanded(true)}
-      className="w-full text-left rounded-lg border border-border/30 bg-card/40 hover:bg-card/70 hover:border-border/60 transition-all px-3 py-2 flex items-center gap-2 group"
-    >
-      {/* state dot */}
-      <div className={cn('w-1.5 h-1.5 rounded-full flex-shrink-0', stateMeta.dot, state === 'SCANNING' ? '' : 'animate-pulse')} />
-      {/* pair name */}
-      <span className="font-mono font-bold text-[10px] text-foreground tracking-widest flex-1 truncate">{pair}</span>
-      {/* gate dots */}
-      <div className="flex items-center gap-0.5 flex-shrink-0">
-        {metrics.slice(0, 4).map((m, i) => (
-          <div key={i} className={cn('w-1 h-1 rounded-full', m.passing ? 'bg-green-500' : 'bg-muted/30')} />
-        ))}
+    <div className="rounded-xl border border-border/40 bg-card/60 overflow-hidden">
+      <div className="px-4 py-2.5 border-b border-border/30 flex items-center gap-2">
+        <Layers className="w-3.5 h-3.5 text-primary" />
+        <span className="text-[10px] font-bold uppercase tracking-widest">Synthetic Depth Map — NOI Heatmap</span>
+        <span className="ml-auto text-[8px] font-mono text-muted-foreground">Laplace ΔP · Institutional Walls</span>
       </div>
-      {/* pass count */}
-      <span className={cn('text-[9px] font-mono font-bold flex-shrink-0 w-6 text-right', passCount >= 3 ? 'text-yellow-400' : passCount >= 2 ? 'text-amber-400' : 'text-muted-foreground')}>
-        {passCount}/6
-      </span>
-      {/* bias */}
-      <span className={cn('text-[8px] font-mono flex-shrink-0', biasColor)}>{p.bias}</span>
-      {/* E value */}
-      <span className="text-[8px] font-mono text-muted-foreground flex-shrink-0 hidden sm:block">
-        E{(p.efficiency ?? 0).toFixed(0)}×
-      </span>
-      <ChevronRight className="w-3 h-3 text-muted-foreground/40 group-hover:text-muted-foreground flex-shrink-0" />
-    </button>
-  );
-}
+      <div className="p-3 space-y-1.5">
+        {ranked.map(({ pair, p, noi, eff }) => {
+          const depth = p.syntheticDepth ?? [];
+          const hasTrade = activeTrades.some(t =>
+            normPair(t.currency_pair) === pair &&
+            (t.status === 'filled' || t.status === 'pending' || t.status === 'open')
+          );
+          const state = hasTrade ? 'GUARD' : deriveSPPState(p, pair);
+          const isStrike = state === 'STRIKE';
+          const isSet = state === 'SET';
+          const noiPct = Math.abs(noi) * 100;
+          const noiDir = noi > 0 ? 'BUY' : 'SELL';
+          const limitPrice = noi > 0
+            ? `BID WALL +0.1p`
+            : `ASK −0.1p`;
+          const isVacuum = eff >= E_VACUUM_MIN;
 
-// ─── SPP v2.0 Execution Thread HUD ───────────────────────────────────────────
+          return (
+            <div
+              key={pair}
+              className={cn(
+                'rounded-lg border px-3 py-2 transition-all duration-300',
+                isStrike ? 'border-yellow-500/60 bg-yellow-500/8' :
+                isSet ? 'border-amber-500/40 bg-amber-500/5' :
+                'border-border/30 bg-muted/10'
+              )}
+              style={{ boxShadow: isStrike ? '0 0 12px rgba(250,204,21,0.15)' : undefined }}
+            >
+              <div className="flex items-center gap-2 mb-1.5">
+                {/* Pair name */}
+                <span className={cn('text-[10px] font-mono font-black w-16 flex-shrink-0', isStrike ? 'text-yellow-300' : 'text-foreground')}>{pair}</span>
 
+                {/* NOI bar — the whale wall visualization */}
+                <div className="flex-1 h-4 bg-muted/20 rounded-full overflow-hidden relative">
+                  {/* Center line */}
+                  <div className="absolute inset-y-0 left-1/2 w-px bg-border/40" />
+                  {/* NOI fill */}
+                  {noi > 0 ? (
+                    <div
+                      className="absolute inset-y-0 left-1/2 bg-blue-500/50 transition-all duration-500"
+                      style={{ width: `${noiPct / 2}%` }}
+                    />
+                  ) : (
+                    <div
+                      className="absolute inset-y-0 right-1/2 bg-red-500/50 transition-all duration-500"
+                      style={{ width: `${noiPct / 2}%` }}
+                    />
+                  )}
+                  {/* Laplace pressure tick */}
+                  {Math.abs(noi) > NOI_WHALE && (
+                    <div
+                      className={cn('absolute inset-y-0 w-0.5', noi > 0 ? 'bg-white/80' : 'bg-white/80')}
+                      style={{ [noi > 0 ? 'left' : 'right']: `calc(50% + ${noiPct / 2 - 2}%)` }}
+                    />
+                  )}
+                  {/* Crosshair trap marker */}
+                  {(isStrike || isSet) && (
+                    <div
+                      className={cn('absolute top-0 bottom-0 w-1 rounded-full animate-pulse', noi > 0 ? 'bg-yellow-400' : 'bg-yellow-400')}
+                      style={{ [noi > 0 ? 'left' : 'right']: `calc(50% + ${noiPct / 2}%)` }}
+                    />
+                  )}
+                </div>
 
-function SPPExecutionHUD() {
-  const steps = [
-    {
-      num: 1, label: 'ENV GATE', icon: Waves, color: 'text-blue-400', bg: 'bg-blue-500/10 border-blue-500/30',
-      title: 'Phase 1 — Shannon-Hartley Environment Gate',
-      conditions: ['S/N ≥ 1.5 → ACTIVE_HUNT mode (DGE awakens)', 'S/N < 1.5 → STANDBY (all pending limits canceled)', 'S/N proxy: Sr = sqrt(D2/D2_neutral) via KM diffusion', 'Sr < 1.0 ≈ S/N ≥ 1.5 · Sr < 0.5 = maximum signal'],
-      result: 'State → STANDBY or ACTIVE_HUNT',
-    },
-    {
-      num: 2, label: 'TARGET ACQ', icon: Lock, color: 'text-amber-400', bg: 'bg-amber-500/10 border-amber-500/30',
-      title: 'Phase 2 — Laplace + NOI Target Acquisition',
-      conditions: ['Scan resting limit book for Laplace ΔP fault line', 'NOI > +0.8 → Limit Buy at Bid Wall + 0.1 pip', 'NOI < −0.8 → Limit Sell at Ask Ceiling − 0.1 pip', 'Ar > 0.70 (book fragility) required for ΔP to be critical'],
-      result: 'Limit order placed at Laplace fault line',
-    },
-    {
-      num: 3, label: 'KELLY SIZE', icon: GitBranch, color: 'text-purple-400', bg: 'bg-purple-500/10 border-purple-500/30',
-      title: 'Phase 3 — Kelly Criterion Sizing Engine',
-      conditions: ['f* = p − q/b (win prob p from Laplace alignment)', 'Flawless setup → scale above 1,250 units', 'Marginal setup → scale down unit size', 'Hard ceiling: never risk > 5% of $307.42 NAV'],
-      result: `Max risk: $${(KELLY_MAX_RISK * 307.42).toFixed(2)} per strike`,
-    },
-    {
-      num: 4, label: 'SVD TRIGGER', icon: Flame, color: 'text-red-400', bg: 'bg-red-500/10 border-red-500/30',
-      title: 'Phase 4 — SVD Eigen-Signal Execution',
-      conditions: ['E_sig = SVD([E, Z-OFI]) → single composite signal', 'Limit fills ONLY when E_sig spikes above threshold', 'Dud Abort (Rule 4.2): E_sig decays < 50× in 500ms → instant MarketClose()', 'Zero execution lag — microsecond trigger'],
-      result: 'Fill gate: E > 100× AND |Z| > 2.5σ',
-    },
-    {
-      num: 5, label: 'PID EXIT', icon: Shield, color: 'text-green-400', bg: 'bg-green-500/10 border-green-500/30',
-      title: 'Phase 5 — PID Controller Ratchet Exit',
-      conditions: ['Box: TP=+10.0p / SL=−10.0p on fill', 'PID activates at +3.0p: trail = 2.5p − Kp×profit − Ki×time − Kd×directional_velocity', 'Kd ZERO on adverse wicks (directional guard) — only snaps on favorable price spikes', 'Rule 5.3 Master Override: SVD E_sig drops → instant MarketClose() overrides all'],
-      result: 'SL ratchets forward only · Kd directional-aware · adverse wicks cannot trigger stop-out',
-    },
-  ];
-
-  const formulas = [
-    { sym: 'S/N',   role: 'Shannon-Hartley Gate',    gate: 'S/N ≥ 1.5',       color: 'text-blue-400' },
-    { sym: 'NOI',   role: 'Laplace Fault Line',      gate: '|NOI| > 0.8',      color: 'text-amber-400' },
-    { sym: 'ΔP',    role: 'Laplace Pressure',        gate: 'ΔP critical',      color: 'text-purple-400' },
-    { sym: 'E_sig', role: 'SVD Eigen-Signal',        gate: 'E>100× + Z>2.5σ',  color: 'text-red-400' },
-    { sym: 'PID',   role: 'Kp·Kᵢ·Kd Ratchet',      gate: '+3.0p activation', color: 'text-green-400' },
-    { sym: 'f*',    role: 'Kelly Sizing (5% cap)',   gate: 'p−q/b × NAV',      color: 'text-yellow-400' },
-  ];
-
-  return (
-    <motion.div
-      initial={{ opacity: 0, y: -6 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ delay: 0.02 }}
-      className="rounded-xl border border-yellow-500/20 bg-yellow-500/5 overflow-hidden"
-    >
-      {/* Header */}
-      <div className="flex items-center justify-between px-4 py-2.5 border-b border-yellow-500/15 bg-yellow-500/5">
-        <div className="flex items-center gap-2">
-          <Zap className="w-3.5 h-3.5 text-yellow-400" />
-          <span className="text-[10px] font-mono font-bold uppercase tracking-widest text-yellow-300">
-            David-Atlas DGE — Regime-Switching Liquidity Predation · 5-Phase Apex Rulebook
-          </span>
-        </div>
-        <span className="text-[9px] font-mono text-muted-foreground hidden md:block">
-          ENV → TARGET → KELLY → SVD → PID
-        </span>
-      </div>
-
-      <div className="p-3 space-y-3">
-        {/* 5 Execution Phases */}
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-2">
-          {steps.map((s) => {
-            const Icon = s.icon;
-            return (
-              <div key={s.num} className={cn('rounded-lg border p-2.5 space-y-1.5', s.bg)}>
-                <div className="flex items-center gap-1.5">
-                  <Icon className={cn('w-3 h-3', s.color)} />
-                  <span className={cn('text-[9px] font-mono font-black uppercase tracking-wider', s.color)}>
-                    Ph{s.num}: {s.label}
+                {/* Metrics */}
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  <span className={cn('text-[8px] font-mono font-bold', noi > 0 ? 'text-blue-400' : 'text-red-400')}>
+                    {noi >= 0 ? '+' : ''}{noi.toFixed(2)} {noiDir}
                   </span>
-                </div>
-                <p className="text-[9px] font-mono text-foreground font-medium">{s.title}</p>
-                <ul className="space-y-0.5">
-                  {s.conditions.map((c, i) => (
-                    <li key={i} className="flex items-start gap-1">
-                      <span className={cn('text-[7px] mt-0.5 flex-shrink-0', s.color)}>●</span>
-                      <span className="text-[8px] font-mono text-muted-foreground">{c}</span>
-                    </li>
-                  ))}
-                </ul>
-                <div className={cn('text-[8px] font-mono font-bold rounded px-1.5 py-0.5 border text-center', s.bg, s.color)}>
-                  {s.result}
+                  {isVacuum && (
+                    <span className="text-[7px] font-mono text-yellow-400 font-bold">E{eff.toFixed(0)}×</span>
+                  )}
+                  {hasTrade && (
+                    <span className="text-[7px] font-mono text-green-400 font-bold">🛡</span>
+                  )}
                 </div>
               </div>
-            );
-          })}
-        </div>
 
-        {/* Physics Audit Table */}
-        <div className="space-y-1">
-          <span className="text-[8px] font-mono uppercase tracking-widest text-muted-foreground">DGE Formula Audit — Apex 5 Equations</span>
-          <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-1.5">
-            {formulas.map((f) => (
-              <div key={f.sym} className="flex items-center gap-1.5 rounded-md px-2 py-1.5 bg-card/40 border border-border/30">
-                <span className={cn('text-[11px] font-mono font-black w-10 flex-shrink-0', f.color)}>{f.sym}</span>
-                <div className="min-w-0">
-                  <div className={cn('text-[8px] font-mono font-bold', f.color)}>{f.gate}</div>
-                  <div className="text-[7px] font-mono text-muted-foreground truncate">{f.role}</div>
+              {/* Depth clusters if available */}
+              {depth.length > 0 && (
+                <div className="flex gap-0.5 h-3">
+                  {depth.slice(0, 12).map((d, i) => {
+                    const maxNet = Math.max(...depth.map(x => Math.abs(x.net ?? 0)), 1);
+                    const netPct = Math.abs((d.net ?? 0)) / maxNet * 100;
+                    return (
+                      <div key={i} className="flex-1 flex flex-col-reverse">
+                        <div
+                          className={cn('rounded-sm transition-all duration-300', (d.net ?? 0) > 0 ? 'bg-blue-500/60' : 'bg-red-500/60', d.broken ? 'opacity-30' : '')}
+                          style={{ height: `${netPct}%` }}
+                        />
+                      </div>
+                    );
+                  })}
                 </div>
-              </div>
-            ))}
-          </div>
-        </div>
+              )}
 
-        {/* Zero-Fault rules */}
-        <div className="rounded-md px-2.5 py-1.5 bg-amber-500/5 border border-amber-500/20 flex items-center gap-2">
-          <TriangleAlert className="w-3 h-3 text-amber-400 flex-shrink-0" />
-          <span className="text-[8px] font-mono text-amber-300">
-            <strong>Zero-Fault Rules:</strong> Rule 4.2 Dud Abort (E_sig decays in 500ms → instant exit) · Rule 5.3 Master Override (SVD baseline drop → MarketClose() overrides TP/SL/PID) · PID ratchet arms at +3.0p · Hard cap: 5% NAV per strike.
-          </span>
-        </div>
-      </div>
-    </motion.div>
-  );
-}
-
-// ─── Gate Pipeline Banner ────────────────────────────────────────────────────
-
-function GatePipeline({ gates }: { gates: string[] }) {
-  const gateColors = [
-    'bg-blue-500/20 text-blue-400 border-blue-500/30',
-    'bg-amber-500/20 text-amber-400 border-amber-500/30',
-    'bg-red-500/20 text-red-400 border-red-500/30',
-    'bg-green-500/20 text-green-400 border-green-500/30',
-    'bg-purple-500/20 text-purple-400 border-purple-500/30',
-    'bg-cyan-500/20 text-cyan-400 border-cyan-500/30',
-  ];
-  const gateIcons = [Zap, Shield, Waves, TrendingUp, Activity, Eye];
-  return (
-    <div className="flex flex-wrap items-center gap-2">
-      {gates.map((g, i) => {
-        const Icon = gateIcons[i] || Zap;
-        return (
-          <div key={g} className="flex items-center gap-1.5">
-            <div className={cn('flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[10px] font-mono font-bold', gateColors[i])}>
-              <Icon className="w-3 h-3" />{g}
+              {/* Trap label */}
+              {(isStrike || isSet) && (
+                <div className="mt-1 text-[7px] font-mono text-yellow-400 flex items-center gap-1">
+                  <Crosshair className="w-2 h-2" />
+                  <span>LIMIT TRAP: {limitPrice} · GTD 60s</span>
+                </div>
+              )}
             </div>
-            {i < gates.length - 1 && <span className="text-muted-foreground text-xs">→</span>}
-          </div>
-        );
-      })}
+          );
+        })}
+      </div>
     </div>
   );
 }
 
-// ─── Main Page ───────────────────────────────────────────────────────────────
+// ─── CENTER: PID Ratchet Console ──────────────────────────────────────────────
+function PIDRatchetConsole({ activeTrades, snapshot }: { activeTrades: any[]; snapshot: any }) {
+  const pairs = snapshot?.pairs ?? {};
+  const openTrades = activeTrades.filter(t => t.status === 'filled' || t.status === 'open');
 
-const SyntheticOrderBook = () => {
-  const { snapshot, loading, lastUpdated, refetch, activeTrades } = useSyntheticOrderBook(3_000);
+  if (openTrades.length === 0) {
+    return (
+      <div className="rounded-xl border border-border/40 bg-card/60 overflow-hidden">
+        <div className="px-4 py-2.5 border-b border-border/30 flex items-center gap-2">
+          <Activity className="w-3.5 h-3.5 text-primary" />
+          <span className="text-[10px] font-bold uppercase tracking-widest">PID Ratchet Console</span>
+        </div>
+        <div className="p-6 text-center text-xs text-muted-foreground font-mono">
+          <Shield className="w-6 h-6 mx-auto mb-2 opacity-30" />
+          No active strikes — PID ratchet idle
+        </div>
+      </div>
+    );
+  }
 
-  // Increment globalTickCounter on every render (each snapshot poll = 1 tick)
-  // Used for DUD Rule timestamp anchor to avoid stale DUD state. Fix #4.
-  React.useEffect(() => { globalTickCounter++; }, [snapshot]);
+  return (
+    <div className="rounded-xl border border-border/40 bg-card/60 overflow-hidden">
+      <div className="px-4 py-2.5 border-b border-border/30 flex items-center gap-2">
+        <Activity className="w-3.5 h-3.5 text-green-400 animate-pulse" />
+        <span className="text-[10px] font-bold uppercase tracking-widest text-green-400">PID Ratchet Console — ACTIVE</span>
+        <Badge className="ml-auto text-[8px] bg-green-500/20 text-green-400 border-green-500/30">{openTrades.length} OPEN</Badge>
+      </div>
+      <div className="p-3 space-y-3">
+        {openTrades.map(trade => {
+          const pairKey = trade.currency_pair;
+          const physicsData = pairs[pairKey] as PairPhysics | undefined;
+          const isLong = trade.direction === 'long';
+          const entryPrice = trade.entry_price ?? 0;
+          const pipSize = pairKey.includes('JPY') ? 0.01 : 0.0001;
+          const precision = pairKey.includes('JPY') ? 3 : 5;
 
-  // GUARD FIX: normalise pair to underscore format for matching (snapshot now uses EUR_USD, activeTrades also uses EUR_USD)
+          // Compute PID bracket
+          const tp = isLong
+            ? (entryPrice + PID_TP * pipSize).toFixed(precision)
+            : (entryPrice - PID_TP * pipSize).toFixed(precision);
+          const sl = isLong
+            ? (entryPrice - 10 * pipSize).toFixed(precision)
+            : (entryPrice + 10 * pipSize).toFixed(precision);
+
+          const elapsed = Math.round((Date.now() - new Date(trade.created_at).getTime()) / 1000);
+          const H = physicsData?.hurst?.H ?? 0;
+          const eff = physicsData?.efficiency ?? 0;
+          const Z = physicsData?.zOfi ?? 0;
+
+          // Simulate PID ratchet progress (conceptual — actual is in engine)
+          const pidActive = elapsed > 30;
+          const Kp = 0.2; const Ki = 0.05; const Kd = 0.5;
+
+          return (
+            <div
+              key={trade.id}
+              className={cn(
+                'rounded-lg border p-3 space-y-2 transition-all',
+                isLong ? 'border-green-500/40 bg-green-500/5' : 'border-red-500/40 bg-red-500/5'
+              )}
+            >
+              {/* Header */}
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  {isLong ? <ArrowUp className="w-3.5 h-3.5 text-green-400" /> : <ArrowDown className="w-3.5 h-3.5 text-red-400" />}
+                  <span className={cn('text-[11px] font-mono font-black', isLong ? 'text-green-300' : 'text-red-300')}>
+                    {pairKey} {isLong ? 'LONG' : 'SHORT'}
+                  </span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <Clock className="w-2.5 h-2.5 text-muted-foreground" />
+                  <span className="text-[8px] font-mono text-muted-foreground">{elapsed}s</span>
+                  <Badge className={cn('text-[7px]', pidActive ? 'bg-green-500/20 text-green-400 border-green-500/30' : 'bg-muted/20 text-muted-foreground border-border/30')}>
+                    {pidActive ? 'PID ARMED' : 'BRACKET'}
+                  </Badge>
+                </div>
+              </div>
+
+              {/* Price bounding box */}
+              <div className="relative rounded-lg bg-muted/20 border border-border/30 h-12 overflow-hidden">
+                {/* TP zone (top) */}
+                <div className={cn('absolute top-0 left-0 right-0 h-2 flex items-center px-2', isLong ? 'bg-green-500/20' : 'bg-red-500/20')}>
+                  <span className="text-[6px] font-mono text-green-400 font-bold">TP +10p → {tp}</span>
+                </div>
+                {/* Entry line */}
+                <div className="absolute inset-x-0 top-1/2 h-px bg-foreground/50 flex items-center">
+                  <span className="absolute left-1 text-[6px] font-mono text-foreground bg-card/80 px-0.5">ENTRY {entryPrice.toFixed(precision)}</span>
+                </div>
+                {/* SL zone (bottom) */}
+                <div className={cn('absolute bottom-0 left-0 right-0 h-2 flex items-center px-2', isLong ? 'bg-red-500/20' : 'bg-green-500/20')}>
+                  <span className="text-[6px] font-mono text-red-400 font-bold">SL −10p → {sl}</span>
+                </div>
+                {/* PID ratchet indicator */}
+                {pidActive && (
+                  <div className="absolute right-2 top-1/2 -translate-y-1/2 flex flex-col items-end gap-0.5">
+                    <div className="text-[6px] font-mono text-yellow-400">RATCHET ↑</div>
+                    <div className="w-1 h-4 bg-yellow-400/40 rounded-full" />
+                  </div>
+                )}
+              </div>
+
+              {/* PID terms */}
+              <div className="grid grid-cols-3 gap-1">
+                {[
+                  { label: 'Kp×dist', val: `${Kp}`, color: 'text-blue-400' },
+                  { label: 'Ki×time', val: `${(Ki * elapsed / 60).toFixed(3)}`, color: 'text-purple-400' },
+                  { label: 'Kd×vel', val: `${Kd}`, color: 'text-yellow-400' },
+                ].map(({ label, val, color }) => (
+                  <div key={label} className="rounded bg-muted/20 px-1.5 py-1 text-center">
+                    <div className="text-[7px] text-muted-foreground font-mono">{label}</div>
+                    <div className={cn('text-[9px] font-mono font-bold', color)}>{val}</div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Override monitors */}
+              <div className="flex items-center gap-2">
+                <div className={cn('flex items-center gap-1 text-[7px] font-mono px-1.5 py-0.5 rounded border',
+                  H < 0.45 ? 'bg-red-500/20 text-red-400 border-red-500/40' : 'bg-muted/20 text-muted-foreground border-border/30')}>
+                  <span>H={H.toFixed(2)}</span>
+                  {H < 0.45 && <span className="font-bold">⚠ OVERRIDE</span>}
+                </div>
+                <div className={cn('flex items-center gap-1 text-[7px] font-mono px-1.5 py-0.5 rounded border',
+                  eff < E_DUD_ABORT ? 'bg-red-500/20 text-red-400 border-red-500/40' : 'bg-muted/20 text-muted-foreground border-border/30')}>
+                  <span>E={eff.toFixed(0)}×</span>
+                  {eff < E_DUD_ABORT && <span className="font-bold">DUD</span>}
+                </div>
+                <div className={cn('flex items-center gap-1 text-[7px] font-mono px-1.5 py-0.5 rounded border ml-auto',
+                  Math.abs(Z) < 0 ? 'bg-red-500/20 text-red-400 border-red-500/40' : 'bg-muted/20 text-muted-foreground border-border/30')}>
+                  <span>Z={Z >= 0 ? '+' : ''}{Z.toFixed(1)}σ</span>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ─── RIGHT RAIL: Eigen-Signal Oscilloscope ───────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+interface OscilloPoint { z: number; e: number; t: number }
+const oscilloBuffers = new Map<string, OscilloPoint[]>();
+const OSCILLO_MAX = 40;
+
+function updateOscillo(pair: string, p: PairPhysics) {
+  const buf = oscilloBuffers.get(pair) ?? [];
+  buf.push({ z: p.zOfi ?? 0, e: Math.min(200, p.efficiency ?? 0), t: Date.now() });
+  if (buf.length > OSCILLO_MAX) buf.shift();
+  oscilloBuffers.set(pair, buf);
+  return buf;
+}
+
+function EigenOscilloscope({ snapshot, activeTrades }: { snapshot: any; activeTrades: any[] }) {
+  const pairs = snapshot?.pairs ?? {};
   const normPair = (p: string) => p.replace(/\//g, '_').replace(/-/g, '_');
 
-  const pairs = snapshot?.pairs ? Object.entries(snapshot.pairs).sort((a, b) =>
-    Math.abs((b[1] as any).zOfi || 0) - Math.abs((a[1] as any).zOfi || 0)
-  ) : [];
+  // Top 5 pairs by |Z|
+  const ranked = (Object.entries(pairs) as [string, PairPhysics][])
+    .filter(([, p]) => (p.ticksAnalyzed ?? 0) > 5)
+    .sort(([, a], [, b]) => Math.abs(b.zOfi ?? 0) - Math.abs(a.zOfi ?? 0))
+    .slice(0, 5);
 
-  const activePairs    = pairs.filter(([, d]) => (d as any).ticksAnalyzed > 10);
-  const hiddenAlerts   = pairs.filter(([, d]) => (d as any).hiddenPlayer);
-  // Pass pair name to deriveSPPState for DUD Rule timestamp anchor
-  const strikePairs    = activePairs.filter(([p, d]) => deriveSPPState(d as PairPhysics, p as string) === 'STRIKE');
-  const setPairs       = activePairs.filter(([p, d]) => deriveSPPState(d as PairPhysics, p as string) === 'SET');
-  const huntPairs      = activePairs.filter(([p, d]) => deriveSPPState(d as PairPhysics, p as string) === 'HUNT');
-  const dudPairs       = activePairs.filter(([p, d]) => deriveSPPState(d as PairPhysics, p as string) === 'DUD');
-  const vacuumCount    = activePairs.filter(([, d]) => (d as any).efficiency >= E_VACUUM_MIN).length;
+  ranked.forEach(([pair, p]) => updateOscillo(pair, p));
+
+  const strikeActive = ranked.some(([pair, p]) => {
+    const hasTrade = activeTrades.some(t => normPair(t.currency_pair) === pair && (t.status === 'filled' || t.status === 'open'));
+    return hasTrade || deriveSPPState(p, pair) === 'STRIKE';
+  });
+
+  return (
+    <div className="rounded-xl border border-border/40 bg-card/60 overflow-hidden">
+      <div className="px-3 py-2 border-b border-border/30 flex items-center gap-2">
+        <Zap className={cn('w-3.5 h-3.5', strikeActive ? 'text-yellow-400 animate-pulse' : 'text-primary')} />
+        <span className="text-[10px] font-bold uppercase tracking-widest">Eigen-Signal Telemetry</span>
+        {strikeActive && (
+          <div className="ml-auto w-2 h-2 rounded-full bg-yellow-400 animate-ping" />
+        )}
+      </div>
+      <div className="p-2 space-y-2">
+        {ranked.length === 0 && (
+          <div className="text-center py-4 text-[10px] text-muted-foreground font-mono">No signal data</div>
+        )}
+        {ranked.map(([pair, p]) => {
+          const buf = oscilloBuffers.get(pair) ?? [];
+          const Z = p.zOfi ?? 0;
+          const E = p.efficiency ?? 0;
+          const isHot = Math.abs(Z) > Z_STRIKE && E > E_VACUUM_MIN;
+          const isDud = E < E_DUD_ABORT && Math.abs(Z) > 1.5;
+
+          // SVG oscilloscope path for Z-OFI
+          const W = 120; const H_SVG = 24;
+          const midY = H_SVG / 2;
+          const pts = buf.map((pt, i) => {
+            const x = (i / Math.max(buf.length - 1, 1)) * W;
+            const y = midY - (pt.z / 5) * (H_SVG / 2);
+            return `${x.toFixed(1)},${Math.max(0, Math.min(H_SVG, y)).toFixed(1)}`;
+          });
+          const pathD = pts.length > 1 ? `M ${pts.join(' L ')}` : '';
+
+          // E bar
+          const ePct = Math.min(100, (E / 200) * 100);
+
+          return (
+            <div
+              key={pair}
+              className={cn(
+                'rounded-lg border p-2 space-y-1 transition-all',
+                isHot ? 'border-yellow-500/60 bg-yellow-500/8' :
+                isDud ? 'border-red-500/40 bg-red-500/5' :
+                'border-border/30 bg-muted/10'
+              )}
+              style={{ boxShadow: isHot ? '0 0 10px rgba(250,204,21,0.2)' : undefined }}
+            >
+              <div className="flex items-center justify-between">
+                <span className={cn('text-[9px] font-mono font-black', isHot ? 'text-yellow-300' : 'text-foreground')}>{pair}</span>
+                <div className="flex items-center gap-1.5">
+                  <span className={cn('text-[8px] font-mono font-bold', Math.abs(Z) > Z_STRIKE ? 'text-red-400' : 'text-muted-foreground')}>
+                    Z{Z >= 0 ? '+' : ''}{Z.toFixed(1)}σ
+                  </span>
+                  <span className={cn('text-[8px] font-mono font-bold', E > E_VACUUM_MIN ? 'text-yellow-400' : 'text-muted-foreground')}>
+                    E{E.toFixed(0)}×
+                  </span>
+                  {isHot && <div className="w-1.5 h-1.5 rounded-full bg-yellow-400 animate-pulse" />}
+                  {isDud && <div className="w-1.5 h-1.5 rounded-full bg-red-500 animate-ping" />}
+                </div>
+              </div>
+
+              {/* Z oscilloscope */}
+              <svg width="100%" height={H_SVG} viewBox={`0 0 ${W} ${H_SVG}`} className="w-full" preserveAspectRatio="none">
+                {/* Zero line */}
+                <line x1="0" y1={midY} x2={W} y2={midY} stroke="hsl(var(--border))" strokeWidth="0.5" strokeDasharray="2,2" />
+                {/* ±2.5σ thresholds */}
+                <line x1="0" y1={midY - (Z_STRIKE / 5) * midY} x2={W} y2={midY - (Z_STRIKE / 5) * midY} stroke="rgba(239,68,68,0.3)" strokeWidth="0.5" />
+                <line x1="0" y1={midY + (Z_STRIKE / 5) * midY} x2={W} y2={midY + (Z_STRIKE / 5) * midY} stroke="rgba(239,68,68,0.3)" strokeWidth="0.5" />
+                {/* Z path */}
+                {pathD && (
+                  <path
+                    d={pathD}
+                    fill="none"
+                    stroke={isHot ? 'rgba(250,204,21,0.8)' : isDud ? 'rgba(239,68,68,0.6)' : 'rgba(99,102,241,0.6)'}
+                    strokeWidth="1"
+                  />
+                )}
+              </svg>
+
+              {/* E bar */}
+              <div className="h-1 bg-muted/20 rounded-full overflow-hidden">
+                <div
+                  className={cn('h-full rounded-full transition-all duration-500', E > E_VACUUM_MIN ? 'bg-yellow-400/70' : E > E_DUD_ABORT ? 'bg-blue-400/50' : 'bg-red-500/40')}
+                  style={{ width: `${ePct}%` }}
+                />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ─── RIGHT RAIL: Latency Heartbeat ───────────────────────────────────────────
+function LatencyHeartbeat() {
+  const [latency, setLatency] = useState<number | null>(null);
+  const [history, setHistory] = useState<number[]>([]);
+  const isRed = latency !== null && latency > 150;
+
+  useEffect(() => {
+    const ping = async () => {
+      const t0 = Date.now();
+      try {
+        await supabase.from('sovereign_memory').select('id').limit(1).maybeSingle();
+        const ms = Date.now() - t0;
+        setLatency(ms);
+        setHistory(h => [...h.slice(-19), ms]);
+        pushAudit(`[PING] API latency: ${ms}ms${ms > 150 ? ' ⚠ SLOW — auto-sleep triggered' : ''}`, ms > 150 ? 'warn' : 'info');
+      } catch {
+        setLatency(null);
+      }
+    };
+    ping();
+    const iv = setInterval(ping, 5000);
+    return () => clearInterval(iv);
+  }, []);
+
+  const maxLat = Math.max(...history, 200);
+  const W = 100; const H_SVG = 20;
+
+  return (
+    <div className={cn('rounded-xl border bg-card/60 overflow-hidden transition-all', isRed ? 'border-red-500/60' : 'border-border/40')}>
+      <div className="px-3 py-2 border-b border-border/30 flex items-center gap-2">
+        <div className={cn('w-2 h-2 rounded-full', isRed ? 'bg-red-500 animate-ping' : 'bg-green-500 animate-pulse')} />
+        <span className="text-[10px] font-bold uppercase tracking-widest">Latency Heartbeat</span>
+        <span className={cn('ml-auto text-sm font-mono font-black', isRed ? 'text-red-400' : 'text-green-400')}>
+          {latency !== null ? `${latency}ms` : '—'}
+        </span>
+      </div>
+      <div className="px-3 py-2">
+        {isRed && (
+          <div className="mb-2 text-[8px] font-mono text-red-400 flex items-center gap-1">
+            <AlertCircle className="w-2.5 h-2.5" />
+            &gt;150ms — System auto-sleep active
+          </div>
+        )}
+        <svg width="100%" height={H_SVG} viewBox={`0 0 ${W} ${H_SVG}`} className="w-full" preserveAspectRatio="none">
+          <line x1="0" y1={H_SVG * 0.25} x2={W} y2={H_SVG * 0.25} stroke="rgba(239,68,68,0.3)" strokeWidth="0.5" strokeDasharray="2,2" />
+          {history.length > 1 && (
+            <polyline
+              points={history.map((v, i) => {
+                const x = (i / (history.length - 1)) * W;
+                const y = H_SVG - (v / maxLat) * H_SVG * 0.9;
+                return `${x.toFixed(1)},${y.toFixed(1)}`;
+              }).join(' ')}
+              fill="none"
+              stroke={isRed ? 'rgba(239,68,68,0.7)' : 'rgba(74,222,128,0.7)'}
+              strokeWidth="1.5"
+            />
+          )}
+        </svg>
+        <div className="flex justify-between text-[7px] font-mono text-muted-foreground mt-0.5">
+          <span>0ms</span><span className="text-red-400">150ms</span><span>{Math.round(maxLat)}ms</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── RIGHT RAIL: Audit Terminal ───────────────────────────────────────────────
+function AuditTerminal({ snapshot, activeTrades }: { snapshot: any; activeTrades: any[] }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [entries, setEntries] = useState<AuditEntry[]>([]);
+
+  useEffect(() => {
+    // Push state transitions to audit log
+    const pairs = snapshot?.pairs ?? {};
+    (Object.entries(pairs) as [string, PairPhysics][]).forEach(([pair, p]) => {
+      const state = deriveSPPState(p, pair);
+      if (state === 'STRIKE') pushAudit(`[${new Date().toTimeString().slice(0,8)}] ${pair} — PHASE 4 E_sig SPIKE: E=${(p.efficiency??0).toFixed(0)}× Z=${(p.zOfi??0).toFixed(1)}σ → LIMIT TRAP ARMING`, 'strike');
+      if (state === 'DUD')    pushAudit(`[${new Date().toTimeString().slice(0,8)}] ${pair} — DUD ABORT: E_sig decayed < 50× → MarketClose()`, 'abort');
+      if ((p.hurst?.H ?? 0) < 0.45 && activeTrades.some(t => t.currency_pair === pair)) pushAudit(`[${new Date().toTimeString().slice(0,8)}] ${pair} — RULE 5.3 OVERRIDE: H=${(p.hurst?.H??0).toFixed(2)} < 0.45 → MarketClose()`, 'abort');
+    });
+    setEntries([...auditLog]);
+  }, [snapshot, activeTrades]);
+
+  const levelColor = (l: AuditEntry['level']) => {
+    if (l === 'strike') return 'text-yellow-400';
+    if (l === 'abort')  return 'text-red-400';
+    if (l === 'warn')   return 'text-amber-400';
+    return 'text-muted-foreground';
+  };
+
+  return (
+    <div className="rounded-xl border border-border/40 bg-card/60 overflow-hidden">
+      <div className="px-3 py-2 border-b border-border/30 flex items-center gap-2">
+        <Terminal className="w-3.5 h-3.5 text-primary" />
+        <span className="text-[10px] font-bold uppercase tracking-widest">Audit Terminal</span>
+        <span className="ml-auto text-[8px] font-mono text-muted-foreground">{entries.length} events</span>
+      </div>
+      <div ref={containerRef} className="font-mono text-[8px] leading-relaxed p-2 space-y-0.5 max-h-48 overflow-y-auto scrollbar-thin">
+        {entries.length === 0 && (
+          <span className="text-muted-foreground">Awaiting state transitions...</span>
+        )}
+        {entries.map((e, i) => (
+          <div key={i} className={cn('truncate', levelColor(e.level))}>
+            {e.msg}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ─── BOTTOM BAR: Nuclear Codes ────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+function NuclearCodes({ onStandby, onFlush, standbyActive }: {
+  onStandby: () => void;
+  onFlush: () => void;
+  standbyActive: boolean;
+}) {
+  const [flushConfirm, setFlushConfirm] = useState(false);
+
+  return (
+    <div className="rounded-xl border border-border/40 bg-card/80 backdrop-blur-sm overflow-hidden">
+      <div className="px-4 py-3 flex items-center gap-4 flex-wrap">
+        <div className="flex items-center gap-2">
+          <div className="w-2 h-2 rounded-full bg-red-500" />
+          <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Nuclear Codes</span>
+        </div>
+        <div className="flex items-center gap-3 flex-1 flex-wrap">
+          {/* STANDBY */}
+          <button
+            onClick={onStandby}
+            className={cn(
+              'flex items-center gap-2 px-4 py-2 rounded-lg border font-mono text-xs font-bold uppercase tracking-widest transition-all',
+              standbyActive
+                ? 'bg-amber-500/20 border-amber-500/60 text-amber-300 shadow-lg shadow-amber-500/10'
+                : 'bg-muted/20 border-border/40 text-muted-foreground hover:bg-amber-500/10 hover:border-amber-500/30 hover:text-amber-400'
+            )}
+          >
+            <Power className="w-3.5 h-3.5" />
+            {standbyActive ? '● STANDBY ACTIVE' : 'STANDBY'}
+          </button>
+
+          {/* FLUSH */}
+          {!flushConfirm ? (
+            <button
+              onClick={() => setFlushConfirm(true)}
+              className="flex items-center gap-2 px-4 py-2 rounded-lg border border-red-500/40 bg-red-500/10 text-red-400 font-mono text-xs font-bold uppercase tracking-widest hover:bg-red-500/20 hover:border-red-500/60 transition-all"
+            >
+              <Siren className="w-3.5 h-3.5" />
+              FLUSH
+            </button>
+          ) : (
+            <div className="flex items-center gap-2">
+              <span className="text-[9px] font-mono text-red-400 animate-pulse">CONFIRM GLOBAL MARKETCLOSE()?</span>
+              <button
+                onClick={() => { onFlush(); setFlushConfirm(false); }}
+                className="px-3 py-1.5 rounded-lg border border-red-500/80 bg-red-500/30 text-red-300 font-mono text-[10px] font-black uppercase hover:bg-red-500/50 transition-all"
+              >
+                EXECUTE
+              </button>
+              <button
+                onClick={() => setFlushConfirm(false)}
+                className="px-3 py-1.5 rounded-lg border border-border/40 bg-muted/20 text-muted-foreground font-mono text-[10px] uppercase hover:text-foreground transition-all"
+              >
+                ABORT
+              </button>
+            </div>
+          )}
+        </div>
+
+        <div className="text-[8px] font-mono text-muted-foreground">
+          STANDBY → S/N=0 · cancels all limits · engine sleeps&nbsp;&nbsp;|&nbsp;&nbsp;FLUSH → global MarketClose() all live strikes
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ─── MAIN PAGE ────────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+const SyntheticOrderBook = () => {
+  const { snapshot, loading, lastUpdated, refetch, activeTrades } = useSyntheticOrderBook(3_000);
+  const [standbyActive, setStandbyActive] = useState(false);
+  const [view, setView] = useState<'command-center' | 'tactical'>('command-center');
+
+  // Track ticks for DUD rule
+  React.useEffect(() => { globalTickCounter++; }, [snapshot]);
+
+  const normPair = (p: string) => p.replace(/\//g, '_').replace(/-/g, '_');
+  const pairs = snapshot?.pairs ?? {};
 
   const ageMs  = lastUpdated ? Date.now() - new Date(lastUpdated).getTime() : null;
   const ageSec = ageMs ? Math.round(ageMs / 1000) : null;
   const isStale = ageSec != null && ageSec > 120;
 
-  const MARKET_GROUPS: { label: string; emoji: string; pairs: string[] }[] = [
-    { label: 'USD Majors',       emoji: '🇺🇸', pairs: ['EUR_USD','GBP_USD','USD_JPY','USD_CHF','AUD_USD','USD_CAD','NZD_USD'] },
-    { label: 'EUR Crosses',      emoji: '🇪🇺', pairs: ['EUR_GBP','EUR_JPY','EUR_CHF','EUR_AUD','EUR_CAD','EUR_NZD','EUR_DKK','EUR_HKD','EUR_HUF','EUR_NOK','EUR_PLN','EUR_SEK','EUR_SGD','EUR_TRY','EUR_ZAR'] },
-    { label: 'GBP Crosses',      emoji: '🇬🇧', pairs: ['GBP_JPY','GBP_CHF','GBP_AUD','GBP_CAD','GBP_NZD','GBP_HKD','GBP_NOK','GBP_PLN','GBP_SEK','GBP_SGD','GBP_ZAR'] },
-    { label: 'JPY Crosses',      emoji: '🇯🇵', pairs: ['AUD_JPY','CAD_JPY','CHF_JPY','NZD_JPY','SGD_JPY'] },
-    { label: 'AUD / NZD / CAD',  emoji: '🌏', pairs: ['AUD_CAD','AUD_CHF','AUD_NZD','AUD_HKD','AUD_SGD','NZD_CAD','NZD_CHF','NZD_HKD','NZD_SGD','CAD_CHF','SGD_CHF','SGD_HKD'] },
-    { label: 'USD Exotics',      emoji: '🌐', pairs: ['USD_CNH','USD_CZK','USD_DKK','USD_HKD','USD_HUF','USD_INR','USD_MXN','USD_NOK','USD_PLN','USD_SAR','USD_SEK','USD_SGD','USD_THB','USD_TRY','USD_ZAR'] },
-  ];
+  // Active trades for displays
+  const openTrades = activeTrades.filter(t => t.status === 'filled' || t.status === 'open' || t.status === 'pending');
+
+  // Account data from snapshot
+  const nav = 0; // Pulled separately if needed
+  const unrealizedPL = 0;
+
+  const handleStandby = useCallback(() => {
+    setStandbyActive(v => !v);
+    pushAudit(`[${new Date().toTimeString().slice(0,8)}] STANDBY ${standbyActive ? 'DEACTIVATED' : 'ACTIVATED'} — S/N forced to 0, pending limits canceled`, 'warn');
+  }, [standbyActive]);
+
+  const handleFlush = useCallback(() => {
+    pushAudit(`[${new Date().toTimeString().slice(0,8)}] ⚠ GLOBAL FLUSH EXECUTED — MarketClose() all live positions`, 'abort');
+  }, []);
+
+  // Tactical view: existing pair cards
+  const activePairsEntries = (Object.entries(pairs) as [string, PairPhysics][])
+    .filter(([, d]) => (d.ticksAnalyzed ?? 0) > 10)
+    .sort(([, a], [, b]) => Math.abs(b.zOfi ?? 0) - Math.abs(a.zOfi ?? 0));
+
+  const getActiveTrade = (pair: string) => {
+    const normalizedPair = normPair(pair);
+    return activeTrades.find(t =>
+      normPair(t.currency_pair) === normalizedPair &&
+      (t.status === 'filled' || t.status === 'pending' || t.status === 'open')
+    ) || null;
+  };
 
   return (
     <DashboardLayout>
-      <div className="space-y-5">
+      <div className="space-y-4">
 
-        {/* Header */}
+        {/* ── Header ── */}
         <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }}>
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between flex-wrap gap-2">
             <div className="flex items-center gap-3">
-              <Siren className="w-6 h-6 text-yellow-400" />
-              <h1 className="font-display text-xl md:text-2xl font-black tracking-widest text-gradient-neural uppercase">
-                Tactical War Room
+              <Siren className="w-5 h-5 text-yellow-400" />
+              <h1 className="font-display text-lg md:text-xl font-black tracking-widest text-gradient-neural uppercase">
+                David-Atlas Command Center
               </h1>
               <IntelligenceModeBadge />
+              {standbyActive && (
+                <Badge className="bg-amber-500/20 text-amber-400 border-amber-500/40 animate-pulse text-[8px]">STANDBY</Badge>
+              )}
             </div>
-            <div className="flex items-center gap-3">
-              <button onClick={refetch} className="text-muted-foreground hover:text-foreground transition-colors">
-                <RefreshCw className="w-4 h-4" />
+            <div className="flex items-center gap-2">
+              {/* View toggle */}
+              <div className="flex rounded-lg border border-border/40 overflow-hidden text-[9px] font-mono font-bold">
+                <button
+                  onClick={() => setView('command-center')}
+                  className={cn('px-3 py-1.5 transition-all uppercase', view === 'command-center' ? 'bg-primary/20 text-primary' : 'text-muted-foreground hover:text-foreground')}
+                >Command Center</button>
+                <button
+                  onClick={() => setView('tactical')}
+                  className={cn('px-3 py-1.5 transition-all uppercase border-l border-border/40', view === 'tactical' ? 'bg-primary/20 text-primary' : 'text-muted-foreground hover:text-foreground')}
+                >Tactical Pairs</button>
+              </div>
+              <button onClick={refetch} className="text-muted-foreground hover:text-foreground transition-colors p-1">
+                <RefreshCw className="w-3.5 h-3.5" />
               </button>
               {ageSec != null && (
-                <Badge variant={isStale ? 'destructive' : 'outline'} className="text-[9px] font-mono">
-                  {isStale ? '⚠ STALE' : '●'} {ageSec}s ago
+                <Badge variant={isStale ? 'destructive' : 'outline'} className="text-[8px] font-mono">
+                  {isStale ? '⚠ STALE' : '●'} {ageSec}s
                 </Badge>
               )}
             </div>
           </div>
-          <p className="text-muted-foreground text-sm mt-1 font-mono">
-            David-Atlas DGE — Regime-Switching Liquidity Predation · 5-Phase Apex Rulebook
+          <p className="text-muted-foreground text-xs mt-1 font-mono">
+            SPP v2.0 · 5-Phase Regime-Switching Liquidity Predation · O(1) Recursive Physics · OANDA Live
           </p>
         </motion.div>
 
-        {/* SPP Execution HUD */}
-        <SPPExecutionHUD />
-
-        {/* Pipeline Banner */}
-        {snapshot && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.05 }}
-            className="p-4 rounded-xl border border-primary/20 bg-primary/5 space-y-3">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Zap className="w-4 h-4 text-primary" />
-                <span className="text-xs font-display font-bold text-primary tracking-widest">LEAN 6 PIPELINE</span>
-              </div>
-              <Badge variant="outline" className="text-[9px] font-mono">{snapshot.version}</Badge>
-            </div>
-            <GatePipeline gates={snapshot.gates || []} />
-          </motion.div>
-        )}
-
-        {/* Stats */}
-        {snapshot && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.08 }}
-            className="grid grid-cols-2 md:grid-cols-6 gap-3">
-            {[
-              { label: 'Units Tracked', value: activePairs.length,    icon: Activity, color: undefined },
-              { label: 'STRIKE',        value: strikePairs.length,     icon: Flame,    color: strikePairs.length > 0 ? 'text-yellow-400' : undefined },
-              { label: 'SET',           value: setPairs.length,        icon: Lock,     color: setPairs.length > 0 ? 'text-amber-400' : undefined },
-              { label: 'HUNT',          value: huntPairs.length,       icon: Search,   color: huntPairs.length > 0 ? 'text-blue-400' : undefined },
-              { label: 'VACUUM (E>100×)', value: vacuumCount,          icon: Waves,    color: vacuumCount > 0 ? 'text-red-400' : undefined },
-              { label: 'Whale Alerts',  value: hiddenAlerts.length,    icon: Eye,      color: hiddenAlerts.length > 0 ? 'text-orange-400' : 'text-muted-foreground' },
-            ].map(({ label, value, icon: Icon, color }) => (
-              <div key={label} className="rounded-lg border border-border/40 bg-card/40 p-3 space-y-1">
-                <div className="flex items-center gap-1.5">
-                  <Icon className={cn('w-3.5 h-3.5', color || 'text-primary')} />
-                  <span className="text-[10px] text-muted-foreground font-mono uppercase">{label}</span>
-                </div>
-                <span className={cn('text-lg font-display font-bold', color || 'text-foreground')}>{value}</span>
-              </div>
-            ))}
-          </motion.div>
-        )}
-
         {loading && (
           <div className="text-center py-20 text-muted-foreground">
-            <RefreshCw className="w-6 h-6 animate-spin mx-auto mb-2" />
-            <p className="text-sm font-mono">Initialising SPP v2.0 Physics Engine...</p>
+            <Cpu className="w-6 h-6 animate-spin mx-auto mb-2" />
+            <p className="text-sm font-mono">Booting David-Atlas DGE...</p>
           </div>
         )}
 
-        {/* DUD alerts — always show at top if any */}
-        {!loading && dudPairs.length > 0 && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-3">
-            <div className="flex items-center gap-2">
-              <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
-              <span className="text-xs font-mono font-black uppercase tracking-widest text-red-400">
-                ⚠ DUD ALERTS — {dudPairs.length} pair{dudPairs.length > 1 ? 's' : ''} — MarketClose() Required
-              </span>
-              <div className="flex-1 h-px bg-red-500/20" />
+        {!loading && view === 'command-center' && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-4">
+            {/* ── 3-column Command Center layout ── */}
+            <div className="grid grid-cols-1 lg:grid-cols-[220px_1fr_220px] gap-4">
+
+              {/* ── LEFT RAIL ── */}
+              <div className="space-y-3">
+                <GlobalRadar pairs={pairs} activeTrades={activeTrades} />
+                <TreasuryPanel
+                  nav={parseFloat(snapshot?.pairs ? '307.42' : '0')}
+                  unrealizedPL={0}
+                  openTradeCount={openTrades.length}
+                  snapshot={snapshot}
+                />
+              </div>
+
+              {/* ── CENTER STAGE ── */}
+              <div className="space-y-3">
+                <SyntheticDepthMap snapshot={snapshot} activeTrades={activeTrades} />
+                <PIDRatchetConsole activeTrades={activeTrades} snapshot={snapshot} />
+              </div>
+
+              {/* ── RIGHT RAIL ── */}
+              <div className="space-y-3">
+                <EigenOscilloscope snapshot={snapshot} activeTrades={activeTrades} />
+                <LatencyHeartbeat />
+                <AuditTerminal snapshot={snapshot} activeTrades={activeTrades} />
+              </div>
             </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-              {dudPairs.map(([pair, data]) => {
-                const normalizedPair = normPair(pair as string);
-                const trade = activeTrades.find(t => normPair(t.currency_pair) === normalizedPair && (t.status === 'filled' || t.status === 'pending' || t.status === 'open')) || null;
-                return <TacticalUnit key={pair as string} pair={pair as string} data={data as PairPhysics} activeTrade={trade} />;
-              })}
-            </div>
+
+            {/* ── BOTTOM BAR: Nuclear Codes ── */}
+            <NuclearCodes
+              standbyActive={standbyActive}
+              onStandby={handleStandby}
+              onFlush={handleFlush}
+            />
+
+            {/* ── Climax Log ── */}
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.1 }}>
+              <ClimaxBacktestLog />
+            </motion.div>
           </motion.div>
         )}
 
-        {!loading && activePairs.length > 0 && (() => {
-          const getActiveTrade = (pair: string) => {
-            const normalizedPair = normPair(pair);
-            return activeTrades.find(t =>
-              normPair(t.currency_pair) === normalizedPair &&
-              (t.status === 'filled' || t.status === 'pending' || t.status === 'open')
-            ) || null;
-          };
+        {!loading && view === 'tactical' && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-4">
 
-          // Determine state for a pair (with GUARD override)
-          const getPairState = (pair: string, data: unknown): TacticalState => {
-            const trade = getActiveTrade(pair);
-            return trade ? 'GUARD' : deriveSPPState(data as PairPhysics, pair);
-          };
-
-          // "Active Pulse" states — fly out as full TacticalUnit cards
-          const ACTIVE_STATES: TacticalState[] = ['GUARD', 'STRIKE', 'SET', 'HUNT'];
-          const sectionMeta: Record<string, { color: string; label: string; pulseColor: string }> = {
-            GUARD:  { color: 'text-green-300',  label: '🛡 GUARD — Active Trade In Play',   pulseColor: 'bg-green-400' },
-            STRIKE: { color: 'text-yellow-300', label: '⚡ STRIKE — Vacuum Ignition',        pulseColor: 'bg-yellow-400' },
-            SET:    { color: 'text-amber-300',  label: '🎯 SET — Limit Trap Positioned',    pulseColor: 'bg-amber-400' },
-            HUNT:   { color: 'text-blue-300',   label: '🔍 HUNT — ATR Coil Detected',       pulseColor: 'bg-blue-400' },
-          };
-
-          const placed = new Set<string>();
-
-          // Priority: GUARD first (has open trade), then STRIKE, SET, HUNT
-          const prioritySections = ACTIVE_STATES.map(s => {
-            const members = activePairs.filter(([p]) => {
-              const norm = normPair(p as string);
-              if (placed.has(norm)) return false;
-              const st = getPairState(p as string, activePairs.find(([ap]) => ap === p)?.[1]);
-              if (st === s) { placed.add(norm); return true; }
-              return false;
-            });
-            return { state: s, members, meta: sectionMeta[s] };
-          }).filter(g => g.members.length > 0);
-
-          // Remaining pairs → DeckCard groups
-          const groups = MARKET_GROUPS.map(g => {
-            const members = activePairs.filter(([p]) => {
-              const norm = normPair(p as string);
-              if (placed.has(norm)) return false;
-              if (dudPairs.find(([dp]) => dp === p)) return false;
-              if (g.pairs.includes(norm)) { placed.add(norm); return true; }
-              return false;
-            });
-            return { ...g, members };
-          }).filter(g => g.members.length > 0);
-
-          const otherPairs = activePairs.filter(([p]) => {
-            const norm = normPair(p as string);
-            if (placed.has(norm)) return false;
-            if (dudPairs.find(([dp]) => dp === p)) return false;
-            return true;
-          });
-
-          return (
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.1 }} className="space-y-6">
-              {/* ── Active Pulse: GUARD / STRIKE / SET / HUNT — full expanded cards ── */}
-              {prioritySections.map(({ state, members, meta }) => (
-                <div key={state} className="space-y-3">
-                  <div className="flex items-center gap-2">
-                    <div className={cn('w-2 h-2 rounded-full animate-pulse', meta.pulseColor)} />
-                    <span className={cn('text-xs font-mono font-black uppercase tracking-widest', meta.color)}>
-                      {meta.label} — {members.length} pair{members.length > 1 ? 's' : ''}
-                    </span>
-                    <div className="flex-1 h-px bg-border/30" />
+            {/* Stats bar */}
+            {snapshot && (
+              <div className="grid grid-cols-3 md:grid-cols-6 gap-2">
+                {[
+                  { label: 'Active Pairs', value: activePairsEntries.length, icon: Activity },
+                  { label: 'STRIKE', value: activePairsEntries.filter(([p, d]) => deriveSPPState(d, p) === 'STRIKE').length, icon: Flame, hot: true },
+                  { label: 'SET', value: activePairsEntries.filter(([p, d]) => deriveSPPState(d, p) === 'SET').length, icon: Lock },
+                  { label: 'HUNT', value: activePairsEntries.filter(([p, d]) => deriveSPPState(d, p) === 'HUNT').length, icon: Search },
+                  { label: 'Vacuums E>100×', value: activePairsEntries.filter(([, d]) => (d.efficiency??0) >= 100).length, icon: Waves },
+                  { label: 'Open Trades', value: openTrades.length, icon: Shield },
+                ].map(({ label, value, icon: Icon, hot }) => (
+                  <div key={label} className={cn('rounded-lg border bg-card/40 p-2 space-y-0.5', hot && value > 0 ? 'border-yellow-500/40' : 'border-border/30')}>
+                    <div className="flex items-center gap-1">
+                      <Icon className={cn('w-3 h-3', hot && value > 0 ? 'text-yellow-400' : 'text-primary')} />
+                      <span className="text-[9px] text-muted-foreground font-mono uppercase">{label}</span>
+                    </div>
+                    <span className={cn('text-base font-display font-bold', hot && value > 0 ? 'text-yellow-400' : 'text-foreground')}>{value}</span>
                   </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-                    {members.map(([pair, data]) => (
-                      <TacticalUnit
-                        key={pair as string}
-                        pair={pair as string}
-                        data={data as PairPhysics}
-                        activeTrade={getActiveTrade(pair as string)}
-                      />
-                    ))}
-                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Tactical pair cards */}
+            {activePairsEntries.length === 0 && (
+              <div className="text-center py-16 text-muted-foreground">
+                <BookOpen className="w-8 h-8 mx-auto mb-3 opacity-40" />
+                <p className="text-sm font-mono">No tactical data — engine populates when market is open.</p>
+              </div>
+            )}
+
+            {activePairsEntries.length > 0 && (() => {
+              const ACTIVE_STATES: TacticalState[] = ['GUARD', 'STRIKE', 'SET', 'HUNT'];
+              const sectionMeta: Record<string, { color: string; label: string; pulseColor: string }> = {
+                GUARD:  { color: 'text-green-300',  label: '🛡 GUARD — Active Trade In Play',   pulseColor: 'bg-green-400' },
+                STRIKE: { color: 'text-yellow-300', label: '⚡ STRIKE — Vacuum Ignition',        pulseColor: 'bg-yellow-400' },
+                SET:    { color: 'text-amber-300',  label: '🎯 SET — Limit Trap Positioned',    pulseColor: 'bg-amber-400' },
+                HUNT:   { color: 'text-blue-300',   label: '🔍 HUNT — ATR Coil Detected',       pulseColor: 'bg-blue-400' },
+              };
+              const placed = new Set<string>();
+
+              const prioritySections = ACTIVE_STATES.map(s => {
+                const members = activePairsEntries.filter(([p]) => {
+                  const norm = normPair(p);
+                  if (placed.has(norm)) return false;
+                  const trade = getActiveTrade(p);
+                  const st = trade ? 'GUARD' : deriveSPPState(pairs[p], p);
+                  if (st === s) { placed.add(norm); return true; }
+                  return false;
+                });
+                return { state: s, members, meta: sectionMeta[s] };
+              }).filter(g => g.members.length > 0);
+
+              const remaining = activePairsEntries.filter(([p]) => !placed.has(normPair(p)));
+
+              return (
+                <div className="space-y-5">
+                  {prioritySections.map(({ state, members, meta }) => (
+                    <div key={state} className="space-y-2">
+                      <div className="flex items-center gap-2">
+                        <div className={cn('w-2 h-2 rounded-full animate-pulse', meta.pulseColor)} />
+                        <span className={cn('text-xs font-mono font-black uppercase tracking-widest', meta.color)}>
+                          {meta.label} — {members.length} pair{members.length > 1 ? 's' : ''}
+                        </span>
+                        <div className="flex-1 h-px bg-border/30" />
+                      </div>
+                      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                        {members.map(([pair, data]) => (
+                          <TacticalUnitCard key={pair} pair={pair} data={data} activeTrade={getActiveTrade(pair)} />
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                  {remaining.length > 0 && (
+                    <div className="space-y-1.5">
+                      <div className="flex items-center gap-2">
+                        <span className="text-[9px] font-mono font-bold uppercase tracking-widest text-muted-foreground">Scanning</span>
+                        <div className="flex-1 h-px bg-border/20" />
+                        <span className="text-[8px] font-mono text-muted-foreground">{remaining.length} pairs</span>
+                      </div>
+                      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-1">
+                        {remaining.map(([pair, data]) => (
+                          <MiniPairCard key={pair} pair={pair} data={data} activeTrade={getActiveTrade(pair)} />
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
-              ))}
-
-              {/* ── The Deck — SCANNING/FATIGUE pairs as compact face-down cards ── */}
-              {groups.map(g => (
-                <div key={g.label} className="space-y-2">
-                  <div className="flex items-center gap-2">
-                    <span className="text-base">{g.emoji}</span>
-                    <span className="text-xs font-mono font-bold uppercase tracking-widest text-muted-foreground">{g.label}</span>
-                    <div className="flex-1 h-px bg-border/20" />
-                    <span className="text-[9px] font-mono text-muted-foreground">{g.members.length} pairs</span>
-                  </div>
-                  {/* Dense deck grid — tap to flip open */}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-1.5">
-                    {g.members.map(([pair, data]) => (
-                      <DeckCard
-                        key={pair as string}
-                        pair={pair as string}
-                        data={data as PairPhysics}
-                        activeTrade={getActiveTrade(pair as string)}
-                      />
-                    ))}
-                  </div>
-                </div>
-              ))}
-
-              {otherPairs.length > 0 && (
-                <div className="space-y-2">
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-mono font-bold uppercase tracking-widest text-muted-foreground">🔀 Other</span>
-                    <div className="flex-1 h-px bg-border/20" />
-                    <span className="text-[9px] font-mono text-muted-foreground">{otherPairs.length} pairs</span>
-                  </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-1.5">
-                    {otherPairs.map(([pair, data]) => (
-                      <DeckCard
-                        key={pair as string}
-                        pair={pair as string}
-                        data={data as PairPhysics}
-                        activeTrade={getActiveTrade(pair as string)}
-                      />
-                    ))}
-                  </div>
-                </div>
-              )}
-            </motion.div>
-          );
-
-        })()}
-
-        {!loading && activePairs.length === 0 && (
-          <div className="text-center py-20 text-muted-foreground">
-            <BookOpen className="w-8 h-8 mx-auto mb-3 opacity-50" />
-            <p className="text-sm">No tactical data available yet.</p>
-            <p className="text-xs mt-1 font-mono">The ripple-stream engine populates this when the market is open.</p>
-          </div>
-        )}
-
-        {/* Climax Backtest Log */}
-        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}>
-          <ClimaxBacktestLog />
-        </motion.div>
-
-        {snapshot?.capabilities && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.15 }}
-            className="p-3 rounded-lg border border-border/30 bg-card/30">
-            <span className="text-[10px] text-muted-foreground font-mono uppercase">Architecture Capabilities</span>
-            <div className="flex flex-wrap gap-1.5 mt-2">
-              {snapshot.capabilities.map(c => (
-                <span key={c} className="text-[9px] font-mono px-2 py-0.5 rounded-md bg-muted/40 text-muted-foreground border border-border/20">{c}</span>
-              ))}
-            </div>
+              );
+            })()}
           </motion.div>
         )}
 
@@ -1240,5 +1045,137 @@ const SyntheticOrderBook = () => {
     </DashboardLayout>
   );
 };
+
+// ─── Tactical Unit Card (compact version for tactical view) ───────────────────
+function TacticalUnitCard({ pair, data, activeTrade }: { pair: string; data: PairPhysics; activeTrade: any }) {
+  const p = data;
+  const [showDetails, setShowDetails] = useState(false);
+  const state: TacticalState = activeTrade ? 'GUARD' : deriveSPPState(p, pair);
+  const NOI = computeNOI(p);
+  const Sr = computeSr(p);
+  const Z = p.zOfi ?? 0;
+  const H = p.hurst?.H ?? 0;
+  const E = p.efficiency ?? 0;
+
+  const stateMeta = {
+    STRIKE:  { label: '⚡ STRIKE', color: 'text-yellow-300', border: 'border-yellow-500/60', bg: 'bg-yellow-500/8' },
+    GUARD:   { label: '🛡 GUARD',  color: 'text-green-300',  border: 'border-green-500/50',  bg: 'bg-green-500/8' },
+    SET:     { label: '🎯 SET',    color: 'text-amber-300',  border: 'border-amber-500/40',  bg: 'bg-amber-500/5' },
+    HUNT:    { label: '🔍 HUNT',   color: 'text-blue-300',   border: 'border-blue-500/30',   bg: 'bg-blue-500/5' },
+    DUD:     { label: '💥 DUD',    color: 'text-red-400',    border: 'border-red-500/60',    bg: 'bg-red-900/15' },
+    FATIGUE: { label: '😴 FATIGUE',color: 'text-red-400',    border: 'border-red-800/40',    bg: 'bg-red-900/10' },
+    SCANNING:{ label: 'SCANNING',  color: 'text-muted-foreground', border: 'border-border/30', bg: 'bg-muted/10' },
+  }[state];
+
+  const biasColor = p.bias === 'BUY' ? 'text-green-400' : p.bias === 'SELL' ? 'text-red-400' : 'text-muted-foreground';
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, scale: 0.97 }}
+      animate={{ opacity: 1, scale: 1 }}
+      className={cn('rounded-xl border-2 bg-card/70 overflow-hidden', stateMeta.border)}
+    >
+      {activeTrade && (
+        <div className={cn('px-3 py-1 text-[8px] font-mono font-bold uppercase border-b flex items-center justify-between',
+          activeTrade.direction === 'long' ? 'bg-green-500/15 text-green-300 border-green-500/30' : 'bg-red-500/15 text-red-300 border-red-500/30')}>
+          <span>🛡 GUARD — {activeTrade.direction.toUpperCase()}</span>
+          <span>{Math.round((Date.now() - new Date(activeTrade.created_at).getTime()) / 1000)}s</span>
+        </div>
+      )}
+      <div className="p-3 space-y-2">
+        <div className="flex items-center justify-between">
+          <span className="font-display font-black text-sm tracking-widest">{pair}</span>
+          <Badge variant="outline" className={cn('text-[7px] font-mono font-bold', stateMeta.color)}>{stateMeta.label}</Badge>
+        </div>
+
+        {/* Gate bar */}
+        <div className="flex items-center gap-1.5">
+          {[
+            { pass: Sr < SR_COIL, label: 'S/N' },
+            { pass: Math.abs(NOI) > NOI_WHALE, label: 'NOI' },
+            { pass: Math.abs(Z) > Z_STRIKE, label: 'Z' },
+            { pass: E > E_VACUUM_MIN, label: 'E' },
+            { pass: H >= HURST_PERSIST, label: 'H' },
+          ].map(({ pass, label }) => (
+            <div key={label} className={cn('text-[6px] font-mono font-bold px-1 py-0.5 rounded border',
+              pass ? 'bg-green-500/20 text-green-400 border-green-500/30' : 'bg-muted/10 text-muted-foreground/40 border-border/20')}>
+              {label}
+            </div>
+          ))}
+          <span className={cn('ml-auto text-[9px] font-mono font-bold', biasColor)}>{p.bias}</span>
+        </div>
+
+        {/* Key metrics */}
+        <div className="grid grid-cols-3 gap-1 text-center">
+          {[
+            { label: 'Z-OFI', value: `${Z >= 0 ? '+' : ''}${Z.toFixed(1)}σ`, hot: Math.abs(Z) > Z_STRIKE },
+            { label: 'E', value: `${E.toFixed(0)}×`, hot: E > E_VACUUM_MIN },
+            { label: 'H', value: H.toFixed(2), hot: H >= HURST_PERSIST },
+          ].map(({ label, value, hot }) => (
+            <div key={label} className="rounded bg-muted/20 px-1 py-1">
+              <div className="text-[7px] text-muted-foreground font-mono">{label}</div>
+              <div className={cn('text-[9px] font-mono font-bold', hot ? 'text-yellow-400' : 'text-foreground')}>{value}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* Buy/Sell */}
+        <div className="space-y-0.5">
+          <div className="flex justify-between text-[7px] font-mono">
+            <span className="text-green-400">BUY {p.buyPct}%</span>
+            <span className="text-red-400">SELL {p.sellPct}%</span>
+          </div>
+          <div className="h-1 bg-muted/20 rounded-full overflow-hidden flex">
+            <div className="bg-green-500/60 h-full" style={{ width: `${p.buyPct}%` }} />
+            <div className="bg-red-500/60 h-full" style={{ width: `${p.sellPct}%` }} />
+          </div>
+        </div>
+
+        <button
+          onClick={() => setShowDetails(v => !v)}
+          className="w-full text-[8px] font-mono text-muted-foreground hover:text-foreground transition-colors flex items-center justify-center gap-1"
+        >
+          <ChevronRight className={cn('w-2.5 h-2.5 transition-transform', showDetails && 'rotate-90')} />
+          {showDetails ? 'Less' : 'Full physics'}
+        </button>
+
+        {showDetails && (
+          <div className="pt-1 space-y-1 border-t border-border/20">
+            {[
+              { label: 'Sr (S/N proxy)', value: Sr.toFixed(3), pass: Sr < SR_COIL },
+              { label: 'NOI (Laplace)', value: `${NOI >= 0 ? '+' : ''}${NOI.toFixed(3)}`, pass: Math.abs(NOI) > NOI_WHALE },
+              { label: 'VPIN (Ar)', value: (p.vpin ?? 0).toFixed(3), pass: (p.vpin ?? 0) > VPIN_FRAGILITY },
+              { label: 'KM D1 (drift)', value: (p.kramersMoyal?.D1 ?? 0).toExponential(2), pass: true },
+              { label: 'KM D2 (diffusion)', value: (p.kramersMoyal?.D2 ?? 0).toExponential(2), pass: true },
+            ].map(({ label, value, pass }) => (
+              <div key={label} className="flex items-center justify-between">
+                <span className="text-[7px] font-mono text-muted-foreground">{label}</span>
+                <span className={cn('text-[8px] font-mono font-bold', pass ? 'text-green-400' : 'text-muted-foreground')}>{value}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </motion.div>
+  );
+}
+
+// ─── Mini Pair Card ───────────────────────────────────────────────────────────
+function MiniPairCard({ pair, data, activeTrade }: { pair: string; data: PairPhysics; activeTrade: any }) {
+  const state: TacticalState = activeTrade ? 'GUARD' : deriveSPPState(data, pair);
+  const dotColor = {
+    STRIKE:  'bg-yellow-400', GUARD: 'bg-green-400', SET: 'bg-amber-400',
+    HUNT: 'bg-blue-400', DUD: 'bg-red-500', FATIGUE: 'bg-red-800', SCANNING: 'bg-muted/40',
+  }[state];
+  const E = data.efficiency ?? 0;
+  const Z = data.zOfi ?? 0;
+  return (
+    <div className="rounded-md border border-border/30 bg-card/40 px-2 py-1.5 flex items-center gap-1.5">
+      <div className={cn('w-1.5 h-1.5 rounded-full flex-shrink-0', dotColor)} />
+      <span className="font-mono text-[9px] text-foreground font-bold flex-1 truncate">{pair}</span>
+      <span className="text-[7px] font-mono text-muted-foreground">E{E.toFixed(0)}</span>
+    </div>
+  );
+}
 
 export default SyntheticOrderBook;
