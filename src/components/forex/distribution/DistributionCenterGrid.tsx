@@ -126,14 +126,14 @@ function DcCard({ item, meta }: { item: PairCard; meta: typeof TIER_META[1] }) {
             </div>
           </div>
         )}
-        {/* Direction badge — always shown when trade exists, prominent on Tier 1 */}
+        {/* Direction badge — centered vertically on the image for Tier 1 */}
         {dirLabel && item.tier === 1 && (
-          <div className="absolute inset-x-0 bottom-6 flex justify-center">
+          <div className="absolute inset-0 flex items-center justify-center">
             <div className={cn(
-              'text-[13px] font-mono font-black px-3 py-1 rounded-lg border-2 shadow-xl backdrop-blur-sm tracking-widest',
+              'text-[15px] font-mono font-black px-4 py-1.5 rounded-xl border-2 shadow-2xl backdrop-blur-md tracking-widest',
               item.tradeDirection === 'long'
-                ? 'bg-emerald-500/95 text-white border-emerald-300 shadow-emerald-500/60'
-                : 'bg-red-500/95 text-white border-red-300 shadow-red-500/60'
+                ? 'bg-emerald-500 text-white border-emerald-200 shadow-emerald-500/80'
+                : 'bg-red-500 text-white border-red-200 shadow-red-500/80'
             )}>
               {dirLabel}
             </div>
