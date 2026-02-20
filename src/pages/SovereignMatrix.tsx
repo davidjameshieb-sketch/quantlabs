@@ -1,6 +1,7 @@
 // Sovereign Matrix v20.0 — Mechanical Chomp Dashboard (Institutional Grade)
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { supabase } from '@/integrations/supabase/client';
 import {
   Activity, AlertTriangle, ArrowDownRight, ArrowRight, ArrowUpRight,
   Crosshair, Grid3x3, Lock, RefreshCw, Shield, Target, TrendingDown,
@@ -384,6 +385,123 @@ const SafetyRails = () => (
   </PanelCard>
 );
 
+// ─── Panel 6: Live Trades ─────────────────────────────────────────────────────
+interface OpenTrade {
+  id: string;
+  currency_pair: string;
+  direction: string;
+  units: number;
+  entry_price: number | null;
+  status: string;
+  agent_id: string | null;
+  created_at: string;
+  environment: string;
+  signal_id: string;
+}
+
+const LiveTradesPanel = ({ environment }: { environment: Env }) => {
+  const [trades, setTrades] = useState<OpenTrade[]>([]);
+  const [fetching, setFetching] = useState(true);
+
+  const fetchTrades = async () => {
+    setFetching(true);
+    const { data } = await supabase
+      .from('oanda_orders')
+      .select('id, currency_pair, direction, units, entry_price, status, agent_id, created_at, environment, signal_id')
+      .eq('status', 'open')
+      .eq('environment', environment)
+      .order('created_at', { ascending: false })
+      .limit(20);
+    setTrades((data as OpenTrade[]) ?? []);
+    setFetching(false);
+  };
+
+  useEffect(() => { fetchTrades(); }, [environment]);
+
+  // Realtime subscription
+  useEffect(() => {
+    const channel = supabase
+      .channel('live-trades')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'oanda_orders' }, () => {
+        fetchTrades();
+      })
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [environment]);
+
+  return (
+    <PanelCard
+      title={`Live Payload Tracking — ${environment.toUpperCase()}`}
+      icon={Activity}
+      className="lg:col-span-12"
+      accentColor="border-yellow-500/25"
+    >
+      {fetching ? (
+        <div className="py-4 text-center text-[10px] text-slate-500 tracking-widest uppercase animate-pulse font-mono">
+          Syncing positions…
+        </div>
+      ) : trades.length === 0 ? (
+        <div className="py-5 text-center space-y-1">
+          <p className="text-[10px] text-slate-500 tracking-widest uppercase font-mono">No Active Payloads</p>
+          <p className="text-[9px] text-slate-700 font-mono">Fire T1 on a SOVEREIGN STRIKE to deploy</p>
+        </div>
+      ) : (
+        <div className="divide-y divide-slate-800/40">
+          {trades.map((t) => {
+            const isLong = t.direction === 'long';
+            const isJPY = t.currency_pair.includes('JPY');
+            const dp = isJPY ? 3 : 5;
+            const age = Math.round((Date.now() - new Date(t.created_at).getTime()) / 60000);
+
+            return (
+              <div key={t.id} className="grid grid-cols-2 md:grid-cols-6 gap-3 py-3 items-center">
+                <div>
+                  <span className="text-[9px] text-slate-500 block mb-0.5 uppercase tracking-wider">Pair / Dir</span>
+                  <span className={cn(
+                    'font-bold font-mono',
+                    isLong ? 'text-[#00ffea]' : 'text-[#ff0055]'
+                  )}>
+                    {t.currency_pair.replace('_', '/')} {t.direction.toUpperCase()}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-[9px] text-slate-500 block mb-0.5 uppercase tracking-wider">Units</span>
+                  <span className="font-bold text-white font-mono">{t.units.toLocaleString()}u</span>
+                </div>
+                <div>
+                  <span className="text-[9px] text-yellow-500 block mb-0.5 uppercase tracking-wider">Entry Price</span>
+                  <span className="font-bold text-yellow-400 font-mono">
+                    {t.entry_price ? t.entry_price.toFixed(dp) : '—'}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-[9px] text-slate-500 block mb-0.5 uppercase tracking-wider">Agent</span>
+                  <span className="text-[9px] text-slate-400 font-mono truncate block max-w-[120px]">
+                    {t.agent_id ?? 'system'}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-[9px] text-slate-500 block mb-0.5 uppercase tracking-wider">Deployed</span>
+                  <span className="text-[10px] text-slate-400 font-mono">{age}m ago</span>
+                </div>
+                <div className="text-right">
+                  <span className={cn(
+                    'inline-flex items-center gap-1 text-[9px] font-mono font-bold px-2 py-1 rounded border',
+                    'border-[#00ffea]/30 text-[#00ffea] bg-[#00ffea]/5'
+                  )}>
+                    <div className="w-1.5 h-1.5 rounded-full bg-[#00ffea] animate-pulse" />
+                    LIVE
+                  </span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </PanelCard>
+  );
+};
+
 // ─── Main Dashboard ────────────────────────────────────────────────────────────
 const SovereignMatrix = () => {
   const [environment, setEnvironment] = useState<Env>('live');
@@ -528,6 +646,9 @@ const SovereignMatrix = () => {
                   ))}
                 </div>
               )}
+
+              {/* Live Trades */}
+              <LiveTradesPanel environment={environment} />
 
               {/* Kinetic Pyramid + Safety Rails */}
               <KineticPyramid />
