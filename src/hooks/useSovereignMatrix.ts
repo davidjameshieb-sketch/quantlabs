@@ -2,7 +2,6 @@
 // Hook for fetching matrix signals and firing tiered execution
 
 import { useState, useCallback } from 'react';
-import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
 import { useOandaExecution } from './useOandaExecution';
 
@@ -64,11 +63,6 @@ export function useSovereignMatrix() {
 
   const { executeTrade } = useOandaExecution();
 
-  const getSession = useCallback(async () => {
-    const { data: { session } } = await supabase.auth.getSession();
-    return session;
-  }, []);
-
   const scanMatrix = useCallback(async (
     environment: 'practice' | 'live' = 'live',
     pair?: string
@@ -76,16 +70,12 @@ export function useSovereignMatrix() {
     setLoading(true);
     setError(null);
     try {
-      const session = await getSession();
-      if (!session) throw new Error('Not authenticated');
-
       const res = await fetch(
         `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/sovereign-matrix`,
         {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${session.access_token}`,
             apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
           },
           body: JSON.stringify({ environment, pair }),
@@ -108,7 +98,7 @@ export function useSovereignMatrix() {
     } finally {
       setLoading(false);
     }
-  }, [getSession]);
+  }, []);
 
   // Fire T1: 500 units at market
   const fireT1 = useCallback(async (
