@@ -123,11 +123,20 @@ function DcCard({ item, meta }: { item: PairCard; meta: typeof TIER_META[1] }) {
             <div className="text-[6px] font-mono font-black px-1.5 py-0.5 rounded bg-emerald-600/80 text-white border border-emerald-400/50 animate-pulse">
               🛡 IN TRANSIT
             </div>
-            {dirLabel && (
+            {dirLabel && item.tier === 1 ? (
+              <div className={cn(
+                'text-[11px] font-mono font-black px-2 py-1 rounded-md border-2 shadow-lg backdrop-blur-sm',
+                item.tradeDirection === 'long'
+                  ? 'bg-emerald-500/90 text-white border-emerald-300 shadow-emerald-500/50'
+                  : 'bg-red-500/90 text-white border-red-300 shadow-red-500/50'
+              )}>
+                {dirLabel}
+              </div>
+            ) : dirLabel ? (
               <div className={cn('text-[7px] font-mono font-black px-1.5 py-0.5 rounded border', dirCls)}>
                 {dirLabel}
               </div>
-            )}
+            ) : null}
           </div>
         )}
         {/* Pair label overlay */}
