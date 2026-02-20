@@ -13,6 +13,7 @@ import { cn } from '@/lib/utils';
 import { useSovereignMatrix, TIER_UNITS, pips } from '@/hooks/useSovereignMatrix';
 import type { MatrixSignal, MatrixResult } from '@/hooks/useSovereignMatrix';
 import { ForexTopologyMap } from '@/components/matrix/ForexTopologyMap';
+import { GateFlowChart } from '@/components/matrix/GateFlowChart';
 
 type Env = 'practice' | 'live';
 
@@ -947,6 +948,11 @@ const SovereignMatrix = () => {
                 {/* Nervous System Topology Map — full width */}
                 <div className="lg:col-span-12">
                   <ForexTopologyMap result={matrixResult} />
+                </div>
+
+                {/* Gate Flow Chart — full width between topology and scanner */}
+                <div className="lg:col-span-12 bg-slate-900/80 backdrop-blur-md border border-slate-700/50 rounded-2xl p-5 shadow-2xl">
+                  <GateFlowChart signals={matrixResult.signals} />
                 </div>
 
                 {/* Power Radar (left) + Scanner (right) */}
