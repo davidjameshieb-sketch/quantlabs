@@ -109,14 +109,20 @@ function checkTripleLock(
   const gate1_matrix = isLongAligned || isShortAligned;
   const direction = isLongAligned ? 'long' : isShortAligned ? 'short' : null;
 
-  // Gate 2: Structural breakout (use efficiency as proxy for atlas snap)
+  // Gate 2: Structural breakout — close > highest high (long) / close < lowest low (short)
+  // Proxied via OFI ratio (net buy/sell pressure crossing the cluster boundary) + active liquidity cluster
   const E = physics?.efficiency ?? 0;
-  const H = physics?.hurst?.H ?? 0;
-  const gate2_structural = E >= 7 && H >= 0.55; // Tier 1 means it qualifies
+  const ofi = physics?.ofiRatio ?? 0;
+  const isCluster = E > 5;
+  const gate2_structural =
+    direction === 'long'  ? isCluster && ofi > 0.05 :
+    direction === 'short' ? isCluster && ofi < -0.05 :
+    false;
 
-  // Gate 3: David Vector (kinetic acceleration — positive Hurst slope proxy)
-  const vpin = physics?.vpin ?? 0.5;
-  const gate3_vector = direction === 'long' ? vpin > 0.5 : direction === 'short' ? vpin < 0.5 : false;
+  // Gate 3: David Vector — linear regression slope (ta.linreg)
+  // Kramers-Moyal D1 is the tick-level drift coefficient, equivalent to linreg slope
+  const D1 = physics?.kramersMoyal?.D1 ?? 0;
+  const gate3_vector = direction === 'long' ? D1 > 0 : direction === 'short' ? D1 < 0 : false;
 
   return {
     pair,
