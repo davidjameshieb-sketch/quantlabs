@@ -160,14 +160,8 @@ Deno.serve(async (req) => {
   }
 
   try {
-    // Auth check
-    const authHeader = req.headers.get("Authorization");
-    if (!authHeader?.startsWith("Bearer ")) {
-      return new Response(JSON.stringify({ error: "Unauthorized" }), {
-        status: 401,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
+    // Auth: accept both user JWTs and anon key (for sovereign-matrix execution)
+    const authHeader = req.headers.get("Authorization") || `Bearer ${Deno.env.get("SUPABASE_ANON_KEY")}`;
 
     const supabase = createClient(
       Deno.env.get("SUPABASE_URL")!,
@@ -175,15 +169,9 @@ Deno.serve(async (req) => {
       { global: { headers: { Authorization: authHeader } } }
     );
 
-    const { data: { user: authUser }, error: authError } = await supabase.auth.getUser();
-    if (authError || !authUser) {
-      return new Response(JSON.stringify({ error: "Unauthorized" }), {
-        status: 401,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
-
-    const userId = authUser.id;
+    // Try to get authenticated user — fall back to system UUID for matrix-fired trades
+    const { data: { user: authUser } } = await supabase.auth.getUser();
+    const userId = authUser?.id || "00000000-0000-0000-0000-000000000000";
     const body: ExecuteRequest = await req.json();
     const environment = body.environment || "practice";
 

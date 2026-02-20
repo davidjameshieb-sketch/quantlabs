@@ -57,9 +57,6 @@ export const SignalTable = ({ signals }: Props) => {
 };
 
 function GateDot({ passed }: { passed: boolean }) {
-  return passed ? (
-    <CheckCircle2 className="w-3 h-3 text-neural-green" />
-  ) : (
-    <XCircle className="w-3 h-3 text-muted-foreground/20" />
-  );
+  if (passed) return <CheckCircle2 className="w-3 h-3 text-neural-green" />;
+  return <XCircle className="w-3 h-3 text-muted-foreground/20" />;
 }
