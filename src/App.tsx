@@ -3,9 +3,7 @@ import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
-import { AuthProvider } from "@/contexts/AuthContext";
 
-import Auth from "./pages/Auth";
 import ForexOanda from "./pages/ForexOanda";
 import SovereignMatrix from "./pages/SovereignMatrix";
 import NotFound from "./pages/NotFound";
@@ -18,15 +16,12 @@ const App = () => (
       <Toaster />
       <Sonner />
       <BrowserRouter>
-        <AuthProvider>
-          <Routes>
-            <Route path="/" element={<Navigate to="/oanda" replace />} />
-            <Route path="/auth" element={<Auth />} />
-            <Route path="/oanda" element={<ForexOanda />} />
-            <Route path="/matrix" element={<SovereignMatrix />} />
-            <Route path="*" element={<NotFound />} />
-          </Routes>
-        </AuthProvider>
+        <Routes>
+          <Route path="/" element={<Navigate to="/oanda" replace />} />
+          <Route path="/oanda" element={<ForexOanda />} />
+          <Route path="/matrix" element={<SovereignMatrix />} />
+          <Route path="*" element={<NotFound />} />
+        </Routes>
       </BrowserRouter>
     </TooltipProvider>
   </QueryClientProvider>
