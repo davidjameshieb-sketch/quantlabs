@@ -1246,19 +1246,21 @@ Deno.serve(async (req) => {
         ? +(limitPrice - PID_SL_PIPS * pipSize).toFixed(pair.includes("JPY") ? 3 : 5)
         : +(limitPrice + PID_SL_PIPS * pipSize).toFixed(pair.includes("JPY") ? 3 : 5);
 
-      // MARKET ORDER: Immediate execution at current bid/ask.
-      // Operator directive: predatory limit orders were expiring before fills — switch to market.
+      // MARKET ORDER — timeInForce=GTC (not FOK).
+      // ROOT CAUSE FIX: FOK on OANDA practice causes orderCancelTransaction (httpStatus=201, no fill)
+      // when bid/ask shifts even 0.1p between signal and submission. GTC fills immediately at market
+      // like FOK but does NOT cancel on minor price deviation — critical for high-frequency signals.
       const orderBody = {
         order: {
           type: "MARKET",
           instrument: pair,
           units: String(dirUnits),
-          timeInForce: "FOK",
+          timeInForce: "GTC",
           takeProfitOnFill: { price: String(tpPrice), timeInForce: "GTC" },
           stopLossOnFill:   { price: String(slPrice), timeInForce: "GTC" },
         },
       };
-      console.log(`[PHASE2-MARKET] 🎯 ${pair} ${direction.toUpperCase()} | MARKET ORDER ${dirUnits}u | TP=${tpPrice} (+${PID_TP_PIPS}p) SL=${slPrice} (−${PID_SL_PIPS}p) | FOK`);
+      console.log(`[PHASE2-MARKET] 🎯 ${pair} ${direction.toUpperCase()} | MARKET ORDER ${dirUnits}u | TP=${tpPrice} (+${PID_TP_PIPS}p) SL=${slPrice} (−${PID_SL_PIPS}p) | GTC`);
 
       try {
         const orderRes = await fetch(
@@ -1271,20 +1273,22 @@ Deno.serve(async (req) => {
         );
 
         const orderData = await orderRes.json();
-        // MARKET order produces: orderFillTransaction on success, orderRejectTransaction on failure
+        // MARKET GTC: success = orderFillTransaction | cancel = orderCancelTransaction | reject = orderRejectTransaction
         const fill = orderData.orderFillTransaction;
+        const cancelTx = orderData.orderCancelTransaction;
 
         if (fill) {
           // ─── MARKET FILL ───
-          const fillPrice = parseFloat(fill.price || "0");
           const tradeId = fill.tradeOpened?.tradeID || fill.id;
+          const fillPrice = parseFloat(fill.price);
+          const units = Math.abs(parseInt(fill.units ?? String(dirUnits)));
+          const isLongOrder = direction === 'long';
           const requestedMid = currentPrice.mid;
-          const slippagePips = Math.abs(toPips(fillPrice - requestedMid, pair));
-          const openTime = fill.time ? new Date(fill.time).toISOString() : new Date().toISOString();
+          const slippagePips = isLongOrder
+            ? Math.round((fillPrice - requestedMid) / pipSize * 10) / 10
+            : Math.round((requestedMid - fillPrice) / pipSize * 10) / 10;
 
-          // ─── CRITICAL FIX: Recalculate TP/SL from ACTUAL fill price, not limitPrice ───
-          // For MARKET FOK orders, fill price differs from limitPrice by the spread.
-          // E.g. on CHF_JPY with 4.6p spread, limitPrice-based SL of -10p was only 5.4p from fill → instant stop-out.
+          // Recalculate TP/SL anchored to ACTUAL fill price (market spread shifts fill from mid)
           const fillTpPrice = isLongOrder
             ? +(fillPrice + PID_TP_PIPS * pipSize).toFixed(pair.includes("JPY") ? 3 : 5)
             : +(fillPrice - PID_TP_PIPS * pipSize).toFixed(pair.includes("JPY") ? 3 : 5);
@@ -1292,83 +1296,76 @@ Deno.serve(async (req) => {
             ? +(fillPrice - PID_SL_PIPS * pipSize).toFixed(pair.includes("JPY") ? 3 : 5)
             : +(fillPrice + PID_SL_PIPS * pipSize).toFixed(pair.includes("JPY") ? 3 : 5);
 
-          // Update OANDA brackets to use fill-anchored prices
+          // Patch TP/SL on the live trade to use fill-anchored prices
           if (tradeId) {
             try {
-              await fetch(
-                `${OANDA_API}/accounts/${OANDA_ACCOUNT}/trades/${tradeId}/orders`,
-                {
-                  method: "PUT",
-                  headers: { Authorization: `Bearer ${OANDA_TOKEN}`, "Content-Type": "application/json" },
-                  body: JSON.stringify({
-                    takeProfit: { price: String(fillTpPrice), timeInForce: "GTC" },
-                    stopLoss:   { price: String(fillSlPrice), timeInForce: "GTC" },
-                  }),
-                }
-              );
-              console.log(`[PHASE5-FILL-BRACKET] ✅ ${pair} brackets reset to fill price: TP=${fillTpPrice}(+${PID_TP_PIPS}p) SL=${fillSlPrice}(-${PID_SL_PIPS}p) | fill=${fillPrice} limit=${limitPrice}`);
-            } catch (bracketErr) {
-              console.warn(`[PHASE5-FILL-BRACKET] ⚠️ Could not reset brackets for ${tradeId}:`, bracketErr);
+              await fetch(`${OANDA_API}/accounts/${OANDA_ACCOUNT}/trades/${tradeId}/orders`, {
+                method: 'PUT',
+                headers: { 'Authorization': `Bearer ${OANDA_TOKEN}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  takeProfit: { price: String(fillTpPrice), timeInForce: 'GTC' },
+                  stopLoss:   { price: String(fillSlPrice), timeInForce: 'GTC' },
+                }),
+              });
+              console.log(`[PHASE5-BRACKETS] ✅ ${pair} brackets patched from fill: TP=${fillTpPrice} SL=${fillSlPrice}`);
+            } catch (patchErr) {
+              console.warn(`[PHASE5-BRACKETS] ⚠️ Failed to patch brackets for ${pair}: ${patchErr}`);
             }
           }
 
-          // ─── PHASE 5: Initialize PID Ratchet state for this trade ───
-          pidStateMap.set(tradeId, {
-            maxProfit: 0,
-            ticksInTrade: 0,
-            prevPrice: fillPrice,
-            currentSL: isLongOrder
-              ? fillPrice - PID_SL_PIPS * pipSize
-              : fillPrice + PID_SL_PIPS * pipSize,
-            pidActivated: false,
-            dudCheckTs: Date.now(),
-            entryPrice: fillPrice,
+          // Persist to DB
+          const signalId = `da-${pair}-${Date.now()}`;
+          const idempotencyKey = `da-${pair}-${direction}-${Math.floor(Date.now() / 5000)}`;
+          await supabase.from('oanda_orders').insert({
+            signal_id: signalId,
+            user_id: userId,
+            currency_pair: pair,
             direction,
+            units,
+            entry_price: fillPrice,
+            requested_price: requestedMid,
+            oanda_order_id: fill.orderID,
+            oanda_trade_id: tradeId,
+            status: 'filled',
+            environment: 'practice',
+            agent_id: 'david-atlas-v2',
+            idempotency_key: idempotencyKey,
+            slippage_pips: slippagePips,
+            confidence_score: entryGates.vpin,
+            regime_label: deriveSPPState(pairPhysics, pair),
+            session_label: 'david-atlas',
+            gate_result: 'CLIMAX_STRIKE',
+            gate_reasons: [`H=${entryGates.hurst.toFixed(3)}`, `E=${entryGates.efficiency.toFixed(1)}x`, `Z=${entryGates.zOfi.toFixed(2)}σ`, `VPIN=${entryGates.vpin.toFixed(3)}`],
+            governance_payload: {
+              strategy: "david-atlas-v2-5phase", pair, direction, slippagePips,
+              orderType: "MARKET_GTC",
+              requestedUnits, actualUnits: units,
+              phase3Kelly: { p, q, b, kellyFrac, kellyUnits, navCeiling: MAX_RISK_USD },
+              fillPrice, fillTpPrice, fillSlPrice,
+              gates: entryGates,
+            },
           });
-          console.log(`[PHASE5-PID] ${pair} PID state initialized (market fill) | entry=${fillPrice} | SL=${isLongOrder ? fillPrice - PID_SL_PIPS * pipSize : fillPrice + PID_SL_PIPS * pipSize}`);
 
-          const { hurst: entryHurst, efficiency: entryEfficiency, zOfi: entryZOfi, vpin: entryVpin } = entryGates;
-          if (adminRole) {
-            await supabase.from("oanda_orders").insert({
-              user_id: adminRole.user_id,
-              signal_id: `david-atlas-${pair}-${Date.now()}`,
-              currency_pair: pair,
-              direction: direction.toLowerCase(),
-              units,
-              entry_price: fillPrice,
-              oanda_order_id: fill.id,
-              oanda_trade_id: tradeId,
-              status: "filled",
-              environment: "practice",
-              direction_engine: "david-atlas",
-              sovereign_override_tag: `david-atlas:${pair}`,
-              confidence_score: 1.0,
-              created_at: openTime,
-              gate_result: "DA_5PHASE_CONFIRMED",
-              gate_reasons: [
-                `P1_SN:OK`,
-                `P2_NOI:MARKET_FILL@${fillPrice}(${direction==='long'?'ASK':'BID'})`,
-                `P3_KELLY:p=${p.toFixed(3)},f*=${kellyFrac.toFixed(3)}`,
-                `P4_ESIG:E=${entryEfficiency.toFixed(1)}x,Z=${entryZOfi.toFixed(3)}σ,H=${entryHurst.toFixed(4)},VPIN=${entryVpin.toFixed(4)}`,
-                `P5_BRACKET:TP=+${PID_TP_PIPS}p,SL=-${PID_SL_PIPS}p,PID_ARMED`,
-              ],
-              governance_payload: {
-                strategy: "david-atlas-v2-5phase", pair, direction, slippagePips,
-                orderType: "MARKET_FOK",
-                requestedUnits, actualUnits: units, marginGuardApplied: units !== requestedUnits,
-                phase3Kelly: { p, q, b, kellyFrac, kellyUnits: maxUnitsByKelly, navCeiling: MAX_RISK_USD },
-                phase4Esig: { efficiency: entryEfficiency, zOfi: entryZOfi, hurst: entryHurst, vpin: entryVpin },
-                phase5Bracket: { tpPrice, slPrice, tpPips: PID_TP_PIPS, slPips: PID_SL_PIPS, pidActivationPips: PID_ACTIVATION_PIPS },
-              },
-              requested_price: requestedMid,
-              slippage_pips: slippagePips,
-              spread_at_entry: currentPrice.spreadPips,
-            });
-          }
+          // Track in PID state for ratchet management
+          pidState.set(`${pair}:${direction}`, {
+            tradeId,
+            pair,
+            direction,
+            entryPrice: fillPrice,
+            maxProfit: 0,
+            currentSL: fillSlPrice,
+            pipSize,
+            signalId,
+          });
 
-          console.log(`[DAVID-ATLAS] ✅ MARKET FILLED: ${tradeId} @ ${fillPrice} | ${direction.toUpperCase()} ${units} ${pair} | slip=${slippagePips.toFixed(2)}p | TP=${tpPrice} SL=${slPrice} | KELLY f*=${kellyFrac.toFixed(3)}`);
-          return { success: true, tradeId, fillPrice, slippage: slippagePips, openTime } as any;
+          console.log(`[DAVID-ATLAS] ✅ FILLED: ${pair} ${direction.toUpperCase()} | tradeId=${tradeId} | fill=${fillPrice} | slip=${slippagePips}p | TP=${fillTpPrice} SL=${fillSlPrice}`);
+          return { success: true };
 
+        } else if (cancelTx) {
+          // GTC market orders should not cancel — log for debugging
+          const cancelReason = cancelTx?.reason || cancelTx?.type || "UNKNOWN_CANCEL";
+          console.warn(`[DAVID-ATLAS] ⚠️ GTC-CANCEL: ${pair} | reason=${cancelReason} | rawKeys=${Object.keys(orderData).join(',')}`);
+          return { success: false };
         } else {
           const rejectTx = orderData.orderRejectTransaction;
           const rejectReason = rejectTx?.rejectReason || rejectTx?.type || "Unknown";
@@ -1376,11 +1373,11 @@ Deno.serve(async (req) => {
           console.warn(`[DAVID-ATLAS] ❌ REJECTED: ${pair} | reason=${rejectReason} | detail=${rejectDetail} | httpStatus=${orderRes.status} | rawKeys=${Object.keys(orderData).join(',')}`);
           return { success: false };
         }
-      } catch (err) {
-        console.error(`[DAVID-ATLAS] Execution error:`, err);
+      } catch (execErr) {
+        console.error(`[DAVID-ATLAS] 💥 Execution error for ${pair}:`, execErr);
         return { success: false };
       }
-    }
+    } // end davidAtlasStrike
 
     // ─── David & Atlas: MarketClose — mandatory tunnel flush ───
     async function davidAtlasFlush(
