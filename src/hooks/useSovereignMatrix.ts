@@ -3,7 +3,6 @@
 
 import { useState, useCallback } from 'react';
 import { toast } from 'sonner';
-import { useOandaExecution } from './useOandaExecution';
 
 export interface MatrixSignal {
   instrument: string;
@@ -56,12 +55,28 @@ export function computeAnchor(
   return weighted / totalUnits;
 }
 
+// Direct anon-key call to oanda-execute — works without a user session
+async function callExecuteDirect(body: Record<string, unknown>) {
+  const res = await fetch(
+    `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/oanda-execute`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
+      },
+      body: JSON.stringify(body),
+    }
+  );
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || `Execute failed: ${res.status}`);
+  return data;
+}
+
 export function useSovereignMatrix() {
   const [loading, setLoading] = useState(false);
   const [matrixResult, setMatrixResult] = useState<MatrixResult | null>(null);
   const [error, setError] = useState<string | null>(null);
-
-  const { executeTrade } = useOandaExecution();
 
   const scanMatrix = useCallback(async (
     environment: 'practice' | 'live' = 'live',
@@ -100,56 +115,95 @@ export function useSovereignMatrix() {
     }
   }, []);
 
-  // Fire T1: 500 units at market
+  // Fire T1: 500 units at market — uses direct anon-key call, no session required
   const fireT1 = useCallback(async (
     signal: MatrixSignal,
     environment: 'practice' | 'live'
   ) => {
     const pair = signal.instrument.replace('_', '/');
-    return executeTrade({
-      signalId: `SMVC20-T1-${signal.instrument}-${Date.now()}`,
-      currencyPair: pair,
-      direction: signal.direction!,
-      units: TIER_UNITS.T1,
-      confidenceScore: 3, // all 3 gates passed
-      agentId: 'sovereign-matrix-v20',
-      environment,
-    });
-  }, [executeTrade]);
+    setLoading(true);
+    try {
+      const data = await callExecuteDirect({
+        action: 'execute',
+        signalId: `SMVC20-T1-${signal.instrument}-${Date.now()}`,
+        currencyPair: pair,
+        direction: signal.direction!,
+        units: TIER_UNITS.T1,
+        confidenceScore: 3,
+        agentId: 'sovereign-matrix-v20',
+        environment,
+      });
+      if (data.success) {
+        toast.success(`T1 fired: ${signal.direction!.toUpperCase()} ${TIER_UNITS.T1}u ${pair}`);
+      }
+      return data;
+    } catch (err) {
+      toast.error('T1 execution failed: ' + (err as Error).message);
+      throw err;
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
-  // Fire T2: 500 units (triggered at +15 pips from T1)
+  // Fire T2: 500 units (manual trigger at +15 pips from T1)
   const fireT2 = useCallback(async (
     signal: MatrixSignal,
     environment: 'practice' | 'live'
   ) => {
     const pair = signal.instrument.replace('_', '/');
-    return executeTrade({
-      signalId: `SMVC20-T2-${signal.instrument}-${Date.now()}`,
-      currencyPair: pair,
-      direction: signal.direction!,
-      units: TIER_UNITS.T2,
-      confidenceScore: 3,
-      agentId: 'sovereign-matrix-v20-T2',
-      environment,
-    });
-  }, [executeTrade]);
+    setLoading(true);
+    try {
+      const data = await callExecuteDirect({
+        action: 'execute',
+        signalId: `SMVC20-T2-${signal.instrument}-${Date.now()}`,
+        currencyPair: pair,
+        direction: signal.direction!,
+        units: TIER_UNITS.T2,
+        confidenceScore: 3,
+        agentId: 'sovereign-matrix-v20-T2',
+        environment,
+      });
+      if (data.success) {
+        toast.success(`T2 fired: ${signal.direction!.toUpperCase()} ${TIER_UNITS.T2}u ${pair}`);
+      }
+      return data;
+    } catch (err) {
+      toast.error('T2 execution failed: ' + (err as Error).message);
+      throw err;
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
-  // Fire T3: 250 units (triggered at +30 pips from T1)
+  // Fire T3: 250 units (manual trigger at +30 pips from T1)
   const fireT3 = useCallback(async (
     signal: MatrixSignal,
     environment: 'practice' | 'live'
   ) => {
     const pair = signal.instrument.replace('_', '/');
-    return executeTrade({
-      signalId: `SMVC20-T3-${signal.instrument}-${Date.now()}`,
-      currencyPair: pair,
-      direction: signal.direction!,
-      units: TIER_UNITS.T3,
-      confidenceScore: 3,
-      agentId: 'sovereign-matrix-v20-T3',
-      environment,
-    });
-  }, [executeTrade]);
+    setLoading(true);
+    try {
+      const data = await callExecuteDirect({
+        action: 'execute',
+        signalId: `SMVC20-T3-${signal.instrument}-${Date.now()}`,
+        currencyPair: pair,
+        direction: signal.direction!,
+        units: TIER_UNITS.T3,
+        confidenceScore: 3,
+        agentId: 'sovereign-matrix-v20-T3',
+        environment,
+      });
+      if (data.success) {
+        toast.success(`T3 fired: ${signal.direction!.toUpperCase()} ${TIER_UNITS.T3}u ${pair}`);
+      }
+      return data;
+    } catch (err) {
+      toast.error('T3 execution failed: ' + (err as Error).message);
+      throw err;
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
   return {
     loading,
