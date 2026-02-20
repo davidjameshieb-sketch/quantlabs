@@ -21,7 +21,7 @@
 // │    E_sig = composite(E > 100x + |Z| > 2.5σ)               │
 // │    ENTRY: PREDATORY_LIMIT at NOI wall (not FOK market)     │
 // │      Long: BidWall + 0.1p | Short: AskCeiling − 0.1p      │
-// │    Rule 4.2 Dud Abort: E_sig decays < 50x in 1500ms        │
+// │    Rule 4.2 Dud Abort: E_sig decays < (E_min×0.5) in 1500ms│
 // │      → instant MarketClose() (widened for API latency)     │
 // │                                                             │
 // │  PHASE 5 — Weaponized Exit (PID Controller Ratchet):       │
@@ -1589,8 +1589,9 @@ Deno.serve(async (req) => {
                 const pidSt = pidStateMap.get(openTrade.oanda_trade_id);
                 if (pidSt) {
                   const msSinceFill = Date.now() - pidSt.dudCheckTs;
-                  if (msSinceFill < PID_DUD_ABORT_MS && efficiencyExit < 50) {
-                    const dudReason = `RULE_4.2_DUD_ABORT: E_sig=${efficiencyExit.toFixed(1)}x decayed below 50x within ${msSinceFill}ms — vacuum failed to sustain`;
+                  const DUD_ABORT_THRESHOLD = DA_EFFICIENCY_MIN * 0.5; // Half the entry threshold — aligned with operator-set E gate
+                  if (msSinceFill < PID_DUD_ABORT_MS && efficiencyExit < DUD_ABORT_THRESHOLD) {
+                    const dudReason = `RULE_4.2_DUD_ABORT: E_sig=${efficiencyExit.toFixed(1)}x decayed below ${DUD_ABORT_THRESHOLD.toFixed(1)}x within ${msSinceFill}ms — vacuum failed to sustain`;
                     console.log(`[DA-EXIT] 💥 DUD ABORT: ${tradePairKey} | ${dudReason}`);
                     pidStateMap.delete(openTrade.oanda_trade_id);
                     await davidAtlasFlush(openTrade, tradePairKey, dudReason);
