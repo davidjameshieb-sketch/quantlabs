@@ -37,7 +37,8 @@ interface ExecuteRequest {
   }>;
 }
 
-// Convert QuantLabs pair format (EUR/USD) to OANDA format (EUR_USD)
+// Convert pair format to OANDA instrument format (EUR_USD).
+// Accepts both EUR/USD (slash) and EUR_USD (underscore) formats safely.
 function toOandaInstrument(pair: string): string {
   return pair.replace("/", "_");
 }

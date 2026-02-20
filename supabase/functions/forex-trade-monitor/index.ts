@@ -14,7 +14,8 @@ const OANDA_HOSTS: Record<string, string> = {
   practice: "https://api-fxpractice.oanda.com",
   live: "https://api-fxtrade.oanda.com",
 };
-const USER_ID = "11edc350-4c81-4d9f-82ae-cd2209b7581d";
+// USER_ID removed — monitor now scans ALL filled trades regardless of user_id.
+// Matrix-fired trades use a system UUID (00000000-...) and would be missed by user_id filter.
 const STRATEGY_CUTOFF = "2026-02-12T00:00:00Z";
 
 // ─── Pair-specific thresholds ───
@@ -516,6 +517,26 @@ function evaluateExit(
         currentPnlPips, progressToTp, tradeAgeMinutes,
       };
     }
+  } else if (mfeR >= 1.7) {
+    // ═══ PHASE 1.5 TRAILING GAP — MFE >= 1.7R: lock in 1.2R ═══
+    // BUGFIX: Previously placed AFTER the 1.5R block, making it unreachable (else-if chain).
+    // Any trade reaching 1.7R was caught by mfeR >= 1.5 first. Moved above 1.5R to fix.
+    const lockR = 1.2 * effectiveRPips * pipMult;
+    const phase15SlPrice = direction === "long"
+      ? entryPrice + lockR * healthTrailingFactor
+      : entryPrice - lockR * healthTrailingFactor;
+
+    const phase15Hit = direction === "long"
+      ? currentPrice <= phase15SlPrice
+      : currentPrice >= phase15SlPrice;
+
+    if (phase15Hit) {
+      return {
+        action: "close-trailing",
+        reason: `Phase-1.5 trail: ${currentPnlPips.toFixed(1)}p (${currentR.toFixed(2)}R) | MFE=${mfeR.toFixed(2)}R reached 1.7R — locking 1.2R (pulse-ratchet step)`,
+        currentPnlPips, progressToTp, tradeAgeMinutes,
+      };
+    }
   } else if (mfeR >= 1.5) {
     // Phase 1: MFE reached 1.5R — trail at entry + 1R (lock in profit)
     const oneRDistance = effectiveRPips * pipMult;
@@ -536,27 +557,6 @@ function evaluateExit(
       return {
         action: "close-trailing",
         reason: `R-trailing hit: ${currentPnlPips.toFixed(1)}p (${currentR.toFixed(2)}R) | MFE=${mfeR.toFixed(2)}R | trail@entry+1R${entryRegimeDiverging ? ' (regime early-warn)' : ''}`,
-        currentPnlPips, progressToTp, tradeAgeMinutes,
-      };
-    }
-  } else if (mfeR >= 1.7) {
-    // ═══ FIX #3: PHASE 1.5 TRAILING GAP — MFE >= 1.7R: lock in 1.2R ═══
-    // Previously there was a dead zone between 1.5R and 2.0R where no trail update fired
-    // and trades gave back 0.8R. Now at 1.7R MFE we lock in entry+1.2R — a pulse-ratchet
-    // step that captures more of the move before Phase 2 ATR-trail kicks in at 2.0R MFE.
-    const lockR = 1.2 * effectiveRPips * pipMult;
-    const phase15SlPrice = direction === "long"
-      ? entryPrice + lockR * healthTrailingFactor
-      : entryPrice - lockR * healthTrailingFactor;
-
-    const phase15Hit = direction === "long"
-      ? currentPrice <= phase15SlPrice
-      : currentPrice >= phase15SlPrice;
-
-    if (phase15Hit) {
-      return {
-        action: "close-trailing",
-        reason: `Phase-1.5 trail: ${currentPnlPips.toFixed(1)}p (${currentR.toFixed(2)}R) | MFE=${mfeR.toFixed(2)}R reached 1.7R — locking 1.2R (pulse-ratchet step)`,
         currentPnlPips, progressToTp, tradeAgeMinutes,
       };
     }
@@ -654,10 +654,11 @@ Deno.serve(async (req) => {
     );
 
     // 1. Get all filled orders that haven't been closed yet (no exit_price)
+    // NOTE: No user_id filter — matrix-fired trades use system UUID (00000000-...) and
+    // would be missed. Scan all filled trades since strategy cutoff instead.
     const { data: openOrders, error: fetchErr } = await supabase
       .from("oanda_orders")
       .select("*")
-      .eq("user_id", USER_ID)
       .eq("status", "filled")
       .is("exit_price", null)
       .not("oanda_trade_id", "is", null)
