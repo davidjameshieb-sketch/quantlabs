@@ -15,6 +15,7 @@ import type { MatrixSignal, MatrixResult } from '@/hooks/useSovereignMatrix';
 import { ForexTopologyMap } from '@/components/matrix/ForexTopologyMap';
 import { GateFlowChart } from '@/components/matrix/GateFlowChart';
 import { MatrixStrengthChart } from '@/components/matrix/MatrixStrengthChart';
+import { OrderFlowBattlefield } from '@/components/matrix/OrderFlowBattlefield';
 
 type Env = 'practice' | 'live';
 
@@ -954,6 +955,11 @@ const SovereignMatrix = () => {
                 {/* ── Matrix Strength Chart — THE new world-first view ── */}
                 <div className="lg:col-span-12">
                   <MatrixStrengthChart result={matrixResult} />
+                </div>
+
+                {/* ── Order Flow Battlefield — Footprint + CVD + Heatmap ── */}
+                <div className="lg:col-span-12">
+                  <OrderFlowBattlefield result={matrixResult} />
                 </div>
 
                 {/* Gate Flow Chart — full width between topology and scanner */}
