@@ -1744,16 +1744,14 @@ Deno.serve(async (req) => {
                 // If efficiency stays below entry minimum, the vacuum has collapsed
                 const eSigCollapsed = efficiencyExit < DA_EXIT_EFFICIENCY_MIN;
                 const zOfiDropped   = !(isLong ? zOfiExit >= DA_EXIT_ZOFI_MIN : zOfiExit <= -DA_EXIT_ZOFI_MIN);
-                const vpinDropped   = exitTracker.vpinRecursive < DA_EXIT_VPIN_MIN;
-                const hurstDropped  = exitTracker.hurst < DA_HURST_MIN;
-                const gatesOpen     = [!eSigCollapsed, !zOfiDropped, !vpinDropped, !hurstDropped].filter(Boolean).length;
+                // VPIN excluded from exit gate (not accumulating in stream context — operator directive)
+                const gatesOpen     = [!eSigCollapsed, !zOfiDropped, !hurstDropped].filter(Boolean).length;
 
-                if (gatesOpen < 4) {
+                if (gatesOpen < 3) {
                   const failedGates = [
                     hurstDropped    ? `HURST(${exitTracker.hurst.toFixed(3)}<${DA_HURST_MIN})` : null,
                     eSigCollapsed   ? `E_SIG(${efficiencyExit.toFixed(2)}<${DA_EXIT_EFFICIENCY_MIN}x)` : null,
                     zOfiDropped     ? `Z-OFI(${zOfiExit.toFixed(2)} directionless)` : null,
-                    vpinDropped     ? `VPIN(${exitTracker.vpinRecursive.toFixed(3)}<${DA_EXIT_VPIN_MIN})` : null,
                   ].filter(Boolean).join(" | ");
 
                   const flushReason = `ESIG_BASELINE_DROP: ${gatesOpen}/4 gates. Failed: ${failedGates}`;
@@ -1847,13 +1845,11 @@ Deno.serve(async (req) => {
                 daState.consecutivePassCount = 0; gateDiag.zofi++; continue;
               }
 
-              // ─── GATE 4: VPIN > 0.60 — MM toxicity threshold ───
-              // MMs about to withdraw liquidity → violent price reversal / Climax
-              if (daTracker.vpinRecursive < DA_VPIN_GHOST_MAX) {
+              // ─── GATE 4: VPIN — Ghost move blocker only (hard min removed) ───
+              // VPIN > 0.60 hard gate removed by operator — VPIN not accumulating in stream context.
+              // Ghost-move block retained: VPIN < 0.15 = pure retail noise (vacuum), never enter.
+              if (daTracker.vpinRecursive > 0 && daTracker.vpinRecursive < DA_VPIN_GHOST_MAX) {
                 console.log(`[DA-PHASE4] 👻 GHOST MOVE BLOCKED: ${tradePair} VPIN=${daTracker.vpinRecursive.toFixed(3)} < ghost_max=${DA_VPIN_GHOST_MAX} — E_sig invalid`);
-                daState.consecutivePassCount = 0; gateDiag.vpin++; continue;
-              }
-              if (daTracker.vpinRecursive < DA_VPIN_MIN) {
                 daState.consecutivePassCount = 0; gateDiag.vpin++; continue;
               }
 
