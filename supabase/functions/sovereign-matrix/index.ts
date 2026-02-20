@@ -173,13 +173,20 @@ function linearRegressionSlope(values: number[]): number {
 }
 
 // Gate 2: Atlas Snap — 20-period highest high / lowest low breakout
+// CRITICAL FIX: exclude the current (last) candle from the lookback window.
+// Including it made close <= highest20 always true, preventing any breakout from ever triggering.
 function computeAtlasSnap(candles: Candle[], period = 20): { highest: number; lowest: number } {
-  if (candles.length < period) {
-    const highs = candles.map((c) => c.high);
-    const lows = candles.map((c) => c.low);
-    return { highest: Math.max(...highs), lowest: Math.min(...lows) };
+  // Use all candles EXCEPT the last one for the lookback
+  const lookback = candles.slice(0, -1);
+  if (lookback.length < period) {
+    const highs = lookback.map((c) => c.high);
+    const lows = lookback.map((c) => c.low);
+    return {
+      highest: highs.length > 0 ? Math.max(...highs) : 0,
+      lowest: lows.length > 0 ? Math.min(...lows) : 0,
+    };
   }
-  const slice = candles.slice(-period);
+  const slice = lookback.slice(-period);
   return {
     highest: Math.max(...slice.map((c) => c.high)),
     lowest: Math.min(...slice.map((c) => c.low)),
@@ -214,7 +221,7 @@ Deno.serve(async (req) => {
     const matrixCandleResults = await Promise.allSettled(
       MATRIX_PAIRS.map(async (p) => ({
         pair: p,
-        candles: await fetchCandles(p.instrument, 22, environment, apiToken),
+        candles: await fetchCandles(p.instrument, 23, environment, apiToken),
       }))
     );
 
@@ -259,8 +266,8 @@ Deno.serve(async (req) => {
         const [baseCur, quoteCur] = parts;
 
         try {
-          const candles = await fetchCandles(instrument, 22, environment, apiToken);
-          if (candles.length < 20) return;
+          const candles = await fetchCandles(instrument, 23, environment, apiToken);
+          if (candles.length < 21) return; // need 20 prior + 1 current
 
           const close = candles[candles.length - 1].close;
           const atlas = findAtlasBlock(candles);

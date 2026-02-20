@@ -356,8 +356,9 @@ Deno.serve(async (req) => {
           exit_price: closePrice,
           closed_at: new Date().toISOString(),
         })
-        .eq("oanda_trade_id", body.oandaTradeId)
-        .eq("user_id", userId);
+        .eq("oanda_trade_id", body.oandaTradeId);
+        // NOTE: Do NOT filter by user_id here — matrix-fired trades use the system UUID (00000000-...)
+        // but the row was written with whatever user_id was active at execute time.
 
       return new Response(
         JSON.stringify({ success: true, result }),
