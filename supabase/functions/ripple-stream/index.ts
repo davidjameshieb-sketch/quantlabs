@@ -930,17 +930,14 @@ Deno.serve(async (req) => {
     // Only pairs that receive live OANDA tick data can execute. OANDA practice streaming
     // is capped at ~20 instruments per connection. The 45 exotic pairs previously listed
     // received zero ticks and could never fire — removed to eliminate phantom monitoring.
+    // ─── TIER 1 PAIRS ONLY — Operator directive ───
+    // Only the most liquid, institutionally-traded pairs are eligible for execution.
+    // Crosses like CHF_JPY, GBP_AUD, NZD_JPY, AUD_JPY are Tier 2/3 — excluded.
     const DA_PAIRS = [
-      // USD Majors (7)
+      // USD Majors — Tier 1 core (highest liquidity, tightest spreads)
       "EUR_USD", "GBP_USD", "USD_JPY", "AUD_USD", "USD_CAD", "USD_CHF", "NZD_USD",
-      // EUR Crosses (5)
-      "EUR_GBP", "EUR_JPY", "EUR_CHF", "EUR_AUD", "EUR_CAD",
-      // GBP Crosses (3)
-      "GBP_JPY", "GBP_CHF", "GBP_AUD",
-      // JPY Crosses (4)
-      "AUD_JPY", "CAD_JPY", "CHF_JPY", "NZD_JPY",
-      // AUD Crosses (1)
-      "AUD_CAD",
+      // Major crosses — Tier 1 eligible (high volume, institutional flow)
+      "EUR_GBP", "EUR_JPY", "GBP_JPY",
     ];
     const instruments = new Set<string>(
       DA_PAIRS.filter(p => !blockedPairs.includes(p))
@@ -963,11 +960,9 @@ Deno.serve(async (req) => {
     // The full 60-pair set still appears in the War Room via the sovereign_memory snapshot.
     const STREAM_PAIRS_MAX = 20;
     const PRIORITY_STREAM_PAIRS = [
+      // Tier 1 only — matches DA_PAIRS
       "EUR_USD", "GBP_USD", "USD_JPY", "AUD_USD", "USD_CAD", "USD_CHF", "NZD_USD",
-      "EUR_GBP", "EUR_JPY", "EUR_CHF", "EUR_AUD", "EUR_CAD",
-      "GBP_JPY", "GBP_CHF", "GBP_AUD",
-      "AUD_JPY", "CAD_JPY", "CHF_JPY", "NZD_JPY",
-      "AUD_CAD",
+      "EUR_GBP", "EUR_JPY", "GBP_JPY",
     ];
     // Use priority pairs first, filling remaining slots from instruments set
     const streamInstruments = new Set<string>();
