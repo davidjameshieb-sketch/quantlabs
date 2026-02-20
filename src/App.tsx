@@ -7,6 +7,7 @@ import { AuthProvider } from "@/contexts/AuthContext";
 
 import Auth from "./pages/Auth";
 import ForexOanda from "./pages/ForexOanda";
+import SovereignMatrix from "./pages/SovereignMatrix";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -22,6 +23,7 @@ const App = () => (
             <Route path="/" element={<Navigate to="/oanda" replace />} />
             <Route path="/auth" element={<Auth />} />
             <Route path="/oanda" element={<ForexOanda />} />
+            <Route path="/matrix" element={<SovereignMatrix />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </AuthProvider>
