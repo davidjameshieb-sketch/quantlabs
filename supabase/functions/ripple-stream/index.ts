@@ -1599,61 +1599,16 @@ Deno.serve(async (req) => {
                   : DA_MIN_HOLD_MS + 1;
 
                 // ═══════════════════════════════════════════════════════════
-                // DAVID-ATLAS 5-PHASE EXIT LOGIC
-                // Phase 4 Rule 4.2 Dud Abort: E_sig decays < 50x within 500ms → instant close
-                // Phase 5 Rule 5.3 Master Override: H < 0.45 → instant close
-                // Phase 5 Rule 5.2 PID Ratchet: trails SL after +3p (directional Kd only)
+                // DAVID-ATLAS EXIT LOGIC — RATCHET TRAIL STOP ONLY
+                // Operator directive: trades close ONLY when OANDA SL is hit.
+                // The PID ratchet continuously tightens the SL as profit grows.
+                // All other exit triggers (Hurst override, Z-OFI reversal,
+                // Dud Abort, ESIG flush) are DISABLED.
                 // ═══════════════════════════════════════════════════════════
 
-                // Compute current physics for this trade's pair
                 const pipMultExit = tradePairKey.includes("JPY") ? 100 : 10000;
                 const pipSizeExit  = tradePairKey.includes("JPY") ? 0.01 : 0.0001;
-                const absD1Exit = Math.abs(exitTracker.D1);
-                const absOfiExit = Math.abs(exitTracker.ofiRecursive);
-                const ofiScaledExit = absOfiExit / pipMultExit;
-                const efficiencyExit = ofiScaledExit / (absD1Exit + EFFICIENCY_EPSILON);
-                const zOfiExit = exitTracker.zOfi;
                 const isLong = openTrade.direction === "long";
-
-                // ─── RULE 4.2: Dud Abort — E_sig decays within 500ms of fill ───
-                const pidSt = pidStateMap.get(openTrade.oanda_trade_id);
-                if (pidSt) {
-                  const msSinceFill = Date.now() - pidSt.dudCheckTs;
-                  const DUD_ABORT_THRESHOLD = DA_EFFICIENCY_MIN * 0.5; // Half the entry threshold — aligned with operator-set E gate
-                  if (msSinceFill < PID_DUD_ABORT_MS && efficiencyExit < DUD_ABORT_THRESHOLD) {
-                    const dudReason = `RULE_4.2_DUD_ABORT: E_sig=${efficiencyExit.toFixed(1)}x decayed below ${DUD_ABORT_THRESHOLD.toFixed(1)}x within ${msSinceFill}ms — vacuum failed to sustain`;
-                    console.log(`[DA-EXIT] 💥 DUD ABORT: ${tradePairKey} | ${dudReason}`);
-                    pidStateMap.delete(openTrade.oanda_trade_id);
-                    await davidAtlasFlush(openTrade, tradePairKey, dudReason);
-                    continue;
-                  }
-                }
-
-                // ─── RULE 5.3: Master Override — Hurst below baseline (aligned with DA_HURST_MIN) ───
-                if (exitTracker.hurst < DA_HURST_MIN) {
-                  const masterReason = `RULE_5.3_MASTER_OVERRIDE: H=${exitTracker.hurst.toFixed(3)} below ${DA_HURST_MIN} — SVD Eigen-Signal dropped below baseline. Whale volume exhausted.`;
-                  console.log(`[DA-EXIT] 🛑 MASTER OVERRIDE: ${tradePairKey} | ${masterReason}`);
-                  pidStateMap.delete(openTrade.oanda_trade_id);
-                  await davidAtlasFlush(openTrade, tradePairKey, masterReason);
-                  continue;
-                }
-
-                // ─── P0 INTERRUPT: Z-OFI full directional reversal (bypasses MIN_HOLD) ───
-                const zOfiFullReversal = isLong
-                  ? (zOfiExit <= -DA_EXIT_ZOFI_MIN)
-                  : (zOfiExit >= DA_EXIT_ZOFI_MIN);
-                if (zOfiFullReversal && exitTracker.tickCount >= 10) {
-                  const p0Reason = `P0_ZOFi_REVERSAL: Z=${zOfiExit.toFixed(3)} — Whale fully reversed past ±${DA_EXIT_ZOFI_MIN}σ. Bypasses MIN_HOLD.`;
-                  console.log(`[DA-EXIT] ⚡ P0 REVERSAL: ${tradePairKey} | ${p0Reason}`);
-                  pidStateMap.delete(openTrade.oanda_trade_id);
-                  await davidAtlasFlush(openTrade, tradePairKey, p0Reason);
-                  continue;
-                }
-
-                if (tradeAgeMs < DA_MIN_HOLD_MS) {
-                  // In warm-up window — only P0/Dud/Master can exit
-                  continue;
-                }
 
                 // ─── PHASE 5 RULE 5.2: PID Ratchet — update SL if ratchet armed ───
                 const currentPriceForPair = prices.get(tradePairKey);
@@ -1721,28 +1676,10 @@ Deno.serve(async (req) => {
                   }
                 }
 
-                // ─── PHASE 5 FALLBACK: E_sig sustained drop check (Rule 5.3 extended) ───
-                // If efficiency stays below entry minimum, the vacuum has collapsed
-                const eSigCollapsed = efficiencyExit < DA_EXIT_EFFICIENCY_MIN;
-                const zOfiDropped   = !(isLong ? zOfiExit >= DA_EXIT_ZOFI_MIN : zOfiExit <= -DA_EXIT_ZOFI_MIN);
-                // VPIN excluded from exit gate (not accumulating in stream context — operator directive)
-                const gatesOpen     = [!eSigCollapsed, !zOfiDropped, !hurstDropped].filter(Boolean).length;
-
-                if (gatesOpen < 3) {
-                  const failedGates = [
-                    hurstDropped    ? `HURST(${exitTracker.hurst.toFixed(3)}<${DA_HURST_MIN})` : null,
-                    eSigCollapsed   ? `E_SIG(${efficiencyExit.toFixed(2)}<${DA_EXIT_EFFICIENCY_MIN}x)` : null,
-                    zOfiDropped     ? `Z-OFI(${zOfiExit.toFixed(2)} directionless)` : null,
-                  ].filter(Boolean).join(" | ");
-
-                  const flushReason = `ESIG_BASELINE_DROP: ${gatesOpen}/4 gates. Failed: ${failedGates}`;
-                  console.log(`[DA-EXIT] 🔴 E_SIG FLUSH: ${tradePairKey} | ${flushReason}`);
-                  pidStateMap.delete(openTrade.oanda_trade_id);
-                  await davidAtlasFlush(openTrade, tradePairKey, flushReason);
-                } else {
-                  // All gates active — PID ratchet managing exit
-                  console.log(`[DA-EXIT] 🟡 PID ACTIVE: ${tradePairKey} ${openTrade.direction} | H=${exitTracker.hurst.toFixed(3)} E=${efficiencyExit.toFixed(1)}x Z=${zOfiExit.toFixed(2)}σ VPIN=${exitTracker.vpinRecursive.toFixed(3)} | MFE=${pidSt?.maxProfit?.toFixed(2) ?? '?'}p SL=${pidSt?.currentSL?.toFixed(5) ?? '?'}`);
-                }
+                // ─── RATCHET STATUS LOG ───
+                // Exit is managed exclusively by the OANDA SL being hit.
+                // The PID ratchet tightens the SL as profit accumulates.
+                console.log(`[DA-EXIT] 🟡 PID RATCHET: ${tradePairKey} ${openTrade.direction} | MFE=${pidSt?.maxProfit?.toFixed(2) ?? '?'}p SL=${pidSt?.currentSL?.toFixed(5) ?? '?'} | ratchetArmed=${pidSt?.pidActivated ?? false}`);
               }
             }
 
