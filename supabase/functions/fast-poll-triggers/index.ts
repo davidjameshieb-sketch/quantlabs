@@ -312,114 +312,15 @@ Deno.serve(async (req) => {
         continue;
       }
 
-      // ── ALL GATES PASSED — FIRE THE TRADE ──
-      console.log(`[RIPPLE] 🎯 FIRING: ${config.direction.toUpperCase()} ${config.units} ${config.quietPair} | Loud moved ${loudMovePips.toFixed(1)}p, Quiet lagging (${(quietRatio * 100).toFixed(0)}%)`);
+      // ── ALL GATES PASSED — EXECUTION BLOCKED ──
+      // OPERATOR DIRECTIVE: David-Atlas Distribution Terminal is the SOLE execution authority.
+      // All trade signals must flow exclusively through the ripple-stream engine.
+      // fast-poll-triggers is relegated to trigger evaluation and alerting ONLY.
+      // No orders will be placed from this function.
+      console.log(`[RIPPLE-BLOCKED] 🚫 Gate passed but execution DISABLED — ripple-stream is sole executor. ${config.direction.toUpperCase()} ${config.units} ${config.quietPair} | divergence=${divergencePips.toFixed(1)}p`);
 
-      let tradeResult: Record<string, unknown> = {};
-      let fireSuccess = false;
-
-      if (LIVE_ENABLED === "true") {
-        try {
-          // Build OANDA order
-          const units = config.direction.toLowerCase() === "long" ? config.units : -config.units;
-          const slDistance = fromPips(config.slPips, config.quietPair);
-          const tpDistance = fromPips(config.tpPips, config.quietPair);
-
-          const orderBody = {
-            order: {
-              type: "MARKET",
-              instrument: config.quietPair,
-              units: String(units),
-              timeInForce: "FOK",
-              stopLossOnFill: {
-                distance: slDistance.toFixed(5),
-                timeInForce: "GTC",
-              },
-              takeProfitOnFill: {
-                distance: tpDistance.toFixed(5),
-                timeInForce: "GTC",
-              },
-            },
-          };
-
-          const orderRes = await fetch(
-            `${OANDA_API}/accounts/${OANDA_ACCOUNT}/orders`,
-            {
-              method: "POST",
-              headers: {
-                Authorization: `Bearer ${OANDA_TOKEN}`,
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify(orderBody),
-            }
-          );
-
-          const orderData = await orderRes.json();
-          tradeResult = orderData;
-
-          const fill = orderData.orderFillTransaction;
-          if (fill) {
-            fireSuccess = true;
-            const fillPrice = parseFloat(fill.price || "0");
-            const tradeId = fill.tradeOpened?.tradeID || fill.id;
-
-            // Write to oanda_orders with full audit trail
-            // Find the user_id (admin user for sovereign trades)
-            const { data: adminRole } = await supabase
-              .from("user_roles")
-              .select("user_id")
-              .eq("role", "admin")
-              .limit(1)
-              .single();
-
-            if (adminRole) {
-              await supabase.from("oanda_orders").insert({
-                user_id: adminRole.user_id,
-                signal_id: `ripple-strike-${config.triggerId}-${Date.now()}`,
-                currency_pair: config.quietPair,
-                direction: config.direction.toLowerCase(),
-                units: config.units,
-                entry_price: fillPrice,
-                oanda_order_id: fill.id,
-                oanda_trade_id: tradeId,
-                status: "filled",
-                environment: "live",
-                direction_engine: "ripple-strike",
-                sovereign_override_tag: `ripple:${config.triggerId}`,
-                confidence_score: Math.min(1, divergencePips / config.thresholdPips),
-                governance_payload: {
-                  triggerId: config.triggerId,
-                  loudPair: config.loudPair,
-                  quietPair: config.quietPair,
-                  loudBaseline: config.loudBaseline,
-                  quietBaseline: config.quietBaseline,
-                  loudMidAtFire: loudPrice.mid,
-                  quietMidAtFire: quietPrice.mid,
-                  loudMovePips,
-                  quietMovePips,
-                  divergencePips,
-                  quietSpreadPips: quietPrice.spreadPips,
-                  quietRatio,
-                  firedAt: nowISO,
-                },
-                requested_price: quietPrice.mid,
-                slippage_pips: Math.abs(toPips(fillPrice - quietPrice.mid, config.quietPair)),
-                spread_at_entry: quietPrice.spreadPips,
-              });
-            }
-
-            console.log(`[RIPPLE] ✅ FILLED: Trade ${tradeId} @ ${fillPrice} | ${config.direction} ${config.units} ${config.quietPair}`);
-          } else {
-            const rejectReason = orderData.orderRejectTransaction?.rejectReason ||
-              orderData.orderCancelTransaction?.reason || "Unknown";
-            console.warn(`[RIPPLE] ❌ ORDER REJECTED: ${rejectReason}`);
-            tradeResult = { rejected: true, reason: rejectReason };
-          }
-        } catch (execErr) {
-          console.error(`[RIPPLE] Execution error:`, execErr);
-          tradeResult = { error: (execErr as Error).message };
-        }
-      }
+      const tradeResult: Record<string, unknown> = { blocked: true, reason: "david-atlas-monopoly" };
+      const fireSuccess = false;
 
       // Mark trigger as fired
       const firedPayload = { ...config, fired: true, firedAt: nowISO, tradeResult };
