@@ -12,6 +12,7 @@ import { Link } from 'react-router-dom';
 import { cn } from '@/lib/utils';
 import { useSovereignMatrix, TIER_UNITS, pips } from '@/hooks/useSovereignMatrix';
 import type { MatrixSignal, MatrixResult } from '@/hooks/useSovereignMatrix';
+import { ForexTopologyMap } from '@/components/matrix/ForexTopologyMap';
 
 type Env = 'practice' | 'live';
 
@@ -942,6 +943,11 @@ const SovereignMatrix = () => {
 
                 {/* Heatmap row — full width */}
                 <StrengthHeatmap result={matrixResult} />
+
+                {/* Nervous System Topology Map — full width */}
+                <div className="lg:col-span-12">
+                  <ForexTopologyMap result={matrixResult} />
+                </div>
 
                 {/* Power Radar (left) + Scanner (right) */}
                 <PowerRadar result={matrixResult} />
