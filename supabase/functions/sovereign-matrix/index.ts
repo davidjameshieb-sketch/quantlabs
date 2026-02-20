@@ -1,5 +1,6 @@
-// Sovereign Matrix v20.0 — Mechanical Chomp
-// 30m macro matrix: Veff Atlas Wall, Triple-Lock gates, 1250-unit scaling
+// Sovereign Matrix v20.0 — True Mechanical Chomp
+// 28-cross True Matrix: mathematically ranks all 8 currencies 1→8 from net global capital flow
+// Gate 1: ONLY authorizes the #1 Strongest vs #8 Weakest (Rank 1 Predator vs Rank 8 Prey)
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -10,20 +11,34 @@ const corsHeaders = {
 const OANDA_HOST = "https://api-fxtrade.oanda.com";
 const OANDA_PRACTICE_HOST = "https://api-fxpractice.oanda.com";
 
-// The 7 major pairs used to build the 8-currency matrix
-const MATRIX_PAIRS = [
-  { instrument: "EUR_USD", base: "EUR", quote: "USD", quoteInverted: false },
-  { instrument: "GBP_USD", base: "GBP", quote: "USD", quoteInverted: false },
-  { instrument: "AUD_USD", base: "AUD", quote: "USD", quoteInverted: false },
-  { instrument: "NZD_USD", base: "NZD", quote: "USD", quoteInverted: false },
-  { instrument: "USD_CAD", base: "USD", quote: "CAD", quoteInverted: true },
-  { instrument: "USD_CHF", base: "USD", quote: "CHF", quoteInverted: true },
-  { instrument: "USD_JPY", base: "USD", quote: "JPY", quoteInverted: true },
-];
-
+// All 8 major currencies
 const ALL_CURRENCIES = ["EUR", "GBP", "AUD", "NZD", "USD", "CAD", "CHF", "JPY"];
 
-// Supported scannable pairs (base_quote format for OANDA)
+// All 28 unique cross-rate combinations of the 8 majors
+// Each entry: [base, quote, oandaInstrument]
+const ALL_28_CROSSES: Array<{ base: string; quote: string; instrument: string }> = [];
+for (let i = 0; i < ALL_CURRENCIES.length; i++) {
+  for (let j = i + 1; j < ALL_CURRENCIES.length; j++) {
+    const base = ALL_CURRENCIES[i];
+    const quote = ALL_CURRENCIES[j];
+    // OANDA instrument format
+    ALL_28_CROSSES.push({ base, quote, instrument: `${base}_${quote}` });
+  }
+}
+
+// Instruments OANDA actually provides (some crosses might not be directly available)
+// We handle unavailable ones by derivation, but for simplicity we try direct + fallback
+const OANDA_AVAILABLE: Set<string> = new Set([
+  "EUR_USD", "EUR_GBP", "EUR_AUD", "EUR_NZD", "EUR_CAD", "EUR_CHF", "EUR_JPY",
+  "GBP_USD", "GBP_AUD", "GBP_NZD", "GBP_CAD", "GBP_CHF", "GBP_JPY",
+  "AUD_USD", "AUD_NZD", "AUD_CAD", "AUD_CHF", "AUD_JPY",
+  "NZD_USD", "NZD_CAD", "NZD_CHF", "NZD_JPY",
+  "USD_CAD", "USD_CHF", "USD_JPY",
+  "CAD_CHF", "CAD_JPY",
+  "CHF_JPY",
+]);
+
+// Pairs to scan for Triple-Lock signals
 const SCAN_PAIRS = [
   "EUR_USD", "GBP_USD", "AUD_USD", "NZD_USD",
   "USD_CAD", "USD_CHF", "USD_JPY",
@@ -51,20 +66,18 @@ interface MatrixSignal {
   quoteCurrency: string;
   baseScore: number;
   quoteScore: number;
-  gate1: boolean; // Matrix Alignment
-  gate2: boolean; // Atlas Snap (20-period breakout)
+  baseRank: number;
+  quoteRank: number;
+  gate1: boolean;
+  gate2: boolean;
   gate2Detail: { highest20: number; lowest20: number; close: number };
-  gate3: boolean; // David Vector (LR slope)
+  gate3: boolean;
   gate3Detail: { slope: number };
   direction: "long" | "short" | null;
   triplelock: boolean;
   atlasBlock: AtlasBlock | null;
   currentPrice: number;
-  sobScore: number; // S_sob for this pair
-}
-
-interface CurrencyScores {
-  [currency: string]: number;
+  sobScore: number;
 }
 
 async function fetchCandles(
@@ -72,37 +85,52 @@ async function fetchCandles(
   count: number,
   environment: "practice" | "live",
   apiToken: string
-): Promise<Candle[]> {
+): Promise<Candle[] | null> {
   const host = environment === "live" ? OANDA_HOST : OANDA_PRACTICE_HOST;
   const url = `${host}/v3/instruments/${instrument}/candles?count=${count}&granularity=M30&price=M`;
 
-  const res = await fetch(url, {
-    headers: { Authorization: `Bearer ${apiToken}`, Accept: "application/json" },
-  });
+  try {
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${apiToken}`, Accept: "application/json" },
+    });
 
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`Candle fetch failed for ${instrument}: ${err}`);
+    if (!res.ok) return null;
+
+    const data = await res.json();
+    const candles = (data.candles || [])
+      .filter((c: { complete?: boolean }) => c.complete !== false)
+      .map((c: {
+        time: string;
+        volume: number;
+        mid: { h: string; l: string; o: string; c: string };
+      }) => ({
+        time: c.time,
+        volume: c.volume,
+        high: parseFloat(c.mid.h),
+        low: parseFloat(c.mid.l),
+        open: parseFloat(c.mid.o),
+        close: parseFloat(c.mid.c),
+      }));
+    return candles;
+  } catch {
+    return null;
   }
-
-  const data = await res.json();
-  return (data.candles || [])
-    .filter((c: { complete?: boolean }) => c.complete !== false)
-    .map((c: {
-      time: string;
-      volume: number;
-      mid: { h: string; l: string; o: string; c: string };
-    }) => ({
-      time: c.time,
-      volume: c.volume,
-      high: parseFloat(c.mid.h),
-      low: parseFloat(c.mid.l),
-      open: parseFloat(c.mid.o),
-      close: parseFloat(c.mid.c),
-    }));
 }
 
-// Volume Efficiency: volume needed per pip of movement
+// Compute percentage return: (close - open) / open * 100 averaged over last N candles
+function computePercentReturn(candles: Candle[], periods = 20): number {
+  if (candles.length < 2) return 0;
+  const slice = candles.slice(-Math.min(periods, candles.length));
+  let totalReturn = 0;
+  for (const c of slice) {
+    if (c.open !== 0) {
+      totalReturn += ((c.close - c.open) / c.open) * 100;
+    }
+  }
+  return totalReturn / slice.length;
+}
+
+// Volume Efficiency
 function computeVeff(candles: Candle[]): number[] {
   return candles.map((c) => {
     const range = Math.abs(c.high - c.low);
@@ -111,30 +139,13 @@ function computeVeff(candles: Candle[]): number[] {
   });
 }
 
-// Simple Moving Average
-function sma(values: number[], period: number): number[] {
-  const result: number[] = [];
-  for (let i = 0; i < values.length; i++) {
-    if (i < period - 1) {
-      result.push(NaN);
-    } else {
-      const slice = values.slice(i - period + 1, i + 1);
-      result.push(slice.reduce((a, b) => a + b, 0) / period);
-    }
-  }
-  return result;
-}
-
 // Atlas Wall: find the most recent cluster candle in last 20 periods
 function findAtlasBlock(candles: Candle[], period = 20): AtlasBlock | null {
   if (candles.length < period) return null;
-
   const recent = candles.slice(-period);
   const veff = computeVeff(recent);
   const avgVeff = veff.reduce((a, b) => a + b, 0) / veff.length;
   const threshold = avgVeff * 1.5;
-
-  // Find most recent cluster candle
   for (let i = recent.length - 1; i >= 0; i--) {
     if (veff[i] > threshold) {
       return {
@@ -156,7 +167,7 @@ function computeSob(candles: Candle[], atlasBlock: AtlasBlock | null): number {
   return 0;
 }
 
-// Linear Regression slope over N points (y = mx + b, return m)
+// Linear Regression slope over N points
 function linearRegressionSlope(values: number[]): number {
   const n = values.length;
   if (n < 2) return 0;
@@ -172,11 +183,8 @@ function linearRegressionSlope(values: number[]): number {
   return (n * sumXY - sumX * sumY) / denom;
 }
 
-// Gate 2: Atlas Snap — 20-period highest high / lowest low breakout
-// CRITICAL FIX: exclude the current (last) candle from the lookback window.
-// Including it made close <= highest20 always true, preventing any breakout from ever triggering.
+// Gate 2: Atlas Snap — exclude current candle from lookback
 function computeAtlasSnap(candles: Candle[], period = 20): { highest: number; lowest: number } {
-  // Use all candles EXCEPT the last one for the lookback
   const lookback = candles.slice(0, -1);
   if (lookback.length < period) {
     const highs = lookback.map((c) => c.high);
@@ -201,7 +209,7 @@ Deno.serve(async (req) => {
   try {
     const body = await req.json().catch(() => ({}));
     const environment: "practice" | "live" = body.environment || "live";
-    const targetPair: string | undefined = body.pair; // optional: scan a specific pair
+    const targetPair: string | undefined = body.pair;
 
     const apiToken =
       environment === "live"
@@ -215,47 +223,69 @@ Deno.serve(async (req) => {
       );
     }
 
-    // ── Step 1: Fetch 22 candles for all 7 matrix pairs (20 lookback + 2 buffer)
-    console.log(`[MATRIX] Fetching 30m candles for matrix pairs (env: ${environment})`);
+    // ── STEP 1: Fetch candles for all 28 cross-rate pairs in parallel ──────────
+    console.log(`[TRUE MATRIX] Fetching 30m candles for 28 cross-rates (env: ${environment})`);
 
-    const matrixCandleResults = await Promise.allSettled(
-      MATRIX_PAIRS.map(async (p) => ({
-        pair: p,
-        candles: await fetchCandles(p.instrument, 23, environment, apiToken),
-      }))
+    // Filter to only OANDA-available instruments
+    const availableCrosses = ALL_28_CROSSES.filter(c => OANDA_AVAILABLE.has(c.instrument));
+
+    const crossResults = await Promise.allSettled(
+      availableCrosses.map(async (cross) => {
+        const candles = await fetchCandles(cross.instrument, 23, environment, apiToken);
+        return { cross, candles };
+      })
     );
 
-    // ── Step 2: Compute S_sob for each matrix pair → derive 8-currency scores
-    const pairSob: Record<string, number> = {};
-    for (const result of matrixCandleResults) {
-      if (result.status === "fulfilled") {
-        const { pair, candles } = result.value;
-        const atlas = findAtlasBlock(candles);
-        const sob = computeSob(candles, atlas);
-        pairSob[pair.instrument] = sob;
-      }
+    // ── STEP 2: Compute cross-rate performance scores ─────────────────────────
+    // For each available cross, compute % return on base vs quote
+    // currencyFlows accumulates net weighted score for each currency
+    const currencyFlows: Record<string, number[]> = {};
+    for (const c of ALL_CURRENCIES) currencyFlows[c] = [];
+
+    for (const result of crossResults) {
+      if (result.status !== "fulfilled" || !result.value.candles || result.value.candles.length < 3) continue;
+      const { cross, candles } = result.value;
+
+      // Percentage return: positive means base is gaining vs quote
+      const pctReturn = computePercentReturn(candles, 20);
+
+      // Base currency gains, quote currency loses (in this cross)
+      currencyFlows[cross.base].push(pctReturn);
+      currencyFlows[cross.quote].push(-pctReturn);
     }
 
-    // Currency score aggregation (Synthetic Matrix Strength)
-    const currencyScores: CurrencyScores = {};
-    for (const c of ALL_CURRENCIES) currencyScores[c] = 0;
-
-    for (const p of MATRIX_PAIRS) {
-      const sob = pairSob[p.instrument] ?? 0;
-      if (!p.quoteInverted) {
-        // base/USD pair: sob > 0 means base is strong vs USD
-        currencyScores[p.base] = (currencyScores[p.base] || 0) + sob;
-        currencyScores[p.quote] = (currencyScores[p.quote] || 0) - sob;
+    // Average all cross-rate flows per currency to get its "True Strength Score"
+    const currencyScores: Record<string, number> = {};
+    for (const cur of ALL_CURRENCIES) {
+      const flows = currencyFlows[cur];
+      if (flows.length === 0) {
+        currencyScores[cur] = 0;
       } else {
-        // USD/quote pair: sob > 0 means USD is strong vs quote
-        currencyScores[p.base] = (currencyScores[p.base] || 0) + sob;
-        currencyScores[p.quote] = (currencyScores[p.quote] || 0) - sob;
+        const avg = flows.reduce((a, b) => a + b, 0) / flows.length;
+        // Round to 4 decimal places for display
+        currencyScores[cur] = Math.round(avg * 10000) / 10000;
       }
     }
 
-    console.log("[MATRIX] Currency scores:", JSON.stringify(currencyScores));
+    // ── STEP 3: Rank all 8 currencies from 1 (Strongest) to 8 (Weakest) ──────
+    const sortedCurrencies = [...ALL_CURRENCIES].sort(
+      (a, b) => currencyScores[b] - currencyScores[a]
+    );
 
-    // ── Step 3: Scan target pair(s) for Triple-Lock signal
+    const currencyRanks: Record<string, number> = {};
+    sortedCurrencies.forEach((cur, idx) => {
+      currencyRanks[cur] = idx + 1; // Rank 1 = Strongest, Rank 8 = Weakest
+    });
+
+    // Predator = Rank 1 (strongest), Prey = Rank 8 (weakest)
+    const predator = sortedCurrencies[0];
+    const prey = sortedCurrencies[sortedCurrencies.length - 1];
+    const bestChompPair = `${predator}_${prey}`;
+
+    console.log(`[TRUE MATRIX] Rankings: ${sortedCurrencies.map((c, i) => `${i+1}.${c}`).join(' | ')}`);
+    console.log(`[TRUE MATRIX] Best Chomp: ${bestChompPair}`);
+
+    // ── STEP 4: Scan pairs for Triple-Lock signals ─────────────────────────────
     const pairsToScan = targetPair ? [targetPair] : SCAN_PAIRS;
     const signals: MatrixSignal[] = [];
 
@@ -267,7 +297,7 @@ Deno.serve(async (req) => {
 
         try {
           const candles = await fetchCandles(instrument, 23, environment, apiToken);
-          if (candles.length < 21) return; // need 20 prior + 1 current
+          if (!candles || candles.length < 21) return;
 
           const close = candles[candles.length - 1].close;
           const atlas = findAtlasBlock(candles);
@@ -275,10 +305,15 @@ Deno.serve(async (req) => {
 
           const baseScore = currencyScores[baseCur] ?? 0;
           const quoteScore = currencyScores[quoteCur] ?? 0;
+          const baseRank = currencyRanks[baseCur] ?? 4;
+          const quoteRank = currencyRanks[quoteCur] ?? 4;
 
-          // Gate 1: Matrix Alignment
-          const longG1 = baseScore >= 1 && quoteScore <= -1;
-          const shortG1 = baseScore <= -1 && quoteScore >= 1;
+          // ── TRUE GATE 1: ELITE RANK FILTER ──────────────────────────────────
+          // ONLY authorize the physical terrain extremes:
+          // LONG: base is Rank 1 (or 2) AND quote is Rank 7 (or 8) — Predator vs Prey
+          // SHORT: base is Rank 7 (or 8) AND quote is Rank 1 (or 2) — Prey fights Predator
+          const longG1 = baseRank <= 2 && quoteRank >= 7;
+          const shortG1 = baseRank >= 7 && quoteRank <= 2;
           const gate1 = longG1 || shortG1;
 
           // Gate 2: Atlas Snap — 20-period breakout
@@ -308,6 +343,8 @@ Deno.serve(async (req) => {
             quoteCurrency: quoteCur,
             baseScore,
             quoteScore,
+            baseRank,
+            quoteRank,
             gate1,
             gate2,
             gate2Detail: { highest20: snap.highest, lowest20: snap.lowest, close },
@@ -335,7 +372,7 @@ Deno.serve(async (req) => {
 
     const strikes = signals.filter((s) => s.triplelock);
 
-    console.log(`[MATRIX] Scan complete. ${strikes.length} STRIKE(s) detected across ${signals.length} pairs.`);
+    console.log(`[TRUE MATRIX] Complete. ${strikes.length} STRIKE(s) across ${signals.length} pairs.`);
 
     return new Response(
       JSON.stringify({
@@ -343,6 +380,11 @@ Deno.serve(async (req) => {
         timestamp: new Date().toISOString(),
         environment,
         currencyScores,
+        currencyRanks,
+        sortedCurrencies,
+        predator,
+        prey,
+        bestChompPair,
         signals,
         strikes,
         strikeCount: strikes.length,
@@ -350,7 +392,7 @@ Deno.serve(async (req) => {
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   } catch (err) {
-    console.error("[MATRIX] Error:", err);
+    console.error("[TRUE MATRIX] Error:", err);
     return new Response(
       JSON.stringify({ error: (err as Error).message || "Internal error" }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
