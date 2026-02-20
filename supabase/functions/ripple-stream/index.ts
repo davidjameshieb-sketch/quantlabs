@@ -1246,16 +1246,17 @@ Deno.serve(async (req) => {
         ? +(limitPrice - PID_SL_PIPS * pipSize).toFixed(pair.includes("JPY") ? 3 : 5)
         : +(limitPrice + PID_SL_PIPS * pipSize).toFixed(pair.includes("JPY") ? 3 : 5);
 
-      // MARKET ORDER — timeInForce=GTC (not FOK).
-      // ROOT CAUSE FIX: FOK on OANDA practice causes orderCancelTransaction (httpStatus=201, no fill)
-      // when bid/ask shifts even 0.1p between signal and submission. GTC fills immediately at market
-      // like FOK but does NOT cancel on minor price deviation — critical for high-frequency signals.
+      // MARKET ORDER — timeInForce=FOK (Fill or Kill).
+      // OANDA MARKET orders only accept FOK or IOC — GTC is invalid for market orders
+      // and causes TIME_IN_FORCE_INVALID (400) rejections on every submission.
+      // FOK fills at best available price immediately; rejected if no liquidity (rare at market).
+      // TP/SL on-fill orders correctly use GTC (valid for limit/stop attached orders).
       const orderBody = {
         order: {
           type: "MARKET",
           instrument: pair,
           units: String(dirUnits),
-          timeInForce: "GTC",
+          timeInForce: "FOK",
           takeProfitOnFill: { price: String(tpPrice), timeInForce: "GTC" },
           stopLossOnFill:   { price: String(slPrice), timeInForce: "GTC" },
         },
