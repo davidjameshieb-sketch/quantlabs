@@ -1,6 +1,4 @@
-// OANDA Execution Order Log
-// Only shows trades that passed ALL 4 SPP v2.0 physics gates (Hurst ≥ 0.62, E > 100x, |Z-OFI| > 2.5σ, VPIN > 0.60)
-// i.e. gate_result = 'PASS' AND oanda_trade_id IS NOT NULL (broker-confirmed fills only)
+// OANDA Execution Order Log — broker-confirmed fills
 
 import { useEffect, useState, useCallback } from 'react';
 import { RefreshCw, CheckCircle2, XCircle, Clock, ArrowUpRight, ArrowDownRight, Zap } from 'lucide-react';
@@ -79,10 +77,7 @@ export const OandaOrderLog = () => {
     <div className="p-4 rounded-xl bg-card/50 border border-border/50 space-y-3">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <h3 className="text-xs font-display font-bold">Confirmed Strikes</h3>
-          <Badge className="text-[9px] h-4 px-1.5 font-mono border-0 bg-primary/20 text-primary">
-            4/4 Gates
-          </Badge>
+          <h3 className="text-xs font-display font-bold">Execution Log</h3>
         </div>
         <Button
           size="sm"
@@ -97,17 +92,15 @@ export const OandaOrderLog = () => {
       </div>
 
       <p className="text-[9px] text-muted-foreground/60">
-        Only broker-confirmed fills that cleared all SPP v2.0 thresholds: H≥0.62 · E&gt;100x · |Z|&gt;2.5σ · VPIN&gt;0.60
+        Broker-confirmed fills with OANDA trade ID.
       </p>
 
       {orders.length === 0 ? (
         <div className="py-6 text-center space-y-1">
           <Zap className="w-6 h-6 mx-auto text-muted-foreground/20" />
-          <p className="text-[10px] text-muted-foreground">
-            No confirmed 4/4-gate strikes yet.
-          </p>
+          <p className="text-[10px] text-muted-foreground">No orders yet.</p>
           <p className="text-[9px] text-muted-foreground/60">
-            Trades appear here only when all physics gates pass simultaneously and OANDA confirms the fill.
+            Executed trades will appear here once OANDA confirms the fill.
           </p>
         </div>
       ) : (
