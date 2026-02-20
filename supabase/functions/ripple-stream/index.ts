@@ -907,7 +907,11 @@ Deno.serve(async (req) => {
     const govPayload = governanceConfig?.payload as Record<string, unknown> | null;
     // ─── SOVEREIGN PULSE PROTOCOL: Fixed 1,250 units per strike. No dynamic sizing. ───
     const baseUnits: number = 1250;
-    const blockedPairs: string[] = (govPayload?.blockedPairs as string[]) || [];
+    // ─── DAVID-ATLAS ACCESS POLICY: Pair blocking is DISABLED ───
+    // Per operator directive: all session-level blacklists, global trade halts, and pair-specific
+    // blocking filters are deactivated. Trade eligibility is determined SOLELY by real-time
+    // physics alignment (Hurst, Efficiency, VPIN, Z-OFI). Sovereign loop DGE blockedPairs are ignored.
+    const blockedPairs: string[] = [];
 
     // ─── 2. Load blocked pairs override from circuit breaker ───
     const { data: circuitBypasses } = await supabase
