@@ -760,9 +760,9 @@ const PID_KI = 0.05;             // Integral: time-decay factor (tightens SL ove
 const PID_KD = 0.5;              // Derivative: velocity factor (DIRECTIONAL — only favored moves)
 const PID_BASE_TRAIL = 2.5;      // Starting trail buffer in pips
 const PID_FLOOR_TRAIL = 0.2;     // Hard floor: trail distance never below 0.2 pips
-const PID_TP_PIPS = 20.0;        // Phase 5 Rule 5.1: hard TP bracket — widened from 10p to survive 2-5p spreads on JPY pairs
-const PID_SL_PIPS = 15.0;        // Phase 5 Rule 5.1: hard SL bracket — widened from 10p to prevent instant stop-out from spread cost
-const PID_ACTIVATION_PIPS = 5.0; // Ratchet activates only at +5.0 pips profit (raised from 3.0p to match wider brackets)
+const PID_TP_PIPS = 20.0;        // Phase 5 Rule 5.1: hard TP bracket
+const PID_SL_PIPS = 20.0;        // Phase 5 Rule 5.1: hard SL bracket
+const PID_ACTIVATION_PIPS = 5.0; // Ratchet activates only at +5.0 pips profit
 const PID_DUD_ABORT_MS = 1500;   // Rule 4.2: E_sig must hold for 1500ms — widened from 500ms to absorb OANDA API latency (200-300ms fill confirm)
 
 // ─── Velocity Gating Constants ───────────────────────────
