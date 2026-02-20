@@ -691,20 +691,19 @@ const ZSCORE_COOLDOWN_MS = 300_000; // 5 MINUTES between fires on same group (wa
 // EXIT: ANY gate drops below threshold → 3/4 gates → IMMEDIATE flush.
 // ENTRY + EXIT use IDENTICAL thresholds. If it's not CLIMAX, there's no trade.
 
-const DA_HURST_MIN = 0.62;           // Gate 1: Persistent regime (unchanged)
-const DA_EFFICIENCY_MIN = 100.0;     // Gate 2: SPP v2.0 SPEC — Liquidity Vacuum / Ghost Move (E > 100x)
-const DA_ZOFI_MIN = 2.5;             // Gate 3: Whale exhausting order block (|Z| > 2.5σ)
-const DA_VPIN_MIN = 0.60;            // Gate 4: MM toxicity threshold (VPIN > 0.60)
+const DA_HURST_MIN = 0.55;           // Gate 1: Persistent regime — aligned with Tier1 UI threshold
+const DA_EFFICIENCY_MIN = 7.0;       // Gate 2: Aligned with Tier1 UI threshold (E ≥ 7x) — operator directive
+const DA_ZOFI_MIN = 1.5;             // Gate 3: Lowered from 2.5σ → 1.5σ — capture Tier1 Z-OFI moves
+const DA_VPIN_MIN = 0.60;            // Gate 4: MM toxicity threshold (retained, VPIN gate bypassed)
 const DA_VPIN_GHOST_MAX = 0.15;      // Ghost move block: VPIN < 0.15 = retail noise, never enter
 
-// EXIT uses IDENTICAL thresholds — no separate lower thresholds.
-// The moment ANY metric drops below threshold → 3/4 gates → mandatory flush.
-const DA_EXIT_EFFICIENCY_MIN = 100.0; // Exit: Efficiency must stay > 100x (SPP v2.0 spec — Ghost Move)
-const DA_EXIT_VPIN_MIN = 0.60;        // Exit: VPIN must stay > 0.60
-const DA_EXIT_ZOFI_MIN = 2.5;         // Exit: |Z-OFI| must stay > 2.5σ
+// EXIT uses IDENTICAL thresholds — aligned with entry gates.
+const DA_EXIT_EFFICIENCY_MIN = 7.0;   // Exit: aligned with entry (E ≥ 7x)
+const DA_EXIT_VPIN_MIN = 0.60;        // Exit: VPIN must stay > 0.60 (VPIN gate bypassed anyway)
+const DA_EXIT_ZOFI_MIN = 1.5;         // Exit: |Z-OFI| must stay > 1.5σ (aligned with entry)
 
-// Rule of 2: Require 2 consecutive CLIMAX ticks before entry (anti-noise, anti-lag)
-const DA_RULE_OF_2 = 2;
+// Rule of 2: Single confirmed CLIMAX tick — direction flip prevention handled by lastPassDirection
+const DA_RULE_OF_2 = 1;
 
 // Cross-session cooldown: 2 minutes between fires on the same pair
 const DA_COOLDOWN_MS = 120_000;
@@ -1246,22 +1245,19 @@ Deno.serve(async (req) => {
         ? +(limitPrice - PID_SL_PIPS * pipSize).toFixed(pair.includes("JPY") ? 3 : 5)
         : +(limitPrice + PID_SL_PIPS * pipSize).toFixed(pair.includes("JPY") ? 3 : 5);
 
-      // PREDATORY_LIMIT: GTC limit order at the NOI wall — fills when whale breaches wall.
-      // GTD (Good-Till-Date) with 60s expiry prevents stale ghost limits if wall disappears.
-      const limitExpiry = new Date(Date.now() + 60_000).toISOString(); // 60s GTD
+      // MARKET ORDER: Immediate execution at current bid/ask.
+      // Operator directive: predatory limit orders were expiring before fills — switch to market.
       const orderBody = {
         order: {
-          type: "LIMIT",
+          type: "MARKET",
           instrument: pair,
           units: String(dirUnits),
-          price: String(limitPrice),
-          timeInForce: "GTD",
-          gtdTime: limitExpiry,
+          timeInForce: "FOK",
           takeProfitOnFill: { price: String(tpPrice), timeInForce: "GTC" },
           stopLossOnFill:   { price: String(slPrice), timeInForce: "GTC" },
         },
       };
-      console.log(`[PHASE2-LIMIT] 🎯 ${pair} ${direction.toUpperCase()} | PREDATORY_LIMIT @ ${limitPrice} (NOI wall ±${NOI_OFFSET_PIPS}p) | TP=${tpPrice} (+${PID_TP_PIPS}p) SL=${slPrice} (−${PID_SL_PIPS}p) | GTD 60s`);
+      console.log(`[PHASE2-MARKET] 🎯 ${pair} ${direction.toUpperCase()} | MARKET ORDER ${dirUnits}u | TP=${tpPrice} (+${PID_TP_PIPS}p) SL=${slPrice} (−${PID_SL_PIPS}p) | FOK`);
 
       try {
         const orderRes = await fetch(
@@ -1274,17 +1270,15 @@ Deno.serve(async (req) => {
         );
 
         const orderData = await orderRes.json();
-        // PREDATORY_LIMIT can produce two outcomes:
-        //   1. Immediate fill (limit price crosses current spread) → orderFillTransaction
-        //   2. Resting limit (limit placed, awaiting whale breach)  → orderCreateTransaction
+        // MARKET order produces: orderFillTransaction on success, orderRejectTransaction on failure
         const fill = orderData.orderFillTransaction;
-        const created = orderData.orderCreateTransaction;
 
         if (fill) {
-          // ─── IMMEDIATE FILL ─── (limit hit the spread on placement)
+          // ─── MARKET FILL ───
           const fillPrice = parseFloat(fill.price || "0");
           const tradeId = fill.tradeOpened?.tradeID || fill.id;
-          const slippagePips = Math.abs(toPips(fillPrice - limitPrice, pair)); // vs limit, not mid
+          const requestedMid = currentPrice.mid;
+          const slippagePips = Math.abs(toPips(fillPrice - requestedMid, pair));
           const openTime = fill.time ? new Date(fill.time).toISOString() : new Date().toISOString();
 
           // ─── PHASE 5: Initialize PID Ratchet state for this trade ───
@@ -1300,7 +1294,7 @@ Deno.serve(async (req) => {
             entryPrice: fillPrice,
             direction,
           });
-          console.log(`[PHASE5-PID] ${pair} PID state initialized (immediate fill) | entry=${fillPrice} | SL=${isLongOrder ? fillPrice - PID_SL_PIPS * pipSize : fillPrice + PID_SL_PIPS * pipSize}`);
+          console.log(`[PHASE5-PID] ${pair} PID state initialized (market fill) | entry=${fillPrice} | SL=${isLongOrder ? fillPrice - PID_SL_PIPS * pipSize : fillPrice + PID_SL_PIPS * pipSize}`);
 
           const { hurst: entryHurst, efficiency: entryEfficiency, zOfi: entryZOfi, vpin: entryVpin } = entryGates;
           if (adminRole) {
@@ -1322,77 +1316,33 @@ Deno.serve(async (req) => {
               gate_result: "DA_5PHASE_CONFIRMED",
               gate_reasons: [
                 `P1_SN:OK`,
-                `P2_NOI:LIMIT_FILL@${limitPrice}(${direction==='long'?'BID_WALL+0.1p':'ASK_CEIL-0.1p'})`,
+                `P2_NOI:MARKET_FILL@${fillPrice}(${direction==='long'?'ASK':'BID'})`,
                 `P3_KELLY:p=${p.toFixed(3)},f*=${kellyFrac.toFixed(3)}`,
                 `P4_ESIG:E=${entryEfficiency.toFixed(1)}x,Z=${entryZOfi.toFixed(3)}σ,H=${entryHurst.toFixed(4)},VPIN=${entryVpin.toFixed(4)}`,
                 `P5_BRACKET:TP=+${PID_TP_PIPS}p,SL=-${PID_SL_PIPS}p,PID_ARMED`,
               ],
               governance_payload: {
                 strategy: "david-atlas-v2-5phase", pair, direction, slippagePips,
-                orderType: "PREDATORY_LIMIT", limitPrice,
+                orderType: "MARKET_FOK",
                 requestedUnits, actualUnits: units, marginGuardApplied: units !== requestedUnits,
                 phase3Kelly: { p, q, b, kellyFrac, kellyUnits: maxUnitsByKelly, navCeiling: MAX_RISK_USD },
                 phase4Esig: { efficiency: entryEfficiency, zOfi: entryZOfi, hurst: entryHurst, vpin: entryVpin },
                 phase5Bracket: { tpPrice, slPrice, tpPips: PID_TP_PIPS, slPips: PID_SL_PIPS, pidActivationPips: PID_ACTIVATION_PIPS },
               },
-              requested_price: limitPrice,
+              requested_price: requestedMid,
               slippage_pips: slippagePips,
               spread_at_entry: currentPrice.spreadPips,
             });
           }
 
-          console.log(`[DAVID-ATLAS] ✅ LIMIT FILLED (immediate): ${tradeId} @ ${fillPrice} | ${direction.toUpperCase()} ${units} ${pair} | slipVsWall=${slippagePips.toFixed(2)}p | TP=${tpPrice} SL=${slPrice} | KELLY f*=${kellyFrac.toFixed(3)}`);
+          console.log(`[DAVID-ATLAS] ✅ MARKET FILLED: ${tradeId} @ ${fillPrice} | ${direction.toUpperCase()} ${units} ${pair} | slip=${slippagePips.toFixed(2)}p | TP=${tpPrice} SL=${slPrice} | KELLY f*=${kellyFrac.toFixed(3)}`);
           return { success: true, tradeId, fillPrice, slippage: slippagePips, openTime } as any;
-
-        } else if (created) {
-          // ─── RESTING LIMIT ─── (order placed at wall — awaiting whale breach)
-          // Return success=true with the OANDA order ID so exitTradeMap can track via polling.
-          // The dud abort clock does NOT start until OANDA confirms the fill via the realtime stream.
-          const orderId = created.orderID || created.id;
-          console.log(`[PHASE2-LIMIT] ⚓ PREDATORY LIMIT RESTING: ${pair} ${direction.toUpperCase()} ${units} @ ${limitPrice} | orderID=${orderId} | Awaiting whale breach (GTD 60s) | TP=${tpPrice} SL=${slPrice}`);
-
-          // Log a 'pending' record — will be updated to 'filled' when OANDA broadcasts the fill
-          const { hurst: entryHurst, efficiency: entryEfficiency, zOfi: entryZOfi, vpin: entryVpin } = entryGates;
-          if (adminRole) {
-            await supabase.from("oanda_orders").insert({
-              user_id: adminRole.user_id,
-              signal_id: `david-atlas-${pair}-${Date.now()}`,
-              currency_pair: pair,
-              direction: direction.toLowerCase(),
-              units,
-              entry_price: null, // not yet filled
-              oanda_order_id: orderId,
-              oanda_trade_id: null,
-              status: "pending",
-              environment: "practice",
-              direction_engine: "david-atlas",
-              sovereign_override_tag: `david-atlas:${pair}`,
-              confidence_score: 1.0,
-              gate_result: "DA_5PHASE_LIMIT_RESTING",
-              gate_reasons: [
-                `P2_NOI:LIMIT_PLACED@${limitPrice}(${direction==='long'?'BID_WALL+0.1p':'ASK_CEIL-0.1p'})`,
-                `P4_ESIG:E=${entryEfficiency.toFixed(1)}x,Z=${entryZOfi.toFixed(3)}σ,H=${entryHurst.toFixed(4)},VPIN=${entryVpin.toFixed(4)}`,
-                `GTD:60s`,
-              ],
-              governance_payload: {
-                strategy: "david-atlas-v2-5phase", pair, direction,
-                orderType: "PREDATORY_LIMIT_RESTING", limitPrice, limitExpiry,
-                requestedUnits, actualUnits: units,
-                phase4Esig: { efficiency: entryEfficiency, zOfi: entryZOfi, hurst: entryHurst, vpin: entryVpin },
-                phase5Bracket: { tpPrice, slPrice, tpPips: PID_TP_PIPS, slPips: PID_SL_PIPS },
-              },
-              requested_price: limitPrice,
-              spread_at_entry: currentPrice.spreadPips,
-            });
-          }
-          // Return tradeId=orderId so exitTradeMap registers the pair as "in-flight"
-          return { success: true, tradeId: orderId, fillPrice: limitPrice, slippage: 0, openTime: new Date().toISOString() } as any;
 
         } else {
           const rejectTx = orderData.orderRejectTransaction;
           const rejectReason = rejectTx?.rejectReason || rejectTx?.type || "Unknown";
           const rejectDetail = rejectTx?.reason || orderData.errorMessage || orderData.errorCode || "";
-          console.warn(`[DAVID-ATLAS] ❌ REJECTED: ${pair} | reason=${rejectReason} | detail=${rejectDetail} | httpStatus=${orderRes.status} | limitPrice=${limitPrice} | rawKeys=${Object.keys(orderData).join(',')}`);
+          console.warn(`[DAVID-ATLAS] ❌ REJECTED: ${pair} | reason=${rejectReason} | detail=${rejectDetail} | httpStatus=${orderRes.status} | rawKeys=${Object.keys(orderData).join(',')}`);
           return { success: false };
         }
       } catch (err) {
@@ -1648,9 +1598,9 @@ Deno.serve(async (req) => {
                   }
                 }
 
-                // ─── RULE 5.3: Master Override — Hurst below baseline ───
-                if (exitTracker.hurst < 0.45) {
-                  const masterReason = `RULE_5.3_MASTER_OVERRIDE: H=${exitTracker.hurst.toFixed(3)} below 0.45 — SVD Eigen-Signal dropped below baseline. Whale volume exhausted.`;
+                // ─── RULE 5.3: Master Override — Hurst below baseline (aligned with DA_HURST_MIN) ───
+                if (exitTracker.hurst < DA_HURST_MIN) {
+                  const masterReason = `RULE_5.3_MASTER_OVERRIDE: H=${exitTracker.hurst.toFixed(3)} below ${DA_HURST_MIN} — SVD Eigen-Signal dropped below baseline. Whale volume exhausted.`;
                   console.log(`[DA-EXIT] 🛑 MASTER OVERRIDE: ${tradePairKey} | ${masterReason}`);
                   pidStateMap.delete(openTrade.oanda_trade_id);
                   await davidAtlasFlush(openTrade, tradePairKey, masterReason);
