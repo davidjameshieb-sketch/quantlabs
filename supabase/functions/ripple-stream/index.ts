@@ -1175,12 +1175,8 @@ Deno.serve(async (req) => {
         return { success: false };
       }
 
-      // ─── L0 HARD GATE: Late-NY / Rollover block ───
-      const utcHour = new Date().getUTCHours();
-      if (utcHour >= 20 || utcHour < 1) {
-        console.log(`[DAVID-ATLAS] 🛡 SESSION GATE: UTC ${utcHour}h — late-NY/rollover blocked`);
-        return { success: false };
-      }
+      // ─── L0 HARD GATE: Late-NY / Rollover block — DISABLED by operator ───
+      // Rollover gate removed: spreads confirmed acceptable during rollover window.
 
       // ─── MARGIN GUARD: Fetch live NAV and pre-calculate required margin ───
       // Self-corrects lot size to fit available margin — prevents rejections on small accounts.
