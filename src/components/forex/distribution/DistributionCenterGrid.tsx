@@ -72,6 +72,7 @@ interface PairCard {
   data: PairPhysics;
   tier: 1 | 2 | 3;
   hasTrade: boolean;
+  tradeDirection: 'long' | 'short' | null;
 }
 
 function DcCard({ item, meta }: { item: PairCard; meta: typeof TIER_META[1] }) {
@@ -86,6 +87,11 @@ function DcCard({ item, meta }: { item: PairCard; meta: typeof TIER_META[1] }) {
   const hPct = Math.min(100, (H / 1) * 100);
   const isShipping = item.hasTrade || state === 'ABSORBING';
   const isJammed = item.tier === 3;
+
+  const dirLabel = item.tradeDirection === 'long' ? '▲ LONG' : item.tradeDirection === 'short' ? '▼ SHORT' : null;
+  const dirCls = item.tradeDirection === 'long'
+    ? 'bg-emerald-600/85 text-white border-emerald-400/50'
+    : 'bg-red-600/85 text-white border-red-400/50';
 
   return (
     <motion.div
@@ -113,8 +119,15 @@ function DcCard({ item, meta }: { item: PairCard; meta: typeof TIER_META[1] }) {
           {meta.action}
         </div>
         {isShipping && (
-          <div className="absolute top-1.5 left-1.5 text-[6px] font-mono font-black px-1.5 py-0.5 rounded bg-emerald-600/80 text-white border border-emerald-400/50 animate-pulse">
-            🛡 IN TRANSIT
+          <div className="absolute top-1.5 left-1.5 flex flex-col gap-0.5">
+            <div className="text-[6px] font-mono font-black px-1.5 py-0.5 rounded bg-emerald-600/80 text-white border border-emerald-400/50 animate-pulse">
+              🛡 IN TRANSIT
+            </div>
+            {dirLabel && (
+              <div className={cn('text-[7px] font-mono font-black px-1.5 py-0.5 rounded border', dirCls)}>
+                {dirLabel}
+              </div>
+            )}
           </div>
         )}
         {/* Pair label overlay */}
@@ -168,7 +181,7 @@ function DcCard({ item, meta }: { item: PairCard; meta: typeof TIER_META[1] }) {
 
 interface Props {
   pairs: Record<string, PairPhysics>;
-  activeTrades: { currency_pair: string; status: string }[];
+  activeTrades: { currency_pair: string; status: string; direction?: string }[];
 }
 
 const RADAR_PAIRS = [
@@ -184,14 +197,17 @@ export function DistributionCenterGrid({ pairs, activeTrades }: Props) {
   const items = useMemo<PairCard[]>(() => {
     return RADAR_PAIRS.map(rp => {
       const data = pairs[rp] ?? pairs[rp.replace('_', '/')] ?? null;
-      const hasTrade = activeTrades.some(t =>
+      const activeTrade = activeTrades.find(t =>
         normPair(t.currency_pair) === rp && ['filled', 'pending', 'open'].includes(t.status)
       );
+      const hasTrade = !!activeTrade;
+      const tradeDirection = (activeTrade?.direction as 'long' | 'short' | undefined) ?? null;
       return {
         pair: rp,
         data: data as PairPhysics,
         tier: computeTier(data),
         hasTrade,
+        tradeDirection,
       };
     });
   }, [pairs, activeTrades]);
