@@ -120,7 +120,10 @@ export function useSovereignMatrix() {
     signal: MatrixSignal,
     environment: 'practice' | 'live'
   ) => {
-    const pair = signal.instrument.replace('_', '/');
+    // CRITICAL: Use OANDA instrument format (EUR_USD), NOT slash format (EUR/USD).
+    // oanda-execute stores currency_pair in DB as-is, and toOandaInstrument() converts / → _
+    // for the API call. Sending EUR_USD avoids a double-conversion and ensures DB consistency.
+    const pair = signal.instrument; // Already in OANDA format e.g. EUR_USD
     setLoading(true);
     try {
       const data = await callExecuteDirect({
@@ -150,7 +153,7 @@ export function useSovereignMatrix() {
     signal: MatrixSignal,
     environment: 'practice' | 'live'
   ) => {
-    const pair = signal.instrument.replace('_', '/');
+    const pair = signal.instrument; // OANDA format EUR_USD
     setLoading(true);
     try {
       const data = await callExecuteDirect({
@@ -180,7 +183,7 @@ export function useSovereignMatrix() {
     signal: MatrixSignal,
     environment: 'practice' | 'live'
   ) => {
-    const pair = signal.instrument.replace('_', '/');
+    const pair = signal.instrument; // OANDA format EUR_USD
     setLoading(true);
     try {
       const data = await callExecuteDirect({
