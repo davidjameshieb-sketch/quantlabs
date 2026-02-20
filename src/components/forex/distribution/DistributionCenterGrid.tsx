@@ -75,10 +75,10 @@ interface PairCard {
 }
 
 function DcCard({ item, meta }: { item: PairCard; meta: typeof TIER_META[1] }) {
-  const E = item.data.efficiency ?? 0;
-  const H = item.data.hurst?.H ?? 0;
-  const Z = item.data.zOfi ?? 0;
-  const state = item.data.marketState ?? 'NEUTRAL';
+  const E = item.data?.efficiency ?? 0;
+  const H = item.data?.hurst?.H ?? 0;
+  const Z = item.data?.zOfi ?? 0;
+  const state = item.data?.marketState ?? 'NEUTRAL';
   const label = item.pair.replace('_', '/');
 
   // Efficiency bar: cap at 200× for visual
