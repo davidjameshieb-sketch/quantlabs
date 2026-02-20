@@ -760,9 +760,9 @@ const PID_KI = 0.05;             // Integral: time-decay factor (tightens SL ove
 const PID_KD = 0.5;              // Derivative: velocity factor (DIRECTIONAL — only favored moves)
 const PID_BASE_TRAIL = 2.5;      // Starting trail buffer in pips
 const PID_FLOOR_TRAIL = 0.2;     // Hard floor: trail distance never below 0.2 pips
-const PID_TP_PIPS = 10.0;        // Phase 5 Rule 5.1: hard TP bracket
-const PID_SL_PIPS = 10.0;        // Phase 5 Rule 5.1: hard SL bracket
-const PID_ACTIVATION_PIPS = 3.0; // Ratchet activates only at +3.0 pips profit
+const PID_TP_PIPS = 20.0;        // Phase 5 Rule 5.1: hard TP bracket — widened from 10p to survive 2-5p spreads on JPY pairs
+const PID_SL_PIPS = 15.0;        // Phase 5 Rule 5.1: hard SL bracket — widened from 10p to prevent instant stop-out from spread cost
+const PID_ACTIVATION_PIPS = 5.0; // Ratchet activates only at +5.0 pips profit (raised from 3.0p to match wider brackets)
 const PID_DUD_ABORT_MS = 1500;   // Rule 4.2: E_sig must hold for 1500ms — widened from 500ms to absorb OANDA API latency (200-300ms fill confirm)
 
 // ─── Velocity Gating Constants ───────────────────────────
@@ -1237,7 +1237,8 @@ Deno.serve(async (req) => {
         ? +(bid + NOI_OFFSET_PIPS * pipSize).toFixed(pair.includes("JPY") ? 3 : 5)   // buy just above bid wall
         : +(ask - NOI_OFFSET_PIPS * pipSize).toFixed(pair.includes("JPY") ? 3 : 5);  // sell just below ask ceiling
 
-      // PHASE 5 Rule 5.1: Arm bracket RELATIVE to limit price (not mid) — fills at the wall
+      // PHASE 5 Rule 5.1: Pre-fill brackets anchored to limitPrice (placeholder, will be reset post-fill)
+      // NOTE: These are only used as a fallback. Real brackets are recalculated from actual fillPrice after fill.
       const tpPrice = isLongOrder
         ? +(limitPrice + PID_TP_PIPS * pipSize).toFixed(pair.includes("JPY") ? 3 : 5)
         : +(limitPrice - PID_TP_PIPS * pipSize).toFixed(pair.includes("JPY") ? 3 : 5);
@@ -1280,6 +1281,36 @@ Deno.serve(async (req) => {
           const requestedMid = currentPrice.mid;
           const slippagePips = Math.abs(toPips(fillPrice - requestedMid, pair));
           const openTime = fill.time ? new Date(fill.time).toISOString() : new Date().toISOString();
+
+          // ─── CRITICAL FIX: Recalculate TP/SL from ACTUAL fill price, not limitPrice ───
+          // For MARKET FOK orders, fill price differs from limitPrice by the spread.
+          // E.g. on CHF_JPY with 4.6p spread, limitPrice-based SL of -10p was only 5.4p from fill → instant stop-out.
+          const fillTpPrice = isLongOrder
+            ? +(fillPrice + PID_TP_PIPS * pipSize).toFixed(pair.includes("JPY") ? 3 : 5)
+            : +(fillPrice - PID_TP_PIPS * pipSize).toFixed(pair.includes("JPY") ? 3 : 5);
+          const fillSlPrice = isLongOrder
+            ? +(fillPrice - PID_SL_PIPS * pipSize).toFixed(pair.includes("JPY") ? 3 : 5)
+            : +(fillPrice + PID_SL_PIPS * pipSize).toFixed(pair.includes("JPY") ? 3 : 5);
+
+          // Update OANDA brackets to use fill-anchored prices
+          if (tradeId) {
+            try {
+              await fetch(
+                `${OANDA_API}/accounts/${OANDA_ACCOUNT}/trades/${tradeId}/orders`,
+                {
+                  method: "PUT",
+                  headers: { Authorization: `Bearer ${OANDA_TOKEN}`, "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    takeProfit: { price: String(fillTpPrice), timeInForce: "GTC" },
+                    stopLoss:   { price: String(fillSlPrice), timeInForce: "GTC" },
+                  }),
+                }
+              );
+              console.log(`[PHASE5-FILL-BRACKET] ✅ ${pair} brackets reset to fill price: TP=${fillTpPrice}(+${PID_TP_PIPS}p) SL=${fillSlPrice}(-${PID_SL_PIPS}p) | fill=${fillPrice} limit=${limitPrice}`);
+            } catch (bracketErr) {
+              console.warn(`[PHASE5-FILL-BRACKET] ⚠️ Could not reset brackets for ${tradeId}:`, bracketErr);
+            }
+          }
 
           // ─── PHASE 5: Initialize PID Ratchet state for this trade ───
           pidStateMap.set(tradeId, {
