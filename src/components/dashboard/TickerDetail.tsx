@@ -19,6 +19,7 @@ import { getTickerBySymbol, TIMEFRAME_LABELS, MARKET_LABELS } from '@/lib/market
 import { analyzeMultiTimeframe } from '@/lib/market/analysisEngine';
 import { BiasDirection, Timeframe, MarketType } from '@/lib/market/types';
 import distributionTerminalTwin from '@/assets/distribution-terminal-twin.jpg';
+import { useSyntheticOrderBook } from '@/hooks/useSyntheticOrderBook';
 import { HistoricalOutcomesPanel } from './HistoricalOutcomesPanel';
 import { MetricGauge } from './MetricGauge';
 import { NeuralSignalMatrix } from './NeuralSignalMatrix';
