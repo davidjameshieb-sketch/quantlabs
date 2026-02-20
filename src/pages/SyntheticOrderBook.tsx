@@ -12,6 +12,7 @@ import { IntelligenceModeBadge } from '@/components/dashboard/IntelligenceModeBa
 import { Badge } from '@/components/ui/badge';
 import { useSyntheticOrderBook, type PairPhysics } from '@/hooks/useSyntheticOrderBook';
 import { ClimaxBacktestLog } from '@/components/forex/floor-manager/ClimaxBacktestLog';
+import { DistributionCenterGrid } from '@/components/forex/distribution/DistributionCenterGrid';
 import { cn } from '@/lib/utils';
 import { supabase } from '@/integrations/supabase/client';
 
@@ -1064,6 +1065,21 @@ const SyntheticOrderBook = () => {
             <Cpu className="w-6 h-6 animate-spin mx-auto mb-2" />
             <p className="text-sm font-mono">Booting warehouse telemetry...</p>
           </div>
+        )}
+
+        {/* ── Distribution Center Tier Grid — always visible at top ── */}
+        {!loading && (
+          <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35 }}>
+            <div className="rounded-xl border border-border/40 bg-card/40 overflow-hidden">
+              <div className="px-4 py-2.5 border-b border-border/30 flex items-center gap-3">
+                <span className="text-[10px] font-mono font-black uppercase tracking-widest text-foreground">📦 Distribution Center Status — All 20 Forex Pairs</span>
+                <span className="text-[8px] font-mono text-muted-foreground italic">Tier 1 = invest · Tier 2 = watch · Tier 3 = pull out</span>
+              </div>
+              <div className="p-3">
+                <DistributionCenterGrid pairs={pairs} activeTrades={activeTrades} />
+              </div>
+            </div>
+          </motion.div>
         )}
 
         {!loading && view === 'command-center' && (
