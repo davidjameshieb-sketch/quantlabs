@@ -107,7 +107,7 @@ function DcCard({ item, meta }: { item: PairCard; meta: typeof TIER_META[1] }) {
       style={{ boxShadow: item.tier < 3 ? meta.glowColor : 'none' }}
     >
       {/* Warehouse mini-image */}
-      <div className="relative h-16 overflow-hidden">
+      <div className={cn('relative overflow-hidden', item.tier === 1 ? 'h-24' : 'h-16')}>
         <img
           src={meta.image}
           alt={isJammed ? 'Jammed warehouse' : 'Active warehouse'}
@@ -118,25 +118,32 @@ function DcCard({ item, meta }: { item: PairCard; meta: typeof TIER_META[1] }) {
         <div className={cn('absolute top-1.5 right-1.5 text-[7px] font-mono font-black px-1.5 py-0.5 rounded border bg-black/60', meta.badgeCls)}>
           {meta.action}
         </div>
+        {/* IN TRANSIT badge */}
         {isShipping && (
-          <div className="absolute top-1.5 left-1.5 flex flex-col gap-0.5">
+          <div className="absolute top-1.5 left-1.5">
             <div className="text-[6px] font-mono font-black px-1.5 py-0.5 rounded bg-emerald-600/80 text-white border border-emerald-400/50 animate-pulse">
               🛡 IN TRANSIT
             </div>
-            {dirLabel && item.tier === 1 ? (
-              <div className={cn(
-                'text-[11px] font-mono font-black px-2 py-1 rounded-md border-2 shadow-lg backdrop-blur-sm',
-                item.tradeDirection === 'long'
-                  ? 'bg-emerald-500/90 text-white border-emerald-300 shadow-emerald-500/50'
-                  : 'bg-red-500/90 text-white border-red-300 shadow-red-500/50'
-              )}>
-                {dirLabel}
-              </div>
-            ) : dirLabel ? (
-              <div className={cn('text-[7px] font-mono font-black px-1.5 py-0.5 rounded border', dirCls)}>
-                {dirLabel}
-              </div>
-            ) : null}
+          </div>
+        )}
+        {/* Direction badge — always shown when trade exists, prominent on Tier 1 */}
+        {dirLabel && item.tier === 1 && (
+          <div className="absolute inset-x-0 bottom-6 flex justify-center">
+            <div className={cn(
+              'text-[13px] font-mono font-black px-3 py-1 rounded-lg border-2 shadow-xl backdrop-blur-sm tracking-widest',
+              item.tradeDirection === 'long'
+                ? 'bg-emerald-500/95 text-white border-emerald-300 shadow-emerald-500/60'
+                : 'bg-red-500/95 text-white border-red-300 shadow-red-500/60'
+            )}>
+              {dirLabel}
+            </div>
+          </div>
+        )}
+        {dirLabel && item.tier !== 1 && (
+          <div className="absolute top-1.5 left-1.5 mt-5">
+            <div className={cn('text-[7px] font-mono font-black px-1.5 py-0.5 rounded border', dirCls)}>
+              {dirLabel}
+            </div>
           </div>
         )}
         {/* Pair label overlay */}
