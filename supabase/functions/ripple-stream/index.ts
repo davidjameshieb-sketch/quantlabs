@@ -999,7 +999,12 @@ Deno.serve(async (req) => {
       consecutivePassCount: number;  // consecutive 4/4 tick passes before entry
       lastPassDirection: string | null;
       lastFireTs: number;            // last entry timestamp (cooldown)
+      lastRejectTs: number;          // last rejection timestamp — rejection cooldown
     }>();
+
+    // Per-pair rejection cooldown: after any broker rejection, suppress re-entry for 30s
+    // This prevents the firing storm where rejected orders cause infinite retry loops per-tick.
+    const DA_REJECT_COOLDOWN_MS = 30_000;
 
     // Cross-session cooldown: load recent DA fires from DB
     // BUG FIX #5: Was querying environment='live' but all trades are written as 'practice'.
@@ -1707,11 +1712,14 @@ Deno.serve(async (req) => {
 
               // Per-instrument David & Atlas state
               if (!davidAtlasState.has(tradePair)) {
-                davidAtlasState.set(tradePair, { consecutivePassCount: 0, lastPassDirection: null, lastFireTs: 0 });
+                davidAtlasState.set(tradePair, { consecutivePassCount: 0, lastPassDirection: null, lastFireTs: 0, lastRejectTs: 0 });
               }
               const daState = davidAtlasState.get(tradePair)!;
 
-              // No cooldown — pure physics gates decide re-entry
+              // Rejection cooldown — if last attempt was rejected, suppress for 30s
+              if (daState.lastRejectTs && (tickTs - daState.lastRejectTs) < DA_REJECT_COOLDOWN_MS) {
+                continue;
+              }
 
               // ─── PRE-GATE: Tick density ───
               const densityCheck = isTickDensitySufficient(tradePair);
@@ -1808,8 +1816,6 @@ Deno.serve(async (req) => {
                 tunnelFires.push(`${tradePair}:${tunnelDirection}`);
 
                 // Register in exitTradeMap immediately to prevent double-entry
-                // BUG FIX: Use the OANDA fill timestamp as created_at (not wall-clock now())
-                // so MIN_HOLD and hold-time calculations are accurate and non-negative.
                 exitTradeMap.set(tradePair, {
                   id: daResult.tradeId,
                   oanda_trade_id: daResult.tradeId,
@@ -1839,6 +1845,11 @@ Deno.serve(async (req) => {
                   expires_at: new Date(Date.now() + 4 * 3600_000).toISOString(),
                   created_by: "david-atlas-engine",
                 });
+              } else {
+                // Mark rejection timestamp — suppresses re-entry for DA_REJECT_COOLDOWN_MS (30s)
+                // This stops the firing storm where rejected orders loop on every tick.
+                daState.lastRejectTs = tickTs;
+                console.log(`[DAVID-ATLAS] 🛑 REJECT COOLDOWN: ${tradePair} suppressed for 30s after broker rejection`);
               }
             }
 

@@ -1,5 +1,5 @@
 // Sovereign Matrix v20.0 — Mechanical Chomp Dashboard (Institutional Grade)
-import { useState, useEffect } from 'react';
+import { useState, useEffect, forwardRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { supabase } from '@/integrations/supabase/client';
 import {
@@ -22,13 +22,11 @@ const FLAGS: Record<string, string> = {
 };
 
 // ─── Sub-components ────────────────────────────────────────────────────────────
-const PanelCard = ({
-  title, icon: Icon, children, className = '', accentColor = 'border-slate-700/50',
-}: {
+const PanelCard = forwardRef<HTMLDivElement, {
   title: string; icon: React.ElementType; children: React.ReactNode;
   className?: string; accentColor?: string;
-}) => (
-  <div className={cn(
+}>(({ title, icon: Icon, children, className = '', accentColor = 'border-slate-700/50' }, ref) => (
+  <div ref={ref} className={cn(
     'bg-slate-900/60 backdrop-blur-md border rounded-xl p-5 shadow-2xl flex flex-col',
     accentColor, className
   )}>
@@ -38,7 +36,8 @@ const PanelCard = ({
     </div>
     <div className="flex-1">{children}</div>
   </div>
-);
+));
+PanelCard.displayName = 'PanelCard';
 
 const GateLight = ({ open, dir }: { open: boolean; dir: string }) => {
   const glow = open
@@ -408,8 +407,7 @@ const LiveTradesPanel = ({ environment }: { environment: Env }) => {
     const { data } = await supabase
       .from('oanda_orders')
       .select('id, currency_pair, direction, units, entry_price, status, agent_id, created_at, environment, signal_id')
-      .eq('status', 'open')
-      .eq('environment', environment)
+      .in('status', ['filled', 'open'])  // DB inserts use 'filled' for broker-confirmed open trades
       .order('created_at', { ascending: false })
       .limit(20);
     setTrades((data as OpenTrade[]) ?? []);
