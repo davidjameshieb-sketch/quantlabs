@@ -13,6 +13,7 @@ import { Badge } from '@/components/ui/badge';
 import { useSyntheticOrderBook, type PairPhysics } from '@/hooks/useSyntheticOrderBook';
 import { ClimaxBacktestLog } from '@/components/forex/floor-manager/ClimaxBacktestLog';
 import { DistributionCenterGrid } from '@/components/forex/distribution/DistributionCenterGrid';
+import { SovereignMatrixDashboard } from '@/components/forex/warroom/SovereignMatrixDashboard';
 import { cn } from '@/lib/utils';
 import { supabase } from '@/integrations/supabase/client';
 
@@ -1077,6 +1078,21 @@ const SyntheticOrderBook = () => {
               </div>
               <div className="p-3">
                 <DistributionCenterGrid pairs={pairs} activeTrades={activeTrades} />
+              </div>
+            </div>
+          </motion.div>
+        )}
+
+        {/* ── Sovereign Matrix v19.4 — Predator/Prey Dashboard ── */}
+        {!loading && (
+          <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4 }}>
+            <div className="rounded-xl border border-border/40 bg-card/40 overflow-hidden">
+              <div className="px-4 py-2.5 border-b border-border/30 flex items-center gap-3">
+                <span className="text-[10px] font-mono font-black uppercase tracking-widest text-foreground">⚡ Sovereign Matrix v19.4 — Predator/Prey Power Radar</span>
+                <span className="text-[8px] font-mono text-muted-foreground italic">Currency strength · Triple-Lock Gate · Best Chomp detection</span>
+              </div>
+              <div className="p-3">
+                <SovereignMatrixDashboard />
               </div>
             </div>
           </motion.div>
