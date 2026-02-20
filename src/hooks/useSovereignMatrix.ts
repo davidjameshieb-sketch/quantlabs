@@ -10,6 +10,8 @@ export interface MatrixSignal {
   quoteCurrency: string;
   baseScore: number;
   quoteScore: number;
+  baseRank: number;
+  quoteRank: number;
   gate1: boolean;
   gate2: boolean;
   gate2Detail: { highest20: number; lowest20: number; close: number };
@@ -26,6 +28,11 @@ export interface MatrixResult {
   timestamp: string;
   environment: 'practice' | 'live';
   currencyScores: Record<string, number>;
+  currencyRanks: Record<string, number>;
+  sortedCurrencies: string[];
+  predator: string;
+  prey: string;
+  bestChompPair: string;
   signals: MatrixSignal[];
   strikes: MatrixSignal[];
   strikeCount: number;
