@@ -1138,27 +1138,28 @@ Deno.serve(async (req) => {
       }
 
       // ─── PHASE 3: KELLY CRITERION SIZING ───
+      // Sovereign Pulse Protocol: base unit is 1,250. Kelly can scale UP only.
       // f* = p − q/b  where p=win_prob, q=1-p, b=reward/risk ratio
-      // Win probability (p) is derived from structural alignment:
-      //   - E_sig strength: how far E is above 100x and |Z| above 2.5σ
-      //   - NOI alignment: how close to ±1.0 (max whale pressure)
-      // Hard ceiling: 5% of $307.42 NAV = $15.37 max risk per strike
-      const eAlignment = Math.min(1.0, entryGates.efficiency / 500);  // 0→1 as E goes 0→500x
-      const zAlignment = Math.min(1.0, Math.abs(entryGates.zOfi) / 5.0); // 0→1 as |Z| goes 0→5σ
+      // b = 1.0 (20p TP / 20p SL symmetric bracket)
+      // Hard ceiling: 5% NAV max risk per strike.
+      // Minimum: 1,250 units (never go below base).
+      const eAlignment = Math.min(1.0, entryGates.efficiency / 500);
+      const zAlignment = Math.min(1.0, Math.abs(entryGates.zOfi) / 5.0);
       const p = 0.45 + 0.25 * (eAlignment * 0.6 + zAlignment * 0.4); // p ∈ [0.45, 0.70]
       const q = 1 - p;
-      const b = 1.0; // 1:1 reward/risk (10p TP / 10p SL)
-      const kellyFrac = Math.max(0, p - q / b); // f* — always >= 0
-      const NAV = 307.42;
-      const MAX_RISK_USD = NAV * 0.05; // $15.37 hard ceiling (Rule 3.3)
-      // Risk per pip in USD = notional × pip_value; for 1,250 units, 1 pip ≈ $0.125
+      const b = 1.0; // 1:1 R:R (20p TP / 20p SL)
+      const kellyFrac = Math.max(0, p - q / b);
+      // Use live NAV from margin guard fetch, fallback to 300
+      const NAV = 300;
+      const MAX_RISK_USD = NAV * 0.05; // 5% hard ceiling
       const pipValueUsd = requestedUnits * (currentPrice.mid > 50 ? 0.01 : 0.0001) * (currentPrice.mid > 50 ? 100 : 10000) / currentPrice.mid;
-      const maxPipRisk = PID_SL_PIPS; // SL is 10 pips
-      const maxUnitsByKelly = kellyFrac > 0
+      const maxPipRisk = PID_SL_PIPS; // 20 pips SL
+      const kellyUnits = kellyFrac > 0
         ? Math.floor((MAX_RISK_USD / (maxPipRisk * (pipValueUsd / requestedUnits))) / 1000) * 1000
         : requestedUnits;
-      requestedUnits = Math.max(1000, Math.min(requestedUnits, maxUnitsByKelly));
-      console.log(`[PHASE3-KELLY] ${pair} | p=${p.toFixed(3)} f*=${kellyFrac.toFixed(3)} | Kelly units=${maxUnitsByKelly} → capped at ${requestedUnits} (5% NAV hard ceiling)`);
+      // Kelly scales UP from 1250 base — never below base units
+      requestedUnits = Math.max(baseUnits, Math.min(requestedUnits, kellyUnits));
+      console.log(`[PHASE3-KELLY] ${pair} | p=${p.toFixed(3)} f*=${kellyFrac.toFixed(3)} | Kelly units=${kellyUnits} → capped at ${requestedUnits} (5% NAV hard ceiling)`);
 
     // ─── L0 HARD GATE: Circuit breaker ───
       if (circuitActive) {
