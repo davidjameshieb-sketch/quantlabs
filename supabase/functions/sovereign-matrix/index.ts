@@ -286,7 +286,12 @@ Deno.serve(async (req) => {
     console.log(`[TRUE MATRIX] Best Chomp: ${bestChompPair}`);
 
     // ── STEP 4: Scan pairs for Triple-Lock signals ─────────────────────────────
-    const pairsToScan = targetPair ? [targetPair] : SCAN_PAIRS;
+    // Always include the Best Chomp pair (Rank #1 vs Rank #8) even if not in SCAN_PAIRS
+    const bestChompInverse = `${prey}_${predator}`;
+    const dynamicPairs = targetPair
+      ? [targetPair]
+      : [...new Set([...SCAN_PAIRS, bestChompPair, bestChompInverse].filter(p => OANDA_AVAILABLE.has(p)))];
+    const pairsToScan = dynamicPairs;
     const signals: MatrixSignal[] = [];
 
     await Promise.allSettled(

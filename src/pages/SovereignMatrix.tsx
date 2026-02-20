@@ -662,6 +662,7 @@ const LiveTradesPanel = ({ environment }: { environment: Env }) => {
       .from('oanda_orders')
       .select('id, currency_pair, direction, units, entry_price, status, agent_id, created_at, environment, signal_id')
       .in('status', ['filled', 'open'])
+      .eq('environment', environment)
       .order('created_at', { ascending: false })
       .limit(20);
     setTrades((data as OpenTrade[]) ?? []);
