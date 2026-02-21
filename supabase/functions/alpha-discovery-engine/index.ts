@@ -457,14 +457,20 @@ async function handlePhase1(body: Record<string, unknown>) {
   // Store state in sovereign_memory
   const sb = getSupabaseAdmin();
 
-  // Store bars
-  await sb.from("sovereign_memory").upsert({
-    memory_key: `${DATA_KEY_PREFIX}${pair}`,
+  // Store bars — delete then insert (composite unique on memory_type+memory_key)
+  const barsKey = `${DATA_KEY_PREFIX}${pair}`;
+  await sb.from("sovereign_memory").delete().eq("memory_key", barsKey).eq("memory_type", "ga_dataset");
+  const { error: barsErr } = await sb.from("sovereign_memory").insert({
+    memory_key: barsKey,
     memory_type: "ga_dataset",
     payload: bars,
     created_by: "alpha-discovery-engine",
     version: 1,
-  }, { onConflict: "memory_key" });
+  });
+  if (barsErr) {
+    console.error("[GA-P1] Failed to persist bars:", barsErr);
+    throw new Error(`Failed to save feature bars: ${barsErr.message}`);
+  }
 
   // Store job state
   const jobState = {
@@ -540,7 +546,7 @@ async function handlePhase2() {
   let totalSimulations = job.totalSimulations as number;
 
   // Load bars
-  const { data: barsRow } = await sb.from("sovereign_memory").select("payload").eq("memory_key", `${DATA_KEY_PREFIX}${pair}`).single();
+  const { data: barsRow } = await sb.from("sovereign_memory").select("payload").eq("memory_key", `${DATA_KEY_PREFIX}${pair}`).eq("memory_type", "ga_dataset").maybeSingle();
   if (!barsRow) throw new Error("Feature data not found. Run Phase 1 first.");
   const bars = barsRow.payload as BarArrays;
 
@@ -639,7 +645,7 @@ async function handlePhase3() {
   const totalSimulations = job.totalSimulations as number;
 
   // Load bars for full simulation
-  const { data: barsRow } = await sb.from("sovereign_memory").select("payload").eq("memory_key", `${DATA_KEY_PREFIX}${pair}`).single();
+  const { data: barsRow } = await sb.from("sovereign_memory").select("payload").eq("memory_key", `${DATA_KEY_PREFIX}${pair}`).eq("memory_type", "ga_dataset").maybeSingle();
   if (!barsRow) throw new Error("Feature data not found.");
   const bars = barsRow.payload as BarArrays;
 
