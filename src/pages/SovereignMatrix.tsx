@@ -19,6 +19,9 @@ import { OrderFlowBattlefield } from '@/components/matrix/OrderFlowBattlefield';
 import { PredatoryRadar } from '@/components/matrix/PredatoryRadar';
 import { NeuralSynthesisMap } from '@/components/matrix/NeuralSynthesisMap';
 import { VacuumForecaster } from '@/components/matrix/VacuumForecaster';
+import { RankHeatmap } from '@/components/matrix/RankHeatmap';
+import { EquityDrawdownChart } from '@/components/matrix/EquityDrawdownChart';
+import { useRankExpectancy } from '@/hooks/useRankExpectancy';
 
 type Env = 'practice' | 'live';
 
@@ -766,6 +769,7 @@ const LiveTradesPanel = ({ environment }: { environment: Env }) => {
 const SovereignMatrix = () => {
   const [environment, setEnvironment] = useState<Env>('live');
   const { loading, matrixResult, error, scanMatrix, fireT1, fireT2, fireT3 } = useSovereignMatrix();
+  const { loading: backtestLoading, result: backtestResult, runBacktest } = useRankExpectancy();
 
   const handleScan = () => scanMatrix(environment);
 
@@ -847,6 +851,19 @@ const SovereignMatrix = () => {
             >
               <RefreshCw className={cn('w-3.5 h-3.5', loading && 'animate-spin')} />
               {loading ? 'Scanning 28 Crosses…' : 'Run True Matrix Scan'}
+            </button>
+
+            <button
+              onClick={() => runBacktest(environment === 'live' ? 'practice' : environment)}
+              disabled={backtestLoading}
+              className={cn(
+                'flex items-center gap-2 text-[10px] font-mono px-4 py-2 rounded-lg font-bold uppercase tracking-wider transition-all',
+                'border border-purple-500/50 text-purple-300 hover:bg-purple-500/10',
+                backtestLoading && 'opacity-60 cursor-not-allowed'
+              )}
+            >
+              <BarChart3 className={cn('w-3.5 h-3.5', backtestLoading && 'animate-spin')} />
+              {backtestLoading ? 'Running 5000 Candles…' : 'Run Rank Backtest'}
             </button>
           </div>
         </div>
@@ -984,6 +1001,32 @@ const SovereignMatrix = () => {
                     <VacuumForecaster result={matrixResult} />
                   </div>
                 </div>
+
+                {/* ── RANK EXPECTANCY BACKTEST DASHBOARDS ── */}
+                {backtestResult && (
+                  <div className="lg:col-span-12 space-y-5">
+                    <div className="flex items-center gap-2">
+                      <motion.div
+                        animate={{ opacity: [0.6, 1, 0.6] }}
+                        transition={{ repeat: Infinity, duration: 2 }}
+                      >
+                        <BarChart3 className="w-4 h-4 text-yellow-400" />
+                      </motion.div>
+                      <p className="text-[10px] text-slate-400 uppercase tracking-widest font-display">
+                        Cross-Sectional Statistical Arbitrage Engine — {backtestResult.candlesPerPair} candles · {backtestResult.pairsLoaded} pairs · {backtestResult.totalSnapshots} snapshots
+                      </p>
+                    </div>
+                    <RankHeatmap
+                      comboResults={backtestResult.comboResults}
+                      bestCombo={backtestResult.bestCombo}
+                    />
+                    <EquityDrawdownChart
+                      equityCurves={backtestResult.equityCurves}
+                      drawdownCurve={backtestResult.drawdownCurve}
+                      dateRange={backtestResult.dateRange}
+                    />
+                  </div>
+                )}
 
                 {/* Gate Flow Chart — full width between topology and scanner */}
                 <div className="lg:col-span-12 bg-slate-900/80 backdrop-blur-md border border-slate-700/50 rounded-2xl p-5 shadow-2xl">
