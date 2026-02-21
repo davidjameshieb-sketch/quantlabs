@@ -521,10 +521,10 @@ function StrategyCard({ profile, idx, expandedProfile, setExpandedProfile, maxCo
           <StatBox label="Total Return" value={`${isPositive ? '+' : ''}${(profile.totalReturn ?? 0).toFixed(1)}%`} color={isPositive ? '#39ff14' : '#ff0055'} />
           <StatBox label="Win Rate" value={`${(profile.winRate * 100).toFixed(1)}%`} color={profile.winRate >= 0.6 ? '#39ff14' : '#00ffea'} />
           <StatBox label="Profit Factor" value={profile.profitFactor.toFixed(2)} color={profile.profitFactor > 2 ? '#39ff14' : '#00ffea'} />
-          <StatBox label="Max Drawdown" value={`${(profile.maxDrawdown ?? 0).toFixed(1)}%`} color={profile.maxDrawdown > -5 ? '#00ffea' : '#ff0055'} />
+          <StatBox label="Max Drawdown" value={`-${((profile.maxDrawdown ?? 0) * 100).toFixed(1)}%`} color={(profile.maxDrawdown ?? 0) < 0.05 ? '#00ffea' : '#ff0055'} />
           <StatBox label="Net Pips" value={`${profile.totalPips >= 0 ? '+' : ''}${Math.round(profile.totalPips)}`} color={profile.totalPips >= 0 ? '#39ff14' : '#ff0055'} />
-          <StatBox label="Final Equity" value={`$${(profile.equityCurve?.length ? profile.equityCurve[profile.equityCurve.length - 1] : 10000).toFixed(2)}`} color={
-            (profile.equityCurve?.length ? profile.equityCurve[profile.equityCurve.length - 1] : 10000) >= 10000 ? '#39ff14' : '#ff0055'
+          <StatBox label="Final Equity" value={`$${(profile.equityCurve?.length ? profile.equityCurve[profile.equityCurve.length - 1] : 1000).toFixed(2)}`} color={
+            (profile.equityCurve?.length ? profile.equityCurve[profile.equityCurve.length - 1] : 1000) >= 1000 ? '#39ff14' : '#ff0055'
           } />
         </div>
       </button>

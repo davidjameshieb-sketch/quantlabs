@@ -495,9 +495,10 @@ function evaluateEntry(bars: BarArrays, i: number, dna: StrategyDNA): { long: bo
 }
 
 function simulateStrategy(bars: BarArrays, dna: StrategyDNA): SimResult {
-  let equity = 10000, peak = 10000, maxDD = 0;
+  const START_EQ = 1000;
+  let equity = START_EQ, peak = START_EQ, maxDD = 0;
   let trades = 0, wins = 0, grossProfit = 0, grossLoss = 0;
-  const curve: number[] = [10000];
+  const curve: number[] = [START_EQ];
   const dailyReturns: number[] = [];
   let dayCounter = 0, dayStart = equity;
 
@@ -538,7 +539,7 @@ function simulateStrategy(bars: BarArrays, dna: StrategyDNA): SimResult {
   }
   curve.push(equity);
 
-  const totalReturn = ((equity - 10000) / 10000) * 100;
+  const totalReturn = ((equity - START_EQ) / START_EQ) * 100;
 
   return {
     trades, wins,
