@@ -530,7 +530,7 @@ function simulateStrategy(bars: BarArrays, dna: StrategyDNA): SimResult {
     trades++;
     if (pips > 0) { wins++; grossProfit += pips; } else { grossLoss += Math.abs(pips); }
 
-    equity += pips * 0.01;
+    equity += pips * 0.10;
     if (equity > peak) peak = equity;
     const dd = (peak - equity) / peak;
     if (dd > maxDD) maxDD = dd;
