@@ -24,6 +24,7 @@ import { EquityDrawdownChart } from '@/components/matrix/EquityDrawdownChart';
 import { BacktestTearSheet } from '@/components/matrix/BacktestTearSheet';
 import { DynamicMatrixSandbox } from '@/components/matrix/DynamicMatrixSandbox';
 import { ProfileDiscoveryEngine } from '@/components/matrix/ProfileDiscoveryEngine';
+import { ExperimentalStrategies } from '@/components/matrix/ExperimentalStrategies';
 import { useRankExpectancy } from '@/hooks/useRankExpectancy';
 
 type Env = 'practice' | 'live';
@@ -1028,6 +1029,9 @@ const SovereignMatrix = () => {
 
                     {/* Profile Discovery Engine — Automated Grid Search */}
                     <ProfileDiscoveryEngine result={backtestResult} />
+
+                    {/* Experimental Strategies Lab */}
+                    <ExperimentalStrategies result={backtestResult} />
 
                     <RankHeatmap
                       comboResults={backtestResult.comboResults}
