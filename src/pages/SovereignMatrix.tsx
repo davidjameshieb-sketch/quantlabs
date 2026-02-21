@@ -16,6 +16,9 @@ import { ForexTopologyMap } from '@/components/matrix/ForexTopologyMap';
 import { GateFlowChart } from '@/components/matrix/GateFlowChart';
 import { MatrixStrengthChart } from '@/components/matrix/MatrixStrengthChart';
 import { OrderFlowBattlefield } from '@/components/matrix/OrderFlowBattlefield';
+import { PredatoryRadar } from '@/components/matrix/PredatoryRadar';
+import { NeuralSynthesisMap } from '@/components/matrix/NeuralSynthesisMap';
+import { VacuumForecaster } from '@/components/matrix/VacuumForecaster';
 
 type Env = 'practice' | 'live';
 
@@ -960,6 +963,26 @@ const SovereignMatrix = () => {
                 {/* ── Order Flow Battlefield — Footprint + CVD + Heatmap ── */}
                 <div className="lg:col-span-12">
                   <OrderFlowBattlefield result={matrixResult} />
+                </div>
+
+                {/* ── PREDATORY SYNTHESIS TERMINAL ── */}
+                <div className="lg:col-span-12">
+                  <div className="flex items-center gap-2 mb-3">
+                    <motion.div
+                      animate={{ opacity: [0.6, 1, 0.6] }}
+                      transition={{ repeat: Infinity, duration: 2 }}
+                    >
+                      <Zap className="w-4 h-4 text-purple-400" />
+                    </motion.div>
+                    <p className="text-[10px] text-slate-400 uppercase tracking-widest font-display">
+                      Predatory Synthesis Terminal — AI Brain · Liquidity Radar · Vacuum Engine
+                    </p>
+                  </div>
+                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+                    <PredatoryRadar result={matrixResult} />
+                    <NeuralSynthesisMap result={matrixResult} />
+                    <VacuumForecaster result={matrixResult} />
+                  </div>
                 </div>
 
                 {/* Gate Flow Chart — full width between topology and scanner */}
