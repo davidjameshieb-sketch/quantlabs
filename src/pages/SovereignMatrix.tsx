@@ -883,6 +883,48 @@ const SovereignMatrix = () => {
           </motion.div>
         )}
 
+        {/* ── BACKTEST ENGINES — Always visible at top ── */}
+        {backtestResult && (
+          <div className="space-y-5">
+            <div className="flex items-center gap-2">
+              <motion.div
+                animate={{ opacity: [0.6, 1, 0.6] }}
+                transition={{ repeat: Infinity, duration: 2 }}
+              >
+                <BarChart3 className="w-4 h-4 text-yellow-400" />
+              </motion.div>
+              <p className="text-[10px] text-slate-400 uppercase tracking-widest font-display">
+                Cross-Sectional Statistical Arbitrage Engine v2.0 — {backtestResult.candlesPerPair} candles · {backtestResult.pairsLoaded} pairs · {backtestResult.totalSnapshots} snapshots
+              </p>
+            </div>
+
+            {/* Three Pillars Tear Sheet */}
+            <BacktestTearSheet result={backtestResult} />
+
+            {/* Dynamic Matrix Sandbox */}
+            <DynamicMatrixSandbox result={backtestResult} />
+
+            {/* Profile Discovery Engine — Automated Grid Search */}
+            <ProfileDiscoveryEngine result={backtestResult} />
+
+            {/* Alpha Discovery Engine — ML Rule Miner */}
+            <AlphaDiscoveryEngine result={backtestResult} />
+
+            {/* Experimental Strategies Lab */}
+            <ExperimentalStrategies result={backtestResult} />
+
+            <RankHeatmap
+              comboResults={backtestResult.comboResults}
+              bestCombo={backtestResult.bestCombo}
+            />
+            <EquityDrawdownChart
+              equityCurves={backtestResult.equityCurves}
+              drawdownCurve={backtestResult.drawdownCurve}
+              dateRange={backtestResult.dateRange}
+            />
+          </div>
+        )}
+
         {/* Idle State */}
         {!matrixResult && !loading && !error && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}
@@ -1007,47 +1049,6 @@ const SovereignMatrix = () => {
                   </div>
                 </div>
 
-                {/* ── RANK EXPECTANCY BACKTEST DASHBOARDS ── */}
-                {backtestResult && (
-                  <div className="lg:col-span-12 space-y-5">
-                    <div className="flex items-center gap-2">
-                      <motion.div
-                        animate={{ opacity: [0.6, 1, 0.6] }}
-                        transition={{ repeat: Infinity, duration: 2 }}
-                      >
-                        <BarChart3 className="w-4 h-4 text-yellow-400" />
-                      </motion.div>
-                      <p className="text-[10px] text-slate-400 uppercase tracking-widest font-display">
-                        Cross-Sectional Statistical Arbitrage Engine v2.0 — {backtestResult.candlesPerPair} candles · {backtestResult.pairsLoaded} pairs · {backtestResult.totalSnapshots} snapshots
-                      </p>
-                    </div>
-
-                    {/* Three Pillars Tear Sheet */}
-                    <BacktestTearSheet result={backtestResult} />
-
-                    {/* Dynamic Matrix Sandbox */}
-                    <DynamicMatrixSandbox result={backtestResult} />
-
-                    {/* Profile Discovery Engine — Automated Grid Search */}
-                    <ProfileDiscoveryEngine result={backtestResult} />
-
-                    {/* Alpha Discovery Engine — ML Rule Miner */}
-                    <AlphaDiscoveryEngine result={backtestResult} />
-
-                    {/* Experimental Strategies Lab */}
-                    <ExperimentalStrategies result={backtestResult} />
-
-                    <RankHeatmap
-                      comboResults={backtestResult.comboResults}
-                      bestCombo={backtestResult.bestCombo}
-                    />
-                    <EquityDrawdownChart
-                      equityCurves={backtestResult.equityCurves}
-                      drawdownCurve={backtestResult.drawdownCurve}
-                      dateRange={backtestResult.dateRange}
-                    />
-                  </div>
-                )}
 
                 {/* Gate Flow Chart — full width between topology and scanner */}
                 <div className="lg:col-span-12 bg-slate-900/80 backdrop-blur-md border border-slate-700/50 rounded-2xl p-5 shadow-2xl">
