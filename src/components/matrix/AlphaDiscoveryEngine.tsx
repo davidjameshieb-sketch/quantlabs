@@ -1,26 +1,31 @@
-// Alpha Discovery Engine v3.0 — Phased GA State Machine UI
-// Drives a multi-invocation GA via init → evolve (loop) → extract
+// Alpha Discovery Engine v4.0 — Unrestricted Alpha Mining UI
+// Displays indicator-based strategy names, entry/exit rules, and edge descriptions
 
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Brain, Cpu, ChevronDown, ChevronUp, AlertTriangle, Target, Activity,
   Layers, Fingerprint, Dna, TrendingUp, BarChart3, Shield, Zap, Crosshair,
-  Loader2, CheckCircle2, Clock,
+  Loader2, CheckCircle2, Clock, Sparkles, Atom,
 } from 'lucide-react';
 import type { BacktestResult } from '@/hooks/useRankExpectancy';
 
 interface StrategyDNA {
-  predatorRankMax: number; preyRankMin: number;
-  gate1Required: boolean; gate2Required: boolean; gate3Required: boolean;
-  sessionFilter: number; slMultiplier: number; tpMultiplier: number;
-  hurstMin: number; hurstMax: number; volFilter: number; direction: number;
+  rsiPeriod: number; rsiLow: number; rsiHigh: number; rsiMode: number;
+  macdFast: number; macdSlow: number; macdSignal: number; macdMode: number;
+  bbPeriod: number; bbStdDev: number; bbMode: number;
+  emaFast: number; emaSlow: number; emaMode: number;
+  volMode: number; sessionFilter: number; dayFilter: number; direction: number;
+  slMultiplier: number; tpMultiplier: number; hurstMin: number; hurstMax: number;
 }
 
 interface GAProfile {
   dna: StrategyDNA; fitness: number; winRate: number; profitFactor: number;
-  trades: number; totalPips: number; maxDrawdown: number; grossProfit: number;
-  grossLoss: number; correlation: number; equityCurve: number[]; plainEnglish: string;
+  trades: number; totalPips: number; totalReturn: number; maxDrawdown: number;
+  grossProfit: number; grossLoss: number; correlation: number;
+  equityCurve: number[];
+  strategyName: string; edgeDescription: string;
+  entryRules: string[]; exitRules: string[];
 }
 
 interface EvolutionEntry { gen: number; bestFitness: number; avgFitness: number; bestTrades: number; }
@@ -98,20 +103,32 @@ function CorrelationBar({ value, max = 0.2 }: { value: number; max: number }) {
   );
 }
 
-function DNABadges({ dna }: { dna: StrategyDNA }) {
-  const sessions = ['Asia', 'London', 'NY', 'NY Close'];
+// ── Indicator DNA Badges ──
+function IndicatorBadges({ dna }: { dna: StrategyDNA }) {
+  const badges: { label: string; color: string; bg: string }[] = [];
+  const rsiModes = ['', 'Oversold Buy', 'Overbought Sell', 'Midline Cross'];
+  const macdModes = ['', 'Signal Cross', 'Zero Cross', 'Histogram'];
+  const bbModes = ['', 'Squeeze Break', 'Mean Revert', 'Band Walk'];
+  const emaModes = ['', 'Crossover', 'Price Above', 'Slope Filter'];
+  const volModes = ['', 'HiVol', 'LoVol', 'Vol Expansion'];
   const dirs = ['LONG', 'SHORT', 'BOTH'];
+  const sessions = ['Asia', 'London', 'NY', 'NYClose'];
+  const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
+
+  if (dna.rsiMode > 0) badges.push({ label: `RSI(${dna.rsiPeriod}) ${rsiModes[dna.rsiMode]}`, color: 'text-orange-400', bg: 'border-orange-500/30 bg-orange-500/5' });
+  if (dna.macdMode > 0) badges.push({ label: `MACD(${dna.macdFast},${dna.macdSlow}) ${macdModes[dna.macdMode]}`, color: 'text-blue-400', bg: 'border-blue-500/30 bg-blue-500/5' });
+  if (dna.bbMode > 0) badges.push({ label: `BB(${dna.bbPeriod},${dna.bbStdDev}σ) ${bbModes[dna.bbMode]}`, color: 'text-purple-400', bg: 'border-purple-500/30 bg-purple-500/5' });
+  if (dna.emaMode > 0) badges.push({ label: `EMA(${dna.emaFast}/${dna.emaSlow}) ${emaModes[dna.emaMode]}`, color: 'text-cyan-400', bg: 'border-cyan-500/30 bg-cyan-500/5' });
+  if (dna.volMode > 0) badges.push({ label: volModes[dna.volMode], color: 'text-yellow-400', bg: 'border-yellow-500/30 bg-yellow-500/5' });
+  if (dna.sessionFilter >= 0) badges.push({ label: sessions[dna.sessionFilter], color: 'text-pink-400', bg: 'border-pink-500/30 bg-pink-500/5' });
+  if (dna.dayFilter >= 0) badges.push({ label: days[dna.dayFilter], color: 'text-teal-400', bg: 'border-teal-500/30 bg-teal-500/5' });
+  badges.push({ label: dirs[dna.direction], color: dna.direction === 0 ? 'text-emerald-400' : dna.direction === 1 ? 'text-red-400' : 'text-slate-400', bg: dna.direction === 0 ? 'border-emerald-500/30 bg-emerald-500/5' : dna.direction === 1 ? 'border-red-500/30 bg-red-500/5' : 'border-slate-500/30 bg-slate-500/5' });
+
   return (
     <div className="flex flex-wrap gap-1">
-      <span className="text-[7px] font-mono px-1.5 py-0.5 rounded border border-cyan-500/30 text-cyan-400 bg-cyan-500/5">Pred ≤{dna.predatorRankMax}</span>
-      <span className="text-[7px] font-mono px-1.5 py-0.5 rounded border border-cyan-500/30 text-cyan-400 bg-cyan-500/5">Prey ≥{dna.preyRankMin}</span>
-      {dna.gate1Required && <span className="text-[7px] font-mono px-1.5 py-0.5 rounded border border-purple-500/30 text-purple-400 bg-purple-500/5">G1</span>}
-      {dna.gate2Required && <span className="text-[7px] font-mono px-1.5 py-0.5 rounded border border-purple-500/30 text-purple-400 bg-purple-500/5">G2</span>}
-      {dna.gate3Required && <span className="text-[7px] font-mono px-1.5 py-0.5 rounded border border-purple-500/30 text-purple-400 bg-purple-500/5">G3</span>}
-      {dna.sessionFilter >= 0 && <span className="text-[7px] font-mono px-1.5 py-0.5 rounded border border-yellow-500/30 text-yellow-400 bg-yellow-500/5">{sessions[dna.sessionFilter]}</span>}
-      <span className="text-[7px] font-mono px-1.5 py-0.5 rounded border border-red-500/30 text-red-400 bg-red-500/5">SL {dna.slMultiplier.toFixed(1)}x</span>
-      <span className="text-[7px] font-mono px-1.5 py-0.5 rounded border border-emerald-500/30 text-emerald-400 bg-emerald-500/5">TP {dna.tpMultiplier.toFixed(1)}x</span>
-      <span className="text-[7px] font-mono px-1.5 py-0.5 rounded border border-slate-500/30 text-slate-400 bg-slate-500/5">{dirs[dna.direction]}</span>
+      {badges.map((b, i) => (
+        <span key={i} className={`text-[7px] font-mono px-1.5 py-0.5 rounded border ${b.color} ${b.bg}`}>{b.label}</span>
+      ))}
     </div>
   );
 }
@@ -124,7 +141,6 @@ export function AlphaDiscoveryEngine({ result }: { result: BacktestResult }) {
   const [error, setError] = useState<string | null>(null);
   const [expandedProfile, setExpandedProfile] = useState<number | null>(null);
 
-  // Config
   const [populationSize, setPopulationSize] = useState(50);
   const [generations, setGenerations] = useState(50);
   const [maxCorrelation, setMaxCorrelation] = useState(0.2);
@@ -132,7 +148,6 @@ export function AlphaDiscoveryEngine({ result }: { result: BacktestResult }) {
   const [candleCount, setCandleCount] = useState(5000);
   const [gensPerCall, setGensPerCall] = useState(5);
 
-  // Progress
   const [currentGen, setCurrentGen] = useState(0);
   const [bestFitness, setBestFitness] = useState(0);
   const [totalSims, setTotalSims] = useState(0);
@@ -155,33 +170,17 @@ export function AlphaDiscoveryEngine({ result }: { result: BacktestResult }) {
     if (pollingRef.current) { clearTimeout(pollingRef.current); pollingRef.current = null; }
   }, []);
 
-  // Phase loop: init → evolve (repeat) → extract
   const runGA = useCallback(async () => {
-    setPhase('initializing');
-    setError(null);
-    setGaResult(null);
-    setCurrentGen(0);
-    setBestFitness(0);
-    setTotalSims(0);
-    setEvolutionLog([]);
-    abortRef.current = false;
+    setPhase('initializing'); setError(null); setGaResult(null);
+    setCurrentGen(0); setBestFitness(0); setTotalSims(0); setEvolutionLog([]); abortRef.current = false;
 
     try {
-      // Phase 1: Init
       const initResult = await callEngine({
-        action: 'init',
-        environment: result.environment,
-        pair,
-        candles: candleCount,
-        populationSize,
-        generations,
-        maxCorrelation,
-        gensPerCall,
+        action: 'init', environment: result.environment, pair,
+        candles: candleCount, populationSize, generations, maxCorrelation, gensPerCall,
       });
-      console.log('[GA-UI] Phase 1 complete:', initResult);
       setBestFitness(initResult.bestFitness || 0);
 
-      // Phase 2: Evolve loop — wait for DB write to propagate
       await new Promise(r => setTimeout(r, 1500));
       setPhase('evolving');
       let done = false;
@@ -192,40 +191,24 @@ export function AlphaDiscoveryEngine({ result }: { result: BacktestResult }) {
         setTotalSims(evolveResult.totalSimulations || 0);
         if (evolveResult.evolutionLog) {
           setEvolutionLog(prev => {
-            const newEntries = (evolveResult.evolutionLog as EvolutionEntry[]).filter(
-              e => !prev.some(p => p.gen === e.gen)
-            );
+            const newEntries = (evolveResult.evolutionLog as EvolutionEntry[]).filter(e => !prev.some(p => p.gen === e.gen));
             return [...prev, ...newEntries];
           });
         }
-
-        if (evolveResult.status === 'extracting') {
-          done = true;
-        } else {
-          // Small delay to avoid hammering
-          await new Promise(r => setTimeout(r, 500));
-        }
+        if (evolveResult.status === 'extracting') { done = true; } else { await new Promise(r => setTimeout(r, 500)); }
       }
+      if (abortRef.current) { setPhase('idle'); return; }
 
-      if (abortRef.current) {
-        setPhase('idle');
-        return;
-      }
-
-      // Phase 3: Extract
       setPhase('extracting');
       const extractResult = await callEngine({ action: 'extract' });
       setGaResult(extractResult);
       setPhase('complete');
-      console.log('[GA-UI] Evolution complete:', extractResult);
-
     } catch (err) {
       setError((err as Error).message);
       setPhase('error');
     }
   }, [result, pair, candleCount, populationSize, generations, maxCorrelation, gensPerCall, callEngine]);
 
-  // Cleanup on unmount
   useEffect(() => () => stopPolling(), [stopPolling]);
 
   const isRunning = phase === 'initializing' || phase === 'evolving' || phase === 'extracting';
@@ -236,41 +219,28 @@ export function AlphaDiscoveryEngine({ result }: { result: BacktestResult }) {
   return (
     <div className="bg-slate-900/80 backdrop-blur-md border border-slate-700/50 rounded-2xl shadow-2xl overflow-hidden">
       {/* Header */}
-      <button
-        onClick={() => setExpanded(!expanded)}
-        className="w-full flex items-center justify-between p-5 text-left hover:bg-slate-800/20 transition-colors"
-      >
+      <button onClick={() => setExpanded(!expanded)} className="w-full flex items-center justify-between p-5 text-left hover:bg-slate-800/20 transition-colors">
         <div className="flex items-center gap-3">
           <div className="relative">
-            <Dna className="w-5 h-5 text-emerald-400" />
+            <Atom className="w-5 h-5 text-emerald-400" />
             {isRunning && (
-              <motion.div
-                animate={{ scale: [1, 1.3, 1], opacity: [0.5, 1, 0.5] }}
-                transition={{ repeat: Infinity, duration: 1 }}
-                className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-emerald-400"
-              />
+              <motion.div animate={{ scale: [1, 1.3, 1], opacity: [0.5, 1, 0.5] }} transition={{ repeat: Infinity, duration: 1 }} className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-emerald-400" />
             )}
           </div>
           <div>
-            <h2 className="text-[11px] font-bold tracking-widest text-slate-200 uppercase">
-              Genetic Alpha Discovery Engine
-            </h2>
-            <p className="text-[8px] text-slate-500 font-mono mt-0.5">
-              Phased State Machine · {generations} Generations · {gensPerCall}/call
-            </p>
+            <h2 className="text-[11px] font-bold tracking-widest text-slate-200 uppercase">Unrestricted Alpha Mining Engine</h2>
+            <p className="text-[8px] text-slate-500 font-mono mt-0.5">RSI · MACD · Bollinger · EMA · Volume · Session · Day-of-Week · {generations} Gen</p>
           </div>
         </div>
         <div className="flex items-center gap-2">
           {isRunning && (
             <span className="text-[8px] font-mono text-yellow-400 bg-yellow-400/10 border border-yellow-400/30 px-2 py-0.5 rounded animate-pulse">
-              {phase === 'initializing' ? 'FETCHING DATA...' :
-               phase === 'extracting' ? 'EXTRACTING TOP DNA...' :
-               `GEN ${currentGen}/${generations}`}
+              {phase === 'initializing' ? 'BUILDING INDICATORS...' : phase === 'extracting' ? 'EXTRACTING ALPHA...' : `GEN ${currentGen}/${generations}`}
             </span>
           )}
           {phase === 'complete' && gaResult && (
             <span className="text-[8px] font-mono text-emerald-400 bg-emerald-400/10 border border-emerald-400/30 px-2 py-0.5 rounded">
-              {gaResult.uncorrelatedProfiles.length} UNCORRELATED · {totalSims.toLocaleString()} SIMS
+              {gaResult.uncorrelatedProfiles.length} STRATEGIES · {totalSims.toLocaleString()} SIMS
             </span>
           )}
           {expanded ? <ChevronUp className="w-4 h-4 text-slate-500" /> : <ChevronDown className="w-4 h-4 text-slate-500" />}
@@ -283,19 +253,12 @@ export function AlphaDiscoveryEngine({ result }: { result: BacktestResult }) {
             <div className="px-5 pb-5 space-y-4">
               {/* Config Panel */}
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-                {/* Pair selector */}
                 <div className="bg-slate-950/50 border border-slate-800/50 rounded-lg p-3">
                   <label className="text-[7px] text-slate-500 font-mono uppercase tracking-widest block mb-1.5">Pair</label>
-                  <select
-                    value={pair}
-                    onChange={e => setPair(e.target.value)}
-                    disabled={isRunning}
-                    className="w-full text-[9px] font-mono bg-slate-900 border border-slate-700 rounded px-2 py-1 text-slate-300"
-                  >
+                  <select value={pair} onChange={e => setPair(e.target.value)} disabled={isRunning} className="w-full text-[9px] font-mono bg-slate-900 border border-slate-700 rounded px-2 py-1 text-slate-300">
                     {PAIRS.map(p => <option key={p} value={p}>{p.replace('_', '/')}</option>)}
                   </select>
                 </div>
-                {/* Candles */}
                 <div className="bg-slate-950/50 border border-slate-800/50 rounded-lg p-3">
                   <label className="text-[7px] text-slate-500 font-mono uppercase tracking-widest block mb-1.5">Candles</label>
                   <div className="flex items-center gap-1.5">
@@ -306,7 +269,6 @@ export function AlphaDiscoveryEngine({ result }: { result: BacktestResult }) {
                     ))}
                   </div>
                 </div>
-                {/* Population */}
                 <div className="bg-slate-950/50 border border-slate-800/50 rounded-lg p-3">
                   <label className="text-[7px] text-slate-500 font-mono uppercase tracking-widest block mb-1.5">Population</label>
                   <div className="flex items-center gap-1.5">
@@ -317,7 +279,6 @@ export function AlphaDiscoveryEngine({ result }: { result: BacktestResult }) {
                     ))}
                   </div>
                 </div>
-                {/* Generations */}
                 <div className="bg-slate-950/50 border border-slate-800/50 rounded-lg p-3">
                   <label className="text-[7px] text-slate-500 font-mono uppercase tracking-widest block mb-1.5">Generations</label>
                   <div className="flex items-center gap-1.5">
@@ -330,7 +291,6 @@ export function AlphaDiscoveryEngine({ result }: { result: BacktestResult }) {
                 </div>
               </div>
 
-              {/* Advanced config row */}
               <div className="grid grid-cols-3 gap-3">
                 <div className="bg-slate-950/50 border border-slate-800/50 rounded-lg p-3">
                   <label className="text-[7px] text-slate-500 font-mono uppercase tracking-widest block mb-1.5">Max Correlation (ρ)</label>
@@ -354,20 +314,20 @@ export function AlphaDiscoveryEngine({ result }: { result: BacktestResult }) {
                 </div>
                 <div className="bg-slate-950/50 border border-slate-800/50 rounded-lg p-3 flex items-end">
                   <div className="text-[7px] font-mono text-slate-600">
-                    Total invocations: ~{Math.ceil(generations / gensPerCall) + 2}
+                    Invocations: ~{Math.ceil(generations / gensPerCall) + 2} · Search: Unrestricted
                   </div>
                 </div>
               </div>
 
-              {/* Progress Bar */}
+              {/* Progress */}
               {isRunning && (
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
                       <Loader2 className="w-3 h-3 text-emerald-400 animate-spin" />
                       <span className="text-[9px] font-mono text-emerald-400 uppercase tracking-widest font-bold">
-                        {phase === 'initializing' ? 'Phase 1: Fetching & Computing Features...' :
-                         phase === 'extracting' ? 'Phase 3: Extracting Top DNA...' :
+                        {phase === 'initializing' ? 'Phase 1: Building RSI · MACD · BB · EMA Library...' :
+                         phase === 'extracting' ? 'Phase 3: Mining Top Alpha Strategies...' :
                          `Phase 2: Evolving (Gen ${currentGen}/${generations})`}
                       </span>
                     </div>
@@ -377,23 +337,17 @@ export function AlphaDiscoveryEngine({ result }: { result: BacktestResult }) {
                     </div>
                   </div>
                   <div className="relative w-full h-2 bg-slate-950 rounded-full border border-slate-800 overflow-hidden">
-                    <motion.div
-                      className="absolute top-0 left-0 h-full rounded-full bg-gradient-to-r from-emerald-500 to-cyan-400"
+                    <motion.div className="absolute top-0 left-0 h-full rounded-full bg-gradient-to-r from-emerald-500 to-cyan-400"
                       initial={{ width: '0%' }}
                       animate={{ width: `${phase === 'initializing' ? 5 : phase === 'extracting' ? 95 : progressPct}%` }}
                       transition={{ ease: 'easeOut', duration: 0.3 }}
                     />
                   </div>
-                  <button
-                    onClick={() => { stopPolling(); setPhase('idle'); }}
-                    className="text-[8px] font-mono text-red-400 hover:text-red-300 transition-colors"
-                  >
-                    ⏹ Cancel
-                  </button>
+                  <button onClick={() => { stopPolling(); setPhase('idle'); }} className="text-[8px] font-mono text-red-400 hover:text-red-300 transition-colors">⏹ Cancel</button>
                 </div>
               )}
 
-              {/* Live Evolution Chart during evolving */}
+              {/* Live Evolution Chart */}
               {(phase === 'evolving' || phase === 'extracting') && evolutionLog.length > 1 && (
                 <div className="bg-slate-950/50 border border-slate-800/40 rounded-lg p-3">
                   <div className="flex items-center gap-1.5 mb-2">
@@ -406,17 +360,12 @@ export function AlphaDiscoveryEngine({ result }: { result: BacktestResult }) {
 
               {/* Launch Button */}
               {!isRunning && (
-                <button
-                  onClick={runGA}
+                <button onClick={runGA}
                   className="w-full flex items-center justify-center gap-2 py-3.5 rounded-xl border transition-all font-mono text-xs font-bold uppercase tracking-widest"
-                  style={{
-                    borderColor: '#10b981aa',
-                    background: 'linear-gradient(135deg, #10b98115, #0f172a)',
-                    color: '#10b981',
-                  }}
+                  style={{ borderColor: '#10b981aa', background: 'linear-gradient(135deg, #10b98115, #0f172a)', color: '#10b981' }}
                 >
-                  <Dna className="w-4 h-4" />
-                  Launch Phased GA · {pair.replace('_', '/')} · {candleCount / 1000}K Candles · {generations} Gen
+                  <Atom className="w-4 h-4" />
+                  Mine Alpha · {pair.replace('_', '/')} · {candleCount / 1000}K Candles · {generations} Gen
                 </button>
               )}
 
@@ -437,7 +386,7 @@ export function AlphaDiscoveryEngine({ result }: { result: BacktestResult }) {
                       { label: 'Simulations', value: totalSims.toLocaleString(), icon: Cpu, color: '#a855f7' },
                       { label: 'Best Fitness', value: gaResult.gaStats.finalBestFitness.toFixed(2), icon: Target, color: '#39ff14' },
                       { label: 'Generations', value: gaResult.gaStats.generations, icon: Dna, color: '#ff8800' },
-                      { label: 'Uncorrelated', value: gaResult.uncorrelatedProfiles.length, icon: Fingerprint, color: '#10b981' },
+                      { label: 'Strategies', value: gaResult.uncorrelatedProfiles.length, icon: Sparkles, color: '#10b981' },
                     ].map(stat => (
                       <div key={stat.label} className="bg-slate-950/60 border border-slate-800/40 rounded-lg p-2.5 text-center">
                         <stat.icon className="w-3.5 h-3.5 mx-auto mb-1" style={{ color: stat.color }} />
@@ -464,20 +413,18 @@ export function AlphaDiscoveryEngine({ result }: { result: BacktestResult }) {
                     </div>
                   )}
 
-                  {/* Evolved Strategies — Primary Results */}
+                  {/* Mined Strategies */}
                   <div className="border border-emerald-500/20 rounded-xl overflow-hidden">
                     <div className="bg-emerald-950/30 px-4 py-2.5 border-b border-emerald-500/20 flex items-center justify-between">
                       <div className="flex items-center gap-2">
-                        <Fingerprint className="w-3.5 h-3.5 text-emerald-400" />
+                        <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
                         <span className="text-[9px] font-bold text-emerald-300 uppercase tracking-widest">
                           {gaResult.correlationFallback
-                            ? `Top Evolved Strategies (relaxed ρ ≤ 0.5)`
-                            : `Evolved Uncorrelated Strategies (ρ ≤ ${maxCorrelation})`}
+                            ? `Mined Alpha Strategies (relaxed ρ ≤ 0.5)`
+                            : `Mined Alpha Strategies (ρ ≤ ${maxCorrelation})`}
                         </span>
                       </div>
-                      <span className="text-[7px] text-emerald-500/60 font-mono">
-                        Pair: {gaResult.config.pair?.replace('_', '/')}
-                      </span>
+                      <span className="text-[7px] text-emerald-500/60 font-mono">{gaResult.config.pair?.replace('_', '/')}</span>
                     </div>
 
                     {gaResult.uncorrelatedProfiles.length === 0 ? (
@@ -494,31 +441,22 @@ export function AlphaDiscoveryEngine({ result }: { result: BacktestResult }) {
                     )}
                   </div>
 
-                  {/* All Profiles — Full Leaderboard */}
+                  {/* All Profiles Leaderboard */}
                   {gaResult.allProfiles.length > 0 && (
                     <div className="border border-purple-500/20 rounded-xl overflow-hidden">
                       <div className="bg-purple-950/20 px-4 py-2.5 border-b border-purple-500/20 flex items-center justify-between">
                         <div className="flex items-center gap-2">
                           <BarChart3 className="w-3.5 h-3.5 text-purple-400" />
-                          <span className="text-[9px] font-bold text-purple-300 uppercase tracking-widest">
-                            All {gaResult.allProfiles.length} Evolved Strategies — Full Leaderboard
-                          </span>
+                          <span className="text-[9px] font-bold text-purple-300 uppercase tracking-widest">All {gaResult.allProfiles.length} Mined Strategies — Full Leaderboard</span>
                         </div>
-                        <span className="text-[7px] text-purple-500/60 font-mono">
-                          Ranked by Fitness Score
-                        </span>
+                        <span className="text-[7px] text-purple-500/60 font-mono">Ranked by Total Return</span>
                       </div>
                       <div className="divide-y divide-slate-800/30">
                         {gaResult.allProfiles.map((profile, idx) => (
-                          <StrategyCard
-                            key={`all-${idx}`}
-                            profile={profile}
-                            idx={idx}
+                          <StrategyCard key={`all-${idx}`} profile={profile} idx={idx}
                             expandedProfile={expandedProfile === null ? null : expandedProfile}
                             setExpandedProfile={(v) => setExpandedProfile(v === null ? null : v !== null ? v + 1000 : null)}
-                            maxCorrelation={maxCorrelation}
-                            offset={1000}
-                          />
+                            maxCorrelation={maxCorrelation} offset={1000} />
                         ))}
                       </div>
                     </div>
@@ -533,7 +471,7 @@ export function AlphaDiscoveryEngine({ result }: { result: BacktestResult }) {
   );
 }
 
-// ── Strategy Card (matches Profile Discovery Engine style) ──
+// ── Strategy Card ──
 function StrategyCard({ profile, idx, expandedProfile, setExpandedProfile, maxCorrelation, offset = 0 }: {
   profile: GAProfile; idx: number; expandedProfile: number | null;
   setExpandedProfile: (v: number | null) => void; maxCorrelation: number; offset?: number;
@@ -541,7 +479,7 @@ function StrategyCard({ profile, idx, expandedProfile, setExpandedProfile, maxCo
   const cardIdx = idx + offset;
   const isExp = expandedProfile === cardIdx;
   const medal = idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : `#${idx + 1}`;
-  const isPositive = profile.totalPips >= 0;
+  const isPositive = (profile.totalReturn ?? profile.totalPips) >= 0;
 
   return (
     <div className="bg-slate-950/20 hover:bg-slate-900/40 transition-colors">
@@ -549,13 +487,13 @@ function StrategyCard({ profile, idx, expandedProfile, setExpandedProfile, maxCo
         <div className="flex items-center gap-3">
           <span className="text-lg w-8 text-center shrink-0">{medal}</span>
           <div className="flex-1 min-w-0">
-            <DNABadges dna={profile.dna} />
-            <div className="text-[8px] font-mono text-slate-500 mt-1 truncate">{profile.plainEnglish}</div>
+            <div className="text-[10px] font-bold text-slate-200 mb-0.5">{profile.strategyName || 'Unnamed Strategy'}</div>
+            <IndicatorBadges dna={profile.dna} />
           </div>
           <div className="flex items-center gap-3 shrink-0">
+            <StatCell label="Return" value={`${isPositive ? '+' : ''}${(profile.totalReturn ?? 0).toFixed(1)}%`} color={isPositive ? '#39ff14' : '#ff0055'} />
             <StatCell label="WR" value={`${(profile.winRate * 100).toFixed(1)}%`} color={profile.winRate >= 0.6 ? '#39ff14' : '#00ffea'} />
             <StatCell label="PF" value={profile.profitFactor.toFixed(2)} color={profile.profitFactor > 2 ? '#39ff14' : '#00ffea'} />
-            <StatCell label="Pips" value={`${isPositive ? '+' : ''}${profile.totalPips.toFixed(0)}`} color={isPositive ? '#39ff14' : '#ff0055'} />
             <StatCell label="Trades" value={`${profile.trades}`} color="#94a3b8" />
             <StatCell label="ρ" value={profile.correlation.toFixed(3)} color={profile.correlation <= maxCorrelation ? '#10b981' : '#f59e0b'} />
             {isExp ? <ChevronUp className="w-3 h-3 text-slate-500" /> : <ChevronDown className="w-3 h-3 text-slate-500" />}
@@ -566,26 +504,70 @@ function StrategyCard({ profile, idx, expandedProfile, setExpandedProfile, maxCo
         {isExp && (
           <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="overflow-hidden">
             <div className="px-4 pb-4 space-y-3">
+              {/* Edge Description */}
+              <div className="bg-emerald-950/20 border border-emerald-500/20 rounded-lg p-3">
+                <div className="flex items-center gap-1.5 mb-2">
+                  <Sparkles className="w-3 h-3 text-emerald-400" />
+                  <span className="text-[7px] font-mono text-emerald-400 uppercase tracking-widest font-bold">The Mathematical Edge</span>
+                </div>
+                <p className="text-[9px] font-mono text-emerald-300 leading-relaxed">{profile.edgeDescription || 'Pure filter strategy'}</p>
+              </div>
+
               {/* Equity Curve */}
               <div className="bg-slate-950/60 border border-slate-800/40 rounded-lg p-3">
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-[7px] font-mono text-slate-500 uppercase tracking-widest">Strategy Equity Curve</span>
                   <span className="text-[8px] font-mono font-bold" style={{ color: isPositive ? '#39ff14' : '#ff0055' }}>
-                    {isPositive ? '+' : ''}{profile.totalPips.toFixed(1)} pips
+                    {isPositive ? '+' : ''}{(profile.totalReturn ?? 0).toFixed(1)}% return
                   </span>
                 </div>
                 <EquityCurve curve={profile.equityCurve} height={80} />
               </div>
 
-              {/* Stats Grid */}
+              {/* Entry Rules */}
+              <div className="bg-blue-950/20 border border-blue-500/20 rounded-lg p-3">
+                <div className="flex items-center gap-1.5 mb-2">
+                  <Crosshair className="w-3 h-3 text-blue-400" />
+                  <span className="text-[7px] font-mono text-blue-400 uppercase tracking-widest font-bold">Entry Rules</span>
+                </div>
+                <div className="space-y-1">
+                  {(profile.entryRules || []).map((rule, i) => (
+                    <div key={i} className="flex items-start gap-2 text-[8px] font-mono text-blue-300">
+                      <span className="text-blue-500 mt-0.5">▸</span>
+                      <span>{rule}</span>
+                    </div>
+                  ))}
+                  {(!profile.entryRules || profile.entryRules.length === 0) && (
+                    <span className="text-[8px] font-mono text-slate-500">No explicit indicator rules (pure filter)</span>
+                  )}
+                </div>
+              </div>
+
+              {/* Exit Rules & Risk */}
+              <div className="bg-red-950/10 border border-red-500/20 rounded-lg p-3">
+                <div className="flex items-center gap-1.5 mb-2">
+                  <Shield className="w-3 h-3 text-red-400" />
+                  <span className="text-[7px] font-mono text-red-400 uppercase tracking-widest font-bold">Exit Rules & Risk</span>
+                </div>
+                <div className="space-y-1">
+                  {(profile.exitRules || []).map((rule, i) => (
+                    <div key={i} className="flex items-start gap-2 text-[8px] font-mono text-red-300">
+                      <span className="text-red-500 mt-0.5">▸</span>
+                      <span>{rule}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Performance Stats */}
               <div className="grid grid-cols-3 lg:grid-cols-6 gap-2">
                 {[
+                  { label: 'Total Return', value: `${isPositive ? '+' : ''}${(profile.totalReturn ?? 0).toFixed(1)}%`, color: isPositive ? '#39ff14' : '#ff0055' },
                   { label: 'Win Rate', value: `${(profile.winRate * 100).toFixed(1)}%`, color: '#39ff14' },
                   { label: 'Profit Factor', value: profile.profitFactor.toFixed(2), color: '#00ffea' },
-                  { label: 'Total Pips', value: `${isPositive ? '+' : ''}${profile.totalPips.toFixed(1)}`, color: isPositive ? '#39ff14' : '#ff0055' },
                   { label: 'Max Drawdown', value: `${(profile.maxDrawdown * 100).toFixed(1)}%`, color: '#ff8800' },
+                  { label: 'Total Trades', value: `${profile.trades}`, color: '#94a3b8' },
                   { label: 'Fitness Score', value: profile.fitness.toFixed(2), color: '#a855f7' },
-                  { label: 'Gross Profit', value: `+${profile.grossProfit.toFixed(0)}`, color: '#39ff14' },
                 ].map(s => (
                   <div key={s.label} className="bg-slate-950/40 border border-slate-800/30 rounded-lg p-2 text-center">
                     <div className="text-[9px] font-bold font-mono" style={{ color: s.color }}>{s.value}</div>
@@ -594,7 +576,7 @@ function StrategyCard({ profile, idx, expandedProfile, setExpandedProfile, maxCo
                 ))}
               </div>
 
-              {/* Correlation Bar */}
+              {/* Correlation */}
               <div className="bg-slate-950/60 border border-slate-800/40 rounded-lg p-3">
                 <div className="flex items-center gap-1.5 mb-2">
                   <Layers className="w-3 h-3 text-emerald-400" />
@@ -606,21 +588,6 @@ function StrategyCard({ profile, idx, expandedProfile, setExpandedProfile, maxCo
                 <CorrelationBar value={profile.correlation} max={maxCorrelation} />
               </div>
 
-              {/* DNA Blueprint */}
-              <div className="bg-emerald-950/20 border border-emerald-500/20 rounded-lg p-3">
-                <div className="flex items-center gap-1.5 mb-2">
-                  <Dna className="w-3 h-3 text-emerald-400" />
-                  <span className="text-[7px] font-mono text-emerald-400 uppercase tracking-widest font-bold">Strategy DNA Blueprint</span>
-                </div>
-                <p className="text-[9px] font-mono text-emerald-300 leading-relaxed">{profile.plainEnglish}</p>
-                <div className="mt-2 grid grid-cols-2 lg:grid-cols-4 gap-1.5">
-                  <div className="text-[7px] font-mono text-slate-500"><span className="text-cyan-400">SL:</span> {profile.dna.slMultiplier.toFixed(2)} × ATR</div>
-                  <div className="text-[7px] font-mono text-slate-500"><span className="text-emerald-400">TP:</span> {profile.dna.tpMultiplier.toFixed(2)} × ATR</div>
-                  <div className="text-[7px] font-mono text-slate-500"><span className="text-purple-400">Hurst:</span> {profile.dna.hurstMin.toFixed(2)} – {profile.dna.hurstMax.toFixed(2)}</div>
-                  <div className="text-[7px] font-mono text-slate-500"><span className="text-yellow-400">R:R:</span> {(profile.dna.tpMultiplier / profile.dna.slMultiplier).toFixed(2)}:1</div>
-                </div>
-              </div>
-
               {/* Strategy Intelligence */}
               <div className="bg-cyan-950/10 border border-cyan-500/20 rounded-lg p-3">
                 <div className="flex items-center gap-1.5 mb-2">
@@ -628,28 +595,17 @@ function StrategyCard({ profile, idx, expandedProfile, setExpandedProfile, maxCo
                   <span className="text-[7px] font-mono text-cyan-400 uppercase tracking-widest font-bold">Strategy Intelligence</span>
                 </div>
                 <div className="grid grid-cols-2 gap-2 text-[8px] font-mono text-slate-400">
-                  <div>
-                    <span className="text-slate-600">Edge Type: </span>
-                    <span className="text-cyan-300">
-                      {profile.dna.gate1Required && profile.dna.gate2Required && profile.dna.gate3Required ? 'Triple-Lock Confirmed' :
-                       profile.dna.gate2Required ? 'Structural Breakout' :
-                       profile.dna.gate3Required ? 'Momentum Drift' : 'Rank Divergence'}
-                    </span>
-                  </div>
+                  <div><span className="text-slate-600">Edge Type: </span><span className="text-cyan-300">{profile.strategyName}</span></div>
                   <div>
                     <span className="text-slate-600">Risk Profile: </span>
                     <span style={{ color: profile.maxDrawdown < 0.05 ? '#39ff14' : profile.maxDrawdown < 0.15 ? '#f59e0b' : '#ff0055' }}>
                       {profile.maxDrawdown < 0.05 ? 'Conservative' : profile.maxDrawdown < 0.15 ? 'Moderate' : 'Aggressive'}
                     </span>
                   </div>
-                  <div>
-                    <span className="text-slate-600">Expectancy/Trade: </span>
-                    <span className="text-emerald-300">{profile.trades > 0 ? (profile.totalPips / profile.trades).toFixed(1) : '0'} pips</span>
-                  </div>
-                  <div>
-                    <span className="text-slate-600">Gross Loss: </span>
-                    <span className="text-red-400">-{profile.grossLoss.toFixed(0)} pips</span>
-                  </div>
+                  <div><span className="text-slate-600">Expectancy/Trade: </span><span className="text-emerald-300">{profile.trades > 0 ? (profile.totalPips / profile.trades).toFixed(1) : '0'} pips</span></div>
+                  <div><span className="text-slate-600">Gross Profit: </span><span className="text-emerald-400">+{profile.grossProfit.toFixed(0)} pips</span></div>
+                  <div><span className="text-slate-600">Gross Loss: </span><span className="text-red-400">-{profile.grossLoss.toFixed(0)} pips</span></div>
+                  <div><span className="text-slate-600">R:R Ratio: </span><span className="text-yellow-300">{(profile.dna.tpMultiplier / profile.dna.slMultiplier).toFixed(2)}:1</span></div>
                 </div>
               </div>
             </div>
