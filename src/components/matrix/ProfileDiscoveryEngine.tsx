@@ -6,7 +6,7 @@ import { useState, useMemo, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Cpu, Trophy, TrendingUp, Flame, Search, ChevronDown, ChevronUp,
-  Zap, Target, Shield, Activity, BarChart3, Calendar,
+  Zap, Target, Shield, Activity, BarChart3, Calendar, Brain, Fingerprint, Layers,
 } from 'lucide-react';
 import type { BacktestResult, RankComboResult } from '@/hooks/useRankExpectancy';
 
@@ -334,6 +334,233 @@ function TimePeriodBreakdown({ curve }: { curve: Array<{ time: string; equity: n
           </tbody>
         </table>
       </div>
+    </div>
+  );
+}
+
+// ── Strategy Intelligence Analysis ──
+function generateProfileIntelligence(profile: ProfileResult, allTop: ProfileResult[], idx: number): {
+  whyProfitable: string;
+  uniqueEdge: string;
+  diversification: string;
+  riskProfile: string;
+  tags: Array<{ label: string; color: string }>;
+} {
+  const p = profile;
+
+  // ── Why Profitable ──
+  const rankSpread = Math.abs(p.predator - p.prey);
+  const isExtremeRank = p.predator <= 1 && p.prey >= 8;
+  const isWideRank = rankSpread >= 6;
+  const hasAllGates = p.g1 && p.g2 && p.g3;
+  const hasAtlasWall = p.slLabel.includes('Atlas');
+  const hasTrailing = p.slLabel.includes('Trailing');
+  const isLimitEntry = p.entryLabel.includes('Limit');
+  const isOFI = p.entryLabel.includes('Z-OFI');
+  const isDelta = p.entryLabel.includes('Delta');
+  const isBOS = p.entryLabel.includes('Break of structure');
+  const isOrderBlock = p.entryLabel.includes('Order block');
+  const isFib = p.entryLabel.includes('fib');
+  const isLondon = p.session.includes('London');
+  const isNY = p.session.includes('New York');
+  const isAsia = p.session.includes('Asian');
+
+  let whyParts: string[] = [];
+
+  if (isExtremeRank) {
+    whyParts.push(`Exploits maximum cross-sectional divergence (#${p.predator} vs #${p.prey}) — the widest possible strength gap across the 28-cross matrix creates a kinetic imbalance that institutional flow amplifies.`);
+  } else if (isWideRank) {
+    whyParts.push(`Targets high-divergence rank spread (#${p.predator} vs #${p.prey}) — ${rankSpread}-rank separation provides strong directional conviction from the Structural Order Book scoring.`);
+  } else {
+    whyParts.push(`Uses a moderate rank spread (#${p.predator} vs #${p.prey}) — this mid-divergence approach sacrifices peak conviction for higher trade frequency, capturing more of the daily flow.`);
+  }
+
+  if (hasAllGates) {
+    whyParts.push(`Full Triple-Lock gate alignment (G1+G2+G3) ensures every entry has rank extremity confirmation, Atlas Wall structural breakout validation, AND David Vector kinetic momentum — eliminating false breakouts that destroy capital.`);
+  } else if (p.g1 && p.g2) {
+    whyParts.push(`G1+G2 gating confirms rank extremity with Atlas Wall absorption — trades only fire when institutional resistance is structurally broken, though it lacks the David Vector kinetic confirmation for precise timing.`);
+  } else if (p.g2 && p.g3) {
+    whyParts.push(`G2+G3 gating combines structural breakout with momentum slope — bypasses rank filtering for more frequent entries while requiring both price structure and kinetic energy confirmation.`);
+  }
+
+  if (isLondon) {
+    whyParts.push(`London session (07-12 UTC) provides peak institutional liquidity where the 28-cross matrix divergence signals are most reliable — clearing banks and central desks create the volume needed for Atlas Walls to form and break cleanly.`);
+  } else if (isNY) {
+    whyParts.push(`New York session (12-17 UTC) captures the London-NY overlap — the highest tick density window where order flow micro-structure is most pronounced and slippage front-running is most effective.`);
+  } else if (isAsia) {
+    whyParts.push(`Asian session (00-07 UTC) trades the quieter structural setups — lower volatility means tighter stops are viable and the rank-based divergence plays out more gradually but with higher win rates.`);
+  }
+
+  // ── Unique Edge ──
+  let uniqueParts: string[] = [];
+
+  if (hasAtlasWall) {
+    uniqueParts.push(`Atlas Wall stop placement anchors risk directly to structural support/resistance — the stop is positioned relative to the 20-period institutional boundary rather than arbitrary pip distances, creating a mathematically optimal risk point.`);
+  } else if (hasTrailing) {
+    uniqueParts.push(`Trailing stop (1x ATR) locks in profits dynamically — as the Atlas Snap momentum vacuum drives price, the trailing mechanism captures the full extension while protecting accumulated gains from mean-reversion.`);
+  } else if (p.slLabel.includes('fixed')) {
+    uniqueParts.push(`Fixed-pip stop at ${p.slPips} pips provides consistent position sizing — the predictable risk per trade enables precise portfolio-level risk budgeting and compound growth modeling.`);
+  } else {
+    uniqueParts.push(`ATR-based stop (${p.slLabel}) adapts to current market volatility — wider stops during volatile regimes prevent noise-triggered exits while tighter stops in low-vol environments maximize R-multiple capture.`);
+  }
+
+  if (isOFI) {
+    uniqueParts.push(`Z-OFI entry filter requires confirmed order flow imbalance before execution — this front-runs the institutional liquidity vacuum by only entering when the bid/ask absorption ratio exceeds statistical thresholds.`);
+  } else if (isDelta) {
+    uniqueParts.push(`Delta spike entry (>2σ) captures aggressive institutional positioning — enters only when cumulative delta shows abnormal directional conviction, confirming the rank divergence with real-time market participation.`);
+  } else if (isBOS) {
+    uniqueParts.push(`Break of structure entry confirms the prevailing market structure has shifted — aligns the cross-sectional rank signal with price action's structural bias change for higher-conviction entries.`);
+  } else if (isOrderBlock) {
+    uniqueParts.push(`Order block entry targets the exact price zones where institutional accumulation occurred — enters at the origin of the impulsive move, maximizing the R-ratio by placing entries near the strongest support/resistance.`);
+  } else if (isFib) {
+    uniqueParts.push(`Fibonacci 38.2% pullback entry provides premium pricing within the dominant trend — waits for a measured retracement before entering with the rank-confirmed direction, improving average fill quality.`);
+  } else if (isLimitEntry) {
+    uniqueParts.push(`Limit order entry at ${p.entryLabel} secures better fill prices — by placing resting liquidity below market, the strategy captures execution edge that compounds over hundreds of trades into significant P&L improvement.`);
+  }
+
+  // ── Diversification Analysis ──
+  const others = allTop.filter((_, i) => i !== idx);
+  const sameRankCombo = others.filter(o => o.predator === p.predator && o.prey === p.prey);
+  const sameSession = others.filter(o => o.session === p.session);
+  const sameGates = others.filter(o => o.gates === p.gates);
+  const sameSL = others.filter(o => o.slLabel === p.slLabel);
+  const sameEntry = others.filter(o => o.entryLabel === p.entryLabel);
+
+  const uniqueFactors: string[] = [];
+  const sharedFactors: string[] = [];
+
+  if (sameRankCombo.length === 0) uniqueFactors.push(`rank pairing (#${p.predator}v#${p.prey})`);
+  else sharedFactors.push(`rank pairing with ${sameRankCombo.length} other profile${sameRankCombo.length > 1 ? 's' : ''}`);
+
+  if (sameSession.length === 0) uniqueFactors.push(`${p.session} session`);
+  else sharedFactors.push(`session window with ${sameSession.length} other${sameSession.length > 1 ? 's' : ''}`);
+
+  if (sameEntry.length === 0) uniqueFactors.push(`${p.entryLabel} entry`);
+  else sharedFactors.push(`entry method with ${sameEntry.length} other${sameEntry.length > 1 ? 's' : ''}`);
+
+  if (sameSL.length === 0) uniqueFactors.push(`${p.slLabel} stop loss`);
+  else sharedFactors.push(`SL type with ${sameSL.length} other${sameSL.length > 1 ? 's' : ''}`);
+
+  if (sameGates.length === 0) uniqueFactors.push(`${p.gates} gate config`);
+
+  const diversityScore = uniqueFactors.length;
+  let diversification = '';
+
+  if (diversityScore >= 4) {
+    diversification = `Highly diversified — this profile is completely unique across ${uniqueFactors.join(', ')}. Running this alongside other top profiles provides maximum decorrelation, reducing portfolio-level drawdown through independent signal generation.`;
+  } else if (diversityScore >= 2) {
+    diversification = `Moderately diversified — unique in ${uniqueFactors.join(' and ')}, but shares ${sharedFactors.join(' and ')}. Provides partial decorrelation when combined with other top profiles.`;
+  } else if (diversityScore >= 1) {
+    diversification = `Low diversification — only unique in ${uniqueFactors.join(', ')}, sharing ${sharedFactors.join(', ')}. Consider pairing with profiles from different sessions or rank combos for portfolio-level robustness.`;
+  } else {
+    diversification = `Highly correlated — shares rank pairing, session, entry, and stop loss parameters with other top profiles. Returns will be strongly correlated; avoid over-allocating to this cluster.`;
+  }
+
+  // Risk profile
+  const riskProfile = p.maxDrawdown > -5
+    ? `Conservative risk — shallow ${p.maxDrawdown}% max drawdown indicates tight risk containment. This profile prioritizes capital preservation with consistent, compounding returns.`
+    : p.maxDrawdown > -15
+    ? `Moderate risk — ${p.maxDrawdown}% max drawdown is within institutional tolerance. The drawdown-to-return ratio of ${Math.abs(p.maxDrawdown / ((p.netProfit / 1000) * 100 || 1)).toFixed(1)} suggests reasonable risk-adjusted performance.`
+    : `Aggressive risk — ${p.maxDrawdown}% max drawdown requires strong conviction and proper position sizing. The strategy captures larger moves but demands psychological endurance through deep equity troughs.`;
+
+  // Tags
+  const tags: Array<{ label: string; color: string }> = [];
+  if (isExtremeRank) tags.push({ label: 'Max Divergence', color: '#00ffea' });
+  if (hasAllGates) tags.push({ label: 'Triple-Lock', color: '#39ff14' });
+  if (isLondon) tags.push({ label: 'Peak Liquidity', color: '#ff8800' });
+  if (isNY) tags.push({ label: 'NY Overlap', color: '#ff8800' });
+  if (isOFI) tags.push({ label: 'OFI Edge', color: '#a855f7' });
+  if (isDelta) tags.push({ label: 'Delta Trigger', color: '#a855f7' });
+  if (hasAtlasWall) tags.push({ label: 'Structural SL', color: '#ff0055' });
+  if (hasTrailing) tags.push({ label: 'Dynamic Trail', color: '#ff0055' });
+  if (isBOS) tags.push({ label: 'Structure Break', color: '#00ffea' });
+  if (isOrderBlock) tags.push({ label: 'OB Entry', color: '#a855f7' });
+  if (p.profitFactor > 2) tags.push({ label: 'High PF', color: '#39ff14' });
+  if (p.winRate > 60) tags.push({ label: 'High WR', color: '#39ff14' });
+  if (diversityScore >= 3) tags.push({ label: 'Unique Profile', color: '#ffaa00' });
+
+  return {
+    whyProfitable: whyParts.join(' '),
+    uniqueEdge: uniqueParts.join(' '),
+    diversification,
+    riskProfile,
+    tags,
+  };
+}
+
+function StrategyIntelligencePanel({ profile, allTop, idx }: { profile: ProfileResult; allTop: ProfileResult[]; idx: number }) {
+  const [expanded, setExpanded] = useState(false);
+  const intel = generateProfileIntelligence(profile, allTop, idx);
+
+  return (
+    <div className="mt-2">
+      <button
+        onClick={(e) => { e.stopPropagation(); setExpanded(!expanded); }}
+        className="flex items-center gap-1.5 text-[8px] font-mono text-purple-400 hover:text-purple-300 transition-colors"
+      >
+        <Brain className="w-3 h-3" />
+        <span className="uppercase tracking-widest font-bold">Strategy Intelligence</span>
+        {expanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+      </button>
+
+      <AnimatePresence>
+        {expanded && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+            className="overflow-hidden"
+          >
+            <div className="mt-2 bg-slate-950/50 border border-purple-500/20 rounded-lg p-3 space-y-3">
+              {/* Tags */}
+              <div className="flex flex-wrap gap-1.5">
+                {intel.tags.map((tag) => (
+                  <span key={tag.label} className="text-[7px] font-mono font-bold px-1.5 py-0.5 rounded border"
+                    style={{ color: tag.color, borderColor: `${tag.color}33`, backgroundColor: `${tag.color}10` }}>
+                    {tag.label}
+                  </span>
+                ))}
+              </div>
+
+              {/* Why Profitable */}
+              <div>
+                <div className="flex items-center gap-1.5 mb-1">
+                  <TrendingUp className="w-3 h-3 text-[#39ff14]" />
+                  <span className="text-[8px] font-bold text-[#39ff14] uppercase tracking-wider">Why This Profile Is Profitable</span>
+                </div>
+                <p className="text-[9px] text-slate-400 leading-relaxed font-mono">{intel.whyProfitable}</p>
+              </div>
+
+              {/* Unique Edge */}
+              <div>
+                <div className="flex items-center gap-1.5 mb-1">
+                  <Fingerprint className="w-3 h-3 text-[#00ffea]" />
+                  <span className="text-[8px] font-bold text-[#00ffea] uppercase tracking-wider">Unique Characteristic & Execution Edge</span>
+                </div>
+                <p className="text-[9px] text-slate-400 leading-relaxed font-mono">{intel.uniqueEdge}</p>
+              </div>
+
+              {/* Risk Profile */}
+              <div>
+                <div className="flex items-center gap-1.5 mb-1">
+                  <Shield className="w-3 h-3 text-[#ff8800]" />
+                  <span className="text-[8px] font-bold text-[#ff8800] uppercase tracking-wider">Risk Profile</span>
+                </div>
+                <p className="text-[9px] text-slate-400 leading-relaxed font-mono">{intel.riskProfile}</p>
+              </div>
+
+              {/* Diversification */}
+              <div>
+                <div className="flex items-center gap-1.5 mb-1">
+                  <Layers className="w-3 h-3 text-[#ffaa00]" />
+                  <span className="text-[8px] font-bold text-[#ffaa00] uppercase tracking-wider">Diversification From Other Top Profiles</span>
+                </div>
+                <p className="text-[9px] text-slate-400 leading-relaxed font-mono">{intel.diversification}</p>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
@@ -758,6 +985,9 @@ export const ProfileDiscoveryEngine = ({ result }: Props) => {
 
                       {/* Time Period Breakdown */}
                       <TimePeriodBreakdown curve={p.equityCurve} />
+
+                      {/* Strategy Intelligence */}
+                      <StrategyIntelligencePanel profile={p} allTop={topProfiles} idx={idx} />
                     </motion.button>
                   );
                 })}
