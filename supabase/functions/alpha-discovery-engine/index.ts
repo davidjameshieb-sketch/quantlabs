@@ -825,8 +825,11 @@ function getSupabaseAdmin() {
   );
 }
 
-const JOB_KEY = "ga_job_state";
+const DEFAULT_JOB_KEY = "ga_job_state";
 const DATA_KEY_PREFIX = "ga_bars_";
+function getJobKey(pair?: string): string {
+  return pair ? `ga_job_state_${pair}` : DEFAULT_JOB_KEY;
+}
 
 // ── Phase Handlers ────────────────────────────────────────────────────────
 
@@ -908,6 +911,7 @@ async function handlePhase1(body: Record<string, unknown>) {
     dateRange: { start: candles[0]?.time || '', end: candles[candles.length - 1]?.time || '' },
   };
 
+  const JOB_KEY = getJobKey(pair);
   await sb.from("sovereign_memory").delete().eq("memory_key", JOB_KEY).eq("memory_type", "ga_job");
   const { error: upsertErr } = await sb.from("sovereign_memory").insert({
     memory_key: JOB_KEY, memory_type: "ga_job",
@@ -1010,13 +1014,22 @@ function computeFitness(sim: SimResult, baseDailyReturns: number[], maxCorrelati
   return fitness;
 }
 
-async function handlePhase2() {
+async function handlePhase2(body: Record<string, unknown>) {
   const sb = getSupabaseAdmin();
+  const pairHint = body.pair as string | undefined;
+  // If pair provided, use pair-specific key; otherwise try legacy key, then scan for any active job
+  const keysToTry = pairHint
+    ? [getJobKey(pairHint)]
+    : [getJobKey()]; // fallback for legacy single-pair calls
   let jobRow: { payload: unknown } | null = null;
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const { data } = await sb.from("sovereign_memory").select("payload").eq("memory_key", JOB_KEY).eq("memory_type", "ga_job").maybeSingle();
-    if (data) { jobRow = data; break; }
-    if (attempt < 2) await new Promise(r => setTimeout(r, 2000));
+  let usedKey = keysToTry[0];
+  for (const key of keysToTry) {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const { data } = await sb.from("sovereign_memory").select("payload").eq("memory_key", key).eq("memory_type", "ga_job").maybeSingle();
+      if (data) { jobRow = data; usedKey = key; break; }
+      if (attempt < 2) await new Promise(r => setTimeout(r, 2000));
+    }
+    if (jobRow) break;
   }
   if (!jobRow) throw new Error("No active GA job. Run Phase 1 first.");
   const job = jobRow.payload as Record<string, unknown>;
@@ -1078,7 +1091,7 @@ async function handlePhase2() {
   };
 
   await sb.from("sovereign_memory").update({ payload: updatedJob, version: newCurrentGen })
-    .eq("memory_key", JOB_KEY).eq("memory_type", "ga_job");
+    .eq("memory_key", usedKey).eq("memory_type", "ga_job");
 
   return {
     phase: 2, status: isComplete ? "extracting" : "evolving",
@@ -1091,8 +1104,10 @@ async function handlePhase2() {
   };
 }
 
-async function handlePhase3() {
+async function handlePhase3(body: Record<string, unknown>) {
   const sb = getSupabaseAdmin();
+  const pairHint = body.pair as string | undefined;
+  const JOB_KEY = pairHint ? getJobKey(pairHint) : getJobKey();
   const { data: jobRow } = await sb.from("sovereign_memory").select("payload").eq("memory_key", JOB_KEY).eq("memory_type", "ga_job").maybeSingle();
   if (!jobRow) throw new Error("No GA job found.");
   const job = jobRow.payload as Record<string, unknown>;
@@ -1270,8 +1285,10 @@ async function handlePhase3() {
   };
 }
 
-async function handleStatus() {
+async function handleStatus(body: Record<string, unknown>) {
   const sb = getSupabaseAdmin();
+  const pairHint = body.pair as string | undefined;
+  const JOB_KEY = pairHint ? getJobKey(pairHint) : getJobKey();
   const { data } = await sb.from("sovereign_memory").select("payload").eq("memory_key", JOB_KEY).eq("memory_type", "ga_job").maybeSingle();
   if (!data) return { status: "idle", message: "No active GA job." };
   const job = data.payload as Record<string, unknown>;
@@ -1285,6 +1302,172 @@ async function handleStatus() {
   };
 }
 
+// ── Batch Extract: Cross-pair Top 7 Uncorrelated Strategies ──────────────
+async function handleBatchExtract(body: Record<string, unknown>) {
+  const sb = getSupabaseAdmin();
+  const pairs = (body.pairs as string[]) || [];
+  if (!pairs.length) throw new Error("pairs array required for batch-extract");
+
+  const topN = Number(body.topN) || 7;
+  const maxInterCorr = Number(body.maxInterCorrelation) || 0.4;
+
+  console.log(`[GA-BATCH] Cross-pair extraction across ${pairs.length} pairs, selecting Top ${topN}`);
+
+  // Collect all strategies from all completed pair jobs
+  interface PairStrategy {
+    pair: string; dna: StrategyDNA; fitness: number; sim: SimResult;
+    correlation: number; strategyName: string; edgeDescription: string;
+    entryRules: string[]; exitRules: string[];
+    edgeArchetype: string;
+    oosReturn?: number | null; oosWinRate?: number | null; oosTrades?: number | null;
+    equityCurve: number[];
+  }
+
+  const allStrategies: PairStrategy[] = [];
+
+  for (const p of pairs) {
+    const JOB_KEY = getJobKey(p);
+    const { data: jobRow } = await sb.from("sovereign_memory").select("payload").eq("memory_key", JOB_KEY).eq("memory_type", "ga_job").maybeSingle();
+    if (!jobRow) { console.log(`[GA-BATCH] No job found for ${p}, skipping`); continue; }
+    const job = jobRow.payload as Record<string, unknown>;
+    if (job.status !== "complete" && job.status !== "extracting") {
+      console.log(`[GA-BATCH] Job for ${p} is '${job.status}', skipping`); continue;
+    }
+
+    const population = job.population as { dna: StrategyDNA; fitness: number }[];
+    const isSplit = (job.isSplit as number) || 0;
+    const baseDailyReturns = job.baseDailyReturns as number[];
+
+    const { data: barsRow } = await sb.from("sovereign_memory").select("payload").eq("memory_key", `${DATA_KEY_PREFIX}${p}`).eq("memory_type", "ga_dataset").maybeSingle();
+    if (!barsRow) continue;
+    const bars = barsRow.payload as BarArrays;
+
+    // Extract top 15 from this pair
+    const seen = new Set<string>();
+    nameCounter = 0;
+    for (const ind of population.slice(0, 30)) {
+      const key = `${ind.dna.rsiMode}-${ind.dna.macdMode}-${ind.dna.bbMode}-${ind.dna.emaMode}-${ind.dna.direction}-${ind.dna.sessionFilter}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      const sim = simulateStrategy(bars, ind.dna);
+      if (sim.trades < 30) continue;
+
+      const oosSim = isSplit < bars.count ? simulateStrategy(bars, ind.dna, isSplit) : undefined;
+      const corr = Math.abs(pearsonCorrelation(baseDailyReturns, sim.dailyReturns));
+
+      const maxPts = 100;
+      const stride = Math.max(1, Math.ceil(sim.equityCurve.length / maxPts));
+      const dsCurve = sim.equityCurve.filter((_, i) => i % stride === 0);
+
+      allStrategies.push({
+        pair: p,
+        dna: ind.dna, fitness: ind.fitness,
+        sim: { ...sim, equityCurve: dsCurve },
+        correlation: corr,
+        strategyName: generateStrategyName(ind.dna),
+        edgeDescription: generateEdgeDescription(ind.dna),
+        entryRules: generateEntryRules(ind.dna),
+        exitRules: generateExitRules(ind.dna),
+        edgeArchetype: getEdgeArchetype(ind.dna),
+        oosReturn: oosSim ? Math.round(oosSim.totalReturn * 100) / 100 : null,
+        oosWinRate: oosSim ? Math.round(oosSim.winRate * 10000) / 10000 : null,
+        oosTrades: oosSim?.trades ?? null,
+        equityCurve: dsCurve,
+      });
+    }
+  }
+
+  console.log(`[GA-BATCH] ${allStrategies.length} candidate strategies from ${pairs.length} pairs`);
+
+  // Sort by total return
+  allStrategies.sort((a, b) => b.sim.totalReturn - a.sim.totalReturn);
+
+  // Cross-pair uncorrelated selection with pair diversity
+  const selected: PairStrategy[] = [];
+  const pairCounts: Record<string, number> = {};
+  const MAX_PER_PAIR = 2;
+
+  for (const strat of allStrategies) {
+    if (selected.length >= topN) break;
+
+    // Pair diversity: max 2 strategies per pair
+    const pc = pairCounts[strat.pair] || 0;
+    if (pc >= MAX_PER_PAIR) continue;
+
+    // OOS validation: reject strategies with terrible OOS
+    if (strat.oosTrades != null && strat.oosTrades >= 5 && (strat.oosReturn ?? 0) < -30) continue;
+
+    // Inter-strategy correlation check across the entire selected portfolio
+    let uncorrelated = true;
+    for (const existing of selected) {
+      const interCorr = Math.abs(pearsonCorrelation(strat.sim.dailyReturns, existing.sim.dailyReturns));
+      if (interCorr > maxInterCorr) { uncorrelated = false; break; }
+    }
+    if (!uncorrelated) continue;
+
+    selected.push(strat);
+    pairCounts[strat.pair] = pc + 1;
+  }
+
+  // Fallback: if we couldn't find enough, relax correlation
+  if (selected.length < topN) {
+    for (const strat of allStrategies) {
+      if (selected.length >= topN) break;
+      if (selected.includes(strat)) continue;
+      const pc = pairCounts[strat.pair] || 0;
+      if (pc >= 3) continue; // relaxed pair limit
+
+      let ok = true;
+      for (const existing of selected) {
+        if (Math.abs(pearsonCorrelation(strat.sim.dailyReturns, existing.sim.dailyReturns)) > 0.6) { ok = false; break; }
+      }
+      if (!ok) continue;
+
+      selected.push(strat);
+      pairCounts[strat.pair] = pc + 1;
+    }
+  }
+
+  console.log(`[GA-BATCH] Selected ${selected.length} uncorrelated strategies across ${Object.keys(pairCounts).length} pairs`);
+
+  const fmt = (s: PairStrategy) => ({
+    pair: s.pair,
+    dna: s.dna,
+    fitness: Math.round(s.fitness * 1000) / 1000,
+    winRate: Math.round(s.sim.winRate * 10000) / 10000,
+    profitFactor: Math.round(s.sim.profitFactor * 100) / 100,
+    trades: s.sim.trades,
+    totalPips: Math.round(s.sim.totalPips * 10) / 10,
+    totalReturn: Math.round(s.sim.totalReturn * 100) / 100,
+    maxDrawdown: Math.round(s.sim.maxDrawdown * 10000) / 10000,
+    grossProfit: Math.round(s.sim.grossProfit * 10) / 10,
+    grossLoss: Math.round(s.sim.grossLoss * 10) / 10,
+    sharpe: Math.round((s.sim.sharpe || 0) * 100) / 100,
+    correlation: Math.round(s.correlation * 1000) / 1000,
+    equityCurve: s.equityCurve,
+    strategyName: s.strategyName,
+    edgeDescription: s.edgeDescription,
+    entryRules: s.entryRules,
+    exitRules: s.exitRules,
+    edgeArchetype: s.edgeArchetype,
+    oosReturn: s.oosReturn,
+    oosWinRate: s.oosWinRate,
+    oosTrades: s.oosTrades,
+  });
+
+  return {
+    action: "batch-extract",
+    totalCandidates: allStrategies.length,
+    pairsProcessed: pairs.length,
+    selected: selected.length,
+    pairDistribution: pairCounts,
+    maxInterCorrelation: maxInterCorr,
+    top7: selected.map(fmt),
+    allCandidates: allStrategies.slice(0, 30).map(fmt),
+  };
+}
+
 // ── Main Router ───────────────────────────────────────────────────────────
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -1294,9 +1477,10 @@ Deno.serve(async (req) => {
     let result: unknown;
     switch (action) {
       case "init": result = await handlePhase1(body as Record<string, unknown>); break;
-      case "evolve": result = await handlePhase2(); break;
-      case "extract": result = await handlePhase3(); break;
-      case "status": result = await handleStatus(); break;
+      case "evolve": result = await handlePhase2(body as Record<string, unknown>); break;
+      case "extract": result = await handlePhase3(body as Record<string, unknown>); break;
+      case "status": result = await handleStatus(body as Record<string, unknown>); break;
+      case "batch-extract": result = await handleBatchExtract(body as Record<string, unknown>); break;
       default: throw new Error(`Unknown action: ${action}`);
     }
     return new Response(JSON.stringify({ success: true, ...result as object }), {
