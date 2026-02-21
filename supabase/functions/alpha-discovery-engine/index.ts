@@ -875,6 +875,7 @@ async function handlePhase1(body: Record<string, unknown>) {
     baseDailyReturns,
     evolutionLog: [{ gen: 0, bestFitness: Math.round(population[0].fitness * 1000) / 1000, avgFitness: Math.round(population.reduce((s, p) => s + p.fitness, 0) / population.length * 1000) / 1000, bestTrades: 0 }],
     totalSimulations: populationSize, barCount: bars.count, startedAt: new Date().toISOString(),
+    dateRange: { start: candles[0]?.time || '', end: candles[candles.length - 1]?.time || '' },
   };
 
   await sb.from("sovereign_memory").delete().eq("memory_key", JOB_KEY).eq("memory_type", "ga_job");
@@ -889,6 +890,7 @@ async function handlePhase1(body: Record<string, unknown>) {
     phase: 1, status: "evolving", pair, barCount: bars.count,
     populationSize, totalGenerations, currentGen: 0,
     bestFitness: population[0].fitness,
+    dateRange: { start: candles[0]?.time || '', end: candles[candles.length - 1]?.time || '' },
     message: `Indicator library built. ${bars.count} bars with RSI, MACD, BB, EMA, Volume. Ready to evolve.`,
   };
 }
@@ -1179,6 +1181,7 @@ async function handlePhase3() {
     uncorrelatedProfiles: finalUncorrelated.map(fmt),
     allProfiles: allProfiles.map(fmt),
     correlationFallback: finalUncorrelated.length === 0,
+    dateRange: (job as Record<string, unknown>).dateRange || { start: '', end: '' },
     config: { pair, populationSize: (job as Record<string, unknown>).populationSize, generations: (job as Record<string, unknown>).totalGenerations, maxCorrelation, candleCount: (job as Record<string, unknown>).barCount, mutationRate: (job as Record<string, unknown>).mutationRate },
   };
 }
@@ -1194,6 +1197,7 @@ async function handleStatus() {
     bestFitness: (job.population as { fitness: number }[])?.[0]?.fitness || 0,
     evolutionLog: ((job.evolutionLog as unknown[]) || []).slice(-5),
     pair: job.pair, barCount: job.barCount,
+    dateRange: job.dateRange || { start: '', end: '' },
   };
 }
 

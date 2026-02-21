@@ -37,6 +37,7 @@ interface GAResult {
   evolutionLog: EvolutionEntry[];
   uncorrelatedProfiles: GAProfile[]; allProfiles: GAProfile[];
   correlationFallback?: boolean;
+  dateRange?: { start: string; end: string };
   config: { pair: string; populationSize: number; generations: number; maxCorrelation: number; candleCount: number; mutationRate: number };
 }
 
@@ -380,6 +381,19 @@ export function AlphaDiscoveryEngine({ result }: { result: BacktestResult }) {
               {/* Results */}
               {gaResult && phase === 'complete' && (
                 <div className="space-y-4">
+                  {/* Date Range Banner */}
+                  {gaResult.dateRange?.start && (
+                    <div className="bg-slate-950/60 border border-slate-800/40 rounded-lg p-2.5 flex items-center justify-center gap-3">
+                      <Clock className="w-3 h-3 text-cyan-400" />
+                      <span className="text-[9px] font-mono text-slate-400">
+                        Backtest Period: <span className="text-cyan-400 font-bold">{new Date(gaResult.dateRange.start).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}</span>
+                        <span className="text-slate-600 mx-1.5">→</span>
+                        <span className="text-cyan-400 font-bold">{new Date(gaResult.dateRange.end).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}</span>
+                        <span className="text-slate-600 ml-2">({Math.round((new Date(gaResult.dateRange.end).getTime() - new Date(gaResult.dateRange.start).getTime()) / (1000 * 60 * 60 * 24))} days)</span>
+                      </span>
+                    </div>
+                  )}
+
                   {/* Stats Banner */}
                   <div className="grid grid-cols-5 gap-2">
                     {[
