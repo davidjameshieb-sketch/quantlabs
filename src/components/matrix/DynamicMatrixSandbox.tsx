@@ -6,9 +6,19 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   Sliders, ToggleLeft, ToggleRight, TrendingUp, TrendingDown,
   Zap, Shield, Target, Activity, ChevronDown, ChevronUp,
-  Crosshair, OctagonX,
+  Crosshair, OctagonX, Clock,
 } from 'lucide-react';
 import type { BacktestResult, RankComboResult } from '@/hooks/useRankExpectancy';
+
+// ── Trading Sessions ──
+const SESSION_OPTIONS = [
+  { id: 0, label: 'All Sessions',  wrMod: 0,  pfMod: 1.0,  tradeMul: 1.0,  desc: 'Full 24h cycle — no session filter' },
+  { id: 1, label: 'Asian',         wrMod: 3,  pfMod: 0.90, tradeMul: 0.25, desc: '00:00–07:00 UTC · Low vol consolidation' },
+  { id: 2, label: 'London',        wrMod: -2, pfMod: 1.08, tradeMul: 0.30, desc: '07:00–12:00 UTC · Peak institutional volume' },
+  { id: 3, label: 'New York',      wrMod: -1, pfMod: 1.05, tradeMul: 0.28, desc: '12:00–17:00 UTC · US liquidity overlap' },
+  { id: 4, label: 'NY Close',      wrMod: 4,  pfMod: 0.85, tradeMul: 0.17, desc: '17:00–21:00 UTC · Thin liquidity wind-down' },
+] as const;
+
 
 // ── 25 Stop Loss Strategies ──
 const STOP_LOSS_OPTIONS = [
@@ -84,6 +94,7 @@ function filterAndRecalc(
   slippagePips: number,
   stopLossIdx: number,
   entryIdx: number,
+  sessionIdx: number,
 ) {
   const combo = comboResults.find(
     c => c.strongRank === predatorRank && c.weakRank === preyRank,
@@ -115,10 +126,17 @@ function filterAndRecalc(
   wrPenalty -= entry.wrMod;
   pfMultiplier *= entry.pfMod;
 
+  // Session impact
+  const session = SESSION_OPTIONS[sessionIdx] || SESSION_OPTIONS[0];
+  wrPenalty -= session.wrMod; // negative wrMod = session boosts WR
+  pfMultiplier *= session.pfMod;
+
   // Slippage + entry offset cost
-  const entryOffsetCost = Math.abs(entry.offset) * rawTrades * 0.05;
-  const slippageDrag = slippagePips * rawTrades;
-  const adjustedPips = rawPips - slippageDrag - entryOffsetCost + (sl.pips > 0 ? sl.wrMod * rawTrades * 0.1 : 0);
+  const sessionTradeMul = session.tradeMul;
+  const sessionAdjustedTrades = Math.max(1, Math.round(rawTrades * sessionTradeMul));
+  const entryOffsetCost = Math.abs(entry.offset) * sessionAdjustedTrades * 0.05;
+  const slippageDrag = slippagePips * sessionAdjustedTrades;
+  const adjustedPips = rawPips * sessionTradeMul - slippageDrag - entryOffsetCost + (sl.pips > 0 ? sl.wrMod * sessionAdjustedTrades * 0.1 : 0);
   const adjustedWR = Math.max(0, Math.min(100, rawWR - wrPenalty));
   const adjustedPF = Math.max(0, rawPF * pfMultiplier);
 
@@ -131,11 +149,11 @@ function filterAndRecalc(
   const slPips = sl.pips || 15;
   const rrRatio = adjustedPF; // approximate reward:risk
   const tpPips = slPips * Math.max(0.5, rrRatio);
-  const tradeCount = Math.max(1, rawTrades);
+  const tradeCount = Math.max(1, sessionAdjustedTrades);
   const wrDecimal = adjustedWR / 100;
 
   // Use a seeded pseudo-random based on combo+settings so it's deterministic but unique
-  const seed = predatorRank * 1000 + preyRank * 100 + stopLossIdx * 10 + entryIdx + (gate1 ? 1 : 0) + (gate2 ? 2 : 0) + (gate3 ? 4 : 0);
+  const seed = predatorRank * 1000 + preyRank * 100 + stopLossIdx * 10 + entryIdx + sessionIdx * 7 + (gate1 ? 1 : 0) + (gate2 ? 2 : 0) + (gate3 ? 4 : 0);
   let rng = seed + 1;
   const pseudoRandom = () => {
     rng = (rng * 16807 + 0) % 2147483647;
@@ -192,8 +210,8 @@ function filterAndRecalc(
   const totalReturn = ((finalEquity - 1000) / 1000) * 100;
 
   return {
-    trades: rawTrades,
-    wins: rawWins,
+    trades: tradeCount,
+    wins: Math.round(tradeCount * wrDecimal),
     winRate: Math.round(adjustedWR * 10) / 10,
     profitFactor: Math.round(adjustedPF * 100) / 100,
     totalPips: Math.round(adjustedPips * 10) / 10,
@@ -204,6 +222,7 @@ function filterAndRecalc(
     slippageCost: Math.round(slippageDrag * 10) / 10,
     stopLoss: sl,
     entry,
+    session,
     combo,
   };
 }
@@ -377,6 +396,7 @@ export const DynamicMatrixSandbox = ({ result }: Props) => {
   const [slippagePips, setSlippagePips] = useState(0);
   const [stopLossIdx, setStopLossIdx] = useState(1);
   const [entryIdx, setEntryIdx] = useState(0);
+  const [sessionIdx, setSessionIdx] = useState(0);
 
   const sandbox = useMemo(
     () => filterAndRecalc(
@@ -390,8 +410,9 @@ export const DynamicMatrixSandbox = ({ result }: Props) => {
       slippagePips,
       stopLossIdx,
       entryIdx,
+      sessionIdx,
     ),
-    [result, predatorRank, preyRank, gate1, gate2, gate3, slippagePips, stopLossIdx, entryIdx],
+    [result, predatorRank, preyRank, gate1, gate2, gate3, slippagePips, stopLossIdx, entryIdx, sessionIdx],
   );
 
   return (
@@ -628,6 +649,44 @@ export const DynamicMatrixSandbox = ({ result }: Props) => {
               </p>
             )}
           </div>
+
+          {/* Trading Session */}
+          <div className="space-y-2">
+            <h3 className="text-[9px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1.5">
+              <Clock className="w-3 h-3 text-[#a855f7]" />
+              Trading Session
+            </h3>
+            <div className="space-y-1">
+              {SESSION_OPTIONS.map((s) => (
+                <button
+                  key={s.id}
+                  onClick={() => setSessionIdx(s.id)}
+                  className={`w-full text-left px-2.5 py-2 rounded-lg border transition-all ${
+                    sessionIdx === s.id
+                      ? 'border-purple-500/40 bg-purple-500/10'
+                      : 'border-slate-800/50 bg-transparent hover:border-slate-700/50'
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className={`text-[9px] font-bold font-mono ${
+                      sessionIdx === s.id ? 'text-purple-400' : 'text-slate-500'
+                    }`}>
+                      {s.label}
+                    </span>
+                    {sessionIdx === s.id && (
+                      <span className="text-[7px] font-mono text-purple-400">●</span>
+                    )}
+                  </div>
+                  <p className="text-[7px] text-slate-600 mt-0.5">{s.desc}</p>
+                </button>
+              ))}
+            </div>
+            {sessionIdx > 0 && (
+              <p className="text-[8px] text-purple-400/70 font-mono">
+                WR mod: {SESSION_OPTIONS[sessionIdx].wrMod > 0 ? '+' : ''}{SESSION_OPTIONS[sessionIdx].wrMod}% · PF: ×{SESSION_OPTIONS[sessionIdx].pfMod} · ~{Math.round(SESSION_OPTIONS[sessionIdx].tradeMul * 100)}% of trades
+              </p>
+            )}
+          </div>
         </div>
 
         {/* ── MAIN: Dynamic Output ── */}
@@ -659,7 +718,7 @@ export const DynamicMatrixSandbox = ({ result }: Props) => {
                 <MiniEquityChart curve={sandbox.equityCurve} />
                 <div className="flex items-center justify-between mt-2 text-[8px] font-mono text-slate-600">
                   <span>{sandbox.equityCurve[0]?.time ? new Date(sandbox.equityCurve[0].time).toLocaleDateString() : ''}</span>
-                  <span>{sandbox.trades} trades · #{predatorRank} vs #{preyRank} · {[gate1 && 'G1', gate2 && 'G2', gate3 && 'G3'].filter(Boolean).join('+') || 'No Gates'}</span>
+                  <span>{sandbox.trades} trades · #{predatorRank} vs #{preyRank} · {[gate1 && 'G1', gate2 && 'G2', gate3 && 'G3'].filter(Boolean).join('+') || 'No Gates'} · {SESSION_OPTIONS[sessionIdx].label}</span>
                   <span>{sandbox.equityCurve.length > 0 ? new Date(sandbox.equityCurve[sandbox.equityCurve.length - 1].time).toLocaleDateString() : ''}</span>
                 </div>
               </div>
