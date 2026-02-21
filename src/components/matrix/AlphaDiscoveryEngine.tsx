@@ -717,16 +717,16 @@ function StrategyCard({ profile, idx, expandedProfile, setExpandedProfile, maxCo
         </div>
         {/* Stats Row — 8 KPIs */}
         <div className="grid grid-cols-4 lg:grid-cols-8 gap-1.5 mt-2.5">
-          <StatBox label="Total Return" value={`${isPositive ? '+' : ''}${(profile.totalReturn ?? 0).toFixed(1)}%`} color={isPositive ? '#39ff14' : '#ff0055'} />
+          <StatBox label="Total Return" value={formatReturn(profile.totalReturn ?? 0)} color={isPositive ? '#39ff14' : '#ff0055'} />
           <StatBox label="Win Rate" value={`${(profile.winRate * 100).toFixed(1)}%`} color={profile.winRate >= 0.6 ? '#39ff14' : '#00ffea'} />
           <StatBox label="Profit Factor" value={profile.profitFactor.toFixed(2)} color={profile.profitFactor > 2 ? '#39ff14' : '#00ffea'} />
           <StatBox label="Sharpe Ratio" value={`${(profile.sharpe ?? 0).toFixed(2)}`} color={(profile.sharpe ?? 0) > 1.5 ? '#39ff14' : (profile.sharpe ?? 0) > 0.5 ? '#00ffea' : '#ff0055'} />
           <StatBox label="Max Drawdown" value={`-${((profile.maxDrawdown ?? 0) * 100).toFixed(1)}%`} color={(profile.maxDrawdown ?? 0) < 0.1 ? '#00ffea' : '#ff0055'} />
           <StatBox label="Net Pips" value={`${profile.totalPips >= 0 ? '+' : ''}${Math.round(profile.totalPips)}`} color={profile.totalPips >= 0 ? '#39ff14' : '#ff0055'} />
-          <StatBox label="Final Equity" value={`$${(profile.equityCurve?.length ? profile.equityCurve[profile.equityCurve.length - 1] : 1000).toFixed(0)}`} color={
+          <StatBox label="Final Equity" value={formatEquity(profile.equityCurve?.length ? profile.equityCurve[profile.equityCurve.length - 1] : 1000)} color={
             (profile.equityCurve?.length ? profile.equityCurve[profile.equityCurve.length - 1] : 1000) >= 1000 ? '#39ff14' : '#ff0055'
           } />
-          <StatBox label="OOS Return" value={profile.oosReturn != null ? `${profile.oosReturn >= 0 ? '+' : ''}${profile.oosReturn.toFixed(1)}%` : '—'} color={
+          <StatBox label="OOS Return" value={profile.oosReturn != null ? formatReturn(profile.oosReturn) : '—'} color={
             profile.oosReturn != null ? (profile.oosReturn >= 0 ? '#39ff14' : '#ff0055') : '#475569'
           } />
         </div>
@@ -747,7 +747,7 @@ function StrategyCard({ profile, idx, expandedProfile, setExpandedProfile, maxCo
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-[7px] font-mono text-slate-500 uppercase tracking-widest">Strategy Equity Curve</span>
                   <span className="text-[8px] font-mono font-bold" style={{ color: isPositive ? '#39ff14' : '#ff0055' }}>
-                    {isPositive ? '+' : ''}{(profile.totalReturn ?? 0).toFixed(1)}% return
+                    {formatReturn(profile.totalReturn ?? 0)} return
                   </span>
                 </div>
                 <EquityCurve curve={profile.equityCurve} height={80} />
@@ -805,6 +805,24 @@ function StrategyCard({ profile, idx, expandedProfile, setExpandedProfile, maxCo
       </AnimatePresence>
     </div>
   );
+}
+
+function formatReturn(val: number): string {
+  const abs = Math.abs(val);
+  const sign = val >= 0 ? '+' : '-';
+  if (abs >= 1e12) return `${sign}${(abs / 1e12).toFixed(1)}T%`;
+  if (abs >= 1e9) return `${sign}${(abs / 1e9).toFixed(1)}B%`;
+  if (abs >= 1e6) return `${sign}${(abs / 1e6).toFixed(1)}M%`;
+  if (abs >= 1e4) return `${sign}${(abs / 1e3).toFixed(1)}K%`;
+  return `${sign}${abs.toFixed(1)}%`;
+}
+
+function formatEquity(val: number): string {
+  if (val >= 1e12) return `$${(val / 1e12).toFixed(1)}T`;
+  if (val >= 1e9) return `$${(val / 1e9).toFixed(1)}B`;
+  if (val >= 1e6) return `$${(val / 1e6).toFixed(1)}M`;
+  if (val >= 1e4) return `$${(val / 1e3).toFixed(1)}K`;
+  return `$${val.toFixed(0)}`;
 }
 
 function StatBox({ label, value, color }: { label: string; value: string | number; color: string }) {
