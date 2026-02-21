@@ -62,14 +62,22 @@ function filterAndRecalc(
   // Build simulated equity curve
   const comboKey = `${predatorRank}v${preyRank}`;
   const baseCurve = equityCurves[comboKey] || equityCurves['1v8'] || [];
+
+  // Reconstruct equity from per-trade pips scaled by gate/slippage penalties
+  // The base curve encodes the raw equity path; we re-scale the *gains* portion
+  const totalGatePenaltyPct = (wrPenalty / 100); // fraction of edge lost
+  const pfDamage = 1 - pfMultiplier;             // fraction of PF lost
+
   const simulatedCurve = baseCurve.map((pt, idx) => {
+    const rawGain = pt.equity - 1000; // how far from starting capital
+    // Shrink gains by gate penalty (turning off gates degrades the edge)
+    const gatedGain = rawGain * (1 - totalGatePenaltyPct * 1.5 - pfDamage * 0.5);
+    // Slippage drags linearly per trade taken
     const progress = idx / Math.max(1, baseCurve.length - 1);
-    // Apply gate penalties and slippage as a drag on the curve
-    const gateDrag = wrPenalty * 0.15 * progress;
-    const slipDrag = slippagePips * 2 * progress;
+    const slipDrag = slippagePips * rawTrades * 0.10 * progress; // $0.10 per pip per trade
     return {
       time: pt.time,
-      equity: Math.max(0, pt.equity - gateDrag - slipDrag),
+      equity: Math.max(0, 1000 + gatedGain - slipDrag),
     };
   });
 
