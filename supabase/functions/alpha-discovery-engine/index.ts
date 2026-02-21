@@ -197,23 +197,41 @@ function findBestSplit(
   let bestThreshold = 0;
 
   for (const fi of featureIndices) {
-    const allVals = features.map(r => r[fi]);
-    const uniqueVals = [...new Set(allVals)].sort((a, b) => a - b);
-    // Subsample thresholds to max 20 candidates to save memory/CPU
-    const step = Math.max(1, Math.floor(uniqueVals.length / 20));
-    const values = uniqueVals.filter((_, i) => i % step === 0);
-    for (let t = 0; t < values.length - 1; t++) {
-      const threshold = (values[t] + values[t + 1]) / 2;
-      const leftLabels: number[] = [];
-      const rightLabels: number[] = [];
-      for (let i = 0; i < features.length; i++) {
-        if (features[i][fi] <= threshold) leftLabels.push(labels[i]);
-        else rightLabels.push(labels[i]);
+    const uniqueVals = [...new Set(features.map(r => r[fi]))].sort((a, b) => a - b);
+    // Subsample thresholds to max 30 candidates
+    const maxCandidates = 30;
+    let thresholds: number[];
+    if (uniqueVals.length <= maxCandidates + 1) {
+      thresholds = [];
+      for (let t = 0; t < uniqueVals.length - 1; t++) {
+        thresholds.push((uniqueVals[t] + uniqueVals[t + 1]) / 2);
       }
-      if (leftLabels.length < 3 || rightLabels.length < 3) continue;
-      const leftGini = giniImpurity(leftLabels);
-      const rightGini = giniImpurity(rightLabels);
-      const weightedGini = (leftLabels.length * leftGini + rightLabels.length * rightGini) / labels.length;
+    } else {
+      thresholds = [];
+      const step = (uniqueVals.length - 1) / maxCandidates;
+      for (let j = 0; j < maxCandidates; j++) {
+        const idx = Math.floor(j * step);
+        thresholds.push((uniqueVals[idx] + uniqueVals[idx + 1]) / 2);
+      }
+    }
+
+    for (const threshold of thresholds) {
+      let leftPos = 0, leftTotal = 0, rightPos = 0, rightTotal = 0;
+      for (let i = 0; i < features.length; i++) {
+        if (features[i][fi] <= threshold) {
+          leftTotal++;
+          if (labels[i] === 1) leftPos++;
+        } else {
+          rightTotal++;
+          if (labels[i] === 1) rightPos++;
+        }
+      }
+      if (leftTotal < 3 || rightTotal < 3) continue;
+      const leftP = leftPos / leftTotal;
+      const rightP = rightPos / rightTotal;
+      const leftGini = 2 * leftP * (1 - leftP);
+      const rightGini = 2 * rightP * (1 - rightP);
+      const weightedGini = (leftTotal * leftGini + rightTotal * rightGini) / labels.length;
       const gain = parentGini - weightedGini;
       if (gain > bestGain) {
         bestGain = gain;
@@ -222,7 +240,11 @@ function findBestSplit(
       }
     }
   }
-  return bestGain > 0.001 ? { featureIndex: bestFeature, threshold: bestThreshold, gain: bestGain } : null;
+  
+  if (bestGain > 0) {
+    console.log(`[TREE] Best split: feature=${bestFeature}, threshold=${bestThreshold.toFixed(4)}, gain=${bestGain.toFixed(6)}`);
+  }
+  return bestGain > 0.0001 ? { featureIndex: bestFeature, threshold: bestThreshold, gain: bestGain } : null;
 }
 
 function buildTree(
@@ -395,9 +417,9 @@ Deno.serve(async (req) => {
     const body = await req.json().catch(() => ({}));
     const environment: "practice" | "live" = body.environment || "live";
     const maxDepth = body.maxDepth || 5;
-    const minWinRate = body.minWinRate || 0.35;
+    const minWinRate = body.minWinRate || 0.22;
     const maxCorrelation = body.maxCorrelation || 0.3;
-    const candleCount = Math.min(body.candles || 2000, 3000);
+    const candleCount = Math.min(body.candles || 5000, 5000);
 
     const apiToken = environment === "live"
       ? (Deno.env.get("OANDA_LIVE_API_TOKEN") || Deno.env.get("OANDA_API_TOKEN"))
@@ -440,19 +462,22 @@ Deno.serve(async (req) => {
         const closes = window.map(c => c.close);
         const currentATR = atrs[i] || atrs[i - 1] || 0.001;
 
-        // Compute rankings from window
+        // Compute independent base/quote momentum for rank proxy
         const pctReturn = computePercentReturn(window, 20);
-        // Simplified: use sign of return for rank proxy
-        const predatorRank = pctReturn > 0.01 ? 1 : pctReturn > 0.005 ? 2 : pctReturn > 0 ? 3 : 4;
-        const preyRank = pctReturn < -0.01 ? 8 : pctReturn < -0.005 ? 7 : pctReturn < 0 ? 6 : 5;
+        // Spread ranks across full 1-8 range independently
+        const baseStrength = pctReturn; // positive = base strong
+        const quoteWeakness = -pctReturn; // positive = quote weak (base strong)
+        // Use quantile-style bucketing for more variance
+        const predatorRank = baseStrength > 0.02 ? 1 : baseStrength > 0.01 ? 2 : baseStrength > 0.005 ? 3 : baseStrength > 0 ? 4 : baseStrength > -0.005 ? 5 : baseStrength > -0.01 ? 6 : baseStrength > -0.02 ? 7 : 8;
+        const preyRank = quoteWeakness > 0.02 ? 1 : quoteWeakness > 0.01 ? 2 : quoteWeakness > 0.005 ? 3 : quoteWeakness > 0 ? 4 : quoteWeakness > -0.005 ? 5 : quoteWeakness > -0.01 ? 6 : quoteWeakness > -0.02 ? 7 : 8;
 
         // Gate computations
         const snap20High = Math.max(...window.map(c => c.high));
         const snap20Low = Math.min(...window.map(c => c.low));
-        const gate1 = predatorRank <= 2 && preyRank >= 7;
+        const gate1 = predatorRank <= 3 && preyRank >= 6; // relaxed to be achievable
         const gate2 = candles[i].close > snap20High || candles[i].close < snap20Low;
         const slope = linearRegressionSlope(closes);
-        const gate3 = Math.abs(slope) > 0;
+        const gate3 = Math.abs(slope) > currentATR * 0.01; // meaningful threshold
 
         // Hurst exponent
         const hurst = computeHurst(closes, 20);
@@ -518,12 +543,12 @@ Deno.serve(async (req) => {
     }
 
     // ── Step 3: Subsample if too large to avoid memory limits ──
-    const MAX_ROWS = 15000;
+    const MAX_ROWS = 8000;
     let trainingRows = allRows;
     if (allRows.length > MAX_ROWS) {
       const stride = Math.ceil(allRows.length / MAX_ROWS);
       trainingRows = allRows.filter((_, i) => i % stride === 0);
-      console.log(`[ALPHA DISCOVERY] Subsampled ${allRows.length} → ${trainingRows.length} rows`);
+      console.log(`[ALPHA DISCOVERY] Subsampled ${allRows.length} → ${trainingRows.length} for tree training (full data used for simulation)`);
     }
 
     const features = trainingRows.map(r => [
@@ -539,7 +564,7 @@ Deno.serve(async (req) => {
     // ── Step 4: Extract high-probability leaf paths ──
     const leafPaths = extractLeafPaths(tree);
     const highProbPaths = leafPaths
-      .filter(lp => lp.winRate >= minWinRate && lp.samples >= 20)
+      .filter(lp => lp.winRate >= minWinRate && lp.samples >= 10)
       .sort((a, b) => b.winRate - a.winRate);
 
     console.log(`[ALPHA DISCOVERY] Found ${highProbPaths.length} paths with ≥${(minWinRate * 100).toFixed(0)}% win rate`);
