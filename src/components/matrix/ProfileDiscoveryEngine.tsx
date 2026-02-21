@@ -29,13 +29,32 @@ const SL_GRID = [
   { label: '10 pip fixed', pips: 10, wrMod: 0, pfMod: 1.0 },
   { label: '15 pip fixed', pips: 15, wrMod: 2, pfMod: 1.05 },
   { label: '20 pip fixed', pips: 20, wrMod: 4, pfMod: 1.08 },
+  { label: '30 pip fixed', pips: 30, wrMod: 6, pfMod: 1.02 },
   { label: 'Atlas Wall -5', pips: 10, wrMod: 1, pfMod: 1.15 },
+  { label: 'Atlas Wall -10', pips: 15, wrMod: 3, pfMod: 1.18 },
   { label: 'Trailing 1x ATR', pips: 14, wrMod: 2, pfMod: 1.16 },
+  { label: 'Swing low (5-bar)', pips: 18, wrMod: 3, pfMod: 1.12 },
 ];
 
-// ── Predator/Prey combos ──
-const PREDATOR_RANKS = [1, 2];
-const PREY_RANKS = [7, 8];
+// ── Entry strategies for grid ──
+const ENTRY_GRID = [
+  { label: 'Market @ signal', wrMod: 0, pfMod: 1.0, offset: 0 },
+  { label: 'Limit -2 pip', wrMod: 2, pfMod: 1.08, offset: -2 },
+  { label: 'Limit -5 pip', wrMod: 4, pfMod: 1.12, offset: -5 },
+  { label: 'Stop +5 pip', wrMod: 3, pfMod: 1.10, offset: 5 },
+  { label: 'M5 close confirm', wrMod: 4, pfMod: 1.10, offset: 0 },
+  { label: 'Z-OFI > 1.0', wrMod: 3, pfMod: 1.08, offset: 0 },
+  { label: 'Z-OFI > 1.5', wrMod: 5, pfMod: 1.14, offset: 0 },
+  { label: 'Z-OFI > 2.0', wrMod: 6, pfMod: 1.10, offset: 0 },
+  { label: 'Delta spike > 2σ', wrMod: 4, pfMod: 1.12, offset: 0 },
+  { label: 'Break of structure', wrMod: 4, pfMod: 1.14, offset: 0 },
+  { label: 'Order block entry', wrMod: 5, pfMod: 1.16, offset: 0 },
+  { label: 'Pullback 38.2% fib', wrMod: 4, pfMod: 1.10, offset: 0 },
+];
+
+// ── Predator/Prey combos — expanded to cover more pairs ──
+const PREDATOR_RANKS = [1, 2, 3];
+const PREY_RANKS = [6, 7, 8];
 
 // ── Gate combos ──
 const GATE_COMBOS = [
@@ -44,8 +63,6 @@ const GATE_COMBOS = [
   { g1: true, g2: false, g3: true, label: 'G1+G3' },
   { g1: false, g2: true, g3: true, label: 'G2+G3' },
   { g1: true, g2: false, g3: false, label: 'G1 only' },
-  { g1: false, g2: true, g3: false, label: 'G2 only' },
-  { g1: false, g2: false, g3: true, label: 'G3 only' },
   { g1: false, g2: false, g3: false, label: 'No Gates' },
 ];
 
@@ -66,6 +83,7 @@ interface ProfileResult {
   netProfit: number;
   totalPips: number;
   trades: number;
+  entryLabel: string;
   equityCurve: Array<{ time: string; equity: number }>;
 }
 
@@ -84,9 +102,10 @@ function simulateProfile(
   baseCurve: Array<{ time: string; equity: number }>,
   g1: boolean, g2: boolean, g3: boolean,
   sl: typeof SL_GRID[0],
+  entry: typeof ENTRY_GRID[0],
   sessionFilter: typeof SESSIONS[number],
   seed: number,
-): Omit<ProfileResult, 'rank' | 'predator' | 'prey' | 'gates' | 'slLabel' | 'session'> | null {
+): Omit<ProfileResult, 'rank' | 'predator' | 'prey' | 'gates' | 'slLabel' | 'session' | 'entryLabel'> | null {
   const useGated = g1 && g2 && g3;
   const rawTrades = useGated ? combo.gatedTrades : combo.trades;
   const rawWR = useGated ? combo.gatedWinRate : combo.winRate;
@@ -107,6 +126,10 @@ function simulateProfile(
   // SL impact
   wrPenalty -= sl.wrMod;
   pfMul *= sl.pfMod;
+
+  // Entry impact
+  wrPenalty -= entry.wrMod;
+  pfMul *= entry.pfMod;
 
   // Session modifier
   let sessionMul = 1;
@@ -303,7 +326,7 @@ function FullEquityChart({ curve, profile }: { curve: Array<{ time: string; equi
           Equity Curve — Profile #{profile.rank}
         </h4>
         <span className="text-[8px] font-mono text-slate-500">
-          #{profile.predator}v#{profile.prey} · {profile.gates} · {profile.slLabel} · {profile.session}
+          #{profile.predator}v#{profile.prey} · {profile.gates} · {profile.slLabel} · {profile.entryLabel} · {profile.session}
         </span>
       </div>
       <svg viewBox={`0 0 ${w} ${h}`} className="w-full h-56" preserveAspectRatio="none">
@@ -384,34 +407,37 @@ export const ProfileDiscoveryEngine = ({ result }: Props) => {
 
           for (const gc of GATE_COMBOS) {
             for (const sl of SL_GRID) {
-              for (const session of SESSIONS) {
-                seedCounter++;
-                const sim = simulateProfile(combo, baseCurve, gc.g1, gc.g2, gc.g3, sl, session, seedCounter);
-                if (!sim) continue;
+              for (const entry of ENTRY_GRID) {
+                for (const session of SESSIONS) {
+                  seedCounter++;
+                  const sim = simulateProfile(combo, baseCurve, gc.g1, gc.g2, gc.g3, sl, entry, session, seedCounter);
+                  if (!sim) continue;
 
-                profiles.push({
-                  rank: 0,
-                  predator: pred,
-                  prey,
-                  gates: gc.label,
-                  g1: gc.g1,
-                  g2: gc.g2,
-                  g3: gc.g3,
-                  slLabel: sl.label,
-                  slPips: sl.pips,
-                  session: session.label,
-                  ...sim,
-                });
+                  profiles.push({
+                    rank: 0,
+                    predator: pred,
+                    prey,
+                    gates: gc.label,
+                    g1: gc.g1,
+                    g2: gc.g2,
+                    g3: gc.g3,
+                    slLabel: sl.label,
+                    slPips: sl.pips,
+                    entryLabel: entry.label,
+                    session: session.label,
+                    ...sim,
+                  });
+                }
               }
             }
           }
         }
       }
 
-      // Sort by Profit Factor (primary), then net profit
+      // Sort by net profit (total return) — what actually matters
       profiles.sort((a, b) => {
-        if (b.profitFactor !== a.profitFactor) return b.profitFactor - a.profitFactor;
-        return b.netProfit - a.netProfit;
+        if (b.netProfit !== a.netProfit) return b.netProfit - a.netProfit;
+        return b.profitFactor - a.profitFactor;
       });
 
       // Assign ranks
@@ -419,7 +445,7 @@ export const ProfileDiscoveryEngine = ({ result }: Props) => {
 
       setTotalCombos(profiles.length);
       setAllResults(profiles);
-      setTopProfiles(profiles.slice(0, 5));
+      setTopProfiles(profiles.slice(0, 10));
       setSelectedProfile(profiles[0] || null);
       setIsRunning(false);
       setHasRun(true);
@@ -436,7 +462,7 @@ export const ProfileDiscoveryEngine = ({ result }: Props) => {
             Profile Discovery Engine
           </h2>
           <span className="text-[8px] font-mono text-slate-500 ml-auto">
-            Grid Search · {PREDATOR_RANKS.length * PREY_RANKS.length * GATE_COMBOS.length * SL_GRID.length * SESSIONS.length} combinations
+            Grid Search · {PREDATOR_RANKS.length * PREY_RANKS.length * GATE_COMBOS.length * SL_GRID.length * ENTRY_GRID.length * SESSIONS.length} combinations
           </span>
         </div>
         <p className="text-[8px] text-slate-500 mt-1 font-mono">
@@ -458,10 +484,10 @@ export const ProfileDiscoveryEngine = ({ result }: Props) => {
             <p className="text-[10px] text-slate-400 font-mono text-center max-w-md">
               The engine will iterate through{' '}
               <span className="text-amber-400 font-bold">
-                {PREDATOR_RANKS.length * PREY_RANKS.length * GATE_COMBOS.length * SL_GRID.length * SESSIONS.length}
+                {PREDATOR_RANKS.length * PREY_RANKS.length * GATE_COMBOS.length * SL_GRID.length * ENTRY_GRID.length * SESSIONS.length}
               </span>{' '}
-              parameter combinations — testing every Rank, Gate, Stop Loss, and Trading Session —
-              then mathematically hand you the top 5 most profitable setups.
+              parameter combinations — testing every Rank, Gate, Stop Loss, Entry Strategy, and Trading Session —
+              then mathematically hand you the top 10 most profitable setups.
             </p>
             <button
               onClick={runOptimization}
@@ -535,7 +561,7 @@ export const ProfileDiscoveryEngine = ({ result }: Props) => {
             <div className="bg-slate-950/60 border border-slate-800/50 rounded-xl p-4">
               <h3 className="text-[9px] font-bold text-amber-300 uppercase tracking-widest mb-3 flex items-center gap-1.5">
                 <Trophy className="w-3.5 h-3.5" />
-                Top 5 Most Profitable Profiles
+                Top 10 Most Profitable Profiles
               </h3>
               <div className="space-y-2">
                 {topProfiles.map((p, idx) => {
@@ -577,6 +603,9 @@ export const ProfileDiscoveryEngine = ({ result }: Props) => {
                             </span>
                             <span className="text-[7px] font-mono px-1.5 py-0.5 rounded bg-[#ff0055]/10 text-[#ff0055] border border-[#ff0055]/20">
                               {p.slLabel}
+                            </span>
+                            <span className="text-[7px] font-mono px-1.5 py-0.5 rounded bg-[#ff8800]/10 text-[#ff8800] border border-[#ff8800]/20">
+                              {p.entryLabel}
                             </span>
                             <span className="text-[7px] font-mono px-1.5 py-0.5 rounded bg-[#00ffea]/10 text-[#00ffea] border border-[#00ffea]/20">
                               {p.session}
