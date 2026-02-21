@@ -60,6 +60,7 @@ interface SimResult {
   trades: number; wins: number; winRate: number; profitFactor: number;
   totalPips: number; maxDrawdown: number; grossProfit: number; grossLoss: number;
   totalReturn: number; equityCurve: number[]; dailyReturns: number[];
+  sharpe: number;
 }
 
 interface ScoredIndividual {
@@ -331,7 +332,8 @@ function buildFeatureArrays(pair: string, candles: Candle[]): BarArrays {
     isJPY: [], count: 0,
   };
 
-  for (let i = START; i < n - 8; i++) {
+  const MFE_MAE_HORIZON = 16; // 8 hours on M30 — captures real trend moves
+  for (let i = START; i < n - MFE_MAE_HORIZON; i++) {
     const currentATR = atrs[i] || 0.001;
     const hurst = computeHurst(closes, i, 20);
 
@@ -351,9 +353,9 @@ function buildFeatureArrays(pair: string, candles: Candle[]): BarArrays {
     }
     const isLongBias = pctSum > 0 ? 1 : 0;
 
-    // Future MFE/MAE over 8 bars — for BOTH directions
+    // Future MFE/MAE over 16 bars — for BOTH directions
     let mfeLong = 0, maeLong = 0, mfeShort = 0, maeShort = 0;
-    for (let j = i + 1; j <= i + 8 && j < n; j++) {
+    for (let j = i + 1; j <= i + MFE_MAE_HORIZON && j < n; j++) {
       const favL = candles[j].high - candles[i].close;
       const advL = candles[i].close - candles[j].low;
       if (favL > mfeLong) mfeLong = favL;
@@ -494,22 +496,27 @@ function evaluateEntry(bars: BarArrays, i: number, dna: StrategyDNA): { long: bo
   return { long: isLong, short: isShort };
 }
 
-function simulateStrategy(bars: BarArrays, dna: StrategyDNA): SimResult {
+function simulateStrategy(bars: BarArrays, dna: StrategyDNA, startIdx = 0, endIdx?: number): SimResult {
   const START_EQ = 1000;
+  const RISK_PER_TRADE = 0.01; // 1% equity risk per trade — enables compounding
+  const TRADE_COOLDOWN = 4;    // minimum bars between trades — prevents overlapping entries
   let equity = START_EQ, peak = START_EQ, maxDD = 0;
   let trades = 0, wins = 0, grossProfit = 0, grossLoss = 0;
   const curve: number[] = [START_EQ];
   const dailyReturns: number[] = [];
   let dayCounter = 0, dayStart = equity;
+  let cooldown = 0;
+  const end = endIdx ?? bars.count;
 
-  for (let i = 1; i < bars.count; i++) {
-    const entry = evaluateEntry(bars, i, dna);
-    const isLong = entry.long;
-    const isShort = entry.short;
-
+  for (let i = Math.max(1, startIdx); i < end; i++) {
     dayCounter++;
     if (dayCounter >= 48) { dailyReturns.push((equity - dayStart) / (dayStart || 1)); dayStart = equity; dayCounter = 0; }
 
+    if (cooldown > 0) { cooldown--; continue; }
+
+    const entry = evaluateEntry(bars, i, dna);
+    const isLong = entry.long;
+    const isShort = entry.short;
     if (!isLong && !isShort) continue;
 
     const sl = bars.atr[i] * dna.slMultiplier;
@@ -530,14 +537,30 @@ function simulateStrategy(bars: BarArrays, dna: StrategyDNA): SimResult {
     trades++;
     if (pips > 0) { wins++; grossProfit += pips; } else { grossLoss += Math.abs(pips); }
 
-    equity += pips * 0.10;
+    // Compounding: risk 1% of current equity
+    const dollarRisk = equity * RISK_PER_TRADE;
+    const slPips = sl * pipMult;
+    const dollarPerPip = slPips > 0 ? dollarRisk / slPips : 0.10;
+    equity += pips * dollarPerPip;
+
     if (equity > peak) peak = equity;
     const dd = (peak - equity) / peak;
     if (dd > maxDD) maxDD = dd;
 
+    cooldown = TRADE_COOLDOWN;
+
     if (i % 5 === 0) curve.push(equity);
   }
   curve.push(equity);
+
+  // Compute Sharpe ratio (annualized, assuming ~252 trading days)
+  let sharpe = 0;
+  if (dailyReturns.length > 5) {
+    const mean = dailyReturns.reduce((a, b) => a + b, 0) / dailyReturns.length;
+    const variance = dailyReturns.reduce((s, r) => s + (r - mean) ** 2, 0) / dailyReturns.length;
+    const stdDev = Math.sqrt(variance);
+    sharpe = stdDev > 0 ? (mean / stdDev) * Math.sqrt(252) : 0;
+  }
 
   const totalReturn = ((equity - START_EQ) / START_EQ) * 100;
 
@@ -549,6 +572,7 @@ function simulateStrategy(bars: BarArrays, dna: StrategyDNA): SimResult {
     maxDrawdown: maxDD, grossProfit, grossLoss,
     totalReturn,
     equityCurve: curve, dailyReturns,
+    sharpe,
   };
 }
 
@@ -829,10 +853,14 @@ async function handlePhase1(body: Record<string, unknown>) {
   const bars = buildFeatureArrays(pair, candles);
   console.log(`[GA-P1] Built ${bars.count} feature bars with full indicator suite`);
 
+  // Walk-forward split: evolve on first 70%, validate on last 30%
+  const IS_SPLIT = Math.floor(bars.count * 0.7);
+  console.log(`[GA-P1] Walk-forward split: IS=${IS_SPLIT} bars, OOS=${bars.count - IS_SPLIT} bars`);
+
   // Baseline: simple EMA(8)/EMA(34) crossover for correlation checking
   const baseDailyReturns: number[] = [];
   let baseEq = 10000, dayCounter = 0, dayStart = baseEq;
-  for (let i = 1; i < bars.count; i++) {
+  for (let i = 1; i < IS_SPLIT; i++) {
     const isLong = bars.ema8[i] > bars.ema34[i];
     const baseReturn = isLong ? bars.mfeLong[i] * 0.5 : bars.mfeShort[i] * 0.5;
     baseEq += baseReturn * 10000 * 0.001;
@@ -846,15 +874,15 @@ async function handlePhase1(body: Record<string, unknown>) {
   // First: seed one individual per archetype
   for (let i = 0; i < Math.min(ARCHETYPES.length, populationSize); i++) {
     const dna = randomDNA(ARCHETYPES[i]);
-    const sim = simulateStrategy(bars, dna);
-     const fitness = computeFitness(sim, baseDailyReturns, maxCorrelation, dna);
+    const sim = simulateStrategy(bars, dna, 0, IS_SPLIT);
+    const fitness = computeFitness(sim, baseDailyReturns, maxCorrelation, dna);
     population.push({ dna, fitness });
   }
-  // Fill remaining with random (but penalize pure RSI+MACD in fitness)
+  // Fill remaining with random
   while (population.length < populationSize) {
     const dna = randomDNA();
-    const sim = simulateStrategy(bars, dna);
-     const fitness = computeFitness(sim, baseDailyReturns, maxCorrelation, dna);
+    const sim = simulateStrategy(bars, dna, 0, IS_SPLIT);
+    const fitness = computeFitness(sim, baseDailyReturns, maxCorrelation, dna);
     population.push({ dna, fitness });
   }
   population.sort((a, b) => b.fitness - a.fitness);
@@ -873,7 +901,7 @@ async function handlePhase1(body: Record<string, unknown>) {
     status: "evolving", pair, environment, currentGen: 0,
     totalGenerations, populationSize, maxCorrelation, mutationRate, gensPerCall,
     population: population.map(p => ({ dna: p.dna, fitness: Math.round(p.fitness * 1000) / 1000 })),
-    baseDailyReturns,
+    baseDailyReturns, isSplit: IS_SPLIT,
     evolutionLog: [{ gen: 0, bestFitness: Math.round(population[0].fitness * 1000) / 1000, avgFitness: Math.round(population.reduce((s, p) => s + p.fitness, 0) / population.length * 1000) / 1000, bestTrades: 0 }],
     totalSimulations: populationSize, barCount: bars.count, startedAt: new Date().toISOString(),
     dateRange: { start: candles[0]?.time || '', end: candles[candles.length - 1]?.time || '' },
@@ -911,26 +939,38 @@ function getEdgeArchetype(dna: StrategyDNA): string {
 function computeFitness(sim: SimResult, baseDailyReturns: number[], maxCorrelation: number, dna?: StrategyDNA): number {
   let fitness = 0;
   if (sim.trades >= 20 && sim.maxDrawdown > 0.001) {
+    // Core: risk-adjusted return incorporating Sharpe
     fitness = (sim.profitFactor * sim.winRate * Math.sqrt(sim.trades)) / sim.maxDrawdown;
+    // Sharpe bonus — rewards consistency over lucky streaks
+    if (sim.sharpe > 0.5) fitness *= 1 + (sim.sharpe * 0.3);
+    if (sim.sharpe > 1.5) fitness *= 1.3;
+    if (sim.sharpe > 2.5) fitness *= 1.2;
   } else if (sim.trades >= 20) {
     fitness = sim.profitFactor * sim.winRate * Math.sqrt(sim.trades) * 10;
   }
   // Minimum trade count penalty
-  if (sim.trades < 50) fitness *= 0.1;
-  else if (sim.trades < 100) fitness *= 0.5;
-  // Bonus for high trade count
-  if (sim.trades > 300) fitness *= 1.2;
+  if (sim.trades < 30) fitness *= 0.05;
+  else if (sim.trades < 50) fitness *= 0.3;
+  else if (sim.trades < 100) fitness *= 0.7;
+  // Bonus for high trade count (statistical significance)
+  if (sim.trades > 200) fitness *= 1.15;
+  if (sim.trades > 400) fitness *= 1.15;
 
-  // Total return bonus
+  // Total return bonus — strongly rewards profitable strategies
+  if (sim.totalReturn > 20) fitness *= 1.2;
   if (sim.totalReturn > 50) fitness *= 1.3;
-  if (sim.totalReturn > 100) fitness *= 1.5;
+  if (sim.totalReturn > 100) fitness *= 1.4;
+  if (sim.totalReturn > 200) fitness *= 1.3;
+
+  // Drawdown penalty — aggressively penalize >30% DD
+  if (sim.maxDrawdown > 0.3) fitness *= 0.5;
+  if (sim.maxDrawdown > 0.5) fitness *= 0.3;
 
   // Correlation penalty
   const corr = Math.abs(pearsonCorrelation(baseDailyReturns, sim.dailyReturns));
   if (corr > maxCorrelation) fitness *= Math.max(0.01, 1 - (corr - maxCorrelation) * 5);
 
   // ── DIVERSITY INCENTIVE ──
-  // Penalize pure RSI+MACD combos (the "rookie" convergence trap)
   if (dna) {
     const hasRSI = dna.rsiMode > 0;
     const hasMACD = dna.macdMode > 0;
@@ -942,22 +982,20 @@ function computeFitness(sim: SimResult, baseDailyReturns: number[], maxCorrelati
 
     // Pure RSI+MACD with nothing else = severe penalty
     if (hasRSI && hasMACD && !hasBB && !hasEMA && !hasVol && !hasSes && !hasDay) {
-      fitness *= 0.3; // 70% penalty for "rookie" combo
+      fitness *= 0.3;
     }
-    // RSI-only or MACD-only without structural indicators = moderate penalty
     if ((hasRSI || hasMACD) && !hasBB && !hasEMA) {
       fitness *= 0.6;
     }
 
-    // Bonus for using structural indicators (BB, EMA)
+    // Bonus for structural indicators
     if (hasBB) fitness *= 1.3;
     if (hasEMA) fitness *= 1.2;
-    // Bonus for filters (volume, session, day)
     if (hasVol) fitness *= 1.15;
     if (hasSes) fitness *= 1.1;
     if (hasDay) fitness *= 1.1;
 
-    // Bonus for multi-indicator combos (3+ active)
+    // Multi-indicator combos
     const activeCount = [hasRSI, hasMACD, hasBB, hasEMA].filter(Boolean).length;
     if (activeCount >= 3) fitness *= 1.3;
     if (activeCount >= 4) fitness *= 1.2;
@@ -988,13 +1026,14 @@ async function handlePhase2() {
   let population = job.population as { dna: StrategyDNA; fitness: number }[];
   let evolutionLog = job.evolutionLog as { gen: number; bestFitness: number; avgFitness: number; bestTrades: number }[];
   let totalSimulations = job.totalSimulations as number;
+  const isSplit = (job.isSplit as number) || bars.count; // walk-forward split
 
   const { data: barsRow } = await sb.from("sovereign_memory").select("payload").eq("memory_key", `${DATA_KEY_PREFIX}${pair}`).eq("memory_type", "ga_dataset").maybeSingle();
   if (!barsRow) throw new Error("Feature data not found. Run Phase 1 first.");
   const bars = barsRow.payload as BarArrays;
 
   const gensToRun = Math.min(gensPerCall, totalGenerations - currentGen);
-  console.log(`[GA-P2] Gen ${currentGen + 1}→${currentGen + gensToRun} of ${totalGenerations}`);
+  console.log(`[GA-P2] Gen ${currentGen + 1}→${currentGen + gensToRun} of ${totalGenerations} (IS=${isSplit}/${bars.count})`);
 
   for (let g = 0; g < gensToRun; g++) {
     const gen = currentGen + g + 1;
@@ -1007,7 +1046,7 @@ async function handlePhase2() {
       const p2 = tournamentSelect(population);
       let child = crossover(p1.dna, p2.dna);
       child = mutate(child, mutationRate);
-      const sim = simulateStrategy(bars, child);
+      const sim = simulateStrategy(bars, child, 0, isSplit);
       const fitness = computeFitness(sim, baseDailyReturns, maxCorrelation, child);
       newPop.push({ dna: child, fitness });
       totalSimulations++;
@@ -1015,7 +1054,7 @@ async function handlePhase2() {
 
     population = newPop.sort((a, b) => b.fitness - a.fitness);
     const avgFitness = population.reduce((s, p) => s + p.fitness, 0) / population.length;
-    const bestSim = simulateStrategy(bars, population[0].dna);
+    const bestSim = simulateStrategy(bars, population[0].dna, 0, isSplit);
     evolutionLog.push({
       gen, bestFitness: Math.round(population[0].fitness * 1000) / 1000,
       avgFitness: Math.round(avgFitness * 1000) / 1000, bestTrades: bestSim.trades,
@@ -1056,28 +1095,32 @@ async function handlePhase3() {
   const population = job.population as { dna: StrategyDNA; fitness: number }[];
   const evolutionLog = job.evolutionLog as { gen: number; bestFitness: number; avgFitness: number; bestTrades: number }[];
   const totalSimulations = job.totalSimulations as number;
+  const isSplit = (job.isSplit as number) || bars.count;
 
   const { data: barsRow } = await sb.from("sovereign_memory").select("payload").eq("memory_key", `${DATA_KEY_PREFIX}${pair}`).eq("memory_type", "ga_dataset").maybeSingle();
   if (!barsRow) throw new Error("Feature data not found.");
   const bars = barsRow.payload as BarArrays;
 
-  console.log(`[GA-P3] Extracting top strategies from ${population.length} individuals`);
+  console.log(`[GA-P3] Extracting top strategies from ${population.length} individuals (full dataset: ${bars.count} bars)`);
 
   // Reset name counter for clean naming
   nameCounter = 0;
 
   // Deduplicate by full indicator signature (mode + key params)
   const seen = new Set<string>();
-  const profiles: ScoredIndividual[] = [];
+  const profiles: (ScoredIndividual & { oosSim?: SimResult })[] = [];
 
   for (const p of population.slice(0, 60)) {
-    // More granular dedup key — includes indicator modes AND key parameters
     const key = `${p.dna.rsiMode}-${p.dna.rsiPeriod}-${p.dna.macdMode}-${p.dna.macdFast}-${p.dna.bbMode}-${p.dna.bbPeriod}-${p.dna.emaMode}-${p.dna.emaFast}-${p.dna.emaSlow}-${p.dna.direction}-${p.dna.volMode}-${p.dna.sessionFilter}-${p.dna.dayFilter}`;
     if (seen.has(key)) continue;
     seen.add(key);
 
+    // Run on FULL dataset for final stats
     const sim = simulateStrategy(bars, p.dna);
     if (sim.trades < 30) continue;
+
+    // Also run OOS-only for walk-forward validation
+    const oosSim = isSplit < bars.count ? simulateStrategy(bars, p.dna, isSplit) : undefined;
 
     const corr = Math.abs(pearsonCorrelation(baseDailyReturns, sim.dailyReturns));
 
@@ -1092,14 +1135,14 @@ async function handlePhase3() {
       edgeDescription: generateEdgeDescription(p.dna),
       entryRules: generateEntryRules(p.dna),
       exitRules: generateExitRules(p.dna),
+      oosSim,
     });
   }
 
-  // Sort by total return
+  // Sort by total return (full dataset)
   profiles.sort((a, b) => b.sim.totalReturn - a.sim.totalReturn);
 
-  // ── DIVERSITY-ENFORCED EXTRACTION ──
-  // Max 2 strategies per edge archetype to prevent RSI+MACD flooding
+  // ── DIVERSITY-ENFORCED EXTRACTION with INTER-STRATEGY CORRELATION ──
   const MAX_PER_ARCHETYPE = 2;
   const archetypeCounts: Record<string, number> = {};
 
@@ -1111,16 +1154,40 @@ async function handlePhase3() {
     return true;
   }
 
-  // Extract top 10 diverse + uncorrelated
-  const diverseProfiles: ScoredIndividual[] = [];
+  // Inter-strategy correlation check: new strategy must have ρ ≤ 0.4 with ALL already-selected strategies
+  function isUncorrelatedWithPortfolio(candidate: ScoredIndividual, portfolio: ScoredIndividual[]): boolean {
+    for (const existing of portfolio) {
+      const interCorr = Math.abs(pearsonCorrelation(candidate.sim.dailyReturns, existing.sim.dailyReturns));
+      if (interCorr > 0.4) return false;
+    }
+    return true;
+  }
+
+  // Pass 1: strict ρ ≤ 0.2 vs baseline + inter-strategy check + OOS validation
+  const diverseProfiles: (ScoredIndividual & { oosSim?: SimResult })[] = [];
   for (const p of profiles) {
     if (diverseProfiles.length >= 10) break;
-    if (p.correlation > 0.5) continue;
+    if (p.correlation > maxCorrelation) continue; // actual maxCorrelation (default 0.2)
     if (!canAddArchetype(p.dna)) continue;
+    if (!isUncorrelatedWithPortfolio(p, diverseProfiles)) continue;
+    // OOS validation: reject if OOS is catastrophic (negative return or <40% WR)
+    if (p.oosSim && p.oosSim.trades >= 5 && p.oosSim.totalReturn < -20) continue;
     diverseProfiles.push(p);
   }
 
-  // If we didn't get 10, relax correlation but keep diversity
+  // Pass 2: relax baseline correlation to 0.4 but keep inter-strategy check
+  if (diverseProfiles.length < 10) {
+    for (const p of profiles) {
+      if (diverseProfiles.length >= 10) break;
+      if (diverseProfiles.includes(p)) continue;
+      if (p.correlation > 0.4) continue;
+      if (!canAddArchetype(p.dna)) continue;
+      if (!isUncorrelatedWithPortfolio(p, diverseProfiles)) continue;
+      diverseProfiles.push(p);
+    }
+  }
+
+  // Pass 3: fill remaining slots with best available
   if (diverseProfiles.length < 10) {
     for (const p of profiles) {
       if (diverseProfiles.length >= 10) break;
@@ -1142,7 +1209,7 @@ async function handlePhase3() {
     return true;
   }).slice(0, 20);
 
-  const fmt = (p: ScoredIndividual) => ({
+  const fmt = (p: ScoredIndividual & { oosSim?: SimResult }) => ({
     dna: p.dna, fitness: Math.round(p.fitness * 1000) / 1000,
     winRate: Math.round(p.sim.winRate * 10000) / 10000,
     profitFactor: Math.round(p.sim.profitFactor * 100) / 100,
@@ -1152,6 +1219,7 @@ async function handlePhase3() {
     maxDrawdown: Math.round(p.sim.maxDrawdown * 10000) / 10000,
     grossProfit: Math.round(p.sim.grossProfit * 10) / 10,
     grossLoss: Math.round(p.sim.grossLoss * 10) / 10,
+    sharpe: Math.round((p.sim.sharpe || 0) * 100) / 100,
     correlation: Math.round(p.correlation * 1000) / 1000,
     equityCurve: p.sim.equityCurve,
     strategyName: p.strategyName,
@@ -1159,6 +1227,9 @@ async function handlePhase3() {
     entryRules: p.entryRules,
     exitRules: p.exitRules,
     edgeArchetype: getEdgeArchetype(p.dna),
+    oosReturn: p.oosSim ? Math.round(p.oosSim.totalReturn * 100) / 100 : null,
+    oosWinRate: p.oosSim ? Math.round(p.oosSim.winRate * 10000) / 10000 : null,
+    oosTrades: p.oosSim?.trades ?? null,
   });
 
   await sb.from("sovereign_memory").update({

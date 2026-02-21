@@ -23,10 +23,12 @@ interface GAProfile {
   dna: StrategyDNA; fitness: number; winRate: number; profitFactor: number;
   trades: number; totalPips: number; totalReturn: number; maxDrawdown: number;
   grossProfit: number; grossLoss: number; correlation: number;
+  sharpe?: number;
   equityCurve: number[];
   strategyName: string; edgeDescription: string;
   entryRules: string[]; exitRules: string[];
   edgeArchetype?: string;
+  oosReturn?: number | null; oosWinRate?: number | null; oosTrades?: number | null;
 }
 
 interface EvolutionEntry { gen: number; bestFitness: number; avgFitness: number; bestTrades: number; }
@@ -517,15 +519,19 @@ function StrategyCard({ profile, idx, expandedProfile, setExpandedProfile, maxCo
             {isExp ? <ChevronUp className="w-3 h-3 text-slate-500" /> : <ChevronDown className="w-3 h-3 text-slate-500" />}
           </div>
         </div>
-        {/* Stats Row — matching Profile Discovery layout */}
-        <div className="grid grid-cols-6 gap-2 mt-2.5">
+        {/* Stats Row — 8 KPIs including Sharpe and OOS validation */}
+        <div className="grid grid-cols-4 lg:grid-cols-8 gap-1.5 mt-2.5">
           <StatBox label="Total Return" value={`${isPositive ? '+' : ''}${(profile.totalReturn ?? 0).toFixed(1)}%`} color={isPositive ? '#39ff14' : '#ff0055'} />
           <StatBox label="Win Rate" value={`${(profile.winRate * 100).toFixed(1)}%`} color={profile.winRate >= 0.6 ? '#39ff14' : '#00ffea'} />
           <StatBox label="Profit Factor" value={profile.profitFactor.toFixed(2)} color={profile.profitFactor > 2 ? '#39ff14' : '#00ffea'} />
-          <StatBox label="Max Drawdown" value={`-${((profile.maxDrawdown ?? 0) * 100).toFixed(1)}%`} color={(profile.maxDrawdown ?? 0) < 0.05 ? '#00ffea' : '#ff0055'} />
+          <StatBox label="Sharpe Ratio" value={`${(profile.sharpe ?? 0).toFixed(2)}`} color={(profile.sharpe ?? 0) > 1.5 ? '#39ff14' : (profile.sharpe ?? 0) > 0.5 ? '#00ffea' : '#ff0055'} />
+          <StatBox label="Max Drawdown" value={`-${((profile.maxDrawdown ?? 0) * 100).toFixed(1)}%`} color={(profile.maxDrawdown ?? 0) < 0.1 ? '#00ffea' : '#ff0055'} />
           <StatBox label="Net Pips" value={`${profile.totalPips >= 0 ? '+' : ''}${Math.round(profile.totalPips)}`} color={profile.totalPips >= 0 ? '#39ff14' : '#ff0055'} />
-          <StatBox label="Final Equity" value={`$${(profile.equityCurve?.length ? profile.equityCurve[profile.equityCurve.length - 1] : 1000).toFixed(2)}`} color={
+          <StatBox label="Final Equity" value={`$${(profile.equityCurve?.length ? profile.equityCurve[profile.equityCurve.length - 1] : 1000).toFixed(0)}`} color={
             (profile.equityCurve?.length ? profile.equityCurve[profile.equityCurve.length - 1] : 1000) >= 1000 ? '#39ff14' : '#ff0055'
+          } />
+          <StatBox label="OOS Return" value={profile.oosReturn != null ? `${profile.oosReturn >= 0 ? '+' : ''}${profile.oosReturn.toFixed(1)}%` : '—'} color={
+            profile.oosReturn != null ? (profile.oosReturn >= 0 ? '#39ff14' : '#ff0055') : '#475569'
           } />
         </div>
         {/* Period Performance Row */}
