@@ -511,8 +511,13 @@ async function handlePhase1(body: Record<string, unknown>) {
 async function handlePhase2() {
   const sb = getSupabaseAdmin();
 
-  // Load job state
-  const { data: jobRow } = await sb.from("sovereign_memory").select("payload").eq("memory_key", JOB_KEY).single();
+  // Load job state — retry once after 2s if not found (race with Phase 1 write)
+  let jobRow: { payload: unknown } | null = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const { data } = await sb.from("sovereign_memory").select("payload").eq("memory_key", JOB_KEY).single();
+    if (data) { jobRow = data; break; }
+    if (attempt < 2) await new Promise(r => setTimeout(r, 2000));
+  }
   if (!jobRow) throw new Error("No active GA job. Run Phase 1 first.");
   const job = jobRow.payload as Record<string, unknown>;
   if (job.status !== "evolving") throw new Error(`Job status is '${job.status}', not 'evolving'`);
