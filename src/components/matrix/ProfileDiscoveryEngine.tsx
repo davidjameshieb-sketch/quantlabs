@@ -7,6 +7,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   Cpu, Trophy, TrendingUp, Flame, Search, ChevronDown, ChevronUp,
   Zap, Target, Shield, Activity, BarChart3, Calendar, Brain, Fingerprint, Layers,
+  AlertTriangle,
 } from 'lucide-react';
 import type { BacktestResult, RankComboResult } from '@/hooks/useRankExpectancy';
 
@@ -565,6 +566,264 @@ function StrategyIntelligencePanel({ profile, allTop, idx }: { profile: ProfileR
   );
 }
 
+// ── Circuit Breaker Types & Computation ──
+interface CircuitBreakerData {
+  rollingPF: number;
+  historicalPFMean: number;
+  historicalPFStd: number;
+  pfZScore: number;
+  pfBroken: boolean;
+  historicalWR: number;
+  recentWR: number;
+  wrVelocity: number;
+  wrDecayAlert: boolean;
+  cusumValues: number[];
+  cusumBreached: boolean;
+  cusumThreshold: number;
+  status: 'NOMINAL' | 'WARNING' | 'BROKEN';
+  statusReason: string;
+  rollingPFSeries: Array<{ trade: number; pf: number; zScore: number }>;
+  rollingWRSeries: Array<{ trade: number; wr: number; velocity: number }>;
+}
+
+function computeCircuitBreaker(
+  curve: Array<{ time: string; equity: number }>,
+  backtestWR: number,
+  backtestPF: number,
+  windowSize = 30
+): CircuitBreakerData {
+  const trades: number[] = [];
+  for (let i = 1; i < curve.length; i++) {
+    const delta = curve[i].equity - curve[i - 1].equity;
+    if (Math.abs(delta) > 0.001) trades.push(delta);
+  }
+  while (trades.length < windowSize) trades.unshift(0);
+
+  const rollingPFSeries: Array<{ trade: number; pf: number; zScore: number }> = [];
+  const allWindowPFs: number[] = [];
+  for (let i = windowSize; i <= trades.length; i++) {
+    const window = trades.slice(i - windowSize, i);
+    let gp = 0, gl = 0;
+    window.forEach(t => { if (t > 0) gp += t; else gl += Math.abs(t); });
+    const pf = gl > 0 ? gp / gl : gp > 0 ? 5 : 1;
+    allWindowPFs.push(pf);
+    rollingPFSeries.push({ trade: i, pf, zScore: 0 });
+  }
+
+  const pfMean = allWindowPFs.length > 0 ? allWindowPFs.reduce((a, b) => a + b, 0) / allWindowPFs.length : backtestPF;
+  const pfVariance = allWindowPFs.length > 1 ? allWindowPFs.reduce((a, b) => a + (b - pfMean) ** 2, 0) / (allWindowPFs.length - 1) : 0.01;
+  const pfStd = Math.max(0.01, Math.sqrt(pfVariance));
+  rollingPFSeries.forEach(pt => { pt.zScore = (pt.pf - pfMean) / pfStd; });
+  const latestPF = allWindowPFs[allWindowPFs.length - 1] ?? backtestPF;
+  const pfZScore = (latestPF - pfMean) / pfStd;
+  const pfBroken = pfZScore < -2;
+
+  const recentWindow = 20;
+  const recentTrades = trades.slice(-recentWindow);
+  const recentWins = recentTrades.filter(t => t > 0).length;
+  const recentWR = recentTrades.length > 0 ? (recentWins / recentTrades.length) * 100 : backtestWR;
+  const wrVelocity = backtestWR > 0 ? ((recentWR - backtestWR) / backtestWR) * 100 : 0;
+  const wrDecayAlert = wrVelocity < -30;
+
+  const rollingWRSeries: Array<{ trade: number; wr: number; velocity: number }> = [];
+  for (let i = recentWindow; i <= trades.length; i++) {
+    const w = trades.slice(i - recentWindow, i);
+    const wins = w.filter(t => t > 0).length;
+    const wr = (wins / w.length) * 100;
+    const vel = backtestWR > 0 ? ((wr - backtestWR) / backtestWR) * 100 : 0;
+    rollingWRSeries.push({ trade: i, wr, velocity: vel });
+  }
+
+  const target = backtestWR / 100;
+  let cusumNeg = 0;
+  const cusumValues: number[] = [];
+  const k = 0.5 * pfStd;
+  const h = 4 * pfStd;
+  let cusumBreached = false;
+  for (const t of trades) {
+    const normalized = t > 0 ? 1 : 0;
+    cusumNeg = Math.min(0, cusumNeg + (normalized - target) + k);
+    cusumValues.push(cusumNeg);
+    if (Math.abs(cusumNeg) > h) cusumBreached = true;
+  }
+
+  let status: CircuitBreakerData['status'] = 'NOMINAL';
+  let statusReason = 'All metrics within normal operating parameters.';
+  if (pfBroken && wrDecayAlert) {
+    status = 'BROKEN';
+    statusReason = `PF Z-Score at ${pfZScore.toFixed(2)}σ (below -2σ) AND Win-Rate velocity at ${wrVelocity.toFixed(0)}% decay. Market structure has likely shifted.`;
+  } else if (pfBroken || cusumBreached) {
+    status = 'BROKEN';
+    statusReason = pfBroken
+      ? `Profit Factor dropped ${Math.abs(pfZScore).toFixed(1)}σ below historical mean (${pfMean.toFixed(2)}). Strategy edge has broken down.`
+      : `CUSUM chart breached threshold. Structural regime change detected.`;
+  } else if (wrDecayAlert) {
+    status = 'WARNING';
+    statusReason = `Win-Rate velocity at ${wrVelocity.toFixed(0)}% — falling from ${backtestWR.toFixed(1)}% to ${recentWR.toFixed(1)}%. Monitor closely.`;
+  } else if (pfZScore < -1 || wrVelocity < -15) {
+    status = 'WARNING';
+    statusReason = `Mild degradation. PF Z-Score: ${pfZScore.toFixed(2)}σ, WR Velocity: ${wrVelocity.toFixed(0)}%. Trending toward breaker threshold.`;
+  }
+
+  return {
+    rollingPF: Math.round(latestPF * 100) / 100, historicalPFMean: Math.round(pfMean * 100) / 100,
+    historicalPFStd: Math.round(pfStd * 100) / 100, pfZScore: Math.round(pfZScore * 100) / 100, pfBroken,
+    historicalWR: Math.round(backtestWR * 10) / 10, recentWR: Math.round(recentWR * 10) / 10,
+    wrVelocity: Math.round(wrVelocity * 10) / 10, wrDecayAlert,
+    cusumValues, cusumBreached, cusumThreshold: Math.round(h * 100) / 100,
+    status, statusReason, rollingPFSeries, rollingWRSeries,
+  };
+}
+
+function CircuitBreakerPanel({ profile }: { profile: ProfileResult }) {
+  const [expanded, setExpanded] = useState(false);
+  const cb = computeCircuitBreaker(profile.equityCurve, profile.winRate, profile.profitFactor);
+
+  return (
+    <div className="mt-2">
+      <button
+        onClick={(e) => { e.stopPropagation(); setExpanded(!expanded); }}
+        className="flex items-center gap-1.5 text-[8px] font-mono transition-colors"
+        style={{ color: cb.status === 'BROKEN' ? '#ff0055' : cb.status === 'WARNING' ? '#ff8800' : '#39ff14' }}
+      >
+        <AlertTriangle className="w-3 h-3" />
+        <span className="uppercase tracking-widest font-bold">Circuit Breaker</span>
+        <span className="text-[7px] font-mono font-bold px-1.5 py-0.5 rounded-full ml-1"
+          style={{
+            backgroundColor: cb.status === 'BROKEN' ? '#ff005515' : cb.status === 'WARNING' ? '#ff880015' : '#39ff1415',
+            border: `1px solid ${cb.status === 'BROKEN' ? '#ff005533' : cb.status === 'WARNING' ? '#ff880033' : '#39ff1433'}`,
+          }}>
+          {cb.status === 'BROKEN' ? '⛔ BROKEN' : cb.status === 'WARNING' ? '⚠️ WARNING' : '✅ NOMINAL'}
+        </span>
+        {expanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+      </button>
+
+      <AnimatePresence>
+        {expanded && (
+          <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} className="overflow-hidden">
+            <div className="mt-2 bg-slate-950/50 border rounded-lg p-3 space-y-3"
+              style={{ borderColor: cb.status === 'BROKEN' ? '#ff005540' : cb.status === 'WARNING' ? '#ff880040' : '#1e293b60' }}>
+
+              <p className="text-[8px] font-mono leading-relaxed" style={{ color: cb.status === 'BROKEN' ? '#ff6688' : cb.status === 'WARNING' ? '#ffaa55' : '#88aa88' }}>
+                {cb.statusReason}
+              </p>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {/* Rolling PF Z-Score */}
+                <div className="bg-slate-950/60 border border-slate-800/40 rounded-lg p-2.5 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[7px] font-bold text-slate-400 uppercase tracking-widest">Rolling PF Z-Score (30-trade)</span>
+                    <span className="text-[7px] font-mono font-bold" style={{ color: cb.pfBroken ? '#ff0055' : '#39ff14' }}>
+                      {cb.pfBroken ? 'BROKEN' : 'OK'}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-4 gap-1.5">
+                    {[
+                      { l: 'Current PF', v: cb.rollingPF.toFixed(2), c: cb.rollingPF > 1 ? '#39ff14' : '#ff0055' },
+                      { l: 'Hist. Mean', v: cb.historicalPFMean.toFixed(2), c: '#00ffea' },
+                      { l: 'Hist. σ', v: cb.historicalPFStd.toFixed(2), c: '#8888aa' },
+                      { l: 'Z-Score', v: `${cb.pfZScore > 0 ? '+' : ''}${cb.pfZScore.toFixed(2)}σ`, c: cb.pfZScore < -2 ? '#ff0055' : cb.pfZScore < -1 ? '#ff8800' : '#39ff14' },
+                    ].map(m => (
+                      <div key={m.l} className="text-center">
+                        <div className="text-[6px] text-slate-600 uppercase">{m.l}</div>
+                        <div className="text-[10px] font-mono font-bold" style={{ color: m.c }}>{m.v}</div>
+                      </div>
+                    ))}
+                  </div>
+                  {cb.rollingPFSeries.length > 2 && (() => {
+                    const series = cb.rollingPFSeries;
+                    const w = 300, h = 50, pad = 4;
+                    const zVals = series.map(s => s.zScore);
+                    const minZ = Math.min(-3, ...zVals), maxZ = Math.max(3, ...zVals);
+                    const rng = maxZ - minZ || 1;
+                    const neg2Y = h - pad - ((-2 - minZ) / rng) * (h - 2 * pad);
+                    const pts = series.map((pt, i) => `${pad + (i / (series.length - 1)) * (w - 2 * pad)},${h - pad - ((pt.zScore - minZ) / rng) * (h - 2 * pad)}`);
+                    return (
+                      <svg viewBox={`0 0 ${w} ${h}`} className="w-full" style={{ height: 50 }} preserveAspectRatio="none">
+                        <line x1={pad} y1={neg2Y} x2={w - pad} y2={neg2Y} stroke="#ff005544" strokeWidth="0.8" strokeDasharray="3,2" />
+                        <text x={w - pad - 2} y={neg2Y - 2} fill="#ff0055" fontSize="5" textAnchor="end">-2σ</text>
+                        <polyline points={pts.join(' ')} fill="none" stroke={cb.pfBroken ? '#ff0055' : '#00ffea'} strokeWidth="1.2" />
+                      </svg>
+                    );
+                  })()}
+                </div>
+
+                {/* Win-Rate Velocity */}
+                <div className="bg-slate-950/60 border border-slate-800/40 rounded-lg p-2.5 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[7px] font-bold text-slate-400 uppercase tracking-widest">Win-Rate Velocity (20-trade)</span>
+                    <span className="text-[7px] font-mono font-bold" style={{ color: cb.wrDecayAlert ? '#ff0055' : '#39ff14' }}>
+                      {cb.wrDecayAlert ? 'DECAY ALERT' : 'STABLE'}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {[
+                      { l: 'Historical WR', v: `${cb.historicalWR}%`, c: '#00ffea' },
+                      { l: 'Recent WR', v: `${cb.recentWR}%`, c: cb.recentWR >= cb.historicalWR * 0.8 ? '#39ff14' : '#ff0055' },
+                      { l: 'Velocity', v: `${cb.wrVelocity > 0 ? '+' : ''}${cb.wrVelocity}%`, c: cb.wrVelocity < -30 ? '#ff0055' : cb.wrVelocity < -15 ? '#ff8800' : '#39ff14' },
+                    ].map(m => (
+                      <div key={m.l} className="text-center">
+                        <div className="text-[6px] text-slate-600 uppercase">{m.l}</div>
+                        <div className="text-[10px] font-mono font-bold" style={{ color: m.c }}>{m.v}</div>
+                      </div>
+                    ))}
+                  </div>
+                  {cb.rollingWRSeries.length > 2 && (() => {
+                    const series = cb.rollingWRSeries;
+                    const w = 300, h = 50, pad = 4;
+                    const wrVals = series.map(s => s.wr);
+                    const minWR = Math.min(0, ...wrVals), maxWR = Math.max(100, ...wrVals);
+                    const rng = maxWR - minWR || 1;
+                    const histY = h - pad - ((cb.historicalWR - minWR) / rng) * (h - 2 * pad);
+                    const pts = series.map((pt, i) => `${pad + (i / (series.length - 1)) * (w - 2 * pad)},${h - pad - ((pt.wr - minWR) / rng) * (h - 2 * pad)}`);
+                    return (
+                      <svg viewBox={`0 0 ${w} ${h}`} className="w-full" style={{ height: 50 }} preserveAspectRatio="none">
+                        <line x1={pad} y1={histY} x2={w - pad} y2={histY} stroke="#00ffea33" strokeWidth="0.8" strokeDasharray="3,2" />
+                        <text x={w - pad - 2} y={histY - 2} fill="#00ffea" fontSize="5" textAnchor="end">{cb.historicalWR}%</text>
+                        <polyline points={pts.join(' ')} fill="none" stroke={cb.wrDecayAlert ? '#ff0055' : '#ff8800'} strokeWidth="1.2" />
+                      </svg>
+                    );
+                  })()}
+                </div>
+              </div>
+
+              {/* CUSUM */}
+              <div className="bg-slate-950/60 border border-slate-800/40 rounded-lg p-2.5 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[7px] font-bold text-slate-400 uppercase tracking-widest">CUSUM Drift Detection</span>
+                  <span className="text-[7px] font-mono font-bold" style={{ color: cb.cusumBreached ? '#ff0055' : '#39ff14' }}>
+                    {cb.cusumBreached ? 'BREACHED' : `H = ${cb.cusumThreshold}`}
+                  </span>
+                </div>
+                {cb.cusumValues.length > 2 && (() => {
+                  const vals = cb.cusumValues;
+                  const w = 300, h = 45, pad = 4;
+                  const minV = Math.min(-cb.cusumThreshold * 1.2, ...vals), maxV = Math.max(0.1, ...vals);
+                  const rng = maxV - minV || 1;
+                  const threshY = h - pad - ((-cb.cusumThreshold - minV) / rng) * (h - 2 * pad);
+                  const step = Math.max(1, Math.floor(vals.length / 200));
+                  const sampled = vals.filter((_, i) => i % step === 0 || i === vals.length - 1);
+                  const pts = sampled.map((v, i) => `${pad + (i / (sampled.length - 1)) * (w - 2 * pad)},${h - pad - ((v - minV) / rng) * (h - 2 * pad)}`);
+                  return (
+                    <svg viewBox={`0 0 ${w} ${h}`} className="w-full" style={{ height: 45 }} preserveAspectRatio="none">
+                      <line x1={pad} y1={threshY} x2={w - pad} y2={threshY} stroke="#ff005544" strokeWidth="0.8" strokeDasharray="3,2" />
+                      <text x={w - pad - 2} y={threshY - 2} fill="#ff0055" fontSize="5" textAnchor="end">-H</text>
+                      <polyline points={pts.join(' ')} fill="none" stroke={cb.cusumBreached ? '#ff0055' : '#a855f7'} strokeWidth="1" />
+                    </svg>
+                  );
+                })()}
+                <p className="text-[7px] text-slate-600 font-mono">
+                  Cumulative sum of deviations from target win-rate. Breach of H = {cb.cusumThreshold} = structural regime change.
+                </p>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
 // ── Heatmap component ──
 function ProfitFactorHeatmap({ results }: { results: ProfileResult[] }) {
   // Group by predator×prey (rows) vs SL (cols)
@@ -988,6 +1247,9 @@ export const ProfileDiscoveryEngine = ({ result }: Props) => {
 
                       {/* Strategy Intelligence */}
                       <StrategyIntelligencePanel profile={p} allTop={topProfiles} idx={idx} />
+
+                      {/* Statistical Circuit Breaker */}
+                      <CircuitBreakerPanel profile={p} />
                     </motion.button>
                   );
                 })}
