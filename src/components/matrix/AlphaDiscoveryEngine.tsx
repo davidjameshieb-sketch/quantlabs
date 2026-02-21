@@ -180,7 +180,8 @@ export function AlphaDiscoveryEngine({ result }: { result: BacktestResult }) {
       console.log('[GA-UI] Phase 1 complete:', initResult);
       setBestFitness(initResult.bestFitness || 0);
 
-      // Phase 2: Evolve loop
+      // Phase 2: Evolve loop — wait for DB write to propagate
+      await new Promise(r => setTimeout(r, 1500));
       setPhase('evolving');
       let done = false;
       while (!done && !abortRef.current) {
