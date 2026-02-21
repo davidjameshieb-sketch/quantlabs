@@ -450,7 +450,7 @@ export function AlphaDiscoveryEngine({ result }: { result: BacktestResult }) {
                     ) : (
                       <div className="divide-y divide-slate-800/30">
                         {gaResult.uncorrelatedProfiles.map((profile, idx) => (
-                          <StrategyCard key={idx} profile={profile} idx={idx} expandedProfile={expandedProfile} setExpandedProfile={setExpandedProfile} maxCorrelation={maxCorrelation} />
+                          <StrategyCard key={idx} profile={profile} idx={idx} expandedProfile={expandedProfile} setExpandedProfile={setExpandedProfile} maxCorrelation={maxCorrelation} dateRange={gaResult.dateRange} />
                         ))}
                       </div>
                     )}
@@ -471,7 +471,7 @@ export function AlphaDiscoveryEngine({ result }: { result: BacktestResult }) {
                           <StrategyCard key={`all-${idx}`} profile={profile} idx={idx}
                             expandedProfile={expandedProfile === null ? null : expandedProfile}
                             setExpandedProfile={(v) => setExpandedProfile(v === null ? null : v !== null ? v + 1000 : null)}
-                            maxCorrelation={maxCorrelation} offset={1000} />
+                            maxCorrelation={maxCorrelation} offset={1000} dateRange={gaResult.dateRange} />
                         ))}
                       </div>
                     </div>
@@ -487,9 +487,10 @@ export function AlphaDiscoveryEngine({ result }: { result: BacktestResult }) {
 }
 
 // ── Strategy Card ──
-function StrategyCard({ profile, idx, expandedProfile, setExpandedProfile, maxCorrelation, offset = 0 }: {
+function StrategyCard({ profile, idx, expandedProfile, setExpandedProfile, maxCorrelation, offset = 0, dateRange }: {
   profile: GAProfile; idx: number; expandedProfile: number | null;
   setExpandedProfile: (v: number | null) => void; maxCorrelation: number; offset?: number;
+  dateRange?: { start: string; end: string };
 }) {
   const cardIdx = idx + offset;
   const isExp = expandedProfile === cardIdx;
@@ -527,6 +528,8 @@ function StrategyCard({ profile, idx, expandedProfile, setExpandedProfile, maxCo
             (profile.equityCurve?.length ? profile.equityCurve[profile.equityCurve.length - 1] : 1000) >= 1000 ? '#39ff14' : '#ff0055'
           } />
         </div>
+        {/* Period Performance Row */}
+        <PeriodPerformanceRow equityCurve={profile.equityCurve} dateRange={dateRange} />
       </button>
       <AnimatePresence>
         {isExp && (
@@ -658,6 +661,49 @@ function StatBox({ label, value, color }: { label: string; value: string; color:
     <div className="bg-slate-950/60 border border-slate-800/40 rounded-lg py-2 px-1.5 text-center">
       <div className="text-[6px] text-slate-500 font-mono uppercase tracking-widest mb-1">{label}</div>
       <div className="text-[11px] font-bold font-mono" style={{ color }}>{value}</div>
+    </div>
+  );
+}
+
+function PeriodPerformanceRow({ equityCurve, dateRange }: { equityCurve?: number[]; dateRange?: { start: string; end: string } }) {
+  if (!equityCurve || equityCurve.length < 2 || !dateRange?.start || !dateRange?.end) return null;
+
+  const startDate = new Date(dateRange.start).getTime();
+  const endDate = new Date(dateRange.end).getTime();
+  const totalMs = endDate - startDate;
+  if (totalMs <= 0) return null;
+
+  const periods = [
+    { label: '7D', days: 7 },
+    { label: '14D', days: 14 },
+    { label: '30D', days: 30 },
+    { label: '45D', days: 45 },
+    { label: '60D', days: 60 },
+  ];
+
+  const startEquity = equityCurve[0];
+  const finalEquity = equityCurve[equityCurve.length - 1];
+
+  const getEquityAtDaysFromEnd = (daysBack: number): number | null => {
+    const targetMs = endDate - daysBack * 86400000;
+    if (targetMs < startDate) return null; // period exceeds data range
+    const fraction = (targetMs - startDate) / totalMs;
+    const idx = Math.round(fraction * (equityCurve.length - 1));
+    return equityCurve[Math.max(0, Math.min(idx, equityCurve.length - 1))];
+  };
+
+  return (
+    <div className="grid grid-cols-5 gap-1.5 mt-1.5">
+      {periods.map(p => {
+        const eqAtStart = getEquityAtDaysFromEnd(p.days);
+        if (eqAtStart === null) {
+          return <StatBox key={p.label} label={p.label} value="—" color="#475569" />;
+        }
+        const ret = ((finalEquity - eqAtStart) / eqAtStart) * 100;
+        return (
+          <StatBox key={p.label} label={p.label} value={`${ret >= 0 ? '+' : ''}${ret.toFixed(1)}%`} color={ret >= 0 ? '#39ff14' : '#ff0055'} />
+        );
+      })}
     </div>
   );
 }
