@@ -30,6 +30,7 @@ interface GAResult {
   gaStats: { populationSize: number; generations: number; mutationRate: number; maxCorrelation: number; totalSimulations: number; finalBestFitness: number; };
   evolutionLog: EvolutionEntry[];
   uncorrelatedProfiles: GAProfile[]; allProfiles: GAProfile[];
+  correlationFallback?: boolean;
   config: { pair: string; populationSize: number; generations: number; maxCorrelation: number; candleCount: number; mutationRate: number };
 }
 
@@ -463,13 +464,15 @@ export function AlphaDiscoveryEngine({ result }: { result: BacktestResult }) {
                     </div>
                   )}
 
-                  {/* Uncorrelated Profiles */}
+                  {/* Evolved Strategies — Primary Results */}
                   <div className="border border-emerald-500/20 rounded-xl overflow-hidden">
                     <div className="bg-emerald-950/30 px-4 py-2.5 border-b border-emerald-500/20 flex items-center justify-between">
                       <div className="flex items-center gap-2">
                         <Fingerprint className="w-3.5 h-3.5 text-emerald-400" />
                         <span className="text-[9px] font-bold text-emerald-300 uppercase tracking-widest">
-                          Evolved Uncorrelated Strategies (ρ ≤ {maxCorrelation})
+                          {gaResult.correlationFallback
+                            ? `Top Evolved Strategies (relaxed ρ ≤ 0.5)`
+                            : `Evolved Uncorrelated Strategies (ρ ≤ ${maxCorrelation})`}
                         </span>
                       </div>
                       <span className="text-[7px] text-emerald-500/60 font-mono">
@@ -480,126 +483,45 @@ export function AlphaDiscoveryEngine({ result }: { result: BacktestResult }) {
                     {gaResult.uncorrelatedProfiles.length === 0 ? (
                       <div className="p-8 text-center">
                         <AlertTriangle className="w-6 h-6 text-yellow-500 mx-auto mb-2" />
-                        <p className="text-[10px] text-slate-400 font-mono">No uncorrelated strategies survived. Try increasing max correlation or generations.</p>
+                        <p className="text-[10px] text-slate-400 font-mono">No strategies survived extraction. Try increasing generations or population.</p>
                       </div>
                     ) : (
                       <div className="divide-y divide-slate-800/30">
-                        {gaResult.uncorrelatedProfiles.map((profile, idx) => {
-                          const isExp = expandedProfile === idx;
-                          const medal = idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : `#${idx + 1}`;
-                          return (
-                            <div key={idx} className="bg-slate-950/20 hover:bg-slate-900/40 transition-colors">
-                              <button onClick={() => setExpandedProfile(isExp ? null : idx)} className="w-full px-4 py-3 text-left">
-                                <div className="flex items-center gap-3">
-                                  <span className="text-lg w-8 text-center shrink-0">{medal}</span>
-                                  <div className="flex-1 min-w-0">
-                                    <DNABadges dna={profile.dna} />
-                                    <div className="text-[8px] font-mono text-slate-500 mt-1 truncate">Fitness: {profile.fitness} · {profile.plainEnglish}</div>
-                                  </div>
-                                  <div className="flex items-center gap-3 shrink-0">
-                                    <div className="text-center"><div className="text-[8px] font-bold font-mono" style={{ color: profile.winRate >= 0.6 ? '#39ff14' : '#00ffea' }}>{(profile.winRate * 100).toFixed(1)}%</div><div className="text-[6px] text-slate-600 font-mono">WR</div></div>
-                                    <div className="text-center"><div className="text-[8px] font-bold font-mono" style={{ color: profile.profitFactor > 2 ? '#39ff14' : '#00ffea' }}>{profile.profitFactor}</div><div className="text-[6px] text-slate-600 font-mono">PF</div></div>
-                                    <div className="text-center"><div className="text-[8px] font-bold font-mono text-emerald-400">{profile.correlation}</div><div className="text-[6px] text-slate-600 font-mono">ρ</div></div>
-                                    <div className="text-center"><div className="text-[8px] font-bold font-mono text-slate-300">{profile.trades}</div><div className="text-[6px] text-slate-600 font-mono">Trades</div></div>
-                                    {isExp ? <ChevronUp className="w-3 h-3 text-slate-500" /> : <ChevronDown className="w-3 h-3 text-slate-500" />}
-                                  </div>
-                                </div>
-                              </button>
-                              <AnimatePresence>
-                                {isExp && (
-                                  <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="overflow-hidden">
-                                    <div className="px-4 pb-4 space-y-3">
-                                      <div className="bg-slate-950/60 border border-slate-800/40 rounded-lg p-3">
-                                        <div className="flex items-center justify-between mb-2">
-                                          <span className="text-[7px] font-mono text-slate-500 uppercase tracking-widest">Strategy Equity Curve</span>
-                                          <span className="text-[8px] font-mono font-bold" style={{ color: profile.totalPips >= 0 ? '#39ff14' : '#ff0055' }}>{profile.totalPips >= 0 ? '+' : ''}{profile.totalPips} pips</span>
-                                        </div>
-                                        <EquityCurve curve={profile.equityCurve} height={80} />
-                                      </div>
-                                      <div className="bg-slate-950/60 border border-slate-800/40 rounded-lg p-3">
-                                        <div className="flex items-center gap-1.5 mb-2"><Layers className="w-3 h-3 text-emerald-400" /><span className="text-[7px] font-mono text-emerald-400 uppercase tracking-widest font-bold">Correlation to Base</span></div>
-                                        <CorrelationBar value={profile.correlation} max={maxCorrelation} />
-                                        <div className="flex items-center justify-between mt-1.5">
-                                          <span className="text-[7px] text-slate-600 font-mono">0.0 (Independent)</span>
-                                          <span className="text-[7px] text-yellow-500/60 font-mono">Threshold: {maxCorrelation}</span>
-                                          <span className="text-[7px] text-slate-600 font-mono">1.0 (Identical)</span>
-                                        </div>
-                                      </div>
-                                      <div className="grid grid-cols-6 gap-2">
-                                        {[
-                                          { label: 'Win Rate', value: `${(profile.winRate * 100).toFixed(1)}%`, color: '#39ff14' },
-                                          { label: 'Profit Factor', value: profile.profitFactor.toFixed(2), color: '#00ffea' },
-                                          { label: 'Total Pips', value: `${profile.totalPips >= 0 ? '+' : ''}${profile.totalPips}`, color: profile.totalPips >= 0 ? '#39ff14' : '#ff0055' },
-                                          { label: 'Max DD', value: `${(profile.maxDrawdown * 100).toFixed(1)}%`, color: '#ff8800' },
-                                          { label: 'Fitness', value: profile.fitness.toFixed(2), color: '#a855f7' },
-                                          { label: 'Correlation', value: profile.correlation.toFixed(3), color: '#10b981' },
-                                        ].map(s => (
-                                          <div key={s.label} className="bg-slate-950/40 border border-slate-800/30 rounded-lg p-2 text-center">
-                                            <div className="text-[9px] font-bold font-mono" style={{ color: s.color }}>{s.value}</div>
-                                            <div className="text-[6px] text-slate-600 font-mono uppercase mt-0.5">{s.label}</div>
-                                          </div>
-                                        ))}
-                                      </div>
-                                      <div className="bg-emerald-950/20 border border-emerald-500/20 rounded-lg p-3">
-                                        <div className="flex items-center gap-1.5 mb-2"><Dna className="w-3 h-3 text-emerald-400" /><span className="text-[7px] font-mono text-emerald-400 uppercase tracking-widest font-bold">Strategy DNA Blueprint</span></div>
-                                        <p className="text-[9px] font-mono text-emerald-300 leading-relaxed">{profile.plainEnglish}</p>
-                                        <div className="mt-2 grid grid-cols-2 gap-1.5">
-                                          <div className="text-[7px] font-mono text-slate-500"><span className="text-cyan-400">SL:</span> {profile.dna.slMultiplier.toFixed(2)} × ATR</div>
-                                          <div className="text-[7px] font-mono text-slate-500"><span className="text-emerald-400">TP:</span> {profile.dna.tpMultiplier.toFixed(2)} × ATR</div>
-                                          <div className="text-[7px] font-mono text-slate-500"><span className="text-purple-400">Hurst:</span> {profile.dna.hurstMin.toFixed(2)} – {profile.dna.hurstMax.toFixed(2)}</div>
-                                          <div className="text-[7px] font-mono text-slate-500"><span className="text-yellow-400">R:R:</span> {(profile.dna.tpMultiplier / profile.dna.slMultiplier).toFixed(2)}:1</div>
-                                        </div>
-                                      </div>
-                                    </div>
-                                  </motion.div>
-                                )}
-                              </AnimatePresence>
-                            </div>
-                          );
-                        })}
+                        {gaResult.uncorrelatedProfiles.map((profile, idx) => (
+                          <StrategyCard key={idx} profile={profile} idx={idx} expandedProfile={expandedProfile} setExpandedProfile={setExpandedProfile} maxCorrelation={maxCorrelation} />
+                        ))}
                       </div>
                     )}
                   </div>
 
-                  {/* All Profiles Table */}
+                  {/* All Profiles — Full Leaderboard */}
                   {gaResult.allProfiles.length > 0 && (
-                    <details className="group">
-                      <summary className="flex items-center gap-2 cursor-pointer text-[8px] text-slate-500 font-mono uppercase tracking-widest hover:text-slate-300 transition-colors py-2">
-                        <BarChart3 className="w-3 h-3" />
-                        All {gaResult.allProfiles.length} Evolved Strategies (Before Filter)
-                      </summary>
-                      <div className="mt-2 bg-slate-950/40 border border-slate-800/30 rounded-lg overflow-hidden">
-                        <table className="w-full text-left">
-                          <thead>
-                            <tr className="text-[7px] text-slate-600 font-mono uppercase border-b border-slate-800/30">
-                              <th className="p-2">#</th><th className="p-2">DNA</th><th className="p-2 text-right">Fitness</th><th className="p-2 text-right">WR</th><th className="p-2 text-right">PF</th><th className="p-2 text-right">Trades</th><th className="p-2 text-right">DD</th><th className="p-2 text-right">ρ</th><th className="p-2 text-right">Status</th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-slate-800/20">
-                            {gaResult.allProfiles.map((profile, idx) => {
-                              const accepted = profile.correlation <= maxCorrelation && profile.profitFactor > 1;
-                              return (
-                                <tr key={idx} className={accepted ? 'bg-emerald-950/10' : 'opacity-50'}>
-                                  <td className="p-2 text-[8px] font-mono text-slate-500">{idx + 1}</td>
-                                  <td className="p-2 text-[7px] font-mono text-slate-400 max-w-[250px] truncate">{profile.plainEnglish}</td>
-                                  <td className="p-2 text-[8px] font-mono text-right text-purple-400">{profile.fitness}</td>
-                                  <td className="p-2 text-[8px] font-mono text-right" style={{ color: profile.winRate >= 0.6 ? '#39ff14' : '#00ffea' }}>{(profile.winRate * 100).toFixed(1)}%</td>
-                                  <td className="p-2 text-[8px] font-mono text-right" style={{ color: profile.profitFactor > 2 ? '#39ff14' : '#00ffea' }}>{profile.profitFactor}</td>
-                                  <td className="p-2 text-[8px] font-mono text-right text-slate-400">{profile.trades}</td>
-                                  <td className="p-2 text-[8px] font-mono text-right text-orange-400">{(profile.maxDrawdown * 100).toFixed(1)}%</td>
-                                  <td className="p-2 text-[8px] font-mono text-right" style={{ color: profile.correlation <= maxCorrelation ? '#10b981' : '#ff0055' }}>{profile.correlation.toFixed(3)}</td>
-                                  <td className="p-2 text-right">
-                                    <span className={`text-[7px] font-mono font-bold px-1.5 py-0.5 rounded border ${accepted ? 'text-emerald-400 border-emerald-400/30 bg-emerald-400/10' : 'text-red-400 border-red-400/30 bg-red-400/10'}`}>
-                                      {accepted ? 'PASS' : 'REJECT'}
-                                    </span>
-                                  </td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
+                    <div className="border border-purple-500/20 rounded-xl overflow-hidden">
+                      <div className="bg-purple-950/20 px-4 py-2.5 border-b border-purple-500/20 flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <BarChart3 className="w-3.5 h-3.5 text-purple-400" />
+                          <span className="text-[9px] font-bold text-purple-300 uppercase tracking-widest">
+                            All {gaResult.allProfiles.length} Evolved Strategies — Full Leaderboard
+                          </span>
+                        </div>
+                        <span className="text-[7px] text-purple-500/60 font-mono">
+                          Ranked by Fitness Score
+                        </span>
                       </div>
-                    </details>
+                      <div className="divide-y divide-slate-800/30">
+                        {gaResult.allProfiles.map((profile, idx) => (
+                          <StrategyCard
+                            key={`all-${idx}`}
+                            profile={profile}
+                            idx={idx}
+                            expandedProfile={expandedProfile === null ? null : expandedProfile}
+                            setExpandedProfile={(v) => setExpandedProfile(v === null ? null : v !== null ? v + 1000 : null)}
+                            maxCorrelation={maxCorrelation}
+                            offset={1000}
+                          />
+                        ))}
+                      </div>
+                    </div>
                   )}
                 </div>
               )}
@@ -607,6 +529,142 @@ export function AlphaDiscoveryEngine({ result }: { result: BacktestResult }) {
           </motion.div>
         )}
       </AnimatePresence>
+    </div>
+  );
+}
+
+// ── Strategy Card (matches Profile Discovery Engine style) ──
+function StrategyCard({ profile, idx, expandedProfile, setExpandedProfile, maxCorrelation, offset = 0 }: {
+  profile: GAProfile; idx: number; expandedProfile: number | null;
+  setExpandedProfile: (v: number | null) => void; maxCorrelation: number; offset?: number;
+}) {
+  const cardIdx = idx + offset;
+  const isExp = expandedProfile === cardIdx;
+  const medal = idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : `#${idx + 1}`;
+  const isPositive = profile.totalPips >= 0;
+
+  return (
+    <div className="bg-slate-950/20 hover:bg-slate-900/40 transition-colors">
+      <button onClick={() => setExpandedProfile(isExp ? null : cardIdx)} className="w-full px-4 py-3 text-left">
+        <div className="flex items-center gap-3">
+          <span className="text-lg w-8 text-center shrink-0">{medal}</span>
+          <div className="flex-1 min-w-0">
+            <DNABadges dna={profile.dna} />
+            <div className="text-[8px] font-mono text-slate-500 mt-1 truncate">{profile.plainEnglish}</div>
+          </div>
+          <div className="flex items-center gap-3 shrink-0">
+            <StatCell label="WR" value={`${(profile.winRate * 100).toFixed(1)}%`} color={profile.winRate >= 0.6 ? '#39ff14' : '#00ffea'} />
+            <StatCell label="PF" value={profile.profitFactor.toFixed(2)} color={profile.profitFactor > 2 ? '#39ff14' : '#00ffea'} />
+            <StatCell label="Pips" value={`${isPositive ? '+' : ''}${profile.totalPips.toFixed(0)}`} color={isPositive ? '#39ff14' : '#ff0055'} />
+            <StatCell label="Trades" value={`${profile.trades}`} color="#94a3b8" />
+            <StatCell label="ρ" value={profile.correlation.toFixed(3)} color={profile.correlation <= maxCorrelation ? '#10b981' : '#f59e0b'} />
+            {isExp ? <ChevronUp className="w-3 h-3 text-slate-500" /> : <ChevronDown className="w-3 h-3 text-slate-500" />}
+          </div>
+        </div>
+      </button>
+      <AnimatePresence>
+        {isExp && (
+          <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="overflow-hidden">
+            <div className="px-4 pb-4 space-y-3">
+              {/* Equity Curve */}
+              <div className="bg-slate-950/60 border border-slate-800/40 rounded-lg p-3">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-[7px] font-mono text-slate-500 uppercase tracking-widest">Strategy Equity Curve</span>
+                  <span className="text-[8px] font-mono font-bold" style={{ color: isPositive ? '#39ff14' : '#ff0055' }}>
+                    {isPositive ? '+' : ''}{profile.totalPips.toFixed(1)} pips
+                  </span>
+                </div>
+                <EquityCurve curve={profile.equityCurve} height={80} />
+              </div>
+
+              {/* Stats Grid */}
+              <div className="grid grid-cols-3 lg:grid-cols-6 gap-2">
+                {[
+                  { label: 'Win Rate', value: `${(profile.winRate * 100).toFixed(1)}%`, color: '#39ff14' },
+                  { label: 'Profit Factor', value: profile.profitFactor.toFixed(2), color: '#00ffea' },
+                  { label: 'Total Pips', value: `${isPositive ? '+' : ''}${profile.totalPips.toFixed(1)}`, color: isPositive ? '#39ff14' : '#ff0055' },
+                  { label: 'Max Drawdown', value: `${(profile.maxDrawdown * 100).toFixed(1)}%`, color: '#ff8800' },
+                  { label: 'Fitness Score', value: profile.fitness.toFixed(2), color: '#a855f7' },
+                  { label: 'Gross Profit', value: `+${profile.grossProfit.toFixed(0)}`, color: '#39ff14' },
+                ].map(s => (
+                  <div key={s.label} className="bg-slate-950/40 border border-slate-800/30 rounded-lg p-2 text-center">
+                    <div className="text-[9px] font-bold font-mono" style={{ color: s.color }}>{s.value}</div>
+                    <div className="text-[6px] text-slate-600 font-mono uppercase mt-0.5">{s.label}</div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Correlation Bar */}
+              <div className="bg-slate-950/60 border border-slate-800/40 rounded-lg p-3">
+                <div className="flex items-center gap-1.5 mb-2">
+                  <Layers className="w-3 h-3 text-emerald-400" />
+                  <span className="text-[7px] font-mono text-emerald-400 uppercase tracking-widest font-bold">Correlation to Baseline</span>
+                  <span className="text-[7px] font-mono ml-auto" style={{ color: profile.correlation <= maxCorrelation ? '#39ff14' : '#f59e0b' }}>
+                    ρ = {profile.correlation.toFixed(3)} {profile.correlation <= maxCorrelation ? '✓ Decorrelated' : '⚠ Correlated'}
+                  </span>
+                </div>
+                <CorrelationBar value={profile.correlation} max={maxCorrelation} />
+              </div>
+
+              {/* DNA Blueprint */}
+              <div className="bg-emerald-950/20 border border-emerald-500/20 rounded-lg p-3">
+                <div className="flex items-center gap-1.5 mb-2">
+                  <Dna className="w-3 h-3 text-emerald-400" />
+                  <span className="text-[7px] font-mono text-emerald-400 uppercase tracking-widest font-bold">Strategy DNA Blueprint</span>
+                </div>
+                <p className="text-[9px] font-mono text-emerald-300 leading-relaxed">{profile.plainEnglish}</p>
+                <div className="mt-2 grid grid-cols-2 lg:grid-cols-4 gap-1.5">
+                  <div className="text-[7px] font-mono text-slate-500"><span className="text-cyan-400">SL:</span> {profile.dna.slMultiplier.toFixed(2)} × ATR</div>
+                  <div className="text-[7px] font-mono text-slate-500"><span className="text-emerald-400">TP:</span> {profile.dna.tpMultiplier.toFixed(2)} × ATR</div>
+                  <div className="text-[7px] font-mono text-slate-500"><span className="text-purple-400">Hurst:</span> {profile.dna.hurstMin.toFixed(2)} – {profile.dna.hurstMax.toFixed(2)}</div>
+                  <div className="text-[7px] font-mono text-slate-500"><span className="text-yellow-400">R:R:</span> {(profile.dna.tpMultiplier / profile.dna.slMultiplier).toFixed(2)}:1</div>
+                </div>
+              </div>
+
+              {/* Strategy Intelligence */}
+              <div className="bg-cyan-950/10 border border-cyan-500/20 rounded-lg p-3">
+                <div className="flex items-center gap-1.5 mb-2">
+                  <Brain className="w-3 h-3 text-cyan-400" />
+                  <span className="text-[7px] font-mono text-cyan-400 uppercase tracking-widest font-bold">Strategy Intelligence</span>
+                </div>
+                <div className="grid grid-cols-2 gap-2 text-[8px] font-mono text-slate-400">
+                  <div>
+                    <span className="text-slate-600">Edge Type: </span>
+                    <span className="text-cyan-300">
+                      {profile.dna.gate1Required && profile.dna.gate2Required && profile.dna.gate3Required ? 'Triple-Lock Confirmed' :
+                       profile.dna.gate2Required ? 'Structural Breakout' :
+                       profile.dna.gate3Required ? 'Momentum Drift' : 'Rank Divergence'}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-slate-600">Risk Profile: </span>
+                    <span style={{ color: profile.maxDrawdown < 0.05 ? '#39ff14' : profile.maxDrawdown < 0.15 ? '#f59e0b' : '#ff0055' }}>
+                      {profile.maxDrawdown < 0.05 ? 'Conservative' : profile.maxDrawdown < 0.15 ? 'Moderate' : 'Aggressive'}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-slate-600">Expectancy/Trade: </span>
+                    <span className="text-emerald-300">{profile.trades > 0 ? (profile.totalPips / profile.trades).toFixed(1) : '0'} pips</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-600">Gross Loss: </span>
+                    <span className="text-red-400">-{profile.grossLoss.toFixed(0)} pips</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+function StatCell({ label, value, color }: { label: string; value: string; color: string }) {
+  return (
+    <div className="text-center">
+      <div className="text-[8px] font-bold font-mono" style={{ color }}>{value}</div>
+      <div className="text-[6px] text-slate-600 font-mono">{label}</div>
     </div>
   );
 }

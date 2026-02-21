@@ -661,7 +661,7 @@ async function handlePhase3() {
     seen.add(key);
 
     const sim = simulateStrategy(bars, p.dna);
-    if (sim.trades < 20) continue;
+    if (sim.trades < 10) continue;
 
     // Build full equity curve for this one
     let equity = 10000, peak2 = 10000, maxDD2 = 0;
@@ -710,12 +710,24 @@ async function handlePhase3() {
     });
   }
 
+  // Sort all by fitness
+  profiles.sort((a, b) => b.fitness - a.fitness);
+
+  // Uncorrelated: relaxed filter — PF > 0.8 is enough, correlation is informational
   const uncorrelated = profiles
-    .filter(p => p.correlation <= maxCorrelation && p.sim.profitFactor > 1.0)
+    .filter(p => p.correlation <= maxCorrelation && p.sim.profitFactor > 0.8)
     .sort((a, b) => b.fitness - a.fitness)
     .slice(0, 10);
 
-  const allProfiles = profiles.sort((a, b) => b.fitness - a.fitness).slice(0, 20);
+  // If strict filter kills everything, use relaxed correlation (0.5) as fallback
+  const finalUncorrelated = uncorrelated.length > 0
+    ? uncorrelated
+    : profiles
+        .filter(p => p.correlation <= 0.5 && p.sim.profitFactor > 0.8)
+        .sort((a, b) => b.fitness - a.fitness)
+        .slice(0, 10);
+
+  const allProfiles = profiles.slice(0, 20);
 
   // Downsample curves
   function ds(curve: number[], max = 200): number[] {
@@ -744,7 +756,7 @@ async function handlePhase3() {
     payload: { ...(job as object), status: "complete", completedAt: new Date().toISOString() },
   }).eq("memory_key", JOB_KEY).eq("memory_type", "ga_job");
 
-  console.log(`[GA-P3] Extraction complete. ${uncorrelated.length} uncorrelated, ${allProfiles.length} total.`);
+  console.log(`[GA-P3] Extraction complete. ${finalUncorrelated.length} uncorrelated (relaxed fallback: ${uncorrelated.length === 0}), ${allProfiles.length} total profiles.`);
 
   return {
     phase: 3,
@@ -762,8 +774,9 @@ async function handlePhase3() {
       finalBestFitness: population[0]?.fitness || 0,
     },
     evolutionLog: evolutionLog.filter((_, i) => i % Math.max(1, Math.floor(evolutionLog.length / 50)) === 0),
-    uncorrelatedProfiles: uncorrelated.map(fmt),
+    uncorrelatedProfiles: finalUncorrelated.map(fmt),
     allProfiles: allProfiles.map(fmt),
+    correlationFallback: uncorrelated.length === 0,
     config: {
       pair,
       populationSize: (job as Record<string, unknown>).populationSize,
