@@ -126,21 +126,56 @@ function filterAndRecalc(
   const comboKey = `${predatorRank}v${preyRank}`;
   const baseCurve = equityCurves[comboKey] || equityCurves['1v8'] || [];
 
-  const totalGatePenaltyPct = (Math.max(0, wrPenalty) / 100);
-  const pfDamage = Math.max(0, 1 - pfMultiplier);
-  const pfBoost = Math.max(0, pfMultiplier - 1);
+  // Rebuild the equity curve from scratch using adjusted WR + PF + SL pips
+  // This ensures every parameter visibly reshapes the curve
+  const slPips = sl.pips || 15;
+  const rrRatio = adjustedPF; // approximate reward:risk
+  const tpPips = slPips * Math.max(0.5, rrRatio);
+  const tradeCount = Math.max(1, rawTrades);
+  const wrDecimal = adjustedWR / 100;
 
-  const simulatedCurve = baseCurve.map((pt, idx) => {
-    const rawGain = pt.equity - 1000;
-    const scaleFactor = 1 - totalGatePenaltyPct * 1.5 - pfDamage * 0.5 + pfBoost * 0.3;
-    const gatedGain = rawGain * Math.max(-1, scaleFactor);
-    const progress = idx / Math.max(1, baseCurve.length - 1);
-    const slipDrag = (slippagePips * rawTrades * 0.10 + entryOffsetCost * 0.05) * progress;
-    return {
-      time: pt.time,
-      equity: Math.max(0, 1000 + gatedGain - slipDrag),
-    };
-  });
+  // Use a seeded pseudo-random based on combo+settings so it's deterministic but unique
+  const seed = predatorRank * 1000 + preyRank * 100 + stopLossIdx * 10 + entryIdx + (gate1 ? 1 : 0) + (gate2 ? 2 : 0) + (gate3 ? 4 : 0);
+  let rng = seed + 1;
+  const pseudoRandom = () => {
+    rng = (rng * 16807 + 0) % 2147483647;
+    return (rng & 0x7fffffff) / 0x7fffffff;
+  };
+
+  // Generate synthetic trade results
+  const tradeResults: number[] = [];
+  for (let i = 0; i < tradeCount; i++) {
+    const isWin = pseudoRandom() < wrDecimal;
+    const variance = 0.5 + pseudoRandom();
+    if (isWin) {
+      tradeResults.push(tpPips * variance);
+    } else {
+      tradeResults.push(-slPips * variance);
+    }
+  }
+
+  // Build equity curve from trade results, spread across the base curve's time axis
+  const timePoints = baseCurve.length > 0 ? baseCurve.map(p => p.time) : [];
+  const simulatedCurve: Array<{ time: string; equity: number }> = [];
+  let equity = 1000;
+
+  if (timePoints.length > 0 && tradeCount > 0) {
+    const tradesPerPoint = tradeCount / timePoints.length;
+    let tradeIdx = 0;
+
+    for (let i = 0; i < timePoints.length; i++) {
+      // How many trades settle at this point
+      const targetIdx = Math.min(tradeCount, Math.round((i + 1) * tradesPerPoint));
+      while (tradeIdx < targetIdx) {
+        const pipResult = tradeResults[tradeIdx] - slippagePips;
+        equity += pipResult * 0.10; // $0.10 per pip per micro lot
+        tradeIdx++;
+      }
+      simulatedCurve.push({ time: timePoints[i], equity: Math.max(0, Math.round(equity * 100) / 100) });
+    }
+  } else {
+    simulatedCurve.push({ time: new Date().toISOString(), equity: 1000 });
+  }
 
   // Max drawdown
   let peak = 1000;
