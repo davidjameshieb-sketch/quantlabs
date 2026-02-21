@@ -21,6 +21,7 @@ import { NeuralSynthesisMap } from '@/components/matrix/NeuralSynthesisMap';
 import { VacuumForecaster } from '@/components/matrix/VacuumForecaster';
 import { RankHeatmap } from '@/components/matrix/RankHeatmap';
 import { EquityDrawdownChart } from '@/components/matrix/EquityDrawdownChart';
+import { BacktestTearSheet } from '@/components/matrix/BacktestTearSheet';
 import { useRankExpectancy } from '@/hooks/useRankExpectancy';
 
 type Env = 'practice' | 'live';
@@ -1013,9 +1014,13 @@ const SovereignMatrix = () => {
                         <BarChart3 className="w-4 h-4 text-yellow-400" />
                       </motion.div>
                       <p className="text-[10px] text-slate-400 uppercase tracking-widest font-display">
-                        Cross-Sectional Statistical Arbitrage Engine — {backtestResult.candlesPerPair} candles · {backtestResult.pairsLoaded} pairs · {backtestResult.totalSnapshots} snapshots
+                        Cross-Sectional Statistical Arbitrage Engine v2.0 — {backtestResult.candlesPerPair} candles · {backtestResult.pairsLoaded} pairs · {backtestResult.totalSnapshots} snapshots
                       </p>
                     </div>
+
+                    {/* Three Pillars Tear Sheet */}
+                    <BacktestTearSheet result={backtestResult} />
+
                     <RankHeatmap
                       comboResults={backtestResult.comboResults}
                       bestCombo={backtestResult.bestCombo}

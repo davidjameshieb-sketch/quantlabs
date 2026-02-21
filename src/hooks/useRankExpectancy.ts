@@ -15,10 +15,36 @@ export interface RankComboResult {
   avgWin: number;
   avgLoss: number;
   expectancy: number;
+  // v2 — pillar stats
+  gatedTrades: number;
+  gatedWins: number;
+  gatedWinRate: number;
+  gatedPips: number;
+  gatedPF: number;
+  rejectedByGate2: number;
+  rejectedByGate3: number;
+}
+
+export interface SessionStats {
+  session: string;
+  trades: number;
+  wins: number;
+  winRate: number;
+  totalPips: number;
+  profitFactor: number;
+}
+
+export interface PillarSummary {
+  pillar1_divergenceEdge: number;
+  pillar2_atlasWallsEdge: number;
+  pillar3_vectorEdge: number;
+  combinedEdge: number;
+  baselineWR: number;
 }
 
 export interface BacktestResult {
   timestamp: string;
+  version: string;
   environment: string;
   candlesPerPair: number;
   totalSnapshots: number;
@@ -28,6 +54,10 @@ export interface BacktestResult {
   drawdownCurve: Array<{ time: string; drawdown: number }>;
   bestCombo: RankComboResult;
   dateRange: { start: string; end: string };
+  // v2 additions
+  sessionStats: SessionStats[];
+  pillarSummary: PillarSummary;
+  elevatorPitch: string;
 }
 
 export function useRankExpectancy() {
@@ -57,7 +87,7 @@ export function useRankExpectancy() {
       if (!res.ok) throw new Error(data.error || 'Backtest failed');
 
       setResult(data);
-      toast.success(`Backtest complete: ${data.totalSnapshots} snapshots, best combo ${data.bestCombo.strongRank}v${data.bestCombo.weakRank}`);
+      toast.success(`Backtest v2 complete: ${data.totalSnapshots} snapshots, best combo ${data.bestCombo.strongRank}v${data.bestCombo.weakRank}`);
       return data as BacktestResult;
     } catch (err) {
       const msg = (err as Error).message;
