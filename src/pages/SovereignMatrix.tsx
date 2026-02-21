@@ -22,6 +22,7 @@ import { VacuumForecaster } from '@/components/matrix/VacuumForecaster';
 import { RankHeatmap } from '@/components/matrix/RankHeatmap';
 import { EquityDrawdownChart } from '@/components/matrix/EquityDrawdownChart';
 import { BacktestTearSheet } from '@/components/matrix/BacktestTearSheet';
+import { DynamicMatrixSandbox } from '@/components/matrix/DynamicMatrixSandbox';
 import { useRankExpectancy } from '@/hooks/useRankExpectancy';
 
 type Env = 'practice' | 'live';
@@ -1020,6 +1021,9 @@ const SovereignMatrix = () => {
 
                     {/* Three Pillars Tear Sheet */}
                     <BacktestTearSheet result={backtestResult} />
+
+                    {/* Dynamic Matrix Sandbox */}
+                    <DynamicMatrixSandbox result={backtestResult} />
 
                     <RankHeatmap
                       comboResults={backtestResult.comboResults}
