@@ -565,8 +565,42 @@ const EMA_SLOWS = [34, 50, 100, 200];
 function pick<T>(arr: T[]): T { return arr[Math.floor(Math.random() * arr.length)]; }
 function randRange(min: number, max: number): number { return min + Math.random() * (max - min); }
 
-function randomDNA(): StrategyDNA {
-  return {
+// Archetype templates — force the GA to explore ALL indicator families
+const ARCHETYPES: Partial<StrategyDNA>[] = [
+  // Pure Bollinger strategies
+  { rsiMode: 0, macdMode: 0, bbMode: 1, emaMode: 0 },  // BB squeeze breakout
+  { rsiMode: 0, macdMode: 0, bbMode: 2, emaMode: 0 },  // BB mean reversion
+  { rsiMode: 0, macdMode: 0, bbMode: 3, emaMode: 0 },  // BB band walk
+  // Pure EMA strategies
+  { rsiMode: 0, macdMode: 0, bbMode: 0, emaMode: 1 },  // EMA crossover
+  { rsiMode: 0, macdMode: 0, bbMode: 0, emaMode: 2 },  // Price above dual EMA
+  { rsiMode: 0, macdMode: 0, bbMode: 0, emaMode: 3 },  // EMA slope
+  // BB + EMA hybrids
+  { rsiMode: 0, macdMode: 0, bbMode: 1, emaMode: 1 },  // BB breakout + EMA trend
+  { rsiMode: 0, macdMode: 0, bbMode: 2, emaMode: 3 },  // BB revert + EMA slope
+  // Volume-driven
+  { rsiMode: 0, macdMode: 0, bbMode: 1, emaMode: 0, volMode: 3 },  // BB squeeze + vol expansion
+  { rsiMode: 0, macdMode: 0, bbMode: 0, emaMode: 1, volMode: 1 },  // EMA cross + high vol
+  // Session-specific
+  { rsiMode: 0, macdMode: 0, bbMode: 1, emaMode: 0, sessionFilter: 1 },  // BB London
+  { rsiMode: 0, macdMode: 0, bbMode: 0, emaMode: 1, sessionFilter: 2 },  // EMA NY
+  // Triple-indicator combos (NO pure RSI+MACD)
+  { rsiMode: 1, macdMode: 0, bbMode: 1, emaMode: 1 },  // RSI + BB + EMA
+  { rsiMode: 0, macdMode: 1, bbMode: 2, emaMode: 0 },  // MACD + BB revert
+  { rsiMode: 1, macdMode: 0, bbMode: 0, emaMode: 2, volMode: 3 },  // RSI + EMA + vol
+  // Full kitchen sink
+  { rsiMode: 1, macdMode: 1, bbMode: 1, emaMode: 1 },  // All 4 indicators
+  { rsiMode: 2, macdMode: 3, bbMode: 2, emaMode: 3 },  // All 4 — alt modes
+  // Day-of-week anomalies
+  { rsiMode: 0, macdMode: 0, bbMode: 1, emaMode: 0, dayFilter: 1 },  // BB Tues
+  { rsiMode: 0, macdMode: 0, bbMode: 0, emaMode: 1, dayFilter: 2 },  // EMA Wed
+  // Pure Hurst
+  { rsiMode: 0, macdMode: 0, bbMode: 1, emaMode: 0, hurstMin: 0.55, hurstMax: 1.0 },  // BB + trending regime
+  { rsiMode: 0, macdMode: 0, bbMode: 2, emaMode: 0, hurstMin: 0.0, hurstMax: 0.45 },  // BB revert + mean-rev regime
+];
+
+function randomDNA(archetype?: Partial<StrategyDNA>): StrategyDNA {
+  const base: StrategyDNA = {
     rsiPeriod: pick(RSI_PERIODS), rsiLow: 20 + Math.random() * 25, rsiHigh: 55 + Math.random() * 30,
     rsiMode: Math.floor(Math.random() * 4),
     macdFast: pick(MACD_FASTS), macdSlow: pick(MACD_SLOWS), macdSignal: pick(MACD_SIGNALS),
@@ -582,6 +616,9 @@ function randomDNA(): StrategyDNA {
     slMultiplier: randRange(0.5, 3.5), tpMultiplier: randRange(0.5, 6.0),
     hurstMin: Math.random() * 0.5, hurstMax: 0.5 + Math.random() * 0.5,
   };
+  // Override with archetype constraints
+  if (archetype) Object.assign(base, archetype);
+  return base;
 }
 
 function crossover(a: StrategyDNA, b: StrategyDNA): StrategyDNA {
@@ -644,37 +681,66 @@ function tournamentSelect(pop: { dna: StrategyDNA; fitness: number }[], k = 3): 
 
 // ── Strategy naming & description ─────────────────────────────────────────
 
+let nameCounter = 0;
+
 function generateStrategyName(dna: StrategyDNA): string {
-  const parts: string[] = [];
+  nameCounter++;
   
   const indicators: string[] = [];
   if (dna.rsiMode > 0) indicators.push('RSI');
   if (dna.macdMode > 0) indicators.push('MACD');
   if (dna.bbMode > 0) indicators.push('BB');
   if (dna.emaMode > 0) indicators.push('EMA');
+  
+  const filters: string[] = [];
+  if (dna.volMode > 0) filters.push(['HighVol', 'LowVol', 'VolExpansion'][dna.volMode - 1] || 'Vol');
+  const sessions = ['Asia', 'London', 'NewYork', 'NYClose'];
+  if (dna.sessionFilter >= 0) filters.push(sessions[dna.sessionFilter]);
+  const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
+  if (dna.dayFilter >= 0) filters.push(days[dna.dayFilter]);
 
-  const names: Record<string, string[]> = {
-    'RSI': ['Momentum Reversal', 'RSI Divergence', 'Oscillator Snap'],
-    'MACD': ['Signal Crossover', 'Histogram Surge', 'Zero-Line Break'],
-    'BB': ['Volatility Squeeze', 'Band Breakout', 'Mean Reversion Trap'],
-    'EMA': ['Trend Rider', 'Moving Average Cross', 'Slope Runner'],
+  // Single-indicator names with mode specificity
+  const singleNames: Record<string, Record<number, string>> = {
+    BB: { 1: 'The Volatility Squeeze Breakout', 2: 'The Mean Reversion Trap', 3: 'The Band Walker' },
+    EMA: { 1: 'The Golden Cross Hunter', 2: 'The Trend Confirmation Engine', 3: 'The Slope Momentum Rider' },
+    RSI: { 1: 'The Oversold Reversal Sniper', 2: 'The Overbought Fade Machine', 3: 'The Midline Momentum Pivot' },
+    MACD: { 1: 'The Signal Line Snapper', 2: 'The Zero-Line Breakout', 3: 'The Histogram Divergence Play' },
   };
 
-  if (indicators.length === 0) return 'Pure Filter Strategy';
-  
-  if (indicators.length === 1) {
-    const modes = names[indicators[0]] || ['Strategy'];
-    const modeIdx = (dna.rsiMode || dna.macdMode || dna.bbMode || dna.emaMode) - 1;
-    return `The ${modes[Math.min(modeIdx, modes.length - 1)]}`;
+  // Multi-indicator combo names — exhaustive
+  const comboNames: Record<string, string[]> = {
+    'BB+EMA': ['The Structural Trend-Band Convergence', 'The Bollinger-EMA Fusion Engine', 'The Trend Volatility Hybrid'],
+    'BB+RSI': ['The Volatility-Momentum Reversal', 'The Band Squeeze Oscillator', 'The RSI-Bollinger Fade Machine'],
+    'BB+MACD': ['The Volatility-Histogram Surge', 'The Bollinger MACD Breakout', 'The Band Momentum Convergence'],
+    'EMA+RSI': ['The Trend-Momentum Sniper', 'The EMA-RSI Confirmation Engine', 'The Moving Average Oscillator'],
+    'EMA+MACD': ['The Momentum Trend Rider', 'The EMA-MACD Signal Fusion', 'The Trend Histogram Engine'],
+    'RSI+MACD': ['The Dual Oscillator Convergence', 'The Momentum Crossfire', 'The Oscillator Sync Engine'],
+    'BB+EMA+RSI': ['The Triple-Layer Volatility Filter', 'The Full-Spectrum Reversal Engine'],
+    'BB+EMA+MACD': ['The Structural Momentum Machine', 'The Trend-Band-Signal Convergence'],
+    'BB+RSI+MACD': ['The Oscillator Volatility Hybrid', 'The Band-Momentum Trifecta'],
+    'EMA+RSI+MACD': ['The Triple Oscillator Trend Engine', 'The Momentum Consensus Machine'],
+    'BB+EMA+RSI+MACD': ['The Full Kitchen Sink Convergence', 'The Quad-Signal Alpha Engine', 'The Maximum Confluence Machine'],
+  };
+
+  if (indicators.length === 0) {
+    if (filters.length > 0) return `The ${filters.join(' ')} Anomaly Filter #${nameCounter}`;
+    return `The Pure Regime Filter #${nameCounter}`;
   }
 
-  // Multi-indicator names
-  if (indicators.includes('RSI') && indicators.includes('BB')) return 'The Volatility Band Squeeze';
-  if (indicators.includes('MACD') && indicators.includes('EMA')) return 'The Momentum Trend Rider';
-  if (indicators.includes('RSI') && indicators.includes('MACD')) return 'The Dual Oscillator';
-  if (indicators.includes('BB') && indicators.includes('EMA')) return 'The Trend-Band Hybrid';
-  if (indicators.length >= 3) return 'The Multi-Signal Convergence';
-  return `The ${indicators.join('-')} Hybrid`;
+  let baseName: string;
+  if (indicators.length === 1) {
+    const ind = indicators[0];
+    const mode = dna[`${ind.toLowerCase()}Mode` as keyof StrategyDNA] as number || 1;
+    baseName = singleNames[ind]?.[mode] || `The ${ind} Strategy`;
+  } else {
+    const key = indicators.sort().join('+');
+    const options = comboNames[key] || [`The ${indicators.join('-')} Hybrid`];
+    baseName = options[nameCounter % options.length];
+  }
+
+  // Append filter suffix for uniqueness
+  if (filters.length > 0) baseName += ` (${filters.join(' ')})`;
+  return baseName;
 }
 
 function generateEdgeDescription(dna: StrategyDNA): string {
@@ -773,13 +839,21 @@ async function handlePhase1(body: Record<string, unknown>) {
     if (dayCounter >= 48) { baseDailyReturns.push((baseEq - dayStart) / (dayStart || 1)); dayStart = baseEq; dayCounter = 0; }
   }
 
-  // Initialize population
-  console.log(`[GA-P1] Initializing population of ${populationSize}`);
+  // Initialize population — seed with forced archetypes to guarantee diversity
+  console.log(`[GA-P1] Initializing population of ${populationSize} with ${ARCHETYPES.length} archetype seeds`);
   const population: { dna: StrategyDNA; fitness: number }[] = [];
-  for (let i = 0; i < populationSize; i++) {
+  // First: seed one individual per archetype
+  for (let i = 0; i < Math.min(ARCHETYPES.length, populationSize); i++) {
+    const dna = randomDNA(ARCHETYPES[i]);
+    const sim = simulateStrategy(bars, dna);
+     const fitness = computeFitness(sim, baseDailyReturns, maxCorrelation, dna);
+    population.push({ dna, fitness });
+  }
+  // Fill remaining with random (but penalize pure RSI+MACD in fitness)
+  while (population.length < populationSize) {
     const dna = randomDNA();
     const sim = simulateStrategy(bars, dna);
-    let fitness = computeFitness(sim, baseDailyReturns, maxCorrelation);
+     const fitness = computeFitness(sim, baseDailyReturns, maxCorrelation, dna);
     population.push({ dna, fitness });
   }
   population.sort((a, b) => b.fitness - a.fitness);
@@ -819,7 +893,19 @@ async function handlePhase1(body: Record<string, unknown>) {
   };
 }
 
-function computeFitness(sim: SimResult, baseDailyReturns: number[], maxCorrelation: number): number {
+function getEdgeArchetype(dna: StrategyDNA): string {
+  const parts: string[] = [];
+  if (dna.rsiMode > 0) parts.push('RSI');
+  if (dna.macdMode > 0) parts.push('MACD');
+  if (dna.bbMode > 0) parts.push('BB');
+  if (dna.emaMode > 0) parts.push('EMA');
+  if (dna.volMode > 0) parts.push('VOL');
+  if (dna.sessionFilter >= 0) parts.push('SES');
+  if (dna.dayFilter >= 0) parts.push('DAY');
+  return parts.sort().join('+') || 'PURE_FILTER';
+}
+
+function computeFitness(sim: SimResult, baseDailyReturns: number[], maxCorrelation: number, dna?: StrategyDNA): number {
   let fitness = 0;
   if (sim.trades >= 20 && sim.maxDrawdown > 0.001) {
     fitness = (sim.profitFactor * sim.winRate * Math.sqrt(sim.trades)) / sim.maxDrawdown;
@@ -839,6 +925,40 @@ function computeFitness(sim: SimResult, baseDailyReturns: number[], maxCorrelati
   // Correlation penalty
   const corr = Math.abs(pearsonCorrelation(baseDailyReturns, sim.dailyReturns));
   if (corr > maxCorrelation) fitness *= Math.max(0.01, 1 - (corr - maxCorrelation) * 5);
+
+  // ── DIVERSITY INCENTIVE ──
+  // Penalize pure RSI+MACD combos (the "rookie" convergence trap)
+  if (dna) {
+    const hasRSI = dna.rsiMode > 0;
+    const hasMACD = dna.macdMode > 0;
+    const hasBB = dna.bbMode > 0;
+    const hasEMA = dna.emaMode > 0;
+    const hasVol = dna.volMode > 0;
+    const hasSes = dna.sessionFilter >= 0;
+    const hasDay = dna.dayFilter >= 0;
+
+    // Pure RSI+MACD with nothing else = severe penalty
+    if (hasRSI && hasMACD && !hasBB && !hasEMA && !hasVol && !hasSes && !hasDay) {
+      fitness *= 0.3; // 70% penalty for "rookie" combo
+    }
+    // RSI-only or MACD-only without structural indicators = moderate penalty
+    if ((hasRSI || hasMACD) && !hasBB && !hasEMA) {
+      fitness *= 0.6;
+    }
+
+    // Bonus for using structural indicators (BB, EMA)
+    if (hasBB) fitness *= 1.3;
+    if (hasEMA) fitness *= 1.2;
+    // Bonus for filters (volume, session, day)
+    if (hasVol) fitness *= 1.15;
+    if (hasSes) fitness *= 1.1;
+    if (hasDay) fitness *= 1.1;
+
+    // Bonus for multi-indicator combos (3+ active)
+    const activeCount = [hasRSI, hasMACD, hasBB, hasEMA].filter(Boolean).length;
+    if (activeCount >= 3) fitness *= 1.3;
+    if (activeCount >= 4) fitness *= 1.2;
+  }
 
   return fitness;
 }
@@ -885,7 +1005,7 @@ async function handlePhase2() {
       let child = crossover(p1.dna, p2.dna);
       child = mutate(child, mutationRate);
       const sim = simulateStrategy(bars, child);
-      const fitness = computeFitness(sim, baseDailyReturns, maxCorrelation);
+      const fitness = computeFitness(sim, baseDailyReturns, maxCorrelation, child);
       newPop.push({ dna: child, fitness });
       totalSimulations++;
     }
@@ -940,21 +1060,24 @@ async function handlePhase3() {
 
   console.log(`[GA-P3] Extracting top strategies from ${population.length} individuals`);
 
-  // Deduplicate by indicator signature
+  // Reset name counter for clean naming
+  nameCounter = 0;
+
+  // Deduplicate by full indicator signature (mode + key params)
   const seen = new Set<string>();
   const profiles: ScoredIndividual[] = [];
 
-  for (const p of population.slice(0, 40)) {
-    const key = `${p.dna.rsiMode}-${p.dna.macdMode}-${p.dna.bbMode}-${p.dna.emaMode}-${p.dna.direction}-${p.dna.sessionFilter}-${p.dna.dayFilter}`;
+  for (const p of population.slice(0, 60)) {
+    // More granular dedup key — includes indicator modes AND key parameters
+    const key = `${p.dna.rsiMode}-${p.dna.rsiPeriod}-${p.dna.macdMode}-${p.dna.macdFast}-${p.dna.bbMode}-${p.dna.bbPeriod}-${p.dna.emaMode}-${p.dna.emaFast}-${p.dna.emaSlow}-${p.dna.direction}-${p.dna.volMode}-${p.dna.sessionFilter}-${p.dna.dayFilter}`;
     if (seen.has(key)) continue;
     seen.add(key);
 
     const sim = simulateStrategy(bars, p.dna);
-    if (sim.trades < 30) continue; // Overfitting filter: minimum 30 trades
+    if (sim.trades < 30) continue;
 
     const corr = Math.abs(pearsonCorrelation(baseDailyReturns, sim.dailyReturns));
 
-    // Downsample equity curve
     const maxPts = 200;
     const stride = Math.max(1, Math.ceil(sim.equityCurve.length / maxPts));
     const dsCurve = sim.equityCurve.filter((_, i) => i % stride === 0);
@@ -969,16 +1092,52 @@ async function handlePhase3() {
     });
   }
 
-  // Sort by total return (net profit), not just fitness
+  // Sort by total return
   profiles.sort((a, b) => b.sim.totalReturn - a.sim.totalReturn);
 
-  // Extract top 10 uncorrelated
-  const uncorrelated = profiles.filter(p => p.correlation <= maxCorrelation).slice(0, 10);
-  const finalUncorrelated = uncorrelated.length > 0
-    ? uncorrelated
-    : profiles.filter(p => p.correlation <= 0.5).slice(0, 10);
+  // ── DIVERSITY-ENFORCED EXTRACTION ──
+  // Max 2 strategies per edge archetype to prevent RSI+MACD flooding
+  const MAX_PER_ARCHETYPE = 2;
+  const archetypeCounts: Record<string, number> = {};
 
-  const allProfiles = profiles.slice(0, 20);
+  function canAddArchetype(dna: StrategyDNA): boolean {
+    const arch = getEdgeArchetype(dna);
+    const count = archetypeCounts[arch] || 0;
+    if (count >= MAX_PER_ARCHETYPE) return false;
+    archetypeCounts[arch] = count + 1;
+    return true;
+  }
+
+  // Extract top 10 diverse + uncorrelated
+  const diverseProfiles: ScoredIndividual[] = [];
+  for (const p of profiles) {
+    if (diverseProfiles.length >= 10) break;
+    if (p.correlation > 0.5) continue;
+    if (!canAddArchetype(p.dna)) continue;
+    diverseProfiles.push(p);
+  }
+
+  // If we didn't get 10, relax correlation but keep diversity
+  if (diverseProfiles.length < 10) {
+    for (const p of profiles) {
+      if (diverseProfiles.length >= 10) break;
+      if (diverseProfiles.includes(p)) continue;
+      if (!canAddArchetype(p.dna)) continue;
+      diverseProfiles.push(p);
+    }
+  }
+
+  const finalUncorrelated = diverseProfiles;
+
+  // All profiles (for leaderboard) — also diversity-limited
+  const allArchCounts: Record<string, number> = {};
+  const allProfiles = profiles.filter(p => {
+    const arch = getEdgeArchetype(p.dna);
+    const count = allArchCounts[arch] || 0;
+    if (count >= 3) return false; // Max 3 in full leaderboard
+    allArchCounts[arch] = count + 1;
+    return true;
+  }).slice(0, 20);
 
   const fmt = (p: ScoredIndividual) => ({
     dna: p.dna, fitness: Math.round(p.fitness * 1000) / 1000,
@@ -996,6 +1155,7 @@ async function handlePhase3() {
     edgeDescription: p.edgeDescription,
     entryRules: p.entryRules,
     exitRules: p.exitRules,
+    edgeArchetype: getEdgeArchetype(p.dna),
   });
 
   await sb.from("sovereign_memory").update({
