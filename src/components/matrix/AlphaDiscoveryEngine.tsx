@@ -512,14 +512,20 @@ function StrategyCard({ profile, idx, expandedProfile, setExpandedProfile, maxCo
             </div>
             <IndicatorBadges dna={profile.dna} />
           </div>
-          <div className="flex items-center gap-3 shrink-0">
-            <StatCell label="Return" value={`${isPositive ? '+' : ''}${(profile.totalReturn ?? 0).toFixed(1)}%`} color={isPositive ? '#39ff14' : '#ff0055'} />
-            <StatCell label="WR" value={`${(profile.winRate * 100).toFixed(1)}%`} color={profile.winRate >= 0.6 ? '#39ff14' : '#00ffea'} />
-            <StatCell label="PF" value={profile.profitFactor.toFixed(2)} color={profile.profitFactor > 2 ? '#39ff14' : '#00ffea'} />
-            <StatCell label="Trades" value={`${profile.trades}`} color="#94a3b8" />
-            <StatCell label="ρ" value={profile.correlation.toFixed(3)} color={profile.correlation <= maxCorrelation ? '#10b981' : '#f59e0b'} />
+          <div className="flex items-center gap-2 shrink-0">
             {isExp ? <ChevronUp className="w-3 h-3 text-slate-500" /> : <ChevronDown className="w-3 h-3 text-slate-500" />}
           </div>
+        </div>
+        {/* Stats Row — matching Profile Discovery layout */}
+        <div className="grid grid-cols-6 gap-2 mt-2.5">
+          <StatBox label="Total Return" value={`${isPositive ? '+' : ''}${(profile.totalReturn ?? 0).toFixed(1)}%`} color={isPositive ? '#39ff14' : '#ff0055'} />
+          <StatBox label="Win Rate" value={`${(profile.winRate * 100).toFixed(1)}%`} color={profile.winRate >= 0.6 ? '#39ff14' : '#00ffea'} />
+          <StatBox label="Profit Factor" value={profile.profitFactor.toFixed(2)} color={profile.profitFactor > 2 ? '#39ff14' : '#00ffea'} />
+          <StatBox label="Max Drawdown" value={`${(profile.maxDrawdown ?? 0).toFixed(1)}%`} color={profile.maxDrawdown > -5 ? '#00ffea' : '#ff0055'} />
+          <StatBox label="Net Pips" value={`${profile.totalPips >= 0 ? '+' : ''}${Math.round(profile.totalPips)}`} color={profile.totalPips >= 0 ? '#39ff14' : '#ff0055'} />
+          <StatBox label="Final Equity" value={`$${(profile.equityCurve?.length ? profile.equityCurve[profile.equityCurve.length - 1] : 10000).toFixed(2)}`} color={
+            (profile.equityCurve?.length ? profile.equityCurve[profile.equityCurve.length - 1] : 10000) >= 10000 ? '#39ff14' : '#ff0055'
+          } />
         </div>
       </button>
       <AnimatePresence>
@@ -643,6 +649,15 @@ function StatCell({ label, value, color }: { label: string; value: string; color
     <div className="text-center">
       <div className="text-[8px] font-bold font-mono" style={{ color }}>{value}</div>
       <div className="text-[6px] text-slate-600 font-mono">{label}</div>
+    </div>
+  );
+}
+
+function StatBox({ label, value, color }: { label: string; value: string; color: string }) {
+  return (
+    <div className="bg-slate-950/60 border border-slate-800/40 rounded-lg py-2 px-1.5 text-center">
+      <div className="text-[6px] text-slate-500 font-mono uppercase tracking-widest mb-1">{label}</div>
+      <div className="text-[11px] font-bold font-mono" style={{ color }}>{value}</div>
     </div>
   );
 }
