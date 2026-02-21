@@ -1178,7 +1178,7 @@ async function handlePhase3() {
     evolutionLog: evolutionLog.filter((_, i) => i % Math.max(1, Math.floor(evolutionLog.length / 50)) === 0),
     uncorrelatedProfiles: finalUncorrelated.map(fmt),
     allProfiles: allProfiles.map(fmt),
-    correlationFallback: uncorrelated.length === 0,
+    correlationFallback: finalUncorrelated.length === 0,
     config: { pair, populationSize: (job as Record<string, unknown>).populationSize, generations: (job as Record<string, unknown>).totalGenerations, maxCorrelation, candleCount: (job as Record<string, unknown>).barCount, mutationRate: (job as Record<string, unknown>).mutationRate },
   };
 }
