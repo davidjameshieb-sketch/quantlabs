@@ -6,6 +6,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   FlaskConical, Rocket, Shuffle, Layers, ShieldCheck, TrendingUp, TrendingDown,
   Activity, Zap, Target, BarChart3, Clock, ChevronDown, ChevronUp, Brain,
+  AlertTriangle, CircleCheck, CircleAlert,
 } from 'lucide-react';
 import type { BacktestResult, RankComboResult } from '@/hooks/useRankExpectancy';
 
@@ -151,6 +152,148 @@ function simulateSingle(
   };
 }
 
+// ── Circuit Breaker Types ──
+interface CircuitBreakerData {
+  // Rolling PF Z-Score (last N trades vs historical)
+  rollingPF: number;
+  historicalPFMean: number;
+  historicalPFStd: number;
+  pfZScore: number;
+  pfBroken: boolean; // true if Z < -2
+  // Win-Rate Velocity
+  historicalWR: number;
+  recentWR: number; // last 20 trades
+  wrVelocity: number; // (recent - historical) / historical * 100
+  wrDecayAlert: boolean; // true if velocity < -30%
+  // CUSUM tracking
+  cusumValues: number[]; // cumulative sum of deviations
+  cusumBreached: boolean;
+  cusumThreshold: number;
+  // Overall status
+  status: 'NOMINAL' | 'WARNING' | 'BROKEN';
+  statusReason: string;
+  // Rolling windows for chart
+  rollingPFSeries: Array<{ trade: number; pf: number; zScore: number }>;
+  rollingWRSeries: Array<{ trade: number; wr: number; velocity: number }>;
+}
+
+// Compute circuit breaker from trade-level equity curve
+function computeCircuitBreaker(
+  curve: Array<{ time: string; equity: number }>,
+  backtestWR: number,
+  backtestPF: number,
+  windowSize = 30
+): CircuitBreakerData {
+  // Derive trade P&L from equity deltas
+  const trades: number[] = [];
+  for (let i = 1; i < curve.length; i++) {
+    const delta = curve[i].equity - curve[i - 1].equity;
+    if (Math.abs(delta) > 0.001) trades.push(delta);
+  }
+  if (trades.length < windowSize) {
+    // Not enough trades — pad with neutral
+    while (trades.length < windowSize) trades.unshift(0);
+  }
+
+  // ── Rolling PF series ──
+  const rollingPFSeries: Array<{ trade: number; pf: number; zScore: number }> = [];
+  const allWindowPFs: number[] = [];
+  for (let i = windowSize; i <= trades.length; i++) {
+    const window = trades.slice(i - windowSize, i);
+    let gp = 0, gl = 0;
+    window.forEach(t => { if (t > 0) gp += t; else gl += Math.abs(t); });
+    const pf = gl > 0 ? gp / gl : gp > 0 ? 5 : 1;
+    allWindowPFs.push(pf);
+    rollingPFSeries.push({ trade: i, pf, zScore: 0 }); // z filled below
+  }
+
+  // Historical PF stats
+  const pfMean = allWindowPFs.length > 0 ? allWindowPFs.reduce((a, b) => a + b, 0) / allWindowPFs.length : backtestPF;
+  const pfVariance = allWindowPFs.length > 1
+    ? allWindowPFs.reduce((a, b) => a + (b - pfMean) ** 2, 0) / (allWindowPFs.length - 1)
+    : 0.01;
+  const pfStd = Math.max(0.01, Math.sqrt(pfVariance));
+
+  // Fill z-scores
+  rollingPFSeries.forEach(pt => { pt.zScore = (pt.pf - pfMean) / pfStd; });
+  const latestPF = allWindowPFs[allWindowPFs.length - 1] ?? backtestPF;
+  const pfZScore = (latestPF - pfMean) / pfStd;
+  const pfBroken = pfZScore < -2;
+
+  // ── Win-Rate Velocity ──
+  const recentWindow = 20;
+  const recentTrades = trades.slice(-recentWindow);
+  const recentWins = recentTrades.filter(t => t > 0).length;
+  const recentWR = recentTrades.length > 0 ? (recentWins / recentTrades.length) * 100 : backtestWR;
+  const wrVelocity = backtestWR > 0 ? ((recentWR - backtestWR) / backtestWR) * 100 : 0;
+  const wrDecayAlert = wrVelocity < -30;
+
+  // Rolling WR series (window of 20)
+  const rollingWRSeries: Array<{ trade: number; wr: number; velocity: number }> = [];
+  for (let i = recentWindow; i <= trades.length; i++) {
+    const w = trades.slice(i - recentWindow, i);
+    const wins = w.filter(t => t > 0).length;
+    const wr = (wins / w.length) * 100;
+    const vel = backtestWR > 0 ? ((wr - backtestWR) / backtestWR) * 100 : 0;
+    rollingWRSeries.push({ trade: i, wr, velocity: vel });
+  }
+
+  // ── CUSUM ──
+  const target = backtestWR / 100;
+  let cusumPos = 0, cusumNeg = 0;
+  const cusumValues: number[] = [];
+  const k = 0.5 * pfStd; // allowance (half sigma)
+  const h = 4 * pfStd; // threshold (4 sigma)
+  let cusumBreached = false;
+
+  for (const t of trades) {
+    const normalized = t > 0 ? 1 : 0;
+    const deviation = normalized - target;
+    cusumPos = Math.max(0, cusumPos + deviation - k);
+    cusumNeg = Math.min(0, cusumNeg + deviation + k);
+    cusumValues.push(cusumNeg); // track negative drift
+    if (Math.abs(cusumNeg) > h) cusumBreached = true;
+  }
+
+  // ── Overall Status ──
+  let status: CircuitBreakerData['status'] = 'NOMINAL';
+  let statusReason = 'All metrics within normal operating parameters.';
+  if (pfBroken && wrDecayAlert) {
+    status = 'BROKEN';
+    statusReason = `PF Z-Score at ${pfZScore.toFixed(2)}σ (below -2σ threshold) AND Win-Rate velocity at ${wrVelocity.toFixed(0)}% decay. Market structure has likely shifted — strategy edge is invalidated.`;
+  } else if (pfBroken || cusumBreached) {
+    status = 'BROKEN';
+    statusReason = pfBroken
+      ? `Profit Factor dropped ${Math.abs(pfZScore).toFixed(1)}σ below historical mean (${pfMean.toFixed(2)}). This exceeds normal variance — the strategy's statistical edge has broken down.`
+      : `CUSUM chart breached threshold. Cumulative performance deviation indicates a structural regime change, not a normal losing streak.`;
+  } else if (wrDecayAlert) {
+    status = 'WARNING';
+    statusReason = `Win-Rate velocity at ${wrVelocity.toFixed(0)}% — falling rapidly from historical ${backtestWR.toFixed(1)}% to recent ${recentWR.toFixed(1)}%. Monitor closely for further degradation.`;
+  } else if (pfZScore < -1 || wrVelocity < -15) {
+    status = 'WARNING';
+    statusReason = `Mild degradation detected. PF Z-Score: ${pfZScore.toFixed(2)}σ, WR Velocity: ${wrVelocity.toFixed(0)}%. Not yet broken but trending toward circuit breaker threshold.`;
+  }
+
+  return {
+    rollingPF: Math.round(latestPF * 100) / 100,
+    historicalPFMean: Math.round(pfMean * 100) / 100,
+    historicalPFStd: Math.round(pfStd * 100) / 100,
+    pfZScore: Math.round(pfZScore * 100) / 100,
+    pfBroken,
+    historicalWR: Math.round(backtestWR * 10) / 10,
+    recentWR: Math.round(recentWR * 10) / 10,
+    wrVelocity: Math.round(wrVelocity * 10) / 10,
+    wrDecayAlert,
+    cusumValues,
+    cusumBreached,
+    cusumThreshold: Math.round(h * 100) / 100,
+    status,
+    statusReason,
+    rollingPFSeries,
+    rollingWRSeries,
+  };
+}
+
 // ── Experimental Strategy Types ──
 interface ExperimentalStrategy {
   id: string;
@@ -172,6 +315,7 @@ interface ExperimentalStrategy {
   sharpeProxy: number;
   components: string[];
   equityCurve: Array<{ time: string; equity: number }>;
+  circuitBreaker: CircuitBreakerData;
 }
 
 // ── Merge equity curves by averaging ──
@@ -337,6 +481,7 @@ export const ExperimentalStrategies = ({ result }: Props) => {
             sharpeProxy: stats.sharpe,
             components: picked.map(p => `#${p.predator}v#${p.prey} · ${p.gates} · ${p.slLabel} · ${p.entryLabel} · ${p.session}`),
             equityCurve: mergedCurve,
+            circuitBreaker: computeCircuitBreaker(mergedCurve, Math.round(avgWR * 10) / 10, Math.round(avgPF * 100) / 100),
           });
         }
       }
@@ -376,6 +521,7 @@ export const ExperimentalStrategies = ({ result }: Props) => {
             sharpeProxy: stats.sharpe,
             components: sessionBests.map(s => `${s.session}: #${s.predator}v#${s.prey} · ${s.gates} · ${s.slLabel} · ${s.entryLabel}`),
             equityCurve: mergedCurve,
+            circuitBreaker: computeCircuitBreaker(mergedCurve, Math.round(avgWR * 10) / 10, Math.round(avgPF * 100) / 100),
           });
         }
       }
@@ -413,6 +559,7 @@ export const ExperimentalStrategies = ({ result }: Props) => {
             sharpeProxy: stats.sharpe,
             components: hedgeComponents.map(h => `#${h.predator}v#${h.prey} · ${h.gates} · ${h.slLabel} · ${h.entryLabel} · ${h.session}`),
             equityCurve: mergedCurve,
+            circuitBreaker: computeCircuitBreaker(mergedCurve, Math.round(hedgeComponents.reduce((a, h) => a + h.winRate, 0) / hedgeComponents.length * 10) / 10, Math.round(hedgeComponents.reduce((a, h) => a + h.profitFactor, 0) / hedgeComponents.length * 100) / 100),
           });
         }
       }
@@ -456,6 +603,7 @@ export const ExperimentalStrategies = ({ result }: Props) => {
             sharpeProxy: stats.sharpe,
             components: [`Fade: #${bestContrarian.predator}v#${bestContrarian.prey} · ${bestContrarian.gates} · ${bestContrarian.slLabel} · ${bestContrarian.entryLabel} · ${bestContrarian.session}`],
             equityCurve: fadeCurve,
+            circuitBreaker: computeCircuitBreaker(fadeCurve, Math.round(bestContrarian.winRate * 0.85 * 10) / 10, Math.round(bestContrarian.profitFactor * 0.9 * 100) / 100),
           });
         }
       }
@@ -523,6 +671,7 @@ export const ExperimentalStrategies = ({ result }: Props) => {
               `Strict: G1+G2+G3 · ${fullGate.slLabel} · ${fullGate.entryLabel} · ${fullGate.session}`,
             ],
             equityCurve: adaptiveCurve,
+            circuitBreaker: computeCircuitBreaker(adaptiveCurve, Math.round(avgWR * 10) / 10, Math.round(avgPF * 100) / 100),
           });
         }
       }
@@ -566,6 +715,7 @@ export const ExperimentalStrategies = ({ result }: Props) => {
             sharpeProxy: stats.sharpe,
             components: [`Base: #1v#8 · G1+G2+G3 · ${bestTripleLock.slLabel} · ${bestTripleLock.entryLabel} · ${bestTripleLock.session}`],
             equityCurve: pyramidCurve,
+            circuitBreaker: computeCircuitBreaker(pyramidCurve, bestTripleLock.winRate, Math.round(bestTripleLock.profitFactor * 1.25 * 100) / 100),
           });
         }
       }
