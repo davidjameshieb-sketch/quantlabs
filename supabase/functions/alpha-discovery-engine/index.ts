@@ -92,11 +92,12 @@ const FEATURE_LABELS: Record<string, string> = {
 
 // ── Helper Functions ───────────────────────────────────────────────────────
 
-async function fetchCandles(
-  instrument: string, count: number, env: "practice" | "live", token: string
+async function fetchCandlePage(
+  instrument: string, count: number, env: "practice" | "live", token: string, to?: string
 ): Promise<Candle[]> {
   const host = env === "live" ? OANDA_HOST : OANDA_PRACTICE_HOST;
-  const url = `${host}/v3/instruments/${instrument}/candles?count=${count}&granularity=M30&price=M`;
+  let url = `${host}/v3/instruments/${instrument}/candles?count=${count}&granularity=M30&price=M`;
+  if (to) url += `&to=${to}`;
   const res = await fetch(url, {
     headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
   });
@@ -109,6 +110,31 @@ async function fetchCandles(
       high: parseFloat(c.mid.h), low: parseFloat(c.mid.l),
       open: parseFloat(c.mid.o), close: parseFloat(c.mid.c),
     }));
+}
+
+async function fetchCandles(
+  instrument: string, count: number, env: "practice" | "live", token: string
+): Promise<Candle[]> {
+  const PAGE_SIZE = 5000;
+  if (count <= PAGE_SIZE) {
+    return fetchCandlePage(instrument, count, env, token);
+  }
+  // Paginate backwards to collect up to `count` candles
+  let all: Candle[] = [];
+  let remaining = count;
+  let cursor: string | undefined = undefined;
+  while (remaining > 0) {
+    const batch = Math.min(remaining, PAGE_SIZE);
+    const page = await fetchCandlePage(instrument, batch, env, token, cursor);
+    if (page.length === 0) break;
+    all = [...page, ...all]; // prepend older candles
+    remaining -= page.length;
+    if (page.length < batch) break; // no more data
+    cursor = page[0].time; // oldest candle time as next "to"
+  }
+  // Deduplicate by time
+  const seen = new Set<string>();
+  return all.filter(c => { if (seen.has(c.time)) return false; seen.add(c.time); return true; });
 }
 
 function computeATR(candles: Candle[], period = 14): number[] {
@@ -419,7 +445,7 @@ Deno.serve(async (req) => {
     const maxDepth = body.maxDepth || 5;
     const minWinRate = body.minWinRate || 0.22;
     const maxCorrelation = body.maxCorrelation || 0.3;
-    const candleCount = Math.min(body.candles || 5000, 5000);
+    const candleCount = body.candles || 42000;
 
     const apiToken = environment === "live"
       ? (Deno.env.get("OANDA_LIVE_API_TOKEN") || Deno.env.get("OANDA_API_TOKEN"))
