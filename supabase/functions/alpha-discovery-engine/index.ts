@@ -839,6 +839,7 @@ async function handlePhase1(body: Record<string, unknown>) {
   const maxCorrelation = Number(body.maxCorrelation) || 0.2;
   const mutationRate = Number(body.mutationRate) || 0.15;
   const gensPerCall = Math.min(Number(body.gensPerCall) || 5, 10);
+  const unconstrained = Boolean(body.unconstrained);
 
   const apiToken = environment === "live"
     ? (Deno.env.get("OANDA_LIVE_API_TOKEN") || Deno.env.get("OANDA_API_TOKEN"))
@@ -875,14 +876,14 @@ async function handlePhase1(body: Record<string, unknown>) {
   for (let i = 0; i < Math.min(ARCHETYPES.length, populationSize); i++) {
     const dna = randomDNA(ARCHETYPES[i]);
     const sim = simulateStrategy(bars, dna, 0, IS_SPLIT);
-    const fitness = computeFitness(sim, baseDailyReturns, maxCorrelation, dna);
+    const fitness = computeFitness(sim, baseDailyReturns, maxCorrelation, dna, unconstrained);
     population.push({ dna, fitness });
   }
   // Fill remaining with random
   while (population.length < populationSize) {
     const dna = randomDNA();
     const sim = simulateStrategy(bars, dna, 0, IS_SPLIT);
-    const fitness = computeFitness(sim, baseDailyReturns, maxCorrelation, dna);
+    const fitness = computeFitness(sim, baseDailyReturns, maxCorrelation, dna, unconstrained);
     population.push({ dna, fitness });
   }
   population.sort((a, b) => b.fitness - a.fitness);
@@ -899,7 +900,7 @@ async function handlePhase1(body: Record<string, unknown>) {
 
   const jobState = {
     status: "evolving", pair, environment, currentGen: 0,
-    totalGenerations, populationSize, maxCorrelation, mutationRate, gensPerCall,
+    totalGenerations, populationSize, maxCorrelation, mutationRate, gensPerCall, unconstrained,
     population: population.map(p => ({ dna: p.dna, fitness: Math.round(p.fitness * 1000) / 1000 })),
     baseDailyReturns, isSplit: IS_SPLIT,
     evolutionLog: [{ gen: 0, bestFitness: Math.round(population[0].fitness * 1000) / 1000, avgFitness: Math.round(population.reduce((s, p) => s + p.fitness, 0) / population.length * 1000) / 1000, bestTrades: 0 }],
@@ -936,41 +937,53 @@ function getEdgeArchetype(dna: StrategyDNA): string {
   return parts.sort().join('+') || 'PURE_FILTER';
 }
 
-function computeFitness(sim: SimResult, baseDailyReturns: number[], maxCorrelation: number, dna?: StrategyDNA): number {
+function computeFitness(sim: SimResult, baseDailyReturns: number[], maxCorrelation: number, dna?: StrategyDNA, unconstrained = false): number {
+  // ── UNCONSTRAINED MODE: pure profit maximization ──
+  if (unconstrained) {
+    if (sim.trades < 15) return 0;
+    // Raw profit-focused fitness: total return weighted by trade count and drawdown
+    let fitness = sim.totalReturn * Math.sqrt(Math.max(sim.trades, 1));
+    if (sim.maxDrawdown > 0.001) fitness /= (sim.maxDrawdown * 2);
+    // Sharpe bonus still useful for stability
+    if (sim.sharpe > 0.5) fitness *= 1 + (sim.sharpe * 0.2);
+    // Profit factor floor
+    if (sim.profitFactor > 1.5) fitness *= 1.2;
+    if (sim.profitFactor > 2.0) fitness *= 1.2;
+    // Strong return multipliers
+    if (sim.totalReturn > 50) fitness *= 1.3;
+    if (sim.totalReturn > 100) fitness *= 1.4;
+    if (sim.totalReturn > 200) fitness *= 1.5;
+    if (sim.totalReturn > 500) fitness *= 1.5;
+    return Math.max(fitness, 0);
+  }
+
+  // ── CONSTRAINED MODE (original) ──
   let fitness = 0;
   if (sim.trades >= 20 && sim.maxDrawdown > 0.001) {
-    // Core: risk-adjusted return incorporating Sharpe
     fitness = (sim.profitFactor * sim.winRate * Math.sqrt(sim.trades)) / sim.maxDrawdown;
-    // Sharpe bonus — rewards consistency over lucky streaks
     if (sim.sharpe > 0.5) fitness *= 1 + (sim.sharpe * 0.3);
     if (sim.sharpe > 1.5) fitness *= 1.3;
     if (sim.sharpe > 2.5) fitness *= 1.2;
   } else if (sim.trades >= 20) {
     fitness = sim.profitFactor * sim.winRate * Math.sqrt(sim.trades) * 10;
   }
-  // Minimum trade count penalty
   if (sim.trades < 30) fitness *= 0.05;
   else if (sim.trades < 50) fitness *= 0.3;
   else if (sim.trades < 100) fitness *= 0.7;
-  // Bonus for high trade count (statistical significance)
   if (sim.trades > 200) fitness *= 1.15;
   if (sim.trades > 400) fitness *= 1.15;
 
-  // Total return bonus — strongly rewards profitable strategies
   if (sim.totalReturn > 20) fitness *= 1.2;
   if (sim.totalReturn > 50) fitness *= 1.3;
   if (sim.totalReturn > 100) fitness *= 1.4;
   if (sim.totalReturn > 200) fitness *= 1.3;
 
-  // Drawdown penalty — aggressively penalize >30% DD
   if (sim.maxDrawdown > 0.3) fitness *= 0.5;
   if (sim.maxDrawdown > 0.5) fitness *= 0.3;
 
-  // Correlation penalty
   const corr = Math.abs(pearsonCorrelation(baseDailyReturns, sim.dailyReturns));
   if (corr > maxCorrelation) fitness *= Math.max(0.01, 1 - (corr - maxCorrelation) * 5);
 
-  // ── DIVERSITY INCENTIVE ──
   if (dna) {
     const hasRSI = dna.rsiMode > 0;
     const hasMACD = dna.macdMode > 0;
@@ -980,22 +993,15 @@ function computeFitness(sim: SimResult, baseDailyReturns: number[], maxCorrelati
     const hasSes = dna.sessionFilter >= 0;
     const hasDay = dna.dayFilter >= 0;
 
-    // Pure RSI+MACD with nothing else = severe penalty
-    if (hasRSI && hasMACD && !hasBB && !hasEMA && !hasVol && !hasSes && !hasDay) {
-      fitness *= 0.3;
-    }
-    if ((hasRSI || hasMACD) && !hasBB && !hasEMA) {
-      fitness *= 0.6;
-    }
+    if (hasRSI && hasMACD && !hasBB && !hasEMA && !hasVol && !hasSes && !hasDay) fitness *= 0.3;
+    if ((hasRSI || hasMACD) && !hasBB && !hasEMA) fitness *= 0.6;
 
-    // Bonus for structural indicators
     if (hasBB) fitness *= 1.3;
     if (hasEMA) fitness *= 1.2;
     if (hasVol) fitness *= 1.15;
     if (hasSes) fitness *= 1.1;
     if (hasDay) fitness *= 1.1;
 
-    // Multi-indicator combos
     const activeCount = [hasRSI, hasMACD, hasBB, hasEMA].filter(Boolean).length;
     if (activeCount >= 3) fitness *= 1.3;
     if (activeCount >= 4) fitness *= 1.2;
@@ -1026,7 +1032,8 @@ async function handlePhase2() {
   let population = job.population as { dna: StrategyDNA; fitness: number }[];
   let evolutionLog = job.evolutionLog as { gen: number; bestFitness: number; avgFitness: number; bestTrades: number }[];
   let totalSimulations = job.totalSimulations as number;
-  const isSplit = (job.isSplit as number) || bars.count; // walk-forward split
+  const unconstrained = Boolean(job.unconstrained);
+  const isSplit = (job.isSplit as number) || bars.count;
 
   const { data: barsRow } = await sb.from("sovereign_memory").select("payload").eq("memory_key", `${DATA_KEY_PREFIX}${pair}`).eq("memory_type", "ga_dataset").maybeSingle();
   if (!barsRow) throw new Error("Feature data not found. Run Phase 1 first.");
@@ -1047,7 +1054,7 @@ async function handlePhase2() {
       let child = crossover(p1.dna, p2.dna);
       child = mutate(child, mutationRate);
       const sim = simulateStrategy(bars, child, 0, isSplit);
-      const fitness = computeFitness(sim, baseDailyReturns, maxCorrelation, child);
+      const fitness = computeFitness(sim, baseDailyReturns, maxCorrelation, child, unconstrained);
       newPop.push({ dna: child, fitness });
       totalSimulations++;
     }
@@ -1095,6 +1102,7 @@ async function handlePhase3() {
   const population = job.population as { dna: StrategyDNA; fitness: number }[];
   const evolutionLog = job.evolutionLog as { gen: number; bestFitness: number; avgFitness: number; bestTrades: number }[];
   const totalSimulations = job.totalSimulations as number;
+  const unconstrained = Boolean(job.unconstrained);
   const isSplit = (job.isSplit as number) || bars.count;
 
   const { data: barsRow } = await sb.from("sovereign_memory").select("payload").eq("memory_key", `${DATA_KEY_PREFIX}${pair}`).eq("memory_type", "ga_dataset").maybeSingle();
@@ -1142,62 +1150,66 @@ async function handlePhase3() {
   // Sort by total return (full dataset)
   profiles.sort((a, b) => b.sim.totalReturn - a.sim.totalReturn);
 
-  // ── DIVERSITY-ENFORCED EXTRACTION with INTER-STRATEGY CORRELATION ──
-  const MAX_PER_ARCHETYPE = 2;
-  const archetypeCounts: Record<string, number> = {};
+  // ── EXTRACTION ──
+  let finalUncorrelated: (ScoredIndividual & { oosSim?: SimResult })[];
 
-  function canAddArchetype(dna: StrategyDNA): boolean {
-    const arch = getEdgeArchetype(dna);
-    const count = archetypeCounts[arch] || 0;
-    if (count >= MAX_PER_ARCHETYPE) return false;
-    archetypeCounts[arch] = count + 1;
-    return true;
-  }
+  if (unconstrained) {
+    // UNCONSTRAINED: no filters, just take top 10 by total return
+    console.log(`[GA-P3] UNCONSTRAINED MODE — taking top 10 by raw total return`);
+    finalUncorrelated = profiles.slice(0, 10);
+  } else {
+    // CONSTRAINED: diversity-enforced extraction with inter-strategy correlation
+    const MAX_PER_ARCHETYPE = 2;
+    const archetypeCounts: Record<string, number> = {};
 
-  // Inter-strategy correlation check: new strategy must have ρ ≤ 0.4 with ALL already-selected strategies
-  function isUncorrelatedWithPortfolio(candidate: ScoredIndividual, portfolio: ScoredIndividual[]): boolean {
-    for (const existing of portfolio) {
-      const interCorr = Math.abs(pearsonCorrelation(candidate.sim.dailyReturns, existing.sim.dailyReturns));
-      if (interCorr > 0.4) return false;
+    function canAddArchetype(dna: StrategyDNA): boolean {
+      const arch = getEdgeArchetype(dna);
+      const count = archetypeCounts[arch] || 0;
+      if (count >= MAX_PER_ARCHETYPE) return false;
+      archetypeCounts[arch] = count + 1;
+      return true;
     }
-    return true;
-  }
 
-  // Pass 1: strict ρ ≤ 0.2 vs baseline + inter-strategy check + OOS validation
-  const diverseProfiles: (ScoredIndividual & { oosSim?: SimResult })[] = [];
-  for (const p of profiles) {
-    if (diverseProfiles.length >= 10) break;
-    if (p.correlation > maxCorrelation) continue; // actual maxCorrelation (default 0.2)
-    if (!canAddArchetype(p.dna)) continue;
-    if (!isUncorrelatedWithPortfolio(p, diverseProfiles)) continue;
-    // OOS validation: reject if OOS is catastrophic (negative return or <40% WR)
-    if (p.oosSim && p.oosSim.trades >= 5 && p.oosSim.totalReturn < -20) continue;
-    diverseProfiles.push(p);
-  }
+    function isUncorrelatedWithPortfolio(candidate: ScoredIndividual, portfolio: ScoredIndividual[]): boolean {
+      for (const existing of portfolio) {
+        const interCorr = Math.abs(pearsonCorrelation(candidate.sim.dailyReturns, existing.sim.dailyReturns));
+        if (interCorr > 0.4) return false;
+      }
+      return true;
+    }
 
-  // Pass 2: relax baseline correlation to 0.4 but keep inter-strategy check
-  if (diverseProfiles.length < 10) {
+    const diverseProfiles: (ScoredIndividual & { oosSim?: SimResult })[] = [];
     for (const p of profiles) {
       if (diverseProfiles.length >= 10) break;
-      if (diverseProfiles.includes(p)) continue;
-      if (p.correlation > 0.4) continue;
+      if (p.correlation > maxCorrelation) continue;
       if (!canAddArchetype(p.dna)) continue;
       if (!isUncorrelatedWithPortfolio(p, diverseProfiles)) continue;
+      if (p.oosSim && p.oosSim.trades >= 5 && p.oosSim.totalReturn < -20) continue;
       diverseProfiles.push(p);
     }
-  }
 
-  // Pass 3: fill remaining slots with best available
-  if (diverseProfiles.length < 10) {
-    for (const p of profiles) {
-      if (diverseProfiles.length >= 10) break;
-      if (diverseProfiles.includes(p)) continue;
-      if (!canAddArchetype(p.dna)) continue;
-      diverseProfiles.push(p);
+    if (diverseProfiles.length < 10) {
+      for (const p of profiles) {
+        if (diverseProfiles.length >= 10) break;
+        if (diverseProfiles.includes(p)) continue;
+        if (p.correlation > 0.4) continue;
+        if (!canAddArchetype(p.dna)) continue;
+        if (!isUncorrelatedWithPortfolio(p, diverseProfiles)) continue;
+        diverseProfiles.push(p);
+      }
     }
-  }
 
-  const finalUncorrelated = diverseProfiles;
+    if (diverseProfiles.length < 10) {
+      for (const p of profiles) {
+        if (diverseProfiles.length >= 10) break;
+        if (diverseProfiles.includes(p)) continue;
+        if (!canAddArchetype(p.dna)) continue;
+        diverseProfiles.push(p);
+      }
+    }
+
+    finalUncorrelated = diverseProfiles;
+  }
 
   // All profiles (for leaderboard) — also diversity-limited
   const allArchCounts: Record<string, number> = {};

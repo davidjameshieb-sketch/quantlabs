@@ -151,6 +151,7 @@ export function AlphaDiscoveryEngine({ result }: { result: BacktestResult }) {
   const [pair, setPair] = useState('EUR_USD');
   const [candleCount, setCandleCount] = useState(5000);
   const [gensPerCall, setGensPerCall] = useState(5);
+  const [unconstrained, setUnconstrained] = useState(false);
 
   const [currentGen, setCurrentGen] = useState(0);
   const [bestFitness, setBestFitness] = useState(0);
@@ -181,7 +182,9 @@ export function AlphaDiscoveryEngine({ result }: { result: BacktestResult }) {
     try {
       const initResult = await callEngine({
         action: 'init', environment: result.environment, pair,
-        candles: candleCount, populationSize, generations, maxCorrelation, gensPerCall,
+        candles: candleCount, populationSize, generations,
+        maxCorrelation: unconstrained ? 999 : maxCorrelation,
+        gensPerCall, unconstrained,
       });
       setBestFitness(initResult.bestFitness || 0);
 
@@ -211,7 +214,7 @@ export function AlphaDiscoveryEngine({ result }: { result: BacktestResult }) {
       setError((err as Error).message);
       setPhase('error');
     }
-  }, [result, pair, candleCount, populationSize, generations, maxCorrelation, gensPerCall, callEngine]);
+  }, [result, pair, candleCount, populationSize, generations, maxCorrelation, gensPerCall, unconstrained, callEngine]);
 
   useEffect(() => () => stopPolling(), [stopPolling]);
 
@@ -295,17 +298,40 @@ export function AlphaDiscoveryEngine({ result }: { result: BacktestResult }) {
                 </div>
               </div>
 
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-4 gap-3">
+                {/* Unconstrained Toggle */}
                 <div className="bg-slate-950/50 border border-slate-800/50 rounded-lg p-3">
-                  <label className="text-[7px] text-slate-500 font-mono uppercase tracking-widest block mb-1.5">Max Correlation (ρ)</label>
-                  <div className="flex items-center gap-1.5">
-                    {[0.1, 0.2, 0.3, 0.4].map(mc => (
-                      <button key={mc} onClick={() => setMaxCorrelation(mc)} disabled={isRunning}
-                        className={`text-[9px] font-mono font-bold px-2 py-1 rounded border transition-all ${maxCorrelation === mc ? 'bg-emerald-400/10 border-emerald-400/50 text-emerald-400' : 'border-slate-700 text-slate-500 hover:text-slate-300'}`}
-                      >{mc}</button>
-                    ))}
-                  </div>
+                  <label className="text-[7px] text-slate-500 font-mono uppercase tracking-widest block mb-1.5">Search Mode</label>
+                  <button
+                    onClick={() => setUnconstrained(!unconstrained)}
+                    disabled={isRunning}
+                    className={`w-full text-[9px] font-mono font-bold px-2 py-1.5 rounded border transition-all ${
+                      unconstrained
+                        ? 'bg-red-500/15 border-red-400/50 text-red-400 shadow-[0_0_8px_rgba(239,68,68,0.15)]'
+                        : 'bg-emerald-400/10 border-emerald-400/50 text-emerald-400'
+                    }`}
+                  >
+                    {unconstrained ? '🔓 UNCONSTRAINED' : '🔒 FILTERED (ρ ≤ ' + maxCorrelation + ')'}
+                  </button>
+                  {unconstrained && (
+                    <p className="text-[6px] text-red-400/60 font-mono mt-1">No correlation / diversity / OOS filters</p>
+                  )}
                 </div>
+
+                {/* Max Correlation — only show when constrained */}
+                {!unconstrained && (
+                  <div className="bg-slate-950/50 border border-slate-800/50 rounded-lg p-3">
+                    <label className="text-[7px] text-slate-500 font-mono uppercase tracking-widest block mb-1.5">Max Correlation (ρ)</label>
+                    <div className="flex items-center gap-1.5">
+                      {[0.1, 0.2, 0.3, 0.4].map(mc => (
+                        <button key={mc} onClick={() => setMaxCorrelation(mc)} disabled={isRunning}
+                          className={`text-[9px] font-mono font-bold px-2 py-1 rounded border transition-all ${maxCorrelation === mc ? 'bg-emerald-400/10 border-emerald-400/50 text-emerald-400' : 'border-slate-700 text-slate-500 hover:text-slate-300'}`}
+                        >{mc}</button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 <div className="bg-slate-950/50 border border-slate-800/50 rounded-lg p-3">
                   <label className="text-[7px] text-slate-500 font-mono uppercase tracking-widest block mb-1.5">Gens per Call</label>
                   <div className="flex items-center gap-1.5">
@@ -318,7 +344,7 @@ export function AlphaDiscoveryEngine({ result }: { result: BacktestResult }) {
                 </div>
                 <div className="bg-slate-950/50 border border-slate-800/50 rounded-lg p-3 flex items-end">
                   <div className="text-[7px] font-mono text-slate-600">
-                    Invocations: ~{Math.ceil(generations / gensPerCall) + 2} · Search: Unrestricted
+                    Invocations: ~{Math.ceil(generations / gensPerCall) + 2} · {unconstrained ? 'Mode: UNCONSTRAINED' : 'Search: Filtered'}
                   </div>
                 </div>
               </div>
@@ -436,9 +462,11 @@ export function AlphaDiscoveryEngine({ result }: { result: BacktestResult }) {
                       <div className="flex items-center gap-2">
                         <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
                         <span className="text-[9px] font-bold text-emerald-300 uppercase tracking-widest">
-                          {gaResult.correlationFallback
-                            ? `Mined Alpha Strategies (relaxed ρ ≤ 0.5)`
-                            : `Mined Alpha Strategies (ρ ≤ ${maxCorrelation})`}
+                          {unconstrained
+                            ? `Mined Alpha Strategies (UNCONSTRAINED)`
+                            : gaResult.correlationFallback
+                              ? `Mined Alpha Strategies (relaxed ρ ≤ 0.5)`
+                              : `Mined Alpha Strategies (ρ ≤ ${maxCorrelation})`}
                         </span>
                       </div>
                       <span className="text-[7px] text-emerald-500/60 font-mono">{gaResult.config.pair?.replace('_', '/')}</span>
