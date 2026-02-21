@@ -76,7 +76,7 @@ export const NeuralSynthesisMap = ({ result }: Props) => {
 
     // Output layer
     const outputNodes = [
-      { id: 'o_strike', label: 'STRIKE', activation: strikes.length > 0 ? 1 : 0, color: strikes.length > 0 ? '#00ffea' : '#333' },
+      { id: 'o_strike', label: 'STRIKE', activation: strikes.length > 0 ? 1 : 0, color: strikes.length > 0 ? '#00ffea' : '#333333' },
       { id: 'o_conf', label: 'CONFIDENCE', activation: regime.confidence, color: regime.confidence > 0.5 ? '#39ff14' : '#ff8800' },
       { id: 'o_mode', label: regime.isTrending ? 'BREAKOUT' : 'CONSOLIDATION', activation: regime.hurstProxy, color: regime.isTrending ? '#00ffea' : '#ff8800' },
     ];
