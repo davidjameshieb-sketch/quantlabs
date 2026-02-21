@@ -538,82 +538,100 @@ export const ProfileDiscoveryEngine = ({ result }: Props) => {
                 Top 5 Most Profitable Profiles
               </h3>
               <div className="space-y-2">
-                {topProfiles.map((p, idx) => (
-                  <motion.button
-                    key={idx}
-                    onClick={() => setSelectedProfile(p)}
-                    whileHover={{ scale: 1.005 }}
-                    whileTap={{ scale: 0.995 }}
-                    className={`w-full text-left rounded-xl border transition-all p-3 ${
-                      selectedProfile?.rank === p.rank
-                        ? 'border-amber-500/50 bg-amber-500/5'
-                        : 'border-slate-800/50 bg-slate-900/30 hover:border-slate-700/50'
-                    }`}
-                  >
-                    <div className="flex items-center gap-3">
-                      {/* Medal */}
-                      <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold font-mono shrink-0 ${
-                        idx === 0 ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40' :
-                        idx === 1 ? 'bg-slate-400/20 text-slate-300 border border-slate-400/40' :
-                        idx === 2 ? 'bg-orange-700/20 text-orange-400 border border-orange-700/40' :
-                        'bg-slate-800/50 text-slate-500 border border-slate-700/40'
-                      }`}>
-                        #{idx + 1}
-                      </div>
+                {topProfiles.map((p, idx) => {
+                  const finalEquity = p.equityCurve.length > 0 ? p.equityCurve[p.equityCurve.length - 1].equity : 1000;
+                  const totalReturn = ((finalEquity - 1000) / 1000) * 100;
 
-                      {/* Profile info */}
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="text-[10px] font-bold font-mono text-slate-200">
-                            #{p.predator} vs #{p.prey}
-                          </span>
-                          <span className="text-[7px] font-mono px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-400 border border-purple-500/20">
-                            {p.gates}
-                          </span>
-                          <span className="text-[7px] font-mono px-1.5 py-0.5 rounded bg-[#ff0055]/10 text-[#ff0055] border border-[#ff0055]/20">
-                            {p.slLabel}
-                          </span>
-                          <span className="text-[7px] font-mono px-1.5 py-0.5 rounded bg-[#00ffea]/10 text-[#00ffea] border border-[#00ffea]/20">
-                            {p.session}
-                          </span>
+                  return (
+                    <motion.button
+                      key={idx}
+                      onClick={() => setSelectedProfile(p)}
+                      whileHover={{ scale: 1.005 }}
+                      whileTap={{ scale: 0.995 }}
+                      className={`w-full text-left rounded-xl border transition-all p-3 ${
+                        selectedProfile?.rank === p.rank
+                          ? 'border-amber-500/50 bg-amber-500/5'
+                          : 'border-slate-800/50 bg-slate-900/30 hover:border-slate-700/50'
+                      }`}
+                    >
+                      {/* Profile header row */}
+                      <div className="flex items-center gap-3 mb-3">
+                        {/* Medal */}
+                        <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold font-mono shrink-0 ${
+                          idx === 0 ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40' :
+                          idx === 1 ? 'bg-slate-400/20 text-slate-300 border border-slate-400/40' :
+                          idx === 2 ? 'bg-orange-700/20 text-orange-400 border border-orange-700/40' :
+                          'bg-slate-800/50 text-slate-500 border border-slate-700/40'
+                        }`}>
+                          #{idx + 1}
+                        </div>
+
+                        {/* Profile info */}
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="text-[10px] font-bold font-mono text-slate-200">
+                              #{p.predator} vs #{p.prey}
+                            </span>
+                            <span className="text-[7px] font-mono px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-400 border border-purple-500/20">
+                              {p.gates}
+                            </span>
+                            <span className="text-[7px] font-mono px-1.5 py-0.5 rounded bg-[#ff0055]/10 text-[#ff0055] border border-[#ff0055]/20">
+                              {p.slLabel}
+                            </span>
+                            <span className="text-[7px] font-mono px-1.5 py-0.5 rounded bg-[#00ffea]/10 text-[#00ffea] border border-[#00ffea]/20">
+                              {p.session}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Mini curve */}
+                        <div className="w-24 shrink-0 hidden sm:block">
+                          <MiniCurve curve={p.equityCurve} height={40} />
                         </div>
                       </div>
 
-                      {/* KPIs */}
-                      <div className="flex items-center gap-4 shrink-0">
-                        <div className="text-center">
-                          <div className="text-[6px] text-slate-500 uppercase">WR</div>
-                          <div className="text-[10px] font-bold font-mono" style={{ color: p.winRate >= 55 ? '#39ff14' : '#00ffea' }}>
+                      {/* KPI Row — matches Total Return / Win Rate / Profit Factor / Max Drawdown / Net Pips / Final Equity */}
+                      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
+                        <div className="bg-slate-950/60 border border-slate-800/50 rounded-lg p-2 text-center">
+                          <div className="text-[7px] text-slate-500 uppercase tracking-wider">Total Return</div>
+                          <div className="text-sm font-bold font-mono" style={{ color: totalReturn >= 0 ? '#39ff14' : '#ff0055' }}>
+                            {totalReturn >= 0 ? '+' : ''}{totalReturn.toFixed(1)}%
+                          </div>
+                        </div>
+                        <div className="bg-slate-950/60 border border-slate-800/50 rounded-lg p-2 text-center">
+                          <div className="text-[7px] text-slate-500 uppercase tracking-wider">Win Rate</div>
+                          <div className="text-sm font-bold font-mono" style={{ color: p.winRate >= 55 ? '#39ff14' : p.winRate >= 50 ? '#00ffea' : '#ff0055' }}>
                             {p.winRate}%
                           </div>
                         </div>
-                        <div className="text-center">
-                          <div className="text-[6px] text-slate-500 uppercase">PF</div>
-                          <div className="text-[10px] font-bold font-mono" style={{ color: p.profitFactor > 1.5 ? '#39ff14' : '#ff8800' }}>
+                        <div className="bg-slate-950/60 border border-slate-800/50 rounded-lg p-2 text-center">
+                          <div className="text-[7px] text-slate-500 uppercase tracking-wider">Profit Factor</div>
+                          <div className="text-sm font-bold font-mono" style={{ color: p.profitFactor > 1.5 ? '#39ff14' : p.profitFactor > 1 ? '#00ffea' : '#ff0055' }}>
                             {p.profitFactor}
                           </div>
                         </div>
-                        <div className="text-center">
-                          <div className="text-[6px] text-slate-500 uppercase">DD</div>
-                          <div className="text-[10px] font-bold font-mono text-[#ff0055]">
+                        <div className="bg-slate-950/60 border border-slate-800/50 rounded-lg p-2 text-center">
+                          <div className="text-[7px] text-slate-500 uppercase tracking-wider">Max Drawdown</div>
+                          <div className="text-sm font-bold font-mono" style={{ color: p.maxDrawdown > -10 ? '#00ffea' : p.maxDrawdown > -20 ? '#ff8800' : '#ff0055' }}>
                             {p.maxDrawdown}%
                           </div>
                         </div>
-                        <div className="text-center">
-                          <div className="text-[6px] text-slate-500 uppercase">Net $</div>
-                          <div className="text-[10px] font-bold font-mono" style={{ color: p.netProfit >= 0 ? '#39ff14' : '#ff0055' }}>
-                            {p.netProfit >= 0 ? '+' : ''}{p.netProfit.toFixed(0)}
+                        <div className="bg-slate-950/60 border border-slate-800/50 rounded-lg p-2 text-center">
+                          <div className="text-[7px] text-slate-500 uppercase tracking-wider">Net Pips</div>
+                          <div className="text-sm font-bold font-mono" style={{ color: p.totalPips >= 0 ? '#39ff14' : '#ff0055' }}>
+                            {p.totalPips >= 0 ? '+' : ''}{p.totalPips}
+                          </div>
+                        </div>
+                        <div className="bg-slate-950/60 border border-slate-800/50 rounded-lg p-2 text-center">
+                          <div className="text-[7px] text-slate-500 uppercase tracking-wider">Final Equity</div>
+                          <div className="text-sm font-bold font-mono" style={{ color: finalEquity >= 1000 ? '#00ffea' : '#ff0055' }}>
+                            ${finalEquity.toFixed(2)}
                           </div>
                         </div>
                       </div>
-
-                      {/* Mini curve */}
-                      <div className="w-24 shrink-0 hidden sm:block">
-                        <MiniCurve curve={p.equityCurve} height={40} />
-                      </div>
-                    </div>
-                  </motion.button>
-                ))}
+                    </motion.button>
+                  );
+                })}
               </div>
             </div>
 
