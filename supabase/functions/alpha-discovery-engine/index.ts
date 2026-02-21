@@ -485,13 +485,19 @@ async function handlePhase1(body: Record<string, unknown>) {
     startedAt: new Date().toISOString(),
   };
 
-  await sb.from("sovereign_memory").upsert({
+  // Delete any existing job first, then insert fresh
+  await sb.from("sovereign_memory").delete().eq("memory_key", JOB_KEY).eq("memory_type", "ga_job");
+  const { error: upsertErr } = await sb.from("sovereign_memory").insert({
     memory_key: JOB_KEY,
     memory_type: "ga_job",
     payload: jobState,
     created_by: "alpha-discovery-engine",
     version: 1,
-  }, { onConflict: "memory_key" });
+  });
+  if (upsertErr) {
+    console.error("[GA-P1] Failed to persist job state:", upsertErr);
+    throw new Error(`Failed to save GA job state: ${upsertErr.message}`);
+  }
 
   console.log(`[GA-P1] Phase 1 complete. ${bars.count} bars, pop=${populationSize}, ready for evolution.`);
 
@@ -514,7 +520,7 @@ async function handlePhase2() {
   // Load job state — retry once after 2s if not found (race with Phase 1 write)
   let jobRow: { payload: unknown } | null = null;
   for (let attempt = 0; attempt < 3; attempt++) {
-    const { data } = await sb.from("sovereign_memory").select("payload").eq("memory_key", JOB_KEY).single();
+    const { data } = await sb.from("sovereign_memory").select("payload").eq("memory_key", JOB_KEY).eq("memory_type", "ga_job").maybeSingle();
     if (data) { jobRow = data; break; }
     if (attempt < 2) await new Promise(r => setTimeout(r, 2000));
   }
@@ -599,7 +605,7 @@ async function handlePhase2() {
   await sb.from("sovereign_memory").update({
     payload: updatedJob,
     version: newCurrentGen,
-  }).eq("memory_key", JOB_KEY);
+  }).eq("memory_key", JOB_KEY).eq("memory_type", "ga_job");
 
   console.log(`[GA-P2] Gen ${newCurrentGen}/${totalGenerations} done. Best: ${population[0].fitness.toFixed(3)}. Status: ${isComplete ? 'COMPLETE' : 'evolving'}`);
 
@@ -621,7 +627,7 @@ async function handlePhase2() {
 async function handlePhase3() {
   const sb = getSupabaseAdmin();
 
-  const { data: jobRow } = await sb.from("sovereign_memory").select("payload").eq("memory_key", JOB_KEY).single();
+  const { data: jobRow } = await sb.from("sovereign_memory").select("payload").eq("memory_key", JOB_KEY).eq("memory_type", "ga_job").maybeSingle();
   if (!jobRow) throw new Error("No GA job found.");
   const job = jobRow.payload as Record<string, unknown>;
 
@@ -730,7 +736,7 @@ async function handlePhase3() {
   // Mark job as complete
   await sb.from("sovereign_memory").update({
     payload: { ...(job as object), status: "complete", completedAt: new Date().toISOString() },
-  }).eq("memory_key", JOB_KEY);
+  }).eq("memory_key", JOB_KEY).eq("memory_type", "ga_job");
 
   console.log(`[GA-P3] Extraction complete. ${uncorrelated.length} uncorrelated, ${allProfiles.length} total.`);
 
@@ -766,7 +772,7 @@ async function handlePhase3() {
 // ── Status check (no heavy compute) ──────────────────────────────────────
 async function handleStatus() {
   const sb = getSupabaseAdmin();
-  const { data } = await sb.from("sovereign_memory").select("payload").eq("memory_key", JOB_KEY).single();
+  const { data } = await sb.from("sovereign_memory").select("payload").eq("memory_key", JOB_KEY).eq("memory_type", "ga_job").maybeSingle();
   if (!data) return { status: "idle", message: "No active GA job." };
   const job = data.payload as Record<string, unknown>;
   return {
