@@ -15,8 +15,14 @@ interface StrategyDNA {
   macdFast: number; macdSlow: number; macdSignal: number; macdMode: number;
   bbPeriod: number; bbStdDev: number; bbMode: number;
   emaFast: number; emaSlow: number; emaMode: number;
+  adxPeriod: number; adxMode: number;
+  stochK: number; stochD: number; stochMode: number;
+  cciPeriod: number; cciMode: number;
+  donchianPeriod: number; donchianMode: number;
+  paMode: number;
   volMode: number; sessionFilter: number; dayFilter: number; direction: number;
   slMultiplier: number; tpMultiplier: number; hurstMin: number; hurstMax: number;
+  trailingATR: number; maxBarsInTrade: number; partialTP: number;
 }
 
 interface GAProfile {
@@ -126,6 +132,11 @@ function IndicatorBadges({ dna }: { dna: StrategyDNA }) {
   const macdModes = ['', 'Signal Cross', 'Zero Cross', 'Histogram'];
   const bbModes = ['', 'Squeeze Break', 'Mean Revert', 'Band Walk'];
   const emaModes = ['', 'Crossover', 'Price Above', 'Slope Filter'];
+  const adxModes = ['', 'Trend >25', 'Range <20', 'ADX Rising'];
+  const stochModes = ['', 'Oversold Buy', 'Overbought Sell', 'K/D Cross'];
+  const cciModes = ['', 'Breakout >100', 'Reversal <-100', 'Zero Cross'];
+  const donchModes = ['', 'High Breakout', 'Midline', 'Fade Extremes'];
+  const paModes = ['', 'Inside Bar', 'Engulfing', 'Pin Bar'];
   const volModes = ['', 'HiVol', 'LoVol', 'Vol Expansion'];
   const dirs = ['LONG', 'SHORT', 'BOTH'];
   const sessions = ['Asia', 'London', 'NY', 'NYClose'];
@@ -135,10 +146,21 @@ function IndicatorBadges({ dna }: { dna: StrategyDNA }) {
   if (dna.macdMode > 0) badges.push({ label: `MACD(${dna.macdFast},${dna.macdSlow}) ${macdModes[dna.macdMode]}`, color: 'text-blue-400', bg: 'border-blue-500/30 bg-blue-500/5' });
   if (dna.bbMode > 0) badges.push({ label: `BB(${dna.bbPeriod},${dna.bbStdDev}σ) ${bbModes[dna.bbMode]}`, color: 'text-purple-400', bg: 'border-purple-500/30 bg-purple-500/5' });
   if (dna.emaMode > 0) badges.push({ label: `EMA(${dna.emaFast}/${dna.emaSlow}) ${emaModes[dna.emaMode]}`, color: 'text-cyan-400', bg: 'border-cyan-500/30 bg-cyan-500/5' });
+  // New indicator badges
+  if (dna.adxMode > 0) badges.push({ label: `ADX(${dna.adxPeriod}) ${adxModes[dna.adxMode]}`, color: 'text-rose-400', bg: 'border-rose-500/30 bg-rose-500/5' });
+  if (dna.stochMode > 0) badges.push({ label: `Stoch(${dna.stochK},${dna.stochD}) ${stochModes[dna.stochMode]}`, color: 'text-amber-400', bg: 'border-amber-500/30 bg-amber-500/5' });
+  if (dna.cciMode > 0) badges.push({ label: `CCI(${dna.cciPeriod}) ${cciModes[dna.cciMode]}`, color: 'text-lime-400', bg: 'border-lime-500/30 bg-lime-500/5' });
+  if (dna.donchianMode > 0) badges.push({ label: `Donch(${dna.donchianPeriod}) ${donchModes[dna.donchianMode]}`, color: 'text-sky-400', bg: 'border-sky-500/30 bg-sky-500/5' });
+  if (dna.paMode > 0) badges.push({ label: `${paModes[dna.paMode]}`, color: 'text-fuchsia-400', bg: 'border-fuchsia-500/30 bg-fuchsia-500/5' });
+  // Filters
   if (dna.volMode > 0) badges.push({ label: volModes[dna.volMode], color: 'text-yellow-400', bg: 'border-yellow-500/30 bg-yellow-500/5' });
   if (dna.sessionFilter >= 0) badges.push({ label: sessions[dna.sessionFilter], color: 'text-pink-400', bg: 'border-pink-500/30 bg-pink-500/5' });
   if (dna.dayFilter >= 0) badges.push({ label: days[dna.dayFilter], color: 'text-teal-400', bg: 'border-teal-500/30 bg-teal-500/5' });
   badges.push({ label: dirs[dna.direction], color: dna.direction === 0 ? 'text-emerald-400' : dna.direction === 1 ? 'text-red-400' : 'text-slate-400', bg: dna.direction === 0 ? 'border-emerald-500/30 bg-emerald-500/5' : dna.direction === 1 ? 'border-red-500/30 bg-red-500/5' : 'border-slate-500/30 bg-slate-500/5' });
+  // Advanced exit badges
+  if (dna.trailingATR > 0) badges.push({ label: `Trail ${dna.trailingATR.toFixed(1)}ATR`, color: 'text-indigo-400', bg: 'border-indigo-500/30 bg-indigo-500/5' });
+  if (dna.maxBarsInTrade > 0) badges.push({ label: `TimeCut ${Math.round(dna.maxBarsInTrade)}b`, color: 'text-stone-400', bg: 'border-stone-500/30 bg-stone-500/5' });
+  if (dna.partialTP > 0) badges.push({ label: dna.partialTP === 1 ? '50% PartialTP' : '33% PartialTP', color: 'text-violet-400', bg: 'border-violet-500/30 bg-violet-500/5' });
 
   return (
     <div className="flex flex-wrap gap-1">
