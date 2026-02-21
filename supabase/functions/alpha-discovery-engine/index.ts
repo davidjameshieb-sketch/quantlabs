@@ -197,7 +197,11 @@ function findBestSplit(
   let bestThreshold = 0;
 
   for (const fi of featureIndices) {
-    const values = [...new Set(features.map(r => r[fi]))].sort((a, b) => a - b);
+    const allVals = features.map(r => r[fi]);
+    const uniqueVals = [...new Set(allVals)].sort((a, b) => a - b);
+    // Subsample thresholds to max 20 candidates to save memory/CPU
+    const step = Math.max(1, Math.floor(uniqueVals.length / 20));
+    const values = uniqueVals.filter((_, i) => i % step === 0);
     for (let t = 0; t < values.length - 1; t++) {
       const threshold = (values[t] + values[t + 1]) / 2;
       const leftLabels: number[] = [];
@@ -390,10 +394,10 @@ Deno.serve(async (req) => {
   try {
     const body = await req.json().catch(() => ({}));
     const environment: "practice" | "live" = body.environment || "live";
-    const maxDepth = body.maxDepth || 4;
-    const minWinRate = body.minWinRate || 0.65;
+    const maxDepth = body.maxDepth || 5;
+    const minWinRate = body.minWinRate || 0.35;
     const maxCorrelation = body.maxCorrelation || 0.3;
-    const candleCount = Math.min(body.candles || 5000, 5000);
+    const candleCount = Math.min(body.candles || 2000, 3000);
 
     const apiToken = environment === "live"
       ? (Deno.env.get("OANDA_LIVE_API_TOKEN") || Deno.env.get("OANDA_API_TOKEN"))
@@ -513,13 +517,21 @@ Deno.serve(async (req) => {
       );
     }
 
-    // ── Step 3: Build feature matrix & train Decision Tree ──
-    const features = allRows.map(r => [
+    // ── Step 3: Subsample if too large to avoid memory limits ──
+    const MAX_ROWS = 15000;
+    let trainingRows = allRows;
+    if (allRows.length > MAX_ROWS) {
+      const stride = Math.ceil(allRows.length / MAX_ROWS);
+      trainingRows = allRows.filter((_, i) => i % stride === 0);
+      console.log(`[ALPHA DISCOVERY] Subsampled ${allRows.length} → ${trainingRows.length} rows`);
+    }
+
+    const features = trainingRows.map(r => [
       r.predatorRank, r.preyRank,
       r.gate1 ? 1 : 0, r.gate2 ? 1 : 0, r.gate3 ? 1 : 0,
       r.session, r.atr, r.hurst, r.rollingVol,
     ]);
-    const labels = allRows.map(r => r.isPerfectTrade);
+    const labels = trainingRows.map(r => r.isPerfectTrade);
 
     console.log(`[ALPHA DISCOVERY] Training Decision Tree (max_depth=${maxDepth}, samples=${features.length})`);
     const tree = buildTree(features, labels, 0, maxDepth, 10);
