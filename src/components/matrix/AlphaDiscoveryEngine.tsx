@@ -26,6 +26,7 @@ interface GAProfile {
   equityCurve: number[];
   strategyName: string; edgeDescription: string;
   entryRules: string[]; exitRules: string[];
+  edgeArchetype?: string;
 }
 
 interface EvolutionEntry { gen: number; bestFitness: number; avgFitness: number; bestTrades: number; }
@@ -487,7 +488,14 @@ function StrategyCard({ profile, idx, expandedProfile, setExpandedProfile, maxCo
         <div className="flex items-center gap-3">
           <span className="text-lg w-8 text-center shrink-0">{medal}</span>
           <div className="flex-1 min-w-0">
-            <div className="text-[10px] font-bold text-slate-200 mb-0.5">{profile.strategyName || 'Unnamed Strategy'}</div>
+            <div className="flex items-center gap-2 mb-0.5">
+              <div className="text-[10px] font-bold text-slate-200">{profile.strategyName || 'Unnamed Strategy'}</div>
+              {profile.edgeArchetype && (
+                <span className="text-[6px] font-mono px-1 py-0.5 rounded bg-amber-500/10 border border-amber-500/30 text-amber-400 uppercase tracking-wider">
+                  {profile.edgeArchetype}
+                </span>
+              )}
+            </div>
             <IndicatorBadges dna={profile.dna} />
           </div>
           <div className="flex items-center gap-3 shrink-0">
