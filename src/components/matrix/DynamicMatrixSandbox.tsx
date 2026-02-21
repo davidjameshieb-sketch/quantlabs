@@ -6,8 +6,67 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   Sliders, ToggleLeft, ToggleRight, TrendingUp, TrendingDown,
   Zap, Shield, Target, Activity, ChevronDown, ChevronUp,
+  Crosshair, OctagonX,
 } from 'lucide-react';
 import type { BacktestResult, RankComboResult } from '@/hooks/useRankExpectancy';
+
+// ── 25 Stop Loss Strategies ──
+const STOP_LOSS_OPTIONS = [
+  { id: 0,  label: '5 pip fixed',        pips: 5,   wrMod: -3,  pfMod: 0.85, desc: 'Ultra-tight scalp stop' },
+  { id: 1,  label: '10 pip fixed',       pips: 10,  wrMod: 0,   pfMod: 1.0,  desc: 'Standard micro stop' },
+  { id: 2,  label: '15 pip fixed',       pips: 15,  wrMod: 2,   pfMod: 1.05, desc: 'Moderate fixed stop' },
+  { id: 3,  label: '20 pip fixed',       pips: 20,  wrMod: 4,   pfMod: 1.08, desc: 'Wide fixed stop' },
+  { id: 4,  label: '30 pip fixed',       pips: 30,  wrMod: 6,   pfMod: 1.02, desc: 'Swing-level stop' },
+  { id: 5,  label: '50 pip fixed',       pips: 50,  wrMod: 8,   pfMod: 0.90, desc: 'Ultra-wide position stop' },
+  { id: 6,  label: '0.5x ATR',           pips: 7,   wrMod: -2,  pfMod: 0.88, desc: 'Half ATR — tight volatility stop' },
+  { id: 7,  label: '1.0x ATR',           pips: 14,  wrMod: 1,   pfMod: 1.05, desc: 'Standard ATR stop' },
+  { id: 8,  label: '1.5x ATR',           pips: 21,  wrMod: 3,   pfMod: 1.10, desc: 'Comfortable ATR buffer' },
+  { id: 9,  label: '2.0x ATR',           pips: 28,  wrMod: 5,   pfMod: 1.06, desc: 'Wide ATR stop' },
+  { id: 10, label: '3.0x ATR',           pips: 42,  wrMod: 7,   pfMod: 0.92, desc: 'Macro ATR — position trade' },
+  { id: 11, label: '0.5R risk',          pips: 8,   wrMod: -1,  pfMod: 0.92, desc: 'Half-R account risk stop' },
+  { id: 12, label: '1.0R risk',          pips: 15,  wrMod: 2,   pfMod: 1.08, desc: 'Standard 1R risk stop' },
+  { id: 13, label: '2.0R risk',          pips: 30,  wrMod: 5,   pfMod: 1.0,  desc: 'Aggressive 2R risk stop' },
+  { id: 14, label: 'Prev candle low',    pips: 12,  wrMod: 1,   pfMod: 1.04, desc: 'Structure-based: prior candle' },
+  { id: 15, label: 'Swing low (5-bar)',  pips: 18,  wrMod: 3,   pfMod: 1.12, desc: 'Recent 5-bar swing structure' },
+  { id: 16, label: 'Swing low (20-bar)', pips: 35,  wrMod: 6,   pfMod: 1.0,  desc: '20-bar swing — wide structure' },
+  { id: 17, label: 'VWAP deviation',     pips: 16,  wrMod: 2,   pfMod: 1.06, desc: 'Stop at VWAP ± 1 stdev' },
+  { id: 18, label: 'Bollinger Band',     pips: 20,  wrMod: 3,   pfMod: 1.04, desc: 'Stop at opposite Bollinger band' },
+  { id: 19, label: 'Keltner Channel',    pips: 22,  wrMod: 4,   pfMod: 1.07, desc: 'Keltner envelope stop' },
+  { id: 20, label: 'Atlas Wall -5 pip',  pips: 10,  wrMod: 1,   pfMod: 1.15, desc: '5 pips behind nearest wall' },
+  { id: 21, label: 'Atlas Wall -10 pip', pips: 15,  wrMod: 3,   pfMod: 1.18, desc: '10 pips behind nearest wall' },
+  { id: 22, label: 'Trailing 10 pip',    pips: 10,  wrMod: 0,   pfMod: 1.12, desc: '10 pip trailing stop' },
+  { id: 23, label: 'Trailing 1x ATR',    pips: 14,  wrMod: 2,   pfMod: 1.16, desc: 'ATR-based trailing stop' },
+  { id: 24, label: 'Time-based (15 bar)',pips: 0,   wrMod: -4,  pfMod: 0.80, desc: 'Exit after 15 bars regardless' },
+];
+
+// ── 25 Entry Strategies ──
+const ENTRY_OPTIONS = [
+  { id: 0,  label: 'Market @ signal',       offset: 0,   wrMod: 0,   pfMod: 1.0,  desc: 'Immediate market execution' },
+  { id: 1,  label: 'Limit -2 pip',          offset: -2,  wrMod: 2,   pfMod: 1.08, desc: 'Limit order 2 pips better' },
+  { id: 2,  label: 'Limit -5 pip',          offset: -5,  wrMod: 4,   pfMod: 1.12, desc: 'Limit order 5 pips better' },
+  { id: 3,  label: 'Limit -10 pip',         offset: -10, wrMod: 5,   pfMod: 1.06, desc: 'Deep limit — may miss entries' },
+  { id: 4,  label: 'Stop +2 pip',           offset: 2,   wrMod: 1,   pfMod: 1.04, desc: 'Buy stop 2 pips above' },
+  { id: 5,  label: 'Stop +5 pip',           offset: 5,   wrMod: 3,   pfMod: 1.10, desc: 'Buy stop 5 pips — momentum conf' },
+  { id: 6,  label: 'M1 close confirm',      offset: 0,   wrMod: 2,   pfMod: 1.06, desc: 'Wait for M1 candle close' },
+  { id: 7,  label: 'M5 close confirm',      offset: 0,   wrMod: 4,   pfMod: 1.10, desc: 'Wait for M5 candle close' },
+  { id: 8,  label: 'M15 close confirm',     offset: 0,   wrMod: 5,   pfMod: 1.08, desc: 'Wait for M15 candle close' },
+  { id: 9,  label: 'H1 close confirm',      offset: 0,   wrMod: 6,   pfMod: 1.02, desc: 'Wait for H1 candle close' },
+  { id: 10, label: 'Z-OFI > 0.5',           offset: 0,   wrMod: 1,   pfMod: 1.03, desc: 'Min kinetic threshold 0.5' },
+  { id: 11, label: 'Z-OFI > 1.0',           offset: 0,   wrMod: 3,   pfMod: 1.08, desc: 'Moderate kinetic threshold' },
+  { id: 12, label: 'Z-OFI > 1.5',           offset: 0,   wrMod: 5,   pfMod: 1.14, desc: 'Strong kinetic threshold' },
+  { id: 13, label: 'Z-OFI > 2.0',           offset: 0,   wrMod: 6,   pfMod: 1.10, desc: 'Extreme kinetic — fewer fills' },
+  { id: 14, label: 'Delta spike > 2σ',      offset: 0,   wrMod: 4,   pfMod: 1.12, desc: 'Wait for 2-sigma delta spike' },
+  { id: 15, label: 'VWAP touch',            offset: 0,   wrMod: 3,   pfMod: 1.06, desc: 'Enter on VWAP mean revert' },
+  { id: 16, label: 'Pullback 38.2% fib',    offset: 0,   wrMod: 4,   pfMod: 1.10, desc: 'Fibonacci 38.2% retracement' },
+  { id: 17, label: 'Pullback 50% fib',      offset: 0,   wrMod: 5,   pfMod: 1.08, desc: 'Fibonacci 50% retracement' },
+  { id: 18, label: 'Pullback 61.8% fib',    offset: 0,   wrMod: 6,   pfMod: 1.04, desc: 'Deep fib — risky reversal zone' },
+  { id: 19, label: 'EMA9 bounce',           offset: 0,   wrMod: 2,   pfMod: 1.05, desc: 'Enter on 9-EMA touch & bounce' },
+  { id: 20, label: 'EMA21 bounce',          offset: 0,   wrMod: 3,   pfMod: 1.08, desc: 'Enter on 21-EMA support' },
+  { id: 21, label: 'Break of structure',    offset: 0,   wrMod: 4,   pfMod: 1.14, desc: 'SMC break of structure entry' },
+  { id: 22, label: 'Order block entry',     offset: 0,   wrMod: 5,   pfMod: 1.16, desc: 'Institutional order block zone' },
+  { id: 23, label: 'London open only',      offset: 0,   wrMod: 3,   pfMod: 1.10, desc: 'Restrict to London session open' },
+  { id: 24, label: 'NY open only',          offset: 0,   wrMod: 2,   pfMod: 1.08, desc: 'Restrict to NY session open' },
+];
 
 interface Props {
   result: BacktestResult;
@@ -23,15 +82,14 @@ function filterAndRecalc(
   gate2: boolean,
   gate3: boolean,
   slippagePips: number,
+  stopLossIdx: number,
+  entryIdx: number,
 ) {
-  // Find the combo matching the selected ranks
   const combo = comboResults.find(
     c => c.strongRank === predatorRank && c.weakRank === preyRank,
   );
   if (!combo) return null;
 
-  // Determine which metric set to use based on gate toggles
-  // If all 3 gates ON → use gated stats; otherwise use ungated baseline
   const useGated = gate1 && gate2 && gate3;
 
   const rawTrades = useGated ? combo.gatedTrades : combo.trades;
@@ -39,42 +97,45 @@ function filterAndRecalc(
   const rawPips = useGated ? combo.gatedPips : combo.totalPips;
   const rawWR = useGated ? combo.gatedWinRate : combo.winRate;
   const rawPF = useGated ? combo.gatedPF : combo.profitFactor;
-  const rawGrossProfit = useGated
-    ? (combo.gatedPF * (rawPips < 0 ? Math.abs(rawPips) : 1))
-    : combo.grossProfit;
-  const rawGrossLoss = useGated
-    ? (rawPips < 0 ? Math.abs(rawPips) : rawGrossProfit / Math.max(0.01, combo.gatedPF))
-    : combo.grossLoss;
 
-  // Gate penalty simulation: turning off gates degrades performance
+  // Gate penalties
   let wrPenalty = 0;
   let pfMultiplier = 1;
   if (!gate1) { wrPenalty += 8; pfMultiplier *= 0.7; }
   if (!gate2) { wrPenalty += 12; pfMultiplier *= 0.6; }
   if (!gate3) { wrPenalty += 5; pfMultiplier *= 0.85; }
 
-  // Slippage impact
+  // Stop Loss impact
+  const sl = STOP_LOSS_OPTIONS[stopLossIdx] || STOP_LOSS_OPTIONS[1];
+  wrPenalty -= sl.wrMod;  // positive wrMod = wider stop = higher WR
+  pfMultiplier *= sl.pfMod;
+
+  // Entry impact
+  const entry = ENTRY_OPTIONS[entryIdx] || ENTRY_OPTIONS[0];
+  wrPenalty -= entry.wrMod;
+  pfMultiplier *= entry.pfMod;
+
+  // Slippage + entry offset cost
+  const entryOffsetCost = Math.abs(entry.offset) * rawTrades * 0.05;
   const slippageDrag = slippagePips * rawTrades;
-  const adjustedPips = rawPips - slippageDrag;
-  const adjustedWR = Math.max(0, rawWR - wrPenalty);
+  const adjustedPips = rawPips - slippageDrag - entryOffsetCost + (sl.pips > 0 ? sl.wrMod * rawTrades * 0.1 : 0);
+  const adjustedWR = Math.max(0, Math.min(100, rawWR - wrPenalty));
   const adjustedPF = Math.max(0, rawPF * pfMultiplier);
 
   // Build simulated equity curve
   const comboKey = `${predatorRank}v${preyRank}`;
   const baseCurve = equityCurves[comboKey] || equityCurves['1v8'] || [];
 
-  // Reconstruct equity from per-trade pips scaled by gate/slippage penalties
-  // The base curve encodes the raw equity path; we re-scale the *gains* portion
-  const totalGatePenaltyPct = (wrPenalty / 100); // fraction of edge lost
-  const pfDamage = 1 - pfMultiplier;             // fraction of PF lost
+  const totalGatePenaltyPct = (Math.max(0, wrPenalty) / 100);
+  const pfDamage = Math.max(0, 1 - pfMultiplier);
+  const pfBoost = Math.max(0, pfMultiplier - 1);
 
   const simulatedCurve = baseCurve.map((pt, idx) => {
-    const rawGain = pt.equity - 1000; // how far from starting capital
-    // Shrink gains by gate penalty (turning off gates degrades the edge)
-    const gatedGain = rawGain * (1 - totalGatePenaltyPct * 1.5 - pfDamage * 0.5);
-    // Slippage drags linearly per trade taken
+    const rawGain = pt.equity - 1000;
+    const scaleFactor = 1 - totalGatePenaltyPct * 1.5 - pfDamage * 0.5 + pfBoost * 0.3;
+    const gatedGain = rawGain * Math.max(-1, scaleFactor);
     const progress = idx / Math.max(1, baseCurve.length - 1);
-    const slipDrag = slippagePips * rawTrades * 0.10 * progress; // $0.10 per pip per trade
+    const slipDrag = (slippagePips * rawTrades * 0.10 + entryOffsetCost * 0.05) * progress;
     return {
       time: pt.time,
       equity: Math.max(0, 1000 + gatedGain - slipDrag),
@@ -90,7 +151,6 @@ function filterAndRecalc(
     if (dd < maxDD) maxDD = dd;
   }
 
-  // Total return
   const finalEquity = simulatedCurve.length > 0
     ? simulatedCurve[simulatedCurve.length - 1].equity
     : 1000;
@@ -107,6 +167,8 @@ function filterAndRecalc(
     equityCurve: simulatedCurve,
     finalEquity: Math.round(finalEquity * 100) / 100,
     slippageCost: Math.round(slippageDrag * 10) / 10,
+    stopLoss: sl,
+    entry,
     combo,
   };
 }
@@ -278,6 +340,8 @@ export const DynamicMatrixSandbox = ({ result }: Props) => {
   const [gate2, setGate2] = useState(true);
   const [gate3, setGate3] = useState(true);
   const [slippagePips, setSlippagePips] = useState(0);
+  const [stopLossIdx, setStopLossIdx] = useState(1);
+  const [entryIdx, setEntryIdx] = useState(0);
 
   const sandbox = useMemo(
     () => filterAndRecalc(
@@ -289,8 +353,10 @@ export const DynamicMatrixSandbox = ({ result }: Props) => {
       gate2,
       gate3,
       slippagePips,
+      stopLossIdx,
+      entryIdx,
     ),
-    [result, predatorRank, preyRank, gate1, gate2, gate3, slippagePips],
+    [result, predatorRank, preyRank, gate1, gate2, gate3, slippagePips, stopLossIdx, entryIdx],
   );
 
   return (
@@ -446,6 +512,84 @@ export const DynamicMatrixSandbox = ({ result }: Props) => {
             {slippagePips > 0 && (
               <p className="text-[8px] text-[#ff8800]/70 font-mono">
                 -{sandbox?.slippageCost ?? 0} pips total drag
+              </p>
+            )}
+          </div>
+
+          {/* Stop Loss Strategy */}
+          <div className="space-y-2">
+            <h3 className="text-[9px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1.5">
+              <OctagonX className="w-3 h-3 text-[#ff0055]" />
+              Stop Loss Strategy
+            </h3>
+            <div className="bg-slate-950/60 border border-slate-800/50 rounded-lg p-2.5">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-[9px] font-bold font-mono text-[#ff0055]">
+                  {STOP_LOSS_OPTIONS[stopLossIdx].label}
+                </span>
+                <span className="text-[8px] text-slate-500 font-mono">
+                  #{stopLossIdx + 1}/25
+                </span>
+              </div>
+              <p className="text-[7px] text-slate-500 mb-2">{STOP_LOSS_OPTIONS[stopLossIdx].desc}</p>
+              <input
+                type="range"
+                min={0}
+                max={24}
+                value={stopLossIdx}
+                onChange={e => setStopLossIdx(Number(e.target.value))}
+                className="w-full h-1.5 rounded-full appearance-none cursor-pointer"
+                style={{
+                  background: `linear-gradient(to right, #ff0055 ${(stopLossIdx / 24) * 100}%, #1e293b ${(stopLossIdx / 24) * 100}%)`,
+                }}
+              />
+              <div className="flex justify-between text-[7px] text-slate-600 font-mono mt-1">
+                <span>5pip fixed</span>
+                <span>Time-based</span>
+              </div>
+            </div>
+            {STOP_LOSS_OPTIONS[stopLossIdx].pips > 0 && (
+              <p className="text-[8px] text-[#ff0055]/70 font-mono">
+                ~{STOP_LOSS_OPTIONS[stopLossIdx].pips} pip SL · WR mod: {STOP_LOSS_OPTIONS[stopLossIdx].wrMod > 0 ? '+' : ''}{STOP_LOSS_OPTIONS[stopLossIdx].wrMod}% · PF: ×{STOP_LOSS_OPTIONS[stopLossIdx].pfMod}
+              </p>
+            )}
+          </div>
+
+          {/* Entry Strategy */}
+          <div className="space-y-2">
+            <h3 className="text-[9px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1.5">
+              <Crosshair className="w-3 h-3 text-[#00ffea]" />
+              Entry Strategy
+            </h3>
+            <div className="bg-slate-950/60 border border-slate-800/50 rounded-lg p-2.5">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-[9px] font-bold font-mono text-[#00ffea]">
+                  {ENTRY_OPTIONS[entryIdx].label}
+                </span>
+                <span className="text-[8px] text-slate-500 font-mono">
+                  #{entryIdx + 1}/25
+                </span>
+              </div>
+              <p className="text-[7px] text-slate-500 mb-2">{ENTRY_OPTIONS[entryIdx].desc}</p>
+              <input
+                type="range"
+                min={0}
+                max={24}
+                value={entryIdx}
+                onChange={e => setEntryIdx(Number(e.target.value))}
+                className="w-full h-1.5 rounded-full appearance-none cursor-pointer"
+                style={{
+                  background: `linear-gradient(to right, #00ffea ${(entryIdx / 24) * 100}%, #1e293b ${(entryIdx / 24) * 100}%)`,
+                }}
+              />
+              <div className="flex justify-between text-[7px] text-slate-600 font-mono mt-1">
+                <span>Market</span>
+                <span>NY open</span>
+              </div>
+            </div>
+            {ENTRY_OPTIONS[entryIdx].offset !== 0 && (
+              <p className="text-[8px] text-[#00ffea]/70 font-mono">
+                Offset: {ENTRY_OPTIONS[entryIdx].offset > 0 ? '+' : ''}{ENTRY_OPTIONS[entryIdx].offset} pip · WR mod: +{ENTRY_OPTIONS[entryIdx].wrMod}%
               </p>
             )}
           </div>
