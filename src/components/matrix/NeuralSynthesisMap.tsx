@@ -70,7 +70,7 @@ export const NeuralSynthesisMap = ({ result }: Props) => {
       { id: 'h_flow', label: 'FLOW·ΔV', activation: regime.confidence },
     ];
     hiddenNodes.forEach(hn => {
-      const color = hn.activation > 0.6 ? '#00ffea' : hn.activation > 0.3 ? '#ffaa00' : '#ff005560';
+      const color = hn.activation > 0.6 ? '#00ffea' : hn.activation > 0.3 ? '#ffaa00' : '#ff0055';
       n.push({ ...hn, x: 0, y: 0, layer: 1, color });
     });
 
