@@ -1,7 +1,12 @@
-// Alpha Discovery Engine v2.0 — Genetic Algorithm Strategy Breeder
-// Evolves millions of parameter combinations through natural selection
-// Fitness: (ProfitFactor * WinRate) / MaxDrawdown with correlation penalty
-// Genes: Ranks, Gates, Sessions, SL/TP ATR multipliers, Hurst thresholds
+// Alpha Discovery Engine v3.0 — Phased GA State Machine
+// Phase 1: Fetch candles, compute features, store in sovereign_memory
+// Phase 2: Run 1 generation per invocation, persist population state
+// Phase 3: Extract top strategies, verify on full data, return results
+//
+// This architecture bypasses edge function CPU limits by splitting
+// the GA across many short-lived invocations with DB-backed state.
+
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -11,78 +16,38 @@ const corsHeaders = {
 const OANDA_HOST = "https://api-fxtrade.oanda.com";
 const OANDA_PRACTICE_HOST = "https://api-fxpractice.oanda.com";
 
-const PAIRS = [
-  "EUR_USD", "GBP_USD", "AUD_USD", "NZD_USD",
-  "USD_CAD", "USD_CHF", "USD_JPY",
-  "EUR_GBP", "EUR_JPY", "GBP_JPY", "AUD_JPY",
-];
-
 // ── Types ──────────────────────────────────────────────────────────────────
-interface Candle {
-  time: string;
-  volume: number;
-  high: number;
-  low: number;
-  open: number;
-  close: number;
-}
+interface Candle { time: string; volume: number; high: number; low: number; open: number; close: number; }
 
-// Strategy DNA — each gene is a parameter the GA can mutate
 interface StrategyDNA {
-  predatorRankMax: number;   // 1-4: buy when predator rank ≤ this
-  preyRankMin: number;       // 5-8: buy when prey rank ≥ this
-  gate1Required: boolean;
-  gate2Required: boolean;
-  gate3Required: boolean;
-  sessionFilter: number;     // -1=all, 0=asia, 1=london, 2=ny, 3=nyclose
-  slMultiplier: number;      // SL in ATR multiples (0.5-3.0)
-  tpMultiplier: number;      // TP in ATR multiples (1.0-5.0)
-  hurstMin: number;          // min hurst threshold (0.0-1.0)
-  hurstMax: number;          // max hurst threshold (0.0-1.0)
-  volFilter: number;         // 0=no filter, 1=high vol only, 2=low vol only
-  direction: number;         // 0=long only, 1=short only, 2=both
+  predatorRankMax: number; preyRankMin: number;
+  gate1Required: boolean; gate2Required: boolean; gate3Required: boolean;
+  sessionFilter: number; slMultiplier: number; tpMultiplier: number;
+  hurstMin: number; hurstMax: number; volFilter: number; direction: number;
 }
 
 interface SimResult {
-  trades: number;
-  wins: number;
-  winRate: number;
-  profitFactor: number;
-  totalPips: number;
-  maxDrawdown: number;
-  grossProfit: number;
-  grossLoss: number;
-  equityCurve: number[];
-  dailyReturns: number[];
+  trades: number; wins: number; winRate: number; profitFactor: number;
+  totalPips: number; maxDrawdown: number; grossProfit: number; grossLoss: number;
+  equityCurve: number[]; dailyReturns: number[];
 }
 
 interface ScoredIndividual {
-  dna: StrategyDNA;
-  fitness: number;
-  sim: SimResult;
-  correlation: number;
-  plainEnglish: string;
+  dna: StrategyDNA; fitness: number; sim: SimResult;
+  correlation: number; plainEnglish: string;
 }
 
-// ── Precomputed Feature Row (flat arrays for speed) ──
-interface BarData {
-  close: number;
-  atr: number;
-  hurst: number;
-  predatorRank: number;
-  preyRank: number;
-  gate1: number;  // 0 or 1
-  gate2: number;
-  gate3: number;
-  session: number;
-  volBucket: number; // 0=low, 1=mid, 2=high
-  isLongBias: number; // 1=long, 0=short
-  mfe: number;
-  mae: number;
-  isJPY: number;
+// Flat bar for simulation — stored as parallel arrays for compact serialization
+interface BarArrays {
+  close: number[]; atr: number[]; hurst: number[];
+  predatorRank: number[]; preyRank: number[];
+  gate1: number[]; gate2: number[]; gate3: number[];
+  session: number[]; volBucket: number[]; isLongBias: number[];
+  mfe: number[]; mae: number[]; isJPY: number[];
+  count: number;
 }
 
-// ── Helper Functions ───────────────────────────────────────────────────────
+// ── Helpers ────────────────────────────────────────────────────────────────
 
 async function fetchCandlePage(
   instrument: string, count: number, env: "practice" | "live", token: string, to?: string
@@ -108,9 +73,7 @@ async function fetchCandles(
   instrument: string, count: number, env: "practice" | "live", token: string
 ): Promise<Candle[]> {
   const PAGE_SIZE = 5000;
-  if (count <= PAGE_SIZE) {
-    return fetchCandlePage(instrument, count, env, token);
-  }
+  if (count <= PAGE_SIZE) return fetchCandlePage(instrument, count, env, token);
   let all: Candle[] = [];
   let remaining = count;
   let cursor: string | undefined = undefined;
@@ -128,68 +91,57 @@ async function fetchCandles(
 }
 
 function computeATR(candles: Candle[], period = 14): number[] {
-  const atrs: number[] = [];
-  for (let i = 0; i < candles.length; i++) {
-    if (i < period) { atrs.push(0); continue; }
+  const atrs: number[] = new Array(candles.length);
+  for (let i = 0; i < period; i++) atrs[i] = 0;
+  for (let i = period; i < candles.length; i++) {
     let sum = 0;
     for (let j = i - period + 1; j <= i; j++) {
-      const tr = Math.max(
+      sum += Math.max(
         candles[j].high - candles[j].low,
         Math.abs(candles[j].high - candles[j - 1].close),
         Math.abs(candles[j].low - candles[j - 1].close)
       );
-      sum += tr;
     }
-    atrs.push(sum / period);
+    atrs[i] = sum / period;
   }
   return atrs;
 }
 
-function computeHurst(closes: number[], window = 20): number {
-  if (closes.length < window) return 0.5;
-  const slice = closes.slice(-window);
+function computeHurst(closes: number[], start: number, window: number): number {
+  if (start < window) return 0.5;
   const returns: number[] = [];
-  for (let i = 1; i < slice.length; i++) {
-    returns.push(Math.log(slice[i] / slice[i - 1]));
+  for (let i = start - window + 1; i <= start; i++) {
+    if (closes[i - 1] > 0) returns.push(Math.log(closes[i] / closes[i - 1]));
   }
+  if (returns.length < 3) return 0.5;
   const mean = returns.reduce((a, b) => a + b, 0) / returns.length;
-  const deviations = returns.map(r => r - mean);
-  const cumDev: number[] = [];
-  let cumSum = 0;
-  for (const d of deviations) { cumSum += d; cumDev.push(cumSum); }
-  const R = Math.max(...cumDev) - Math.min(...cumDev);
-  const S = Math.sqrt(deviations.reduce((a, d) => a + d * d, 0) / deviations.length);
+  let cumSum = 0, cumMin = 0, cumMax = 0, ssq = 0;
+  for (const r of returns) {
+    const d = r - mean;
+    cumSum += d;
+    if (cumSum > cumMax) cumMax = cumSum;
+    if (cumSum < cumMin) cumMin = cumSum;
+    ssq += d * d;
+  }
+  const S = Math.sqrt(ssq / returns.length);
   if (S === 0) return 0.5;
-  return Math.log(R / S) / Math.log(returns.length);
+  return Math.log((cumMax - cumMin) / S) / Math.log(returns.length);
 }
 
 function getSession(time: string): number {
   const h = new Date(time).getUTCHours();
-  if (h < 7) return 0;
-  if (h < 12) return 1;
-  if (h < 17) return 2;
-  return 3;
+  if (h < 7) return 0; if (h < 12) return 1; if (h < 17) return 2; return 3;
 }
 
-function linearRegressionSlope(values: number[]): number {
-  const n = values.length;
-  if (n < 2) return 0;
+function linearRegressionSlope(closes: number[], start: number, window: number): number {
+  if (window < 2 || start < window - 1) return 0;
   let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
-  for (let i = 0; i < n; i++) {
-    sumX += i; sumY += values[i]; sumXY += i * values[i]; sumX2 += i * i;
+  for (let i = 0; i < window; i++) {
+    const y = closes[start - window + 1 + i];
+    sumX += i; sumY += y; sumXY += i * y; sumX2 += i * i;
   }
-  const denom = n * sumX2 - sumX * sumX;
-  return denom === 0 ? 0 : (n * sumXY - sumX * sumY) / denom;
-}
-
-function computePercentReturn(candles: Candle[], periods = 20): number {
-  if (candles.length < 2) return 0;
-  const slice = candles.slice(-Math.min(periods, candles.length));
-  let total = 0;
-  for (const c of slice) {
-    if (c.open !== 0) total += ((c.close - c.open) / c.open) * 100;
-  }
-  return total / slice.length;
+  const denom = window * sumX2 - sumX * sumX;
+  return denom === 0 ? 0 : (window * sumXY - sumX * sumY) / denom;
 }
 
 function pearsonCorrelation(a: number[], b: number[]): number {
@@ -205,95 +157,169 @@ function pearsonCorrelation(a: number[], b: number[]): number {
   return den === 0 ? 0 : num / den;
 }
 
-// ── Vectorized Simulation Engine ──────────────────────────────────────────
-// Operates on flat arrays — no objects, no iteration overhead
+// ── Build feature arrays from candles ──────────────────────────────────────
+function buildFeatureArrays(pair: string, candles: Candle[]): BarArrays {
+  const isJPY = pair.includes('JPY') ? 1 : 0;
+  const atrs = computeATR(candles, 14);
+  const closes = candles.map(c => c.close);
+  const n = candles.length;
 
-function simulateStrategy(bars: BarData[], dna: StrategyDNA): SimResult {
-  let equity = 10000;
-  let peak = equity;
-  let maxDD = 0;
+  // Precompute volatility percentiles
+  const vols: number[] = [];
+  for (let i = 20; i < n; i++) {
+    let ssq = 0;
+    for (let j = i - 19; j <= i; j++) {
+      if (closes[j - 1] > 0) { const lr = Math.log(closes[j] / closes[j - 1]); ssq += lr * lr; }
+    }
+    vols.push(Math.sqrt(ssq / 19));
+  }
+  vols.sort((a, b) => a - b);
+  const p33 = vols[Math.floor(vols.length * 0.33)] || 0;
+  const p66 = vols[Math.floor(vols.length * 0.66)] || 0;
+
+  const bars: BarArrays = {
+    close: [], atr: [], hurst: [], predatorRank: [], preyRank: [],
+    gate1: [], gate2: [], gate3: [], session: [], volBucket: [],
+    isLongBias: [], mfe: [], mae: [], isJPY: [], count: 0,
+  };
+
+  for (let i = 20; i < n - 8; i++) {
+    const currentATR = atrs[i] || 0.001;
+
+    // Percent return over last 20 bars
+    let pctReturnSum = 0;
+    for (let j = i - 19; j <= i; j++) {
+      if (candles[j].open !== 0) pctReturnSum += ((candles[j].close - candles[j].open) / candles[j].open) * 100;
+    }
+    const pctReturn = pctReturnSum / 20;
+
+    const predatorRank = pctReturn > 0.02 ? 1 : pctReturn > 0.01 ? 2 : pctReturn > 0.005 ? 3 : pctReturn > 0 ? 4 : pctReturn > -0.005 ? 5 : pctReturn > -0.01 ? 6 : pctReturn > -0.02 ? 7 : 8;
+    const negRet = -pctReturn;
+    const preyRank = negRet > 0.02 ? 1 : negRet > 0.01 ? 2 : negRet > 0.005 ? 3 : negRet > 0 ? 4 : negRet > -0.005 ? 5 : negRet > -0.01 ? 6 : negRet > -0.02 ? 7 : 8;
+
+    // Gates
+    let snap20High = -Infinity, snap20Low = Infinity;
+    for (let j = i - 20; j < i; j++) {
+      if (candles[j].high > snap20High) snap20High = candles[j].high;
+      if (candles[j].low < snap20Low) snap20Low = candles[j].low;
+    }
+    const gate1 = (predatorRank <= 3 && preyRank >= 6) ? 1 : 0;
+    const gate2 = (candles[i].close > snap20High || candles[i].close < snap20Low) ? 1 : 0;
+    const slope = linearRegressionSlope(closes, i, 20);
+    const gate3 = (Math.abs(slope) > currentATR * 0.01) ? 1 : 0;
+
+    const hurst = computeHurst(closes, i, 20);
+
+    // Volatility bucket
+    let ssq = 0;
+    for (let j = i - 19; j <= i; j++) {
+      if (closes[j - 1] > 0) { const lr = Math.log(closes[j] / closes[j - 1]); ssq += lr * lr; }
+    }
+    const rollingVol = Math.sqrt(ssq / 19);
+    const volBucket = rollingVol <= p33 ? 0 : rollingVol <= p66 ? 1 : 2;
+
+    const isLongBias = pctReturn > 0 ? 1 : 0;
+
+    // Future MFE/MAE over 8 bars
+    let mfe = 0, mae = 0;
+    for (let j = i + 1; j <= i + 8 && j < n; j++) {
+      if (isLongBias) {
+        const fav = candles[j].high - candles[i].close;
+        const adv = candles[i].close - candles[j].low;
+        if (fav > mfe) mfe = fav;
+        if (adv > mae) mae = adv;
+      } else {
+        const fav = candles[i].close - candles[j].low;
+        const adv = candles[j].high - candles[i].close;
+        if (fav > mfe) mfe = fav;
+        if (adv > mae) mae = adv;
+      }
+    }
+
+    bars.close.push(candles[i].close); bars.atr.push(currentATR); bars.hurst.push(hurst);
+    bars.predatorRank.push(predatorRank); bars.preyRank.push(preyRank);
+    bars.gate1.push(gate1); bars.gate2.push(gate2); bars.gate3.push(gate3);
+    bars.session.push(getSession(candles[i].time)); bars.volBucket.push(volBucket);
+    bars.isLongBias.push(isLongBias); bars.mfe.push(mfe); bars.mae.push(mae);
+    bars.isJPY.push(isJPY);
+    bars.count++;
+  }
+
+  return bars;
+}
+
+// ── Simulation engine on parallel arrays ──────────────────────────────────
+function simulateStrategy(bars: BarArrays, dna: StrategyDNA): SimResult {
+  let equity = 10000, peak = 10000, maxDD = 0;
   let trades = 0, wins = 0, grossProfit = 0, grossLoss = 0;
   const curve: number[] = [];
   const dailyReturns: number[] = [];
-  let dayCounter = 0;
-  let dayStart = equity;
+  let dayCounter = 0, dayStart = equity;
 
-  for (let i = 0; i < bars.length; i++) {
-    const b = bars[i];
-
-    // ── Gene filters ──
-    if (b.predatorRank > dna.predatorRankMax) { curve.push(equity); dayCounter++; if (dayCounter >= 48) { dailyReturns.push((equity - dayStart) / dayStart); dayStart = equity; dayCounter = 0; } continue; }
-    if (b.preyRank < dna.preyRankMin) { curve.push(equity); dayCounter++; if (dayCounter >= 48) { dailyReturns.push((equity - dayStart) / dayStart); dayStart = equity; dayCounter = 0; } continue; }
-    if (dna.gate1Required && b.gate1 === 0) { curve.push(equity); dayCounter++; if (dayCounter >= 48) { dailyReturns.push((equity - dayStart) / dayStart); dayStart = equity; dayCounter = 0; } continue; }
-    if (dna.gate2Required && b.gate2 === 0) { curve.push(equity); dayCounter++; if (dayCounter >= 48) { dailyReturns.push((equity - dayStart) / dayStart); dayStart = equity; dayCounter = 0; } continue; }
-    if (dna.gate3Required && b.gate3 === 0) { curve.push(equity); dayCounter++; if (dayCounter >= 48) { dailyReturns.push((equity - dayStart) / dayStart); dayStart = equity; dayCounter = 0; } continue; }
-    if (dna.sessionFilter >= 0 && b.session !== dna.sessionFilter) { curve.push(equity); dayCounter++; if (dayCounter >= 48) { dailyReturns.push((equity - dayStart) / dayStart); dayStart = equity; dayCounter = 0; } continue; }
-    if (b.hurst < dna.hurstMin || b.hurst > dna.hurstMax) { curve.push(equity); dayCounter++; if (dayCounter >= 48) { dailyReturns.push((equity - dayStart) / dayStart); dayStart = equity; dayCounter = 0; } continue; }
-    if (dna.volFilter === 1 && b.volBucket < 2) { curve.push(equity); dayCounter++; if (dayCounter >= 48) { dailyReturns.push((equity - dayStart) / dayStart); dayStart = equity; dayCounter = 0; } continue; }
-    if (dna.volFilter === 2 && b.volBucket > 0) { curve.push(equity); dayCounter++; if (dayCounter >= 48) { dailyReturns.push((equity - dayStart) / dayStart); dayStart = equity; dayCounter = 0; } continue; }
-    if (dna.direction === 0 && b.isLongBias === 0) { curve.push(equity); dayCounter++; if (dayCounter >= 48) { dailyReturns.push((equity - dayStart) / dayStart); dayStart = equity; dayCounter = 0; } continue; }
-    if (dna.direction === 1 && b.isLongBias === 1) { curve.push(equity); dayCounter++; if (dayCounter >= 48) { dailyReturns.push((equity - dayStart) / dayStart); dayStart = equity; dayCounter = 0; } continue; }
-
-    // ── SL/TP evaluation ──
-    const sl = b.atr * dna.slMultiplier;
-    const tp = b.atr * dna.tpMultiplier;
-    const pipMult = b.isJPY ? 100 : 10000;
-
-    let pips: number;
-    if (b.mfe >= tp) {
-      pips = tp * pipMult;
-    } else if (b.mae >= sl) {
-      pips = -sl * pipMult;
-    } else {
-      // Partial: net of MFE - MAE
-      pips = (b.mfe - b.mae * 0.5) * pipMult;
+  for (let i = 0; i < bars.count; i++) {
+    // Gene filters (branch-free style)
+    if (bars.predatorRank[i] > dna.predatorRankMax ||
+        bars.preyRank[i] < dna.preyRankMin ||
+        (dna.gate1Required && bars.gate1[i] === 0) ||
+        (dna.gate2Required && bars.gate2[i] === 0) ||
+        (dna.gate3Required && bars.gate3[i] === 0) ||
+        (dna.sessionFilter >= 0 && bars.session[i] !== dna.sessionFilter) ||
+        (bars.hurst[i] < dna.hurstMin || bars.hurst[i] > dna.hurstMax) ||
+        (dna.volFilter === 1 && bars.volBucket[i] < 2) ||
+        (dna.volFilter === 2 && bars.volBucket[i] > 0) ||
+        (dna.direction === 0 && bars.isLongBias[i] === 0) ||
+        (dna.direction === 1 && bars.isLongBias[i] === 1)) {
+      // Skip bar — still track equity curve sparsely
+      dayCounter++;
+      if (dayCounter >= 48) { dailyReturns.push((equity - dayStart) / (dayStart || 1)); dayStart = equity; dayCounter = 0; }
+      continue;
     }
 
-    trades++;
-    if (pips > 0) { wins++; grossProfit += pips; }
-    else { grossLoss += Math.abs(pips); }
+    const sl = bars.atr[i] * dna.slMultiplier;
+    const tp = bars.atr[i] * dna.tpMultiplier;
+    const pipMult = bars.isJPY[i] ? 100 : 10000;
 
-    equity += pips * 0.01; // $0.01 per pip
+    let pips: number;
+    if (bars.mfe[i] >= tp) pips = tp * pipMult;
+    else if (bars.mae[i] >= sl) pips = -sl * pipMult;
+    else pips = (bars.mfe[i] - bars.mae[i] * 0.5) * pipMult;
+
+    trades++;
+    if (pips > 0) { wins++; grossProfit += pips; } else { grossLoss += Math.abs(pips); }
+
+    equity += pips * 0.01;
     if (equity > peak) peak = equity;
     const dd = (peak - equity) / peak;
     if (dd > maxDD) maxDD = dd;
 
-    curve.push(equity);
     dayCounter++;
-    if (dayCounter >= 48) {
-      dailyReturns.push((equity - dayStart) / dayStart);
-      dayStart = equity;
-      dayCounter = 0;
-    }
+    if (dayCounter >= 48) { dailyReturns.push((equity - dayStart) / (dayStart || 1)); dayStart = equity; dayCounter = 0; }
   }
 
-  const winRate = trades > 0 ? wins / trades : 0;
-  const pf = grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? 99 : 0;
-  const totalPips = grossProfit - grossLoss;
+  // Only store sparse equity curve (every 50th trade for size)
+  curve.push(equity);
 
   return {
-    trades, wins, winRate, profitFactor: pf, totalPips,
+    trades, wins,
+    winRate: trades > 0 ? wins / trades : 0,
+    profitFactor: grossLoss > 0 ? grossProfit / grossLoss : (grossProfit > 0 ? 99 : 0),
+    totalPips: grossProfit - grossLoss,
     maxDrawdown: maxDD, grossProfit, grossLoss,
     equityCurve: curve, dailyReturns,
   };
 }
 
-// ── Genetic Algorithm Core ────────────────────────────────────────────────
-
+// ── GA operators ──────────────────────────────────────────────────────────
 function randomDNA(): StrategyDNA {
   return {
-    predatorRankMax: 1 + Math.floor(Math.random() * 4),     // 1-4
-    preyRankMin: 5 + Math.floor(Math.random() * 4),          // 5-8
-    gate1Required: Math.random() > 0.5,
-    gate2Required: Math.random() > 0.5,
+    predatorRankMax: 1 + Math.floor(Math.random() * 4),
+    preyRankMin: 5 + Math.floor(Math.random() * 4),
+    gate1Required: Math.random() > 0.5, gate2Required: Math.random() > 0.5,
     gate3Required: Math.random() > 0.5,
-    sessionFilter: Math.floor(Math.random() * 5) - 1,        // -1 to 3
-    slMultiplier: 0.5 + Math.random() * 2.5,                 // 0.5-3.0
-    tpMultiplier: 1.0 + Math.random() * 4.0,                 // 1.0-5.0
-    hurstMin: Math.random() * 0.5,                            // 0.0-0.5
-    hurstMax: 0.5 + Math.random() * 0.5,                      // 0.5-1.0
-    volFilter: Math.floor(Math.random() * 3),                 // 0-2
-    direction: Math.floor(Math.random() * 3),                 // 0-2
+    sessionFilter: Math.floor(Math.random() * 5) - 1,
+    slMultiplier: 0.5 + Math.random() * 2.5, tpMultiplier: 1.0 + Math.random() * 4.0,
+    hurstMin: Math.random() * 0.5, hurstMax: 0.5 + Math.random() * 0.5,
+    volFilter: Math.floor(Math.random() * 3), direction: Math.floor(Math.random() * 3),
   };
 }
 
@@ -331,11 +357,11 @@ function mutate(dna: StrategyDNA, rate = 0.15): StrategyDNA {
   return d;
 }
 
-function tournamentSelect(pop: ScoredIndividual[], k = 3): ScoredIndividual {
-  let best: ScoredIndividual | null = null;
+function tournamentSelect(pop: { dna: StrategyDNA; fitness: number }[], k = 3): { dna: StrategyDNA; fitness: number } {
+  let best: { dna: StrategyDNA; fitness: number } | null = null;
   for (let i = 0; i < k; i++) {
-    const candidate = pop[Math.floor(Math.random() * pop.length)];
-    if (!best || candidate.fitness > best.fitness) best = candidate;
+    const c = pop[Math.floor(Math.random() * pop.length)];
+    if (!best || c.fitness > best.fitness) best = c;
   }
   return best!;
 }
@@ -344,338 +370,446 @@ function dnaToEnglish(dna: StrategyDNA): string {
   const sessions = ['Asia', 'London', 'New York', 'NY Close'];
   const dirs = ['LONG only', 'SHORT only', 'BOTH directions'];
   const parts: string[] = [];
-  parts.push(`Predator Rank ≤ ${dna.predatorRankMax}`);
-  parts.push(`Prey Rank ≥ ${dna.preyRankMin}`);
-  if (dna.gate1Required) parts.push('Gate 1 (Momentum) = ON');
-  if (dna.gate2Required) parts.push('Gate 2 (Breakout) = ON');
-  if (dna.gate3Required) parts.push('Gate 3 (Vector) = ON');
-  if (dna.sessionFilter >= 0) parts.push(`Session = ${sessions[dna.sessionFilter]}`);
-  parts.push(`SL = ${dna.slMultiplier.toFixed(1)} ATR`);
-  parts.push(`TP = ${dna.tpMultiplier.toFixed(1)} ATR`);
-  parts.push(`Hurst ${dna.hurstMin.toFixed(2)}–${dna.hurstMax.toFixed(2)}`);
-  if (dna.volFilter === 1) parts.push('High Vol Only');
-  if (dna.volFilter === 2) parts.push('Low Vol Only');
+  parts.push(`Predator ≤${dna.predatorRankMax}`);
+  parts.push(`Prey ≥${dna.preyRankMin}`);
+  if (dna.gate1Required) parts.push('G1:ON');
+  if (dna.gate2Required) parts.push('G2:ON');
+  if (dna.gate3Required) parts.push('G3:ON');
+  if (dna.sessionFilter >= 0) parts.push(sessions[dna.sessionFilter]);
+  parts.push(`SL=${dna.slMultiplier.toFixed(1)}ATR`);
+  parts.push(`TP=${dna.tpMultiplier.toFixed(1)}ATR`);
+  parts.push(`H:${dna.hurstMin.toFixed(2)}-${dna.hurstMax.toFixed(2)}`);
+  if (dna.volFilter === 1) parts.push('HiVol');
+  if (dna.volFilter === 2) parts.push('LoVol');
   parts.push(dirs[dna.direction]);
   return parts.join(' · ');
 }
 
-// ── Main Handler ───────────────────────────────────────────────────────────
+// ── Supabase client helper ────────────────────────────────────────────────
+function getSupabaseAdmin() {
+  return createClient(
+    Deno.env.get("SUPABASE_URL")!,
+    Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
+  );
+}
 
-Deno.serve(async (req) => {
-  if (req.method === "OPTIONS") {
-    return new Response("ok", { headers: corsHeaders });
+const JOB_KEY = "ga_job_state";
+const DATA_KEY_PREFIX = "ga_bars_";
+
+// ── Phase handlers ────────────────────────────────────────────────────────
+
+async function handlePhase1(body: Record<string, unknown>) {
+  const environment = (body.environment as string) || "practice";
+  const pair = (body.pair as string) || "EUR_USD";
+  const candleCount = Math.min(Number(body.candles) || 5000, 5000);
+  const populationSize = Math.min(Number(body.populationSize) || 50, 100);
+  const totalGenerations = Math.min(Number(body.generations) || 50, 200);
+  const maxCorrelation = Number(body.maxCorrelation) || 0.2;
+  const mutationRate = Number(body.mutationRate) || 0.15;
+  const gensPerCall = Math.min(Number(body.gensPerCall) || 5, 10);
+
+  const apiToken = environment === "live"
+    ? (Deno.env.get("OANDA_LIVE_API_TOKEN") || Deno.env.get("OANDA_API_TOKEN"))
+    : Deno.env.get("OANDA_API_TOKEN");
+  if (!apiToken) throw new Error("OANDA API token not configured");
+
+  console.log(`[GA-P1] Fetching ${candleCount} M30 candles for ${pair} (${environment})`);
+  const candles = await fetchCandles(pair, candleCount, environment, apiToken);
+  if (candles.length < 50) throw new Error(`Insufficient candle data: ${candles.length}`);
+
+  console.log(`[GA-P1] Got ${candles.length} candles, building features...`);
+  const bars = buildFeatureArrays(pair, candles);
+  console.log(`[GA-P1] Built ${bars.count} feature bars`);
+
+  // Compute baseline daily returns for correlation checking
+  const baseDailyReturns: number[] = [];
+  let baseEq = 10000;
+  let dayCounter = 0, dayStart = baseEq;
+  for (let i = 0; i < bars.count; i++) {
+    const baseReturn = (bars.gate1[i] && bars.gate2[i] && bars.gate3[i]) ? bars.mfe[i] : 0;
+    baseEq += baseReturn * 10000 * 0.001;
+    dayCounter++;
+    if (dayCounter >= 48) {
+      baseDailyReturns.push((baseEq - dayStart) / (dayStart || 1));
+      dayStart = baseEq;
+      dayCounter = 0;
+    }
   }
+
+  // Initialize population
+  console.log(`[GA-P1] Initializing population of ${populationSize}`);
+  const population: { dna: StrategyDNA; fitness: number }[] = [];
+  for (let i = 0; i < populationSize; i++) {
+    const dna = randomDNA();
+    const sim = simulateStrategy(bars, dna);
+    let fitness = 0;
+    if (sim.trades >= 20 && sim.maxDrawdown > 0.001) fitness = (sim.profitFactor * sim.winRate) / sim.maxDrawdown;
+    else if (sim.trades >= 20) fitness = sim.profitFactor * sim.winRate * 10;
+    if (sim.trades < 20) fitness *= 0.01;
+    if (sim.trades < 50) fitness *= 0.5;
+    if (sim.trades > 200) fitness *= 1.1;
+    const corr = Math.abs(pearsonCorrelation(baseDailyReturns, sim.dailyReturns));
+    if (corr > maxCorrelation) fitness *= Math.max(0.01, 1 - (corr - maxCorrelation) * 5);
+    population.push({ dna, fitness });
+  }
+  population.sort((a, b) => b.fitness - a.fitness);
+
+  // Store state in sovereign_memory
+  const sb = getSupabaseAdmin();
+
+  // Store bars
+  await sb.from("sovereign_memory").upsert({
+    memory_key: `${DATA_KEY_PREFIX}${pair}`,
+    memory_type: "ga_dataset",
+    payload: bars,
+    created_by: "alpha-discovery-engine",
+    version: 1,
+  }, { onConflict: "memory_key" });
+
+  // Store job state
+  const jobState = {
+    status: "evolving",
+    pair,
+    environment,
+    currentGen: 0,
+    totalGenerations,
+    populationSize,
+    maxCorrelation,
+    mutationRate,
+    gensPerCall,
+    population: population.map(p => ({ dna: p.dna, fitness: Math.round(p.fitness * 1000) / 1000 })),
+    baseDailyReturns,
+    evolutionLog: [{ gen: 0, bestFitness: Math.round(population[0].fitness * 1000) / 1000, avgFitness: Math.round(population.reduce((s, p) => s + p.fitness, 0) / population.length * 1000) / 1000, bestTrades: 0 }],
+    totalSimulations: populationSize,
+    barCount: bars.count,
+    startedAt: new Date().toISOString(),
+  };
+
+  await sb.from("sovereign_memory").upsert({
+    memory_key: JOB_KEY,
+    memory_type: "ga_job",
+    payload: jobState,
+    created_by: "alpha-discovery-engine",
+    version: 1,
+  }, { onConflict: "memory_key" });
+
+  console.log(`[GA-P1] Phase 1 complete. ${bars.count} bars, pop=${populationSize}, ready for evolution.`);
+
+  return {
+    phase: 1,
+    status: "evolving",
+    pair,
+    barCount: bars.count,
+    populationSize,
+    totalGenerations,
+    currentGen: 0,
+    bestFitness: population[0].fitness,
+    message: `Data fetched & population initialized. Ready to evolve ${totalGenerations} generations.`,
+  };
+}
+
+async function handlePhase2() {
+  const sb = getSupabaseAdmin();
+
+  // Load job state
+  const { data: jobRow } = await sb.from("sovereign_memory").select("payload").eq("memory_key", JOB_KEY).single();
+  if (!jobRow) throw new Error("No active GA job. Run Phase 1 first.");
+  const job = jobRow.payload as Record<string, unknown>;
+  if (job.status !== "evolving") throw new Error(`Job status is '${job.status}', not 'evolving'`);
+
+  const pair = job.pair as string;
+  const maxCorrelation = job.maxCorrelation as number;
+  const mutationRate = job.mutationRate as number;
+  const gensPerCall = job.gensPerCall as number;
+  const totalGenerations = job.totalGenerations as number;
+  const currentGen = job.currentGen as number;
+  const baseDailyReturns = job.baseDailyReturns as number[];
+  let population = job.population as { dna: StrategyDNA; fitness: number }[];
+  let evolutionLog = job.evolutionLog as { gen: number; bestFitness: number; avgFitness: number; bestTrades: number }[];
+  let totalSimulations = job.totalSimulations as number;
+
+  // Load bars
+  const { data: barsRow } = await sb.from("sovereign_memory").select("payload").eq("memory_key", `${DATA_KEY_PREFIX}${pair}`).single();
+  if (!barsRow) throw new Error("Feature data not found. Run Phase 1 first.");
+  const bars = barsRow.payload as BarArrays;
+
+  const gensToRun = Math.min(gensPerCall, totalGenerations - currentGen);
+  console.log(`[GA-P2] Gen ${currentGen + 1}→${currentGen + gensToRun} of ${totalGenerations} (${bars.count} bars, pop=${population.length})`);
+
+  for (let g = 0; g < gensToRun; g++) {
+    const gen = currentGen + g + 1;
+    const newPop: { dna: StrategyDNA; fitness: number }[] = [];
+
+    // Elitism
+    const eliteCount = Math.max(2, Math.floor(population.length * 0.1));
+    for (let i = 0; i < eliteCount; i++) newPop.push(population[i]);
+
+    // Breed
+    while (newPop.length < population.length) {
+      const p1 = tournamentSelect(population);
+      const p2 = tournamentSelect(population);
+      let child = crossover(p1.dna, p2.dna);
+      child = mutate(child, mutationRate);
+
+      const sim = simulateStrategy(bars, child);
+      let fitness = 0;
+      if (sim.trades >= 20 && sim.maxDrawdown > 0.001) fitness = (sim.profitFactor * sim.winRate) / sim.maxDrawdown;
+      else if (sim.trades >= 20) fitness = sim.profitFactor * sim.winRate * 10;
+      if (sim.trades < 20) fitness *= 0.01;
+      if (sim.trades < 50) fitness *= 0.5;
+      if (sim.trades > 200) fitness *= 1.1;
+      const corr = Math.abs(pearsonCorrelation(baseDailyReturns, sim.dailyReturns));
+      if (corr > maxCorrelation) fitness *= Math.max(0.01, 1 - (corr - maxCorrelation) * 5);
+
+      newPop.push({ dna: child, fitness });
+      totalSimulations++;
+    }
+
+    population = newPop.sort((a, b) => b.fitness - a.fitness);
+
+    const avgFitness = population.reduce((s, p) => s + p.fitness, 0) / population.length;
+    // Get trade count for best individual
+    const bestSim = simulateStrategy(bars, population[0].dna);
+    evolutionLog.push({
+      gen,
+      bestFitness: Math.round(population[0].fitness * 1000) / 1000,
+      avgFitness: Math.round(avgFitness * 1000) / 1000,
+      bestTrades: bestSim.trades,
+    });
+  }
+
+  const newCurrentGen = currentGen + gensToRun;
+  const isComplete = newCurrentGen >= totalGenerations;
+
+  // Update job state
+  const updatedJob = {
+    ...job,
+    currentGen: newCurrentGen,
+    status: isComplete ? "extracting" : "evolving",
+    population: population.map(p => ({ dna: p.dna, fitness: Math.round(p.fitness * 1000) / 1000 })),
+    evolutionLog,
+    totalSimulations,
+  };
+
+  await sb.from("sovereign_memory").update({
+    payload: updatedJob,
+    version: newCurrentGen,
+  }).eq("memory_key", JOB_KEY);
+
+  console.log(`[GA-P2] Gen ${newCurrentGen}/${totalGenerations} done. Best: ${population[0].fitness.toFixed(3)}. Status: ${isComplete ? 'COMPLETE' : 'evolving'}`);
+
+  return {
+    phase: 2,
+    status: isComplete ? "extracting" : "evolving",
+    currentGen: newCurrentGen,
+    totalGenerations,
+    bestFitness: Math.round(population[0].fitness * 1000) / 1000,
+    avgFitness: Math.round(population.reduce((s, p) => s + p.fitness, 0) / population.length * 1000) / 1000,
+    totalSimulations,
+    evolutionLog: evolutionLog.slice(-10),
+    message: isComplete
+      ? `Evolution complete! ${totalSimulations} total simulations. Ready for extraction.`
+      : `Gen ${newCurrentGen}/${totalGenerations} complete. Polling for next batch...`,
+  };
+}
+
+async function handlePhase3() {
+  const sb = getSupabaseAdmin();
+
+  const { data: jobRow } = await sb.from("sovereign_memory").select("payload").eq("memory_key", JOB_KEY).single();
+  if (!jobRow) throw new Error("No GA job found.");
+  const job = jobRow.payload as Record<string, unknown>;
+
+  const pair = job.pair as string;
+  const maxCorrelation = job.maxCorrelation as number;
+  const baseDailyReturns = job.baseDailyReturns as number[];
+  const population = job.population as { dna: StrategyDNA; fitness: number }[];
+  const evolutionLog = job.evolutionLog as { gen: number; bestFitness: number; avgFitness: number; bestTrades: number }[];
+  const totalSimulations = job.totalSimulations as number;
+
+  // Load bars for full simulation
+  const { data: barsRow } = await sb.from("sovereign_memory").select("payload").eq("memory_key", `${DATA_KEY_PREFIX}${pair}`).single();
+  if (!barsRow) throw new Error("Feature data not found.");
+  const bars = barsRow.payload as BarArrays;
+
+  console.log(`[GA-P3] Extracting top strategies from ${population.length} individuals`);
+
+  // Full simulation of top candidates
+  const seen = new Set<string>();
+  const profiles: ScoredIndividual[] = [];
+
+  for (const p of population.slice(0, 30)) {
+    const key = `${p.dna.predatorRankMax}-${p.dna.preyRankMin}-${p.dna.gate1Required}-${p.dna.gate2Required}-${p.dna.gate3Required}-${p.dna.sessionFilter}-${p.dna.direction}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    const sim = simulateStrategy(bars, p.dna);
+    if (sim.trades < 20) continue;
+
+    // Build full equity curve for this one
+    let equity = 10000, peak2 = 10000, maxDD2 = 0;
+    const fullCurve: number[] = [];
+    const fullDailyReturns: number[] = [];
+    let dc = 0, ds = equity;
+    for (let i = 0; i < bars.count; i++) {
+      if (bars.predatorRank[i] > p.dna.predatorRankMax ||
+          bars.preyRank[i] < p.dna.preyRankMin ||
+          (p.dna.gate1Required && bars.gate1[i] === 0) ||
+          (p.dna.gate2Required && bars.gate2[i] === 0) ||
+          (p.dna.gate3Required && bars.gate3[i] === 0) ||
+          (p.dna.sessionFilter >= 0 && bars.session[i] !== p.dna.sessionFilter) ||
+          (bars.hurst[i] < p.dna.hurstMin || bars.hurst[i] > p.dna.hurstMax) ||
+          (p.dna.volFilter === 1 && bars.volBucket[i] < 2) ||
+          (p.dna.volFilter === 2 && bars.volBucket[i] > 0) ||
+          (p.dna.direction === 0 && bars.isLongBias[i] === 0) ||
+          (p.dna.direction === 1 && bars.isLongBias[i] === 1)) {
+        dc++; if (dc >= 48) { fullDailyReturns.push((equity - ds) / (ds || 1)); ds = equity; dc = 0; }
+        continue;
+      }
+      const sl = bars.atr[i] * p.dna.slMultiplier;
+      const tp = bars.atr[i] * p.dna.tpMultiplier;
+      const pm = bars.isJPY[i] ? 100 : 10000;
+      let pips: number;
+      if (bars.mfe[i] >= tp) pips = tp * pm;
+      else if (bars.mae[i] >= sl) pips = -sl * pm;
+      else pips = (bars.mfe[i] - bars.mae[i] * 0.5) * pm;
+      equity += pips * 0.01;
+      if (equity > peak2) peak2 = equity;
+      const dd = (peak2 - equity) / peak2;
+      if (dd > maxDD2) maxDD2 = dd;
+      if (fullCurve.length === 0 || i % 5 === 0) fullCurve.push(equity);
+      dc++; if (dc >= 48) { fullDailyReturns.push((equity - ds) / (ds || 1)); ds = equity; dc = 0; }
+    }
+    fullCurve.push(equity);
+
+    const corr = Math.abs(pearsonCorrelation(baseDailyReturns, fullDailyReturns));
+
+    profiles.push({
+      dna: p.dna,
+      fitness: p.fitness,
+      sim: { ...sim, equityCurve: fullCurve, dailyReturns: fullDailyReturns, maxDrawdown: maxDD2 },
+      correlation: corr,
+      plainEnglish: dnaToEnglish(p.dna),
+    });
+  }
+
+  const uncorrelated = profiles
+    .filter(p => p.correlation <= maxCorrelation && p.sim.profitFactor > 1.0)
+    .sort((a, b) => b.fitness - a.fitness)
+    .slice(0, 10);
+
+  const allProfiles = profiles.sort((a, b) => b.fitness - a.fitness).slice(0, 20);
+
+  // Downsample curves
+  function ds(curve: number[], max = 200): number[] {
+    if (curve.length <= max) return curve;
+    const stride = Math.ceil(curve.length / max);
+    return curve.filter((_, i) => i % stride === 0);
+  }
+
+  const fmt = (p: ScoredIndividual) => ({
+    dna: p.dna,
+    fitness: Math.round(p.fitness * 1000) / 1000,
+    winRate: Math.round(p.sim.winRate * 10000) / 10000,
+    profitFactor: Math.round(p.sim.profitFactor * 100) / 100,
+    trades: p.sim.trades,
+    totalPips: Math.round(p.sim.totalPips * 10) / 10,
+    maxDrawdown: Math.round(p.sim.maxDrawdown * 10000) / 10000,
+    grossProfit: Math.round(p.sim.grossProfit * 10) / 10,
+    grossLoss: Math.round(p.sim.grossLoss * 10) / 10,
+    correlation: Math.round(p.correlation * 1000) / 1000,
+    equityCurve: ds(p.sim.equityCurve),
+    plainEnglish: p.plainEnglish,
+  });
+
+  // Mark job as complete
+  await sb.from("sovereign_memory").update({
+    payload: { ...(job as object), status: "complete", completedAt: new Date().toISOString() },
+  }).eq("memory_key", JOB_KEY);
+
+  console.log(`[GA-P3] Extraction complete. ${uncorrelated.length} uncorrelated, ${allProfiles.length} total.`);
+
+  return {
+    phase: 3,
+    status: "complete",
+    timestamp: new Date().toISOString(),
+    environment: job.environment,
+    dataPoints: job.barCount,
+    totalSimulations,
+    gaStats: {
+      populationSize: (job as Record<string, unknown>).populationSize,
+      generations: (job as Record<string, unknown>).totalGenerations,
+      mutationRate: (job as Record<string, unknown>).mutationRate,
+      maxCorrelation,
+      totalSimulations,
+      finalBestFitness: population[0]?.fitness || 0,
+    },
+    evolutionLog: evolutionLog.filter((_, i) => i % Math.max(1, Math.floor(evolutionLog.length / 50)) === 0),
+    uncorrelatedProfiles: uncorrelated.map(fmt),
+    allProfiles: allProfiles.map(fmt),
+    config: {
+      pair,
+      populationSize: (job as Record<string, unknown>).populationSize,
+      generations: (job as Record<string, unknown>).totalGenerations,
+      maxCorrelation,
+      candleCount: (job as Record<string, unknown>).barCount,
+      mutationRate: (job as Record<string, unknown>).mutationRate,
+    },
+  };
+}
+
+// ── Status check (no heavy compute) ──────────────────────────────────────
+async function handleStatus() {
+  const sb = getSupabaseAdmin();
+  const { data } = await sb.from("sovereign_memory").select("payload").eq("memory_key", JOB_KEY).single();
+  if (!data) return { status: "idle", message: "No active GA job." };
+  const job = data.payload as Record<string, unknown>;
+  return {
+    status: job.status,
+    currentGen: job.currentGen,
+    totalGenerations: job.totalGenerations,
+    totalSimulations: job.totalSimulations,
+    bestFitness: (job.population as { fitness: number }[])?.[0]?.fitness || 0,
+    evolutionLog: ((job.evolutionLog as unknown[]) || []).slice(-5),
+    pair: job.pair,
+    barCount: job.barCount,
+  };
+}
+
+// ── Main Router ───────────────────────────────────────────────────────────
+Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
 
   try {
     const body = await req.json().catch(() => ({}));
-    const environment: "practice" | "live" = body.environment || "live";
-    const populationSize = Math.min(body.populationSize || 100, 200);
-    const generations = Math.min(body.generations || 50, 80);
-    const maxCorrelation = body.maxCorrelation || 0.2;
-    const candleCount = body.candles || 42000;
-    const mutationRate = body.mutationRate || 0.15;
+    const action = (body as Record<string, unknown>).action as string || "status";
 
-    const apiToken = environment === "live"
-      ? (Deno.env.get("OANDA_LIVE_API_TOKEN") || Deno.env.get("OANDA_API_TOKEN"))
-      : Deno.env.get("OANDA_API_TOKEN");
+    let result: unknown;
 
-    if (!apiToken) {
-      return new Response(
-        JSON.stringify({ error: "OANDA API token not configured" }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+    switch (action) {
+      case "init":
+        result = await handlePhase1(body as Record<string, unknown>);
+        break;
+      case "evolve":
+        result = await handlePhase2();
+        break;
+      case "extract":
+        result = await handlePhase3();
+        break;
+      case "status":
+        result = await handleStatus();
+        break;
+      default:
+        throw new Error(`Unknown action: ${action}`);
     }
 
-    console.log(`[GA ENGINE] Fetching ${candleCount} M30 candles for ${PAIRS.length} pairs (env: ${environment})`);
-
-    // ── Step 1: Fetch all candle data ──
-    const pairResults = await Promise.allSettled(
-      PAIRS.map(async (pair) => {
-        const candles = await fetchCandles(pair, candleCount, environment, apiToken);
-        return { pair, candles };
-      })
-    );
-
-    // ── Step 2: Build flat feature arrays ──
-    const allBars: BarData[] = [];
-    const baselineReturns: number[] = [];
-
-    for (const result of pairResults) {
-      if (result.status !== "fulfilled" || !result.value.candles || result.value.candles.length < 30) continue;
-      const { pair, candles } = result.value;
-      const isJPY = pair.includes('JPY') ? 1 : 0;
-      const atrs = computeATR(candles, 14);
-
-      // Compute rolling volatility percentiles for this pair
-      const allVols: number[] = [];
-      for (let i = 20; i < candles.length; i++) {
-        const window = candles.slice(i - 20, i);
-        const closes = window.map(c => c.close);
-        if (closes.length > 1) {
-          const vol = Math.sqrt(closes.slice(1).reduce((s, c, idx) => s + Math.pow(Math.log(c / closes[idx]), 2), 0) / (closes.length - 1));
-          allVols.push(vol);
-        }
-      }
-      allVols.sort((a, b) => a - b);
-      const p33 = allVols[Math.floor(allVols.length * 0.33)] || 0;
-      const p66 = allVols[Math.floor(allVols.length * 0.66)] || 0;
-
-      for (let i = 20; i < candles.length - 8; i++) {
-        const window = candles.slice(i - 20, i);
-        const closes = window.map(c => c.close);
-        const currentATR = atrs[i] || atrs[i - 1] || 0.001;
-
-        const pctReturn = computePercentReturn(window, 20);
-        const predatorRank = pctReturn > 0.02 ? 1 : pctReturn > 0.01 ? 2 : pctReturn > 0.005 ? 3 : pctReturn > 0 ? 4 : pctReturn > -0.005 ? 5 : pctReturn > -0.01 ? 6 : pctReturn > -0.02 ? 7 : 8;
-        const preyRank = (-pctReturn) > 0.02 ? 1 : (-pctReturn) > 0.01 ? 2 : (-pctReturn) > 0.005 ? 3 : (-pctReturn) > 0 ? 4 : (-pctReturn) > -0.005 ? 5 : (-pctReturn) > -0.01 ? 6 : (-pctReturn) > -0.02 ? 7 : 8;
-
-        const snap20High = Math.max(...window.map(c => c.high));
-        const snap20Low = Math.min(...window.map(c => c.low));
-        const gate1 = (predatorRank <= 3 && preyRank >= 6) ? 1 : 0;
-        const gate2 = (candles[i].close > snap20High || candles[i].close < snap20Low) ? 1 : 0;
-        const slope = linearRegressionSlope(closes);
-        const gate3 = (Math.abs(slope) > currentATR * 0.01) ? 1 : 0;
-
-        const hurst = computeHurst(closes, 20);
-
-        const rollingVol = closes.length > 1
-          ? Math.sqrt(closes.slice(1).reduce((s, c, idx) => s + Math.pow(Math.log(c / closes[idx]), 2), 0) / (closes.length - 1))
-          : 0;
-        const volBucket = rollingVol <= p33 ? 0 : rollingVol <= p66 ? 1 : 2;
-
-        const isLongBias = pctReturn > 0 ? 1 : 0;
-
-        // Future MFE/MAE over next 8 bars
-        const futureSlice = candles.slice(i + 1, i + 9);
-        let mfe = 0, mae = 0;
-        for (const fc of futureSlice) {
-          if (isLongBias) {
-            const fav = fc.high - candles[i].close;
-            const adv = candles[i].close - fc.low;
-            if (fav > mfe) mfe = fav;
-            if (adv > mae) mae = adv;
-          } else {
-            const fav = candles[i].close - fc.low;
-            const adv = fc.high - candles[i].close;
-            if (fav > mfe) mfe = fav;
-            if (adv > mae) mae = adv;
-          }
-        }
-
-        // Baseline strategy return
-        const baseReturn = (gate1 && gate2 && gate3) ? mfe : 0;
-        baselineReturns.push(baseReturn);
-
-        allBars.push({
-          close: candles[i].close, atr: currentATR, hurst,
-          predatorRank, preyRank, gate1, gate2, gate3,
-          session: getSession(candles[i].time),
-          volBucket, isLongBias, mfe, mae, isJPY,
-        });
-      }
-    }
-
-    console.log(`[GA ENGINE] Built ${allBars.length} feature bars from ${PAIRS.length} pairs`);
-
-    if (allBars.length < 200) {
-      return new Response(
-        JSON.stringify({ error: "Insufficient data for GA evolution", barCount: allBars.length }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
-    // Subsample bars for speed if very large
-    let simBars = allBars;
-    if (allBars.length > 15000) {
-      const stride = Math.ceil(allBars.length / 15000);
-      simBars = allBars.filter((_, i) => i % stride === 0);
-      console.log(`[GA ENGINE] Subsampled ${allBars.length} → ${simBars.length} bars for GA simulation`);
-    }
-
-    // Baseline daily returns for correlation check
-    const baseEquity: number[] = [];
-    let baseEq = 10000;
-    for (const br of baselineReturns) {
-      baseEq += br * 10000 * 0.001;
-      baseEquity.push(baseEq);
-    }
-    const baseDailyReturns: number[] = [];
-    for (let i = 48; i < baseEquity.length; i += 48) {
-      baseDailyReturns.push((baseEquity[i] - baseEquity[i - 48]) / baseEquity[i - 48]);
-    }
-
-    // ── Step 3: Genetic Algorithm Evolution ──
-    console.log(`[GA ENGINE] Initializing population=${populationSize}, generations=${generations}`);
-
-    const evolutionLog: Array<{ gen: number; bestFitness: number; avgFitness: number; bestTrades: number }> = [];
-    let totalSimulations = 0;
-
-    // Fitness function with correlation penalty
-    function evaluateIndividual(dna: StrategyDNA): ScoredIndividual {
-      totalSimulations++;
-      const sim = simulateStrategy(simBars, dna);
-
-      // Core fitness: (PF * WR) / MaxDD
-      let fitness = 0;
-      if (sim.trades >= 20 && sim.maxDrawdown > 0.001) {
-        fitness = (sim.profitFactor * sim.winRate) / sim.maxDrawdown;
-      } else if (sim.trades >= 20 && sim.maxDrawdown <= 0.001) {
-        fitness = sim.profitFactor * sim.winRate * 10; // Reward tiny drawdowns
-      }
-
-      // Penalty: too few trades
-      if (sim.trades < 20) fitness *= 0.01;
-      if (sim.trades < 50) fitness *= 0.5;
-
-      // Bonus: more trades = more statistical significance
-      if (sim.trades > 200) fitness *= 1.1;
-      if (sim.trades > 500) fitness *= 1.15;
-
-      // Correlation penalty
-      const corr = Math.abs(pearsonCorrelation(baseDailyReturns, sim.dailyReturns));
-      if (corr > maxCorrelation) {
-        fitness *= Math.max(0.01, 1 - (corr - maxCorrelation) * 5);
-      }
-
-      return {
-        dna, fitness, sim,
-        correlation: corr,
-        plainEnglish: dnaToEnglish(dna),
-      };
-    }
-
-    // Initialize population
-    let population: ScoredIndividual[] = [];
-    for (let i = 0; i < populationSize; i++) {
-      population.push(evaluateIndividual(randomDNA()));
-    }
-    population.sort((a, b) => b.fitness - a.fitness);
-
-    // Evolution loop
-    for (let gen = 0; gen < generations; gen++) {
-      const newPop: ScoredIndividual[] = [];
-
-      // Elitism: keep top 10%
-      const eliteCount = Math.max(2, Math.floor(populationSize * 0.1));
-      for (let i = 0; i < eliteCount; i++) {
-        newPop.push(population[i]);
-      }
-
-      // Fill rest with crossover + mutation
-      while (newPop.length < populationSize) {
-        const parent1 = tournamentSelect(population);
-        const parent2 = tournamentSelect(population);
-        let child = crossover(parent1.dna, parent2.dna);
-        child = mutate(child, mutationRate);
-        newPop.push(evaluateIndividual(child));
-      }
-
-      population = newPop.sort((a, b) => b.fitness - a.fitness);
-
-      const avgFitness = population.reduce((s, p) => s + p.fitness, 0) / population.length;
-      evolutionLog.push({
-        gen: gen + 1,
-        bestFitness: Math.round(population[0].fitness * 1000) / 1000,
-        avgFitness: Math.round(avgFitness * 1000) / 1000,
-        bestTrades: population[0].sim.trades,
-      });
-
-      if (gen % 10 === 0) {
-        console.log(`[GA ENGINE] Gen ${gen + 1}: best=${population[0].fitness.toFixed(3)}, avg=${avgFitness.toFixed(3)}, trades=${population[0].sim.trades}`);
-      }
-    }
-
-    console.log(`[GA ENGINE] Evolution complete. ${totalSimulations} total simulations evaluated.`);
-
-    // ── Step 4: Extract top individuals ──
-    // Re-simulate top candidates on FULL data for final stats
-    const topCandidates = population
-      .filter(p => p.sim.trades >= 20 && p.sim.profitFactor > 1.0)
-      .slice(0, 20);
-
-    // Deduplicate similar strategies (same gate/rank combo)
-    const seen = new Set<string>();
-    const uniqueTop: ScoredIndividual[] = [];
-    for (const c of topCandidates) {
-      const key = `${c.dna.predatorRankMax}-${c.dna.preyRankMin}-${c.dna.gate1Required}-${c.dna.gate2Required}-${c.dna.gate3Required}-${c.dna.sessionFilter}-${c.dna.direction}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-
-      // Re-simulate on full data
-      const fullSim = allBars.length !== simBars.length ? simulateStrategy(allBars, c.dna) : c.sim;
-      const fullCorr = Math.abs(pearsonCorrelation(baseDailyReturns, fullSim.dailyReturns));
-
-      uniqueTop.push({
-        ...c,
-        sim: fullSim,
-        correlation: fullCorr,
-        fitness: fullSim.trades >= 20 && fullSim.maxDrawdown > 0.001
-          ? (fullSim.profitFactor * fullSim.winRate) / fullSim.maxDrawdown
-          : fullSim.profitFactor * fullSim.winRate * 10,
-      });
-    }
-
-    // Final filter & sort
-    const uncorrelatedProfiles = uniqueTop
-      .filter(p => p.correlation <= maxCorrelation && p.sim.profitFactor > 1.0 && p.sim.trades >= 20)
-      .sort((a, b) => b.fitness - a.fitness)
-      .slice(0, 10);
-
-    const allProfiles = uniqueTop
-      .sort((a, b) => b.fitness - a.fitness)
-      .slice(0, 20);
-
-    // Downsample equity curves for response size
-    function downsampleCurve(curve: number[], maxPoints = 200): number[] {
-      if (curve.length <= maxPoints) return curve;
-      const stride = Math.ceil(curve.length / maxPoints);
-      return curve.filter((_, i) => i % stride === 0);
-    }
-
-    const formatProfile = (p: ScoredIndividual) => ({
-      dna: p.dna,
-      fitness: Math.round(p.fitness * 1000) / 1000,
-      winRate: Math.round(p.sim.winRate * 10000) / 10000,
-      profitFactor: Math.round(p.sim.profitFactor * 100) / 100,
-      trades: p.sim.trades,
-      totalPips: Math.round(p.sim.totalPips * 10) / 10,
-      maxDrawdown: Math.round(p.sim.maxDrawdown * 10000) / 10000,
-      grossProfit: Math.round(p.sim.grossProfit * 10) / 10,
-      grossLoss: Math.round(p.sim.grossLoss * 10) / 10,
-      correlation: Math.round(p.correlation * 1000) / 1000,
-      equityCurve: downsampleCurve(p.sim.equityCurve),
-      plainEnglish: p.plainEnglish,
+    return new Response(JSON.stringify({ success: true, ...result as object }), {
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
-
-    console.log(`[GA ENGINE] ${uncorrelatedProfiles.length} uncorrelated profiles (ρ ≤ ${maxCorrelation}), ${allProfiles.length} total profiles`);
-
-    return new Response(
-      JSON.stringify({
-        success: true,
-        timestamp: new Date().toISOString(),
-        environment,
-        dataPoints: allBars.length,
-        totalSimulations,
-        gaStats: {
-          populationSize,
-          generations,
-          mutationRate,
-          maxCorrelation,
-          totalSimulations,
-          finalBestFitness: population[0]?.fitness || 0,
-        },
-        evolutionLog: evolutionLog.filter((_, i) => i % Math.max(1, Math.floor(evolutionLog.length / 50)) === 0),
-        uncorrelatedProfiles: uncorrelatedProfiles.map(formatProfile),
-        allProfiles: allProfiles.map(formatProfile),
-        baselineEquityCurve: downsampleCurve(baseEquity),
-        config: { populationSize, generations, maxCorrelation, candleCount, mutationRate },
-      }),
-      { headers: { ...corsHeaders, "Content-Type": "application/json" } }
-    );
   } catch (err) {
     console.error("[GA ENGINE] Error:", err);
     return new Response(
-      JSON.stringify({ error: (err as Error).message || "Internal error" }),
+      JSON.stringify({ success: false, error: (err as Error).message }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }
