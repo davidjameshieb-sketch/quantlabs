@@ -953,6 +953,156 @@ export const ExperimentalStrategies = ({ result }: Props) => {
                               ))}
                             </div>
                           </div>
+
+                          {/* ═══ Statistical Circuit Breaker ═══ */}
+                          <div className="bg-slate-950/40 border rounded-lg p-3 space-y-3"
+                            style={{ borderColor: strat.circuitBreaker.status === 'BROKEN' ? '#ff005555' : strat.circuitBreaker.status === 'WARNING' ? '#ff880055' : '#1e293b40' }}>
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-1.5">
+                                <AlertTriangle className="w-3.5 h-3.5" style={{ color: strat.circuitBreaker.status === 'BROKEN' ? '#ff0055' : strat.circuitBreaker.status === 'WARNING' ? '#ff8800' : '#39ff14' }} />
+                                <span className="text-[8px] font-bold uppercase tracking-widest" style={{ color: strat.circuitBreaker.status === 'BROKEN' ? '#ff0055' : strat.circuitBreaker.status === 'WARNING' ? '#ff8800' : '#39ff14' }}>
+                                  Statistical Circuit Breaker
+                                </span>
+                              </div>
+                              <span className="text-[7px] font-mono font-bold px-2 py-0.5 rounded-full"
+                                style={{
+                                  color: strat.circuitBreaker.status === 'BROKEN' ? '#ff0055' : strat.circuitBreaker.status === 'WARNING' ? '#ff8800' : '#39ff14',
+                                  backgroundColor: strat.circuitBreaker.status === 'BROKEN' ? '#ff005515' : strat.circuitBreaker.status === 'WARNING' ? '#ff880015' : '#39ff1415',
+                                  border: `1px solid ${strat.circuitBreaker.status === 'BROKEN' ? '#ff005533' : strat.circuitBreaker.status === 'WARNING' ? '#ff880033' : '#39ff1433'}`,
+                                }}>
+                                {strat.circuitBreaker.status === 'BROKEN' ? '⛔ CIRCUIT BROKEN' : strat.circuitBreaker.status === 'WARNING' ? '⚠️ WARNING' : '✅ NOMINAL'}
+                              </span>
+                            </div>
+
+                            <p className="text-[8px] font-mono leading-relaxed" style={{ color: strat.circuitBreaker.status === 'BROKEN' ? '#ff6688' : strat.circuitBreaker.status === 'WARNING' ? '#ffaa55' : '#88aa88' }}>
+                              {strat.circuitBreaker.statusReason}
+                            </p>
+
+                            {/* Two-column: PF Z-Score + Win-Rate Velocity */}
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                              {/* Rolling PF Z-Score */}
+                              <div className="bg-slate-950/60 border border-slate-800/40 rounded-lg p-2.5 space-y-2">
+                                <div className="flex items-center justify-between">
+                                  <span className="text-[7px] font-bold text-slate-400 uppercase tracking-widest">Rolling PF Z-Score (30-trade)</span>
+                                  <span className="text-[7px] font-mono font-bold" style={{ color: strat.circuitBreaker.pfBroken ? '#ff0055' : '#39ff14' }}>
+                                    {strat.circuitBreaker.pfBroken ? 'BROKEN' : 'OK'}
+                                  </span>
+                                </div>
+                                <div className="grid grid-cols-4 gap-1.5">
+                                  {[
+                                    { l: 'Current PF', v: strat.circuitBreaker.rollingPF.toFixed(2), c: strat.circuitBreaker.rollingPF > 1 ? '#39ff14' : '#ff0055' },
+                                    { l: 'Hist. Mean', v: strat.circuitBreaker.historicalPFMean.toFixed(2), c: '#00ffea' },
+                                    { l: 'Hist. σ', v: strat.circuitBreaker.historicalPFStd.toFixed(2), c: '#8888aa' },
+                                    { l: 'Z-Score', v: `${strat.circuitBreaker.pfZScore > 0 ? '+' : ''}${strat.circuitBreaker.pfZScore.toFixed(2)}σ`, c: strat.circuitBreaker.pfZScore < -2 ? '#ff0055' : strat.circuitBreaker.pfZScore < -1 ? '#ff8800' : '#39ff14' },
+                                  ].map(m => (
+                                    <div key={m.l} className="text-center">
+                                      <div className="text-[6px] text-slate-600 uppercase">{m.l}</div>
+                                      <div className="text-[10px] font-mono font-bold" style={{ color: m.c }}>{m.v}</div>
+                                    </div>
+                                  ))}
+                                </div>
+                                {strat.circuitBreaker.rollingPFSeries.length > 2 && (() => {
+                                  const series = strat.circuitBreaker.rollingPFSeries;
+                                  const w = 300, h = 50, pad = 4;
+                                  const zVals = series.map(s => s.zScore);
+                                  const minZ = Math.min(-3, ...zVals);
+                                  const maxZ = Math.max(3, ...zVals);
+                                  const rng = maxZ - minZ || 1;
+                                  const neg2Y = h - pad - ((-2 - minZ) / rng) * (h - 2 * pad);
+                                  const pts = series.map((pt, i) => {
+                                    const x = pad + (i / (series.length - 1)) * (w - 2 * pad);
+                                    const y = h - pad - ((pt.zScore - minZ) / rng) * (h - 2 * pad);
+                                    return `${x},${y}`;
+                                  });
+                                  return (
+                                    <svg viewBox={`0 0 ${w} ${h}`} className="w-full" style={{ height: 50 }} preserveAspectRatio="none">
+                                      <line x1={pad} y1={neg2Y} x2={w - pad} y2={neg2Y} stroke="#ff005544" strokeWidth="0.8" strokeDasharray="3,2" />
+                                      <text x={w - pad - 2} y={neg2Y - 2} fill="#ff0055" fontSize="5" textAnchor="end">-2σ</text>
+                                      <polyline points={pts.join(' ')} fill="none" stroke={strat.circuitBreaker.pfBroken ? '#ff0055' : '#00ffea'} strokeWidth="1.2" />
+                                    </svg>
+                                  );
+                                })()}
+                              </div>
+
+                              {/* Win-Rate Velocity */}
+                              <div className="bg-slate-950/60 border border-slate-800/40 rounded-lg p-2.5 space-y-2">
+                                <div className="flex items-center justify-between">
+                                  <span className="text-[7px] font-bold text-slate-400 uppercase tracking-widest">Win-Rate Velocity (20-trade)</span>
+                                  <span className="text-[7px] font-mono font-bold" style={{ color: strat.circuitBreaker.wrDecayAlert ? '#ff0055' : '#39ff14' }}>
+                                    {strat.circuitBreaker.wrDecayAlert ? 'DECAY ALERT' : 'STABLE'}
+                                  </span>
+                                </div>
+                                <div className="grid grid-cols-3 gap-1.5">
+                                  {[
+                                    { l: 'Historical WR', v: `${strat.circuitBreaker.historicalWR}%`, c: '#00ffea' },
+                                    { l: 'Recent WR', v: `${strat.circuitBreaker.recentWR}%`, c: strat.circuitBreaker.recentWR >= strat.circuitBreaker.historicalWR * 0.8 ? '#39ff14' : '#ff0055' },
+                                    { l: 'Velocity', v: `${strat.circuitBreaker.wrVelocity > 0 ? '+' : ''}${strat.circuitBreaker.wrVelocity}%`, c: strat.circuitBreaker.wrVelocity < -30 ? '#ff0055' : strat.circuitBreaker.wrVelocity < -15 ? '#ff8800' : '#39ff14' },
+                                  ].map(m => (
+                                    <div key={m.l} className="text-center">
+                                      <div className="text-[6px] text-slate-600 uppercase">{m.l}</div>
+                                      <div className="text-[10px] font-mono font-bold" style={{ color: m.c }}>{m.v}</div>
+                                    </div>
+                                  ))}
+                                </div>
+                                {strat.circuitBreaker.rollingWRSeries.length > 2 && (() => {
+                                  const series = strat.circuitBreaker.rollingWRSeries;
+                                  const w = 300, h = 50, pad = 4;
+                                  const wrVals = series.map(s => s.wr);
+                                  const minWR = Math.min(0, ...wrVals);
+                                  const maxWR = Math.max(100, ...wrVals);
+                                  const rng = maxWR - minWR || 1;
+                                  const histY = h - pad - ((strat.circuitBreaker.historicalWR - minWR) / rng) * (h - 2 * pad);
+                                  const pts = series.map((pt, i) => {
+                                    const x = pad + (i / (series.length - 1)) * (w - 2 * pad);
+                                    const y = h - pad - ((pt.wr - minWR) / rng) * (h - 2 * pad);
+                                    return `${x},${y}`;
+                                  });
+                                  return (
+                                    <svg viewBox={`0 0 ${w} ${h}`} className="w-full" style={{ height: 50 }} preserveAspectRatio="none">
+                                      <line x1={pad} y1={histY} x2={w - pad} y2={histY} stroke="#00ffea33" strokeWidth="0.8" strokeDasharray="3,2" />
+                                      <text x={w - pad - 2} y={histY - 2} fill="#00ffea" fontSize="5" textAnchor="end">{strat.circuitBreaker.historicalWR}%</text>
+                                      <polyline points={pts.join(' ')} fill="none" stroke={strat.circuitBreaker.wrDecayAlert ? '#ff0055' : '#ff8800'} strokeWidth="1.2" />
+                                    </svg>
+                                  );
+                                })()}
+                              </div>
+                            </div>
+
+                            {/* CUSUM Chart */}
+                            <div className="bg-slate-950/60 border border-slate-800/40 rounded-lg p-2.5 space-y-2">
+                              <div className="flex items-center justify-between">
+                                <span className="text-[7px] font-bold text-slate-400 uppercase tracking-widest">CUSUM Drift Detection</span>
+                                <span className="text-[7px] font-mono font-bold" style={{ color: strat.circuitBreaker.cusumBreached ? '#ff0055' : '#39ff14' }}>
+                                  {strat.circuitBreaker.cusumBreached ? 'THRESHOLD BREACHED' : `THRESHOLD: ${strat.circuitBreaker.cusumThreshold}`}
+                                </span>
+                              </div>
+                              {strat.circuitBreaker.cusumValues.length > 2 && (() => {
+                                const vals = strat.circuitBreaker.cusumValues;
+                                const w = 300, h = 45, pad = 4;
+                                const minV = Math.min(-strat.circuitBreaker.cusumThreshold * 1.2, ...vals);
+                                const maxV = Math.max(0.1, ...vals);
+                                const rng = maxV - minV || 1;
+                                const threshY = h - pad - ((-strat.circuitBreaker.cusumThreshold - minV) / rng) * (h - 2 * pad);
+                                const step = Math.max(1, Math.floor(vals.length / 200));
+                                const sampled = vals.filter((_, i) => i % step === 0 || i === vals.length - 1);
+                                const pts = sampled.map((v, i) => {
+                                  const x = pad + (i / (sampled.length - 1)) * (w - 2 * pad);
+                                  const y = h - pad - ((v - minV) / rng) * (h - 2 * pad);
+                                  return `${x},${y}`;
+                                });
+                                return (
+                                  <svg viewBox={`0 0 ${w} ${h}`} className="w-full" style={{ height: 45 }} preserveAspectRatio="none">
+                                    <line x1={pad} y1={threshY} x2={w - pad} y2={threshY} stroke="#ff005544" strokeWidth="0.8" strokeDasharray="3,2" />
+                                    <text x={w - pad - 2} y={threshY - 2} fill="#ff0055" fontSize="5" textAnchor="end">-H</text>
+                                    <polyline points={pts.join(' ')} fill="none" stroke={strat.circuitBreaker.cusumBreached ? '#ff0055' : '#a855f7'} strokeWidth="1" />
+                                  </svg>
+                                );
+                              })()}
+                              <p className="text-[7px] text-slate-600 font-mono">
+                                Tracks cumulative sum of deviations from target win-rate. Breach of threshold H = {strat.circuitBreaker.cusumThreshold} indicates structural regime change, not normal variance.
+                              </p>
+                            </div>
+                          </div>
                         </div>
                       </motion.div>
                     )}
