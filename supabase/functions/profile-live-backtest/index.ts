@@ -1,6 +1,5 @@
-// Profile Live Backtest Engine v3.0 — Single-Call In-Memory
-// No database dependency. Fetches candles, builds ranks, simulates all combos,
-// and returns results in a single invocation.
+// Profile Live Backtest Engine v4.0 — CPU-Optimized Single-Call
+// Pre-computes trade exits once per signal, then combos just filter+aggregate.
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -29,7 +28,7 @@ for (let i = 0; i < ALL_CURRENCIES.length; i++) {
 
 interface Candle { time: string; open: number; high: number; low: number; close: number; volume: number; }
 
-// ── Profile Discovery Parameter Grid ──
+// ── Parameter Grid ──
 const PREDATOR_RANKS = [1, 2, 3];
 const PREY_RANKS = [6, 7, 8];
 const GATE_COMBOS = [
@@ -50,27 +49,11 @@ const SESSIONS = [
   { id: "NY_CLOSE", hours: [17, 21] as [number, number] },
 ];
 
-interface ComboKey { predRank: number; preyRank: number; gateIdx: number; sessionIdx: number; exitIdx: number; }
-
-function buildAllCombos(): ComboKey[] {
-  const exitModes: Array<{ slPips: number; tpRatio: number | "flip" }> = [];
-  for (const sl of SL_PIPS) {
-    for (const tp of TP_RATIOS) exitModes.push({ slPips: sl, tpRatio: tp });
-    exitModes.push({ slPips: sl, tpRatio: "flip" });
-  }
-  const combos: ComboKey[] = [];
-  for (const predRank of PREDATOR_RANKS) {
-    for (const preyRank of PREY_RANKS) {
-      for (let gi = 0; gi < GATE_COMBOS.length; gi++) {
-        for (let si = 0; si < SESSIONS.length; si++) {
-          for (let ei = 0; ei < exitModes.length; ei++) {
-            combos.push({ predRank, preyRank, gateIdx: gi, sessionIdx: si, exitIdx: ei });
-          }
-        }
-      }
-    }
-  }
-  return combos;
+// Exit modes built once
+const EXIT_MODES: Array<{ slPips: number; tpRatio: number | "flip" }> = [];
+for (const sl of SL_PIPS) {
+  for (const tp of TP_RATIOS) EXIT_MODES.push({ slPips: sl, tpRatio: tp });
+  EXIT_MODES.push({ slPips: sl, tpRatio: "flip" });
 }
 
 // ── Candle Fetching ──
@@ -149,19 +132,56 @@ function getSessionId(isoTime: string): string {
   return "ASIA";
 }
 
-// ── Signal generation ──
+// ── Signal with pre-computed exits ──
 interface TradeSignal {
   time: string; instrument: string; direction: "long" | "short";
   entryPrice: number; isJPY: boolean; candleIdx: number;
   sessionId: string; g2Pass: boolean; g3Pass: boolean;
+  // Pre-computed exit pips for each exit mode index
+  exitPips: Float64Array;
 }
+
 interface RankSnap { time: string; ranks: Record<string, number>; }
+
+// ── Pre-compute exits for a signal across all exit modes ──
+function precomputeExits(
+  sig: { entryPrice: number; isJPY: boolean; candleIdx: number; direction: "long" | "short"; instrument: string },
+  candles: Candle[],
+  nextSignalTime: string | null,
+): Float64Array {
+  const results = new Float64Array(EXIT_MODES.length);
+  const isJPY = sig.isJPY;
+  const pipMul = isJPY ? 100 : 10000;
+
+  for (let ei = 0; ei < EXIT_MODES.length; ei++) {
+    const exit = EXIT_MODES[ei];
+    const slPrice = exit.slPips / pipMul;
+    const tpPrice = exit.tpRatio === "flip" ? Infinity : (exit.slPips * (exit.tpRatio as number)) / pipMul;
+    let exitPrice = sig.entryPrice;
+
+    for (let ci = sig.candleIdx + 1; ci < candles.length; ci++) {
+      const bar = candles[ci];
+      if (exit.tpRatio === "flip" && nextSignalTime && bar.time >= nextSignalTime) { exitPrice = bar.open; break; }
+      if (sig.direction === "long") {
+        if (bar.low <= sig.entryPrice - slPrice) { exitPrice = sig.entryPrice - slPrice; break; }
+        if (exit.tpRatio !== "flip" && bar.high >= sig.entryPrice + tpPrice) { exitPrice = sig.entryPrice + tpPrice; break; }
+      } else {
+        if (bar.high >= sig.entryPrice + slPrice) { exitPrice = sig.entryPrice + slPrice; break; }
+        if (exit.tpRatio !== "flip" && bar.low <= sig.entryPrice - tpPrice) { exitPrice = sig.entryPrice - tpPrice; break; }
+      }
+      if (exit.tpRatio === "flip" && !nextSignalTime && ci === candles.length - 1) { exitPrice = bar.close; break; }
+    }
+
+    results[ei] = computePips(sig.entryPrice, exitPrice, sig.direction, isJPY);
+  }
+  return results;
+}
 
 function generateSignals(
   predRank: number, preyRank: number, rankSnaps: RankSnap[],
   pairCandles: Record<string, Candle[]>, pairTimeIndex: Record<string, Record<string, number>>
 ): TradeSignal[] {
-  const signals: TradeSignal[] = [];
+  const rawSignals: Array<Omit<TradeSignal, 'exitPips'>> = [];
   let prevInst: string | null = null;
   let prevDir: "long" | "short" | null = null;
 
@@ -186,7 +206,7 @@ function generateSignals(
       const slope = computeLinRegSlope(candles, candleIdx);
       const g3Pass = direction === "long" ? slope > 0 : slope < 0;
 
-      signals.push({
+      rawSignals.push({
         time: snap.time, instrument, direction,
         entryPrice: candles[candleIdx].close,
         isJPY: instrument.includes("JPY"),
@@ -197,6 +217,18 @@ function generateSignals(
       prevDir = direction;
     }
   }
+
+  // Pre-compute exits for all signals (the expensive part, done ONCE)
+  const signals: TradeSignal[] = [];
+  for (let i = 0; i < rawSignals.length; i++) {
+    const sig = rawSignals[i];
+    const candles = pairCandles[sig.instrument];
+    if (!candles) continue;
+    const nextTime = i + 1 < rawSignals.length ? rawSignals[i + 1].time : null;
+    const exitPips = precomputeExits(sig, candles, nextTime);
+    signals.push({ ...sig, exitPips });
+  }
+
   return signals;
 }
 
@@ -211,32 +243,24 @@ interface LiveProfileResult {
   equityCurve: Array<{ time: string; equity: number }> | null;
 }
 
-// ── Simulate one combo ──
+// ── Simulate one combo — now just filter + aggregate, NO candle walking ──
 function simulateCombo(
-  combo: ComboKey,
-  signalCache: Record<string, TradeSignal[]>,
-  pairCandles: Record<string, Candle[]>,
+  predRank: number, preyRank: number, gateIdx: number, sessionIdx: number, exitIdx: number,
+  signals: TradeSignal[],
 ): LiveProfileResult | null {
-  const exitModes: Array<{ slPips: number; tpRatio: number | "flip" }> = [];
-  for (const sl of SL_PIPS) {
-    for (const tp of TP_RATIOS) exitModes.push({ slPips: sl, tpRatio: tp });
-    exitModes.push({ slPips: sl, tpRatio: "flip" });
+  const gate = GATE_COMBOS[gateIdx];
+  const session = SESSIONS[sessionIdx];
+  const exit = EXIT_MODES[exitIdx];
+
+  // Fast filter
+  const filtered: TradeSignal[] = [];
+  for (let i = 0; i < signals.length; i++) {
+    const sig = signals[i];
+    if (gate.g2 && !sig.g2Pass) continue;
+    if (gate.g3 && !sig.g3Pass) continue;
+    if (session.hours && !matchesSession(sig.time, session)) continue;
+    filtered.push(sig);
   }
-
-  const gate = GATE_COMBOS[combo.gateIdx];
-  const session = SESSIONS[combo.sessionIdx];
-  const exit = exitModes[combo.exitIdx];
-  const cacheKey = `${combo.predRank}_${combo.preyRank}`;
-  const signals = signalCache[cacheKey];
-  if (!signals) return null;
-
-  const filtered = signals.filter(sig => {
-    if (gate.g1 && (combo.predRank > 3 || combo.preyRank < 6)) return false;
-    if (gate.g2 && !sig.g2Pass) return false;
-    if (gate.g3 && !sig.g3Pass) return false;
-    if (session.hours && !matchesSession(sig.time, session)) return false;
-    return true;
-  });
 
   if (filtered.length < 3) return null;
 
@@ -245,31 +269,11 @@ function simulateCombo(
 
   for (let fi = 0; fi < filtered.length; fi++) {
     const sig = filtered[fi];
-    const candles = pairCandles[sig.instrument];
-    if (!candles) continue;
     const isJPY = sig.isJPY;
-    const pipMul = isJPY ? 100 : 10000;
     const pipVal = isJPY ? 0.01 : 0.0001;
-    const slPrice = exit.slPips / pipMul;
-    const tpPrice = exit.tpRatio === "flip" ? Infinity : (exit.slPips * (exit.tpRatio as number)) / pipMul;
 
-    const nextSignalTime = fi + 1 < filtered.length ? filtered[fi + 1].time : null;
-    let exitPrice = sig.entryPrice;
-
-    for (let ci = sig.candleIdx + 1; ci < candles.length; ci++) {
-      const bar = candles[ci];
-      if (exit.tpRatio === "flip" && nextSignalTime && bar.time >= nextSignalTime) { exitPrice = bar.open; break; }
-      if (sig.direction === "long") {
-        if (bar.low <= sig.entryPrice - slPrice) { exitPrice = sig.entryPrice - slPrice; break; }
-        if (exit.tpRatio !== "flip" && bar.high >= sig.entryPrice + tpPrice) { exitPrice = sig.entryPrice + tpPrice; break; }
-      } else {
-        if (bar.high >= sig.entryPrice + slPrice) { exitPrice = sig.entryPrice + slPrice; break; }
-        if (exit.tpRatio !== "flip" && bar.low <= sig.entryPrice - tpPrice) { exitPrice = sig.entryPrice - tpPrice; break; }
-      }
-      if (exit.tpRatio === "flip" && !nextSignalTime && ci === candles.length - 1) { exitPrice = bar.close; break; }
-    }
-
-    const tradePips = computePips(sig.entryPrice, exitPrice, sig.direction, isJPY);
+    // Use pre-computed exit pips — O(1) instead of walking candles
+    const tradePips = sig.exitPips[exitIdx];
     const riskAmt = equity * 0.05;
     const dynUnits = exit.slPips > 0 ? riskAmt / (exit.slPips * pipVal) : 2000;
     equity += tradePips * (dynUnits * pipVal);
@@ -286,7 +290,7 @@ function simulateCombo(
   const pf = grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? 999 : 0;
 
   return {
-    predator: combo.predRank, prey: combo.preyRank, gates: gate.label,
+    predator: predRank, prey: preyRank, gates: gate.label,
     slPips: exit.slPips, tpRatio: exit.tpRatio, session: session.id,
     trades, wins, losses,
     winRate: Math.round(wr * 10) / 10,
@@ -301,13 +305,10 @@ function simulateCombo(
   };
 }
 
-// ── Build equity curve ──
-function buildEquityCurve(
-  r: LiveProfileResult, rankSnaps: RankSnap[],
-  pairCandles: Record<string, Candle[]>, pairTimeIndex: Record<string, Record<string, number>>
-): Array<{ time: string; equity: number }> {
-  const signals = generateSignals(r.predator, r.prey, rankSnaps, pairCandles, pairTimeIndex);
+// ── Build equity curve for top results ──
+function buildEquityCurve(r: LiveProfileResult, signals: TradeSignal[], exitIdx: number): Array<{ time: string; equity: number }> {
   const gate = GATE_COMBOS.find(g => g.label === r.gates)!;
+  const exit = EXIT_MODES[exitIdx];
 
   const filtered = signals.filter(sig => {
     if (gate.g2 && !sig.g2Pass) return false;
@@ -322,38 +323,11 @@ function buildEquityCurve(
   const curve: Array<{ time: string; equity: number }> = [];
   let equity = 1000;
 
-  for (let fi = 0; fi < filtered.length; fi++) {
-    const sig = filtered[fi];
-    const candles = pairCandles[sig.instrument];
-    if (!candles) continue;
-    const isJPY = sig.isJPY;
-    const pipMul = isJPY ? 100 : 10000;
-    const pipVal = isJPY ? 0.01 : 0.0001;
-    const slPrice = r.slPips / pipMul;
-    const tpPrice = r.tpRatio === "flip" ? Infinity : (r.slPips * (r.tpRatio as number)) / pipMul;
-
-    const nextSignalTime = fi + 1 < filtered.length ? filtered[fi + 1].time : null;
-    let exitPrice = sig.entryPrice;
-
-    for (let ci = sig.candleIdx + 1; ci < candles.length; ci++) {
-      const bar = candles[ci];
-      let hit = false;
-      if (sig.direction === "long") {
-        if (bar.low <= sig.entryPrice - slPrice) { exitPrice = sig.entryPrice - slPrice; hit = true; }
-        else if (r.tpRatio !== "flip" && bar.high >= sig.entryPrice + tpPrice) { exitPrice = sig.entryPrice + tpPrice; hit = true; }
-      } else {
-        if (bar.high >= sig.entryPrice + slPrice) { exitPrice = sig.entryPrice + slPrice; hit = true; }
-        else if (r.tpRatio !== "flip" && bar.low <= sig.entryPrice - tpPrice) { exitPrice = sig.entryPrice - tpPrice; hit = true; }
-      }
-      if (hit || (r.tpRatio === "flip" && nextSignalTime && bar.time >= nextSignalTime)) {
-        if (!hit) exitPrice = bar.open;
-        break;
-      }
-    }
-
-    const tradePips = computePips(sig.entryPrice, exitPrice, sig.direction, isJPY);
+  for (const sig of filtered) {
+    const pipVal = sig.isJPY ? 0.01 : 0.0001;
+    const tradePips = sig.exitPips[exitIdx];
     const riskAmt = equity * 0.05;
-    const dynUnits = r.slPips > 0 ? riskAmt / (r.slPips * pipVal) : 2000;
+    const dynUnits = exit.slPips > 0 ? riskAmt / (exit.slPips * pipVal) : 2000;
     equity += tradePips * (dynUnits * pipVal);
     curve.push({ time: sig.time, equity: Math.round(equity * 100) / 100 });
   }
@@ -363,7 +337,7 @@ function buildEquityCurve(
 }
 
 // ════════════════════════════════════════════
-// MAIN HANDLER — Single call, no DB needed
+// MAIN HANDLER
 // ════════════════════════════════════════════
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
@@ -387,11 +361,9 @@ Deno.serve(async (req) => {
 
     const availableCrosses = ALL_28_CROSSES.filter(c => OANDA_AVAILABLE.has(c.instrument));
 
-    // ── Step 1: Fetch all candles in parallel ──
-    console.log(`[LIVE-BT v3] Fetching ${candleCount} candles for ${availableCrosses.length} pairs (${environment})`);
-
+    // ── Step 1: Fetch candles ──
+    console.log(`[LIVE-BT v4] Fetching ${candleCount} candles for ${availableCrosses.length} pairs (${environment})`);
     const pairCandles: Record<string, Candle[]> = {};
-    // Fetch in batches of 7 to avoid overwhelming OANDA
     for (let i = 0; i < availableCrosses.length; i += 7) {
       const batch = availableCrosses.slice(i, i + 7);
       const results = await Promise.allSettled(
@@ -404,18 +376,15 @@ Deno.serve(async (req) => {
         }
       }
     }
+    console.log(`[LIVE-BT v4] Loaded ${Object.keys(pairCandles).length} pairs`);
 
-    const pairsLoaded = Object.keys(pairCandles).length;
-    console.log(`[LIVE-BT v3] Loaded ${pairsLoaded} pairs`);
-
-    // ── Step 2: Build time index ──
+    // ── Step 2: Build time index + rank snapshots ──
     const pairTimeIndex: Record<string, Record<string, number>> = {};
     for (const [inst, candles] of Object.entries(pairCandles)) {
       pairTimeIndex[inst] = {};
       for (let i = 0; i < candles.length; i++) pairTimeIndex[inst][candles[i].time] = i;
     }
 
-    // ── Step 3: Build rank snapshots ──
     const allTimestamps = new Set<string>();
     for (const candles of Object.values(pairCandles)) {
       for (const c of candles) allTimestamps.add(c.time);
@@ -463,55 +432,66 @@ Deno.serve(async (req) => {
       sorted.forEach((cur, idx) => { ranks[cur] = idx + 1; });
       rankSnaps.push({ time, ranks });
     }
+    console.log(`[LIVE-BT v4] ${rankSnaps.length} rank snapshots`);
 
-    console.log(`[LIVE-BT v3] ${rankSnaps.length} rank snapshots`);
-
-    // ── Step 4: Pre-generate signals for all 9 rank pairs ──
+    // ── Step 3: Generate signals WITH pre-computed exits (one-time candle walk) ──
     const signalCache: Record<string, TradeSignal[]> = {};
     for (const pr of PREDATOR_RANKS) {
       for (const py of PREY_RANKS) {
         signalCache[`${pr}_${py}`] = generateSignals(pr, py, rankSnaps, pairCandles, pairTimeIndex);
       }
     }
+    console.log(`[LIVE-BT v4] Signals pre-computed with exits`);
 
-    // ── Step 5: Simulate all combos ──
-    const allCombos = buildAllCombos();
-    console.log(`[LIVE-BT v3] Simulating ${allCombos.length} combos`);
+    // ── Step 4: Simulate all combos (now O(1) per trade — no candle walking) ──
+    const totalCombos = PREDATOR_RANKS.length * PREY_RANKS.length * GATE_COMBOS.length * SESSIONS.length * EXIT_MODES.length;
+    console.log(`[LIVE-BT v4] Simulating ${totalCombos} combos (fast aggregate)`);
 
     const allResults: LiveProfileResult[] = [];
-    for (const combo of allCombos) {
-      const result = simulateCombo(combo, signalCache, pairCandles);
-      if (result) allResults.push(result);
+    for (const pr of PREDATOR_RANKS) {
+      for (const py of PREY_RANKS) {
+        const signals = signalCache[`${pr}_${py}`];
+        if (!signals || signals.length < 3) continue;
+        for (let gi = 0; gi < GATE_COMBOS.length; gi++) {
+          for (let si = 0; si < SESSIONS.length; si++) {
+            for (let ei = 0; ei < EXIT_MODES.length; ei++) {
+              const result = simulateCombo(pr, py, gi, si, ei, signals);
+              if (result) allResults.push(result);
+            }
+          }
+        }
+      }
     }
 
-    // Sort by net profit
     allResults.sort((a, b) => b.netProfit - a.netProfit);
     const topResults = allResults.slice(0, topN);
 
     // Build equity curves for top 10
     for (let i = 0; i < Math.min(10, topResults.length); i++) {
-      topResults[i].equityCurve = buildEquityCurve(topResults[i], rankSnaps, pairCandles, pairTimeIndex);
+      const r = topResults[i];
+      const signals = signalCache[`${r.predator}_${r.prey}`];
+      const exitIdx = EXIT_MODES.findIndex(e => e.slPips === r.slPips && e.tpRatio === r.tpRatio);
+      if (signals && exitIdx >= 0) {
+        topResults[i].equityCurve = buildEquityCurve(r, signals, exitIdx);
+      }
     }
 
     const profitable = allResults.filter(r => r.netProfit > 0).length;
-    console.log(`[LIVE-BT v3] Complete. ${allCombos.length} combos, ${profitable} profitable. Top: $${topResults[0]?.netProfit ?? 0}`);
+    console.log(`[LIVE-BT v4] Done. ${profitable} profitable. Top: $${topResults[0]?.netProfit ?? 0}`);
 
     return new Response(JSON.stringify({
-      success: true,
-      version: "3.0",
-      timestamp: new Date().toISOString(),
-      environment,
+      success: true, version: "4.0",
+      timestamp: new Date().toISOString(), environment,
       candlesPerPair: Object.values(pairCandles)[0]?.length ?? 0,
-      pairsLoaded,
+      pairsLoaded: Object.keys(pairCandles).length,
       totalSnapshots: rankSnaps.length,
-      totalCombos: allCombos.length,
-      profitableCombos: profitable,
+      totalCombos, profitableCombos: profitable,
       topResults,
       dateRange: { start: sortedTimes[0], end: sortedTimes[sortedTimes.length - 1] },
     }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
   } catch (err) {
-    console.error("[LIVE-BT v3] Error:", err);
+    console.error("[LIVE-BT v4] Error:", err);
     return new Response(JSON.stringify({ error: (err as Error).message }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
   }
