@@ -804,7 +804,6 @@ const SPREAD_FRICTION_PIPS = 1.5; // Deducted from every trade to simulate bid-a
 
 function simulateStrategy(bars: BarArrays, dna: StrategyDNA, startIdx = 0, endIdx?: number, targetRegime = -1): SimResult {
   const START_EQ = 1000;
-  const RISK_PER_TRADE = 0.01;
   const TRADE_COOLDOWN = 1; // High frequency: only 1-bar cooldown
   let equity = START_EQ, peak = START_EQ, maxDD = 0;
   let trades = 0, wins = 0, grossProfit = 0, grossLoss = 0;
@@ -922,16 +921,13 @@ function simulateStrategy(bars: BarArrays, dna: StrategyDNA, startIdx = 0, endId
     trades++;
     if (pips > 0) { wins++; grossProfit += pips; } else { grossLoss += Math.abs(pips); }
 
-    // ── JPY-safe position sizing ──
-    // For JPY pairs, pipMult=100 produces ~100x smaller pip values than non-JPY (pipMult=10000).
-    // Normalize so dollarPerPip is comparable across all pairs.
-    const isJPYTrade = bars.isJPY[i] === 1;
-    const dollarRisk = equity * RISK_PER_TRADE;
-    const slPips = sl * pipMult;
-    const dollarPerPip = slPips > 0 ? dollarRisk / slPips : 0.10;
-    // Cap max gain/loss per trade to 10% of equity to prevent compounding overflow
+    // ── Fixed Fractional Position Sizing ──
+    // Flat $0.10/pip on $1,000 base equity — no geometric compounding.
+    // This ensures returns are directly proportional to net pips captured.
+    const DOLLAR_PER_PIP = 0.10;
+    const rawPnl = pips * DOLLAR_PER_PIP;
+    // Cap max gain/loss per trade to 10% of equity to prevent single-trade blowup
     const maxPnl = equity * 0.10;
-    const rawPnl = pips * dollarPerPip;
     const clampedPnl = Math.max(-maxPnl, Math.min(maxPnl, rawPnl));
     equity += clampedPnl;
 
@@ -1926,11 +1922,13 @@ async function handleBatchExtract(body: Record<string, unknown>) {
         oosTrades: oosSim?.trades ?? null,
         oosProfitFactor: oosSim ? Math.round(oosSim.profitFactor * 100) / 100 : null,
         oosMaxDrawdown: oosSim ? Math.round(oosSim.maxDrawdown * 10000) / 10000 : null,
+        oosPips: oosSim ? Math.round(oosSim.totalPips * 10) / 10 : null,
         isReturn: isSim ? Math.round(isSim.totalReturn * 100) / 100 : null,
         isWinRate: isSim ? Math.round(isSim.winRate * 10000) / 10000 : null,
         isTrades: isSim?.trades ?? null,
         isProfitFactor: isSim ? Math.round(isSim.profitFactor * 100) / 100 : null,
         isMaxDrawdown: isSim ? Math.round(isSim.maxDrawdown * 10000) / 10000 : null,
+        isPips: isSim ? Math.round(isSim.totalPips * 10) / 10 : null,
         equityCurve: dsCurve,
         regimeScores,
         bestRegime,
