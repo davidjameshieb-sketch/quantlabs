@@ -800,6 +800,8 @@ function evaluateEntry(bars: BarArrays, i: number, dna: StrategyDNA): { long: bo
 
 // ── Simulation Engine ─────────────────────────────────────────────────────
 // targetRegime: if set, only open trades when bar's regime matches
+const SPREAD_FRICTION_PIPS = 1.5; // Deducted from every trade to simulate bid-ask spread
+
 function simulateStrategy(bars: BarArrays, dna: StrategyDNA, startIdx = 0, endIdx?: number, targetRegime = -1): SimResult {
   const START_EQ = 1000;
   const RISK_PER_TRADE = 0.01;
@@ -913,6 +915,9 @@ function simulateStrategy(bars: BarArrays, dna: StrategyDNA, startIdx = 0, endId
         else pips = (bars.mfeShort[i] * 0.5 - bars.maeShort[i] * 0.5) * pipMult;
       }
     }
+
+    // ── Spread friction: deduct 1.5 pips from every trade ──
+    pips -= SPREAD_FRICTION_PIPS;
 
     trades++;
     if (pips > 0) { wins++; grossProfit += pips; } else { grossLoss += Math.abs(pips); }
@@ -1065,9 +1070,9 @@ function randomDNA(archetype?: Partial<StrategyDNA>): StrategyDNA {
     sessionFilter: Math.floor(Math.random() * 5) - 1,
     dayFilter: Math.floor(Math.random() * 6) - 1,
     direction: Math.floor(Math.random() * 3),
-    slMultiplier: randRange(0.3, 2.5), tpMultiplier: 0, // will be set below
+    slMultiplier: randRange(1.0, 2.5), tpMultiplier: 0, // will be set below (floor: 1.0 ATR)
     hurstMin: Math.random() * 0.5, hurstMax: 0.5 + Math.random() * 0.5,
-    trailingATR: Math.random() < 0.3 ? randRange(0.5, 2.5) : 0,
+    trailingATR: Math.random() < 0.3 ? randRange(1.0, 2.5) : 0,
     maxBarsInTrade: Math.random() < 0.3 ? Math.floor(randRange(4, 24)) : 0,
     partialTP: Math.random() < 0.2 ? Math.floor(randRange(1, 3)) : 0,
   };
@@ -1124,13 +1129,13 @@ function mutate(dna: StrategyDNA, rate = 0.15): StrategyDNA {
   if (Math.random() < rate) d.sessionFilter = Math.floor(Math.random() * 5) - 1;
   if (Math.random() < rate) d.dayFilter = Math.floor(Math.random() * 6) - 1;
   if (Math.random() < rate) d.direction = Math.floor(Math.random() * 3);
-  if (Math.random() < rate) d.slMultiplier = Math.max(0.2, Math.min(2.5, d.slMultiplier + (Math.random() - 0.5) * 0.5));
-  if (Math.random() < rate) d.tpMultiplier = Math.max(0.3, Math.min(4.0, d.tpMultiplier + (Math.random() - 0.5) * 0.8));
+  if (Math.random() < rate) d.slMultiplier = Math.max(1.0, Math.min(2.5, d.slMultiplier + (Math.random() - 0.5) * 0.5));
+  if (Math.random() < rate) d.tpMultiplier = Math.max(1.0, Math.min(4.0, d.tpMultiplier + (Math.random() - 0.5) * 0.8));
   // Enforce minimum 1:1 R:R after mutation
   if (d.tpMultiplier < d.slMultiplier) d.tpMultiplier = d.slMultiplier * (1 + Math.random() * 0.5);
   if (Math.random() < rate) d.hurstMin = Math.max(0, Math.min(0.9, d.hurstMin + (Math.random() - 0.5) * 0.15));
   if (Math.random() < rate) d.hurstMax = Math.max(d.hurstMin + 0.1, Math.min(1.0, d.hurstMax + (Math.random() - 0.5) * 0.15));
-  if (Math.random() < rate) d.trailingATR = Math.random() < 0.3 ? 0 : Math.max(0.5, Math.min(2.5, (d.trailingATR || 1.5) + (Math.random() - 0.5) * 0.6));
+  if (Math.random() < rate) d.trailingATR = Math.random() < 0.3 ? 0 : Math.max(1.0, Math.min(2.5, (d.trailingATR || 1.5) + (Math.random() - 0.5) * 0.6));
   if (Math.random() < rate) d.maxBarsInTrade = Math.random() < 0.3 ? 0 : Math.max(4, Math.min(24, Math.round((d.maxBarsInTrade || 12) + (Math.random() - 0.5) * 8)));
   if (Math.random() < rate) d.partialTP = Math.floor(Math.random() * 3);
   return enforceIndicatorCap(d);
