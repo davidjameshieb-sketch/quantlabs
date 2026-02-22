@@ -375,26 +375,27 @@ function getSupabase() {
   );
 }
 
-const MEMORY_KEY = "live_backtest_state";
-const CHUNK_SIZE = 600; // combos per invocation
+const STATE_KEY = "live_backtest_state";
+const CANDLE_KEY = "live_backtest_candles";
+const CHUNK_SIZE = 150; // reduced to avoid CPU timeout
 
-async function loadState(sb: ReturnType<typeof createClient>) {
-  const { data } = await sb.from("sovereign_memory").select("payload").eq("memory_key", MEMORY_KEY).single();
+async function loadMemory(sb: ReturnType<typeof createClient>, key: string) {
+  const { data } = await sb.from("sovereign_memory").select("payload").eq("memory_key", key).single();
   return data?.payload as Record<string, unknown> | null;
 }
 
-async function saveState(sb: ReturnType<typeof createClient>, payload: Record<string, unknown>) {
+async function saveMemory(sb: ReturnType<typeof createClient>, key: string, payload: Record<string, unknown>) {
   const { data: existing } = await sb.from("sovereign_memory")
-    .select("id").eq("memory_key", MEMORY_KEY).single();
+    .select("id").eq("memory_key", key).single();
   if (existing) {
     await sb.from("sovereign_memory").update({
       payload: payload as unknown,
       updated_at: new Date().toISOString(),
       version: 1,
-    }).eq("memory_key", MEMORY_KEY);
+    }).eq("memory_key", key);
   } else {
     await sb.from("sovereign_memory").insert({
-      memory_key: MEMORY_KEY,
+      memory_key: key,
       memory_type: "backtest_state",
       payload: payload as unknown,
       created_by: "profile-live-backtest",
@@ -403,8 +404,9 @@ async function saveState(sb: ReturnType<typeof createClient>, payload: Record<st
   }
 }
 
-async function clearState(sb: ReturnType<typeof createClient>) {
-  await sb.from("sovereign_memory").delete().eq("memory_key", MEMORY_KEY);
+async function clearAll(sb: ReturnType<typeof createClient>) {
+  await sb.from("sovereign_memory").delete().eq("memory_key", STATE_KEY);
+  await sb.from("sovereign_memory").delete().eq("memory_key", CANDLE_KEY);
 }
 
 Deno.serve(async (req) => {
@@ -437,7 +439,7 @@ Deno.serve(async (req) => {
       console.log(`[LIVE-BT] INIT: Fetching ${candleCount} M30 candles for 28 pairs (${environment})`);
 
       // Clear any old state
-      await clearState(sb);
+      await clearAll(sb);
 
       const availableCrosses = ALL_28_CROSSES.filter(c => OANDA_AVAILABLE.has(c.instrument));
       const pairCandles: Record<string, Candle[]> = {};
@@ -537,16 +539,20 @@ Deno.serve(async (req) => {
 
       const allCombos = buildAllCombos();
 
-      // Persist state
-      await saveState(sb, {
-        phase: "compute",
-        environment,
-        topN,
-        candleCount,
+      // Persist candle data separately (read-only after init)
+      await saveMemory(sb, CANDLE_KEY, {
         compactCandles,
         pairTimeIndex,
         rankSnaps,
         signalCache,
+      });
+
+      // Persist lightweight state (updated each compute chunk)
+      await saveMemory(sb, STATE_KEY, {
+        phase: "compute",
+        environment,
+        topN,
+        candleCount,
         allCombos: allCombos.length,
         chunkIdx: 0,
         partialResults: [],
@@ -568,17 +574,23 @@ Deno.serve(async (req) => {
     // PHASE: COMPUTE — Process a chunk of combos
     // ════════════════════════════════════════════
     if (phase === "compute") {
-      const state = await loadState(sb);
+      const state = await loadMemory(sb, STATE_KEY);
       if (!state || state.phase !== "compute") {
         return new Response(JSON.stringify({ error: "No init state found. Run phase=init first." }),
           { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
       }
 
+      const candleData = await loadMemory(sb, CANDLE_KEY);
+      if (!candleData) {
+        return new Response(JSON.stringify({ error: "Candle data missing. Run phase=init first." }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+
       const chunkIdx = (state.chunkIdx as number) || 0;
       const totalCombos = state.allCombos as number;
-      const compactCandles = state.compactCandles as Record<string, Array<[string, number, number, number, number]>>;
-      const pairTimeIndex = state.pairTimeIndex as Record<string, Record<string, number>>;
-      const signalCache = state.signalCache as Record<string, TradeSignal[]>;
+      const compactCandles = candleData.compactCandles as Record<string, Array<[string, number, number, number, number]>>;
+      const pairTimeIndex = candleData.pairTimeIndex as Record<string, Record<string, number>>;
+      const signalCache = candleData.signalCache as Record<string, TradeSignal[]>;
       const partialResults = (state.partialResults as LiveProfileResult[]) || [];
 
       // Reconstruct candle objects from compact format
@@ -611,22 +623,14 @@ Deno.serve(async (req) => {
       const done = endIdx >= allCombos.length;
       const nextChunkIdx = chunkIdx + 1;
 
-      if (done) {
-        // Move to extract phase
-        await saveState(sb, {
-          ...state,
-          phase: "extract",
-          chunkIdx: nextChunkIdx,
-          partialResults: merged,
-          processedCombos: allCombos.length,
-        });
-      } else {
-        await saveState(sb, {
-          ...state,
-          chunkIdx: nextChunkIdx,
-          partialResults: merged,
-        });
-      }
+      // Only update lightweight state (not candle data)
+      await saveMemory(sb, STATE_KEY, {
+        ...state,
+        phase: done ? "extract" : "compute",
+        chunkIdx: nextChunkIdx,
+        partialResults: merged,
+        ...(done ? { processedCombos: allCombos.length } : {}),
+      });
 
       return new Response(JSON.stringify({
         success: true,
@@ -645,16 +649,22 @@ Deno.serve(async (req) => {
     // PHASE: EXTRACT — Build final results + equity curves
     // ════════════════════════════════════════════
     if (phase === "extract") {
-      const state = await loadState(sb);
+      const state = await loadMemory(sb, STATE_KEY);
       if (!state || state.phase !== "extract") {
         return new Response(JSON.stringify({ error: "Compute not finished. Run phase=compute until done." }),
           { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
       }
 
+      const candleData = await loadMemory(sb, CANDLE_KEY);
+      if (!candleData) {
+        return new Response(JSON.stringify({ error: "Candle data missing." }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+
       const partialResults = state.partialResults as LiveProfileResult[];
-      const rankSnaps = state.rankSnaps as RankSnap[];
-      const compactCandles = state.compactCandles as Record<string, Array<[string, number, number, number, number]>>;
-      const pairTimeIndex = state.pairTimeIndex as Record<string, Record<string, number>>;
+      const rankSnaps = candleData.rankSnaps as RankSnap[];
+      const compactCandles = candleData.compactCandles as Record<string, Array<[string, number, number, number, number]>>;
+      const pairTimeIndex = candleData.pairTimeIndex as Record<string, Record<string, number>>;
       const dateRange = state.dateRange as { start: string; end: string };
       const pairsLoaded = state.pairsLoaded as number;
       const totalCombos = state.allCombos as number;
@@ -681,7 +691,7 @@ Deno.serve(async (req) => {
       console.log(`[LIVE-BT] EXTRACT: Top net profit: $${topResults[0]?.netProfit ?? 0}`);
 
       // Clean up state
-      await clearState(sb);
+      await clearAll(sb);
 
       return new Response(JSON.stringify({
         success: true,
