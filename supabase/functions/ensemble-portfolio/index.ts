@@ -219,6 +219,10 @@ function applyRegimeRouting(
 }
 
 // ── Synthesize Portfolio Equity Curve ────────────────────────────────────
+// v2: Fixed Fractional Sizing (max 2% risk/trade) + Execution Friction Drag
+
+const FRICTION_PER_TRADE_PCT = 0.0002; // 0.02% transaction cost per trade (~1.5 pips)
+const MAX_RISK_PER_TRADE = 0.02;       // Fixed fractional: risk max 2% of equity per signal
 
 function synthesizeEquityCurve(
   strategies: StrategyInput[],
@@ -226,30 +230,59 @@ function synthesizeEquityCurve(
 ): number[] {
   if (strategies.length === 0) return [];
 
-  // Normalize all curves to start at 1.0
-  const normalizedCurves = strategies.map(s => ({
+  // Build per-bar return streams for each strategy
+  const stratReturns = strategies.map(s => ({
     id: s.id,
-    curve: normalizeCurve(s.equityCurve),
+    returns: dailyReturns(normalizeCurve(s.equityCurve)),
+    trades: s.trades || 0,
+    curveLen: s.equityCurve.length,
   }));
 
-  // Find the shortest curve length to align
-  const minLen = Math.min(...normalizedCurves.map(c => c.curve.length));
-  if (minLen < 2) return [];
+  const minLen = Math.min(...stratReturns.map(s => s.returns.length));
+  if (minLen < 1) return [];
 
-  // Weighted sum of normalized curves
-  const synthesized: number[] = [];
+  // Estimate trades-per-bar for each strategy (used for friction calc)
+  const tradesPerBar = stratReturns.map(s => ({
+    id: s.id,
+    tpb: s.curveLen > 0 ? s.trades / s.curveLen : 0,
+  }));
+
+  let equity = 1000;
+  const curve: number[] = [equity];
+
   for (let i = 0; i < minLen; i++) {
-    let weightedVal = 0;
-    for (const nc of normalizedCurves) {
-      const w = weights.get(nc.id) || 0;
-      weightedVal += nc.curve[i] * w;
+    let barPnl = 0;
+    let barFriction = 0;
+
+    for (const sr of stratReturns) {
+      const w = weights.get(sr.id) || 0;
+      if (w <= 0) continue;
+
+      const rawReturn = sr.returns[i]; // fractional return for this bar
+
+      // Fixed fractional: capital deployed = weight * equity, but
+      // the effective return is clamped so max loss = MAX_RISK_PER_TRADE * equity * weight
+      const allocatedCapital = equity * w;
+      let tradePnl = allocatedCapital * rawReturn;
+
+      // Clamp: max loss per strategy per bar = 2% of total equity * weight proportion
+      const maxLoss = equity * MAX_RISK_PER_TRADE * w;
+      const maxGain = equity * MAX_RISK_PER_TRADE * w * 5; // allow up to 5R winners
+      tradePnl = Math.max(-maxLoss, Math.min(maxGain, tradePnl));
+
+      barPnl += tradePnl;
+
+      // Friction: estimate # trades this bar, deduct per-trade cost
+      const tpb = tradesPerBar.find(t => t.id === sr.id)?.tpb || 0;
+      barFriction += tpb * FRICTION_PER_TRADE_PCT * allocatedCapital;
     }
-    synthesized.push(weightedVal);
+
+    equity += barPnl - barFriction;
+    equity = Math.max(equity, 1); // floor at $1 to prevent negative
+    curve.push(Math.round(equity * 100) / 100);
   }
 
-  // Scale to $1000 base
-  const scale = 1000 / (synthesized[0] || 1);
-  return synthesized.map(v => Math.round(v * scale * 100) / 100);
+  return curve;
 }
 
 // ── Compute Portfolio Metrics ───────────────────────────────────────────
