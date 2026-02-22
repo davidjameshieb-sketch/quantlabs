@@ -1611,7 +1611,7 @@ async function handlePhase3(body: Record<string, unknown>) {
   nameCounter = 0;
 
   const seen = new Set<string>();
-  const profiles: (ScoredIndividual & { oosSim?: SimResult })[] = [];
+  const profiles: (ScoredIndividual & { oosSim?: SimResult; isSim?: SimResult })[] = [];
 
   for (const p of population.slice(0, 60)) {
     const d = p.dna;
@@ -1619,10 +1619,23 @@ async function handlePhase3(body: Record<string, unknown>) {
     if (seen.has(key)) continue;
     seen.add(key);
 
+    // Full-dataset sim for equity curve display
     const sim = simulateStrategy(bars, p.dna);
-    if (sim.trades < 30) continue;
+    if (sim.trades < 50) continue; // Overfitting filter: require ≥ 50 total trades
 
+    // IS-only sim (candles 0 to isSplit)
+    const isSim = isSplit < bars.count ? simulateStrategy(bars, p.dna, 0, isSplit) : sim;
+    // OOS sim (candles isSplit to end) — the blind test
     const oosSim = isSplit < bars.count ? simulateStrategy(bars, p.dna, isSplit) : undefined;
+
+    // ── OOS Survival Filter ──
+    if (oosSim && oosSim.trades >= 5) {
+      // Reject if OOS Profit Factor < 1.2
+      if (oosSim.profitFactor < 1.2) continue;
+      // Reject if OOS Max Drawdown > 2× IS Max Drawdown
+      if (isSim.maxDrawdown > 0.001 && oosSim.maxDrawdown > isSim.maxDrawdown * 2) continue;
+    }
+
     const corr = Math.abs(pearsonCorrelation(baseDailyReturns, sim.dailyReturns));
 
     const maxPts = 200;
@@ -1637,12 +1650,13 @@ async function handlePhase3(body: Record<string, unknown>) {
       entryRules: generateEntryRules(p.dna),
       exitRules: generateExitRules(p.dna),
       oosSim,
+      isSim,
     });
   }
 
   profiles.sort((a, b) => b.sim.totalReturn - a.sim.totalReturn);
 
-  let finalUncorrelated: (ScoredIndividual & { oosSim?: SimResult })[];
+  let finalUncorrelated: (ScoredIndividual & { oosSim?: SimResult; isSim?: SimResult })[];
 
   if (unconstrained) {
     finalUncorrelated = profiles.slice(0, 10);
@@ -1666,13 +1680,13 @@ async function handlePhase3(body: Record<string, unknown>) {
       return true;
     }
 
-    const diverseProfiles: (ScoredIndividual & { oosSim?: SimResult })[] = [];
+    const diverseProfiles: (ScoredIndividual & { oosSim?: SimResult; isSim?: SimResult })[] = [];
     for (const p of profiles) {
       if (diverseProfiles.length >= 10) break;
       if (p.correlation > maxCorrelation) continue;
       if (!canAddArchetype(p.dna)) continue;
       if (!isUncorrelatedWithPortfolio(p, diverseProfiles)) continue;
-      if (p.oosSim && p.oosSim.trades >= 5 && p.oosSim.totalReturn < -20) continue;
+      // OOS survival filter already applied above during extraction
       diverseProfiles.push(p);
     }
 
@@ -1708,7 +1722,7 @@ async function handlePhase3(body: Record<string, unknown>) {
     return true;
   }).slice(0, 20);
 
-  const fmt = (p: ScoredIndividual & { oosSim?: SimResult }) => ({
+  const fmt = (p: ScoredIndividual & { oosSim?: SimResult; isSim?: SimResult }) => ({
     dna: p.dna, fitness: Math.round(p.fitness * 1000) / 1000,
     winRate: Math.round(p.sim.winRate * 10000) / 10000,
     profitFactor: Math.round(p.sim.profitFactor * 100) / 100,
@@ -1726,9 +1740,20 @@ async function handlePhase3(body: Record<string, unknown>) {
     entryRules: p.entryRules,
     exitRules: p.exitRules,
     edgeArchetype: getEdgeArchetype(p.dna),
+    // Full IS/OOS metrics for Lie Detector panel
     oosReturn: p.oosSim ? Math.round(p.oosSim.totalReturn * 100) / 100 : null,
     oosWinRate: p.oosSim ? Math.round(p.oosSim.winRate * 10000) / 10000 : null,
     oosTrades: p.oosSim?.trades ?? null,
+    oosProfitFactor: p.oosSim ? Math.round(p.oosSim.profitFactor * 100) / 100 : null,
+    oosMaxDrawdown: p.oosSim ? Math.round(p.oosSim.maxDrawdown * 10000) / 10000 : null,
+    oosPips: p.oosSim ? Math.round(p.oosSim.totalPips * 10) / 10 : null,
+    // IS-only metrics
+    isReturn: p.isSim ? Math.round(p.isSim.totalReturn * 100) / 100 : null,
+    isWinRate: p.isSim ? Math.round(p.isSim.winRate * 10000) / 10000 : null,
+    isTrades: p.isSim?.trades ?? null,
+    isProfitFactor: p.isSim ? Math.round(p.isSim.profitFactor * 100) / 100 : null,
+    isMaxDrawdown: p.isSim ? Math.round(p.isSim.maxDrawdown * 10000) / 10000 : null,
+    isPips: p.isSim ? Math.round(p.isSim.totalPips * 10) / 10 : null,
   });
 
   await sb.from("sovereign_memory").update({
@@ -1822,9 +1847,17 @@ async function handleBatchExtract(body: Record<string, unknown>) {
       seen.add(key);
 
       const sim = simulateStrategy(bars, ind.dna);
-      if (sim.trades < 30) continue;
+      if (sim.trades < 50) continue; // ≥ 50 trades required
 
+      const isSim = isSplit < bars.count ? simulateStrategy(bars, ind.dna, 0, isSplit) : sim;
       const oosSim = isSplit < bars.count ? simulateStrategy(bars, ind.dna, isSplit) : undefined;
+
+      // OOS Survival Filter
+      if (oosSim && oosSim.trades >= 5) {
+        if (oosSim.profitFactor < 1.2) continue;
+        if (isSim.maxDrawdown > 0.001 && oosSim.maxDrawdown > isSim.maxDrawdown * 2) continue;
+      }
+
       const corr = Math.abs(pearsonCorrelation(baseDailyReturns, sim.dailyReturns));
 
       const maxPts = 100;
@@ -1844,6 +1877,13 @@ async function handleBatchExtract(body: Record<string, unknown>) {
         oosReturn: oosSim ? Math.round(oosSim.totalReturn * 100) / 100 : null,
         oosWinRate: oosSim ? Math.round(oosSim.winRate * 10000) / 10000 : null,
         oosTrades: oosSim?.trades ?? null,
+        oosProfitFactor: oosSim ? Math.round(oosSim.profitFactor * 100) / 100 : null,
+        oosMaxDrawdown: oosSim ? Math.round(oosSim.maxDrawdown * 10000) / 10000 : null,
+        isReturn: isSim ? Math.round(isSim.totalReturn * 100) / 100 : null,
+        isWinRate: isSim ? Math.round(isSim.winRate * 10000) / 10000 : null,
+        isTrades: isSim?.trades ?? null,
+        isProfitFactor: isSim ? Math.round(isSim.profitFactor * 100) / 100 : null,
+        isMaxDrawdown: isSim ? Math.round(isSim.maxDrawdown * 10000) / 10000 : null,
         equityCurve: dsCurve,
       });
     }
@@ -1860,7 +1900,7 @@ async function handleBatchExtract(body: Record<string, unknown>) {
     if (selected.length >= topN) break;
     const pc = pairCounts[strat.pair] || 0;
     if (pc >= MAX_PER_PAIR) continue;
-    if (strat.oosTrades != null && strat.oosTrades >= 5 && (strat.oosReturn ?? 0) < -30) continue;
+    // OOS survival filter already applied during extraction — no need for extra return check
 
     let uncorrelated = true;
     for (const existing of selected) {

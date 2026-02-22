@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import type { BacktestResult } from '@/hooks/useRankExpectancy';
 import { PeriodPerformanceRow } from './TimePeriodBreakdown';
+import { OOSValidationPanel, type OOSValidationResult } from './OOSValidationPanel';
 
 interface StrategyDNA {
   rsiPeriod: number; rsiLow: number; rsiHigh: number; rsiMode: number;
@@ -37,6 +38,9 @@ interface GAProfile {
   entryRules: string[]; exitRules: string[];
   edgeArchetype?: string;
   oosReturn?: number | null; oosWinRate?: number | null; oosTrades?: number | null;
+  oosProfitFactor?: number | null; oosMaxDrawdown?: number | null; oosPips?: number | null;
+  isReturn?: number | null; isWinRate?: number | null; isTrades?: number | null;
+  isProfitFactor?: number | null; isMaxDrawdown?: number | null; isPips?: number | null;
 }
 
 interface EvolutionEntry { gen: number; bestFitness: number; avgFitness: number; bestTrades: number; }
@@ -806,6 +810,42 @@ function StrategyCard({ profile, idx, expandedProfile, setExpandedProfile, maxCo
                   ))}
                 </div>
               </div>
+
+              {/* ── OOS Validation — The Lie Detector ── */}
+              {profile.isReturn != null && profile.oosReturn != null && (() => {
+                const oosValidation: OOSValidationResult = {
+                  is: {
+                    winRate: Math.round((profile.isWinRate ?? 0) * 100 * 10) / 10,
+                    profitFactor: profile.isProfitFactor ?? 0,
+                    maxDrawdown: Math.round((profile.isMaxDrawdown ?? 0) * 100 * 10) / 10,
+                    totalReturn: profile.isReturn ?? 0,
+                    trades: profile.isTrades ?? 0,
+                    netPips: profile.isPips ?? 0,
+                  },
+                  oos: {
+                    winRate: Math.round((profile.oosWinRate ?? 0) * 100 * 10) / 10,
+                    profitFactor: profile.oosProfitFactor ?? 0,
+                    maxDrawdown: Math.round((profile.oosMaxDrawdown ?? 0) * 100 * 10) / 10,
+                    totalReturn: profile.oosReturn ?? 0,
+                    trades: profile.oosTrades ?? 0,
+                    netPips: profile.oosPips ?? 0,
+                  },
+                  passed: (profile.oosProfitFactor ?? 0) >= 1.2 &&
+                    ((profile.isMaxDrawdown ?? 0) < 0.001 || (profile.oosMaxDrawdown ?? 0) <= (profile.isMaxDrawdown ?? 0) * 2),
+                  failReasons: [],
+                  degradation: {
+                    wrDelta: Math.round(((profile.oosWinRate ?? 0) - (profile.isWinRate ?? 0)) * 100 * 10) / 10,
+                    pfDelta: (profile.isProfitFactor ?? 1) > 0 ? Math.round(((profile.oosProfitFactor ?? 0) - (profile.isProfitFactor ?? 0)) / (profile.isProfitFactor ?? 1) * 100 * 10) / 10 : 0,
+                    ddRatio: (profile.isMaxDrawdown ?? 0) > 0.001 ? Math.round((profile.oosMaxDrawdown ?? 0) / (profile.isMaxDrawdown ?? 1) * 100) / 100 : 1,
+                    returnDelta: (profile.isReturn ?? 0) !== 0 ? Math.round(((profile.oosReturn ?? 0) - (profile.isReturn ?? 0)) / Math.abs(profile.isReturn ?? 1) * 100 * 10) / 10 : 0,
+                  },
+                };
+                if ((profile.oosProfitFactor ?? 0) < 1.2) oosValidation.failReasons.push(`OOS PF ${profile.oosProfitFactor} < 1.2`);
+                if ((profile.isMaxDrawdown ?? 0) > 0.001 && (profile.oosMaxDrawdown ?? 0) > (profile.isMaxDrawdown ?? 0) * 2) {
+                  oosValidation.failReasons.push(`OOS DD > 2× IS DD`);
+                }
+                return <OOSValidationPanel validation={oosValidation} />;
+              })()}
 
               <div className="grid grid-cols-2 gap-3">
                 <div className="bg-slate-950/50 border border-slate-800/40 rounded-lg p-3">

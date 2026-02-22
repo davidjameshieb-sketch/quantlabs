@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import type { BacktestResult, RankComboResult } from '@/hooks/useRankExpectancy';
 import { TimePeriodBreakdown } from './TimePeriodBreakdown';
+import { computeOOSValidation, OOSValidationPanel, type OOSValidationResult } from './OOSValidationPanel';
 
 // ── Trading Sessions ──
 const SESSIONS = [
@@ -87,6 +88,8 @@ interface ProfileResult {
   trades: number;
   entryLabel: string;
   equityCurve: Array<{ time: string; equity: number }>;
+  tradeResults: number[];
+  oosValidation: OOSValidationResult | null;
 }
 
 // ── Seeded PRNG ──
@@ -196,6 +199,8 @@ function simulateProfile(
 
   const pf = grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? 999 : 0;
 
+  const oosValidation = computeOOSValidation(tradeResults, 1000, 0.7, 50);
+
   return {
     g1, g2, g3,
     slPips: sl.pips,
@@ -206,6 +211,8 @@ function simulateProfile(
     totalPips: Math.round(totalPips * 10) / 10,
     trades: tradeCount,
     equityCurve: curve,
+    tradeResults,
+    oosValidation,
   };
 }
 
@@ -1148,14 +1155,17 @@ export const ProfileDiscoveryEngine = ({ result }: Props) => {
                         </div>
                       </div>
 
-                      {/* Time Period Breakdown */}
-                      <TimePeriodBreakdown curve={p.equityCurve} />
+                       {/* Time Period Breakdown */}
+                       <TimePeriodBreakdown curve={p.equityCurve} />
 
-                      {/* Strategy Intelligence */}
-                      <StrategyIntelligencePanel profile={p} allTop={topProfiles} idx={idx} />
+                       {/* OOS Validation — The Lie Detector */}
+                       {p.oosValidation && <OOSValidationPanel validation={p.oosValidation} />}
 
-                      {/* Statistical Circuit Breaker */}
-                      <CircuitBreakerPanel profile={p} />
+                       {/* Strategy Intelligence */}
+                       <StrategyIntelligencePanel profile={p} allTop={topProfiles} idx={idx} />
+
+                       {/* Statistical Circuit Breaker */}
+                       <CircuitBreakerPanel profile={p} />
                     </motion.button>
                   );
                 })}

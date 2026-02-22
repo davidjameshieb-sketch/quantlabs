@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import type { BacktestResult, RankComboResult } from '@/hooks/useRankExpectancy';
 import { TimePeriodBreakdown } from './TimePeriodBreakdown';
+import { computeOOSValidation, OOSValidationPanel, type OOSValidationResult } from './OOSValidationPanel';
 
 // ── Reuse the same grid constants ──
 const SL_GRID = [
