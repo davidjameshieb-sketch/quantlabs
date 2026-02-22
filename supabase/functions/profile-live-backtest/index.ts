@@ -371,42 +371,64 @@ function buildEquityCurve(
 function getSupabase() {
   return createClient(
     Deno.env.get("SUPABASE_URL")!,
-    Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
+    Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
+    { db: { schema: "public" }, global: { headers: {} } }
   );
 }
 
 const STATE_KEY = "live_backtest_state";
 const CANDLE_KEY = "live_backtest_candles";
-const CHUNK_SIZE = 150; // reduced to avoid CPU timeout
+const CHUNK_SIZE = 150;
 
-async function loadMemory(sb: ReturnType<typeof createClient>, key: string) {
-  const { data } = await sb.from("sovereign_memory").select("payload").eq("memory_key", key).single();
-  return data?.payload as Record<string, unknown> | null;
+// DB operations with timeout to avoid hanging on DB connection issues
+async function withTimeout<T>(promise: Promise<T>, ms = 8000): Promise<T> {
+  const timeout = new Promise<never>((_, reject) =>
+    setTimeout(() => reject(new Error("DB operation timed out")), ms)
+  );
+  return Promise.race([promise, timeout]);
+}
+
+async function loadMemory(sb: ReturnType<typeof createClient>, key: string, retries = 3) {
+  for (let attempt = 0; attempt < retries; attempt++) {
+    try {
+      const { data } = await withTimeout(
+        sb.from("sovereign_memory").select("payload").eq("memory_key", key).single()
+      );
+      if (data?.payload) return data.payload as Record<string, unknown>;
+    } catch { /* retry */ }
+    if (attempt < retries - 1) await new Promise(r => setTimeout(r, 2000));
+  }
+  return null;
 }
 
 async function saveMemory(sb: ReturnType<typeof createClient>, key: string, payload: Record<string, unknown>) {
-  const { data: existing } = await sb.from("sovereign_memory")
-    .select("id").eq("memory_key", key).single();
+  const { data: existing } = await withTimeout(
+    sb.from("sovereign_memory").select("id").eq("memory_key", key).single()
+  );
   if (existing) {
-    await sb.from("sovereign_memory").update({
+    await withTimeout(sb.from("sovereign_memory").update({
       payload: payload as unknown,
       updated_at: new Date().toISOString(),
       version: 1,
-    }).eq("memory_key", key);
+    }).eq("memory_key", key));
   } else {
-    await sb.from("sovereign_memory").insert({
+    await withTimeout(sb.from("sovereign_memory").insert({
       memory_key: key,
       memory_type: "backtest_state",
       payload: payload as unknown,
       created_by: "profile-live-backtest",
       version: 1,
-    });
+    }));
   }
 }
 
 async function clearAll(sb: ReturnType<typeof createClient>) {
-  await sb.from("sovereign_memory").delete().eq("memory_key", STATE_KEY);
-  await sb.from("sovereign_memory").delete().eq("memory_key", CANDLE_KEY);
+  try {
+    await withTimeout(sb.from("sovereign_memory").delete().eq("memory_key", STATE_KEY), 5000);
+    await withTimeout(sb.from("sovereign_memory").delete().eq("memory_key", CANDLE_KEY), 5000);
+  } catch (err) {
+    console.warn("[LIVE-BT] clearAll failed (non-fatal):", (err as Error).message);
+  }
 }
 
 Deno.serve(async (req) => {
@@ -433,57 +455,90 @@ Deno.serve(async (req) => {
     const sb = getSupabase();
 
     // ════════════════════════════════════════════
-    // PHASE: INIT — Fetch candles only, persist raw data
+    // PHASE: INIT — Start fetching candles in batches of 7 pairs
+    // First call clears old state and fetches batch 0.
+    // Subsequent calls with phase=fetch continue fetching.
     // ════════════════════════════════════════════
     if (phase === "init") {
-      console.log(`[LIVE-BT] INIT: Fetching ${candleCount} M30 candles for 28 pairs (${environment})`);
-
-      // Clear any old state
+      console.log(`[LIVE-BT] INIT: Starting candle fetch for 28 pairs (${environment})`);
       await clearAll(sb);
 
-      const availableCrosses = ALL_28_CROSSES.filter(c => OANDA_AVAILABLE.has(c.instrument));
-      const pairCandles: Record<string, Candle[]> = {};
-      const BATCH = 7;
-
-      for (let b = 0; b < availableCrosses.length; b += BATCH) {
-        const batch = availableCrosses.slice(b, b + BATCH);
-        const results = await Promise.allSettled(
-          batch.map(async cross => {
-            const candles = await fetchCandles(cross.instrument, candleCount, environment, apiToken!);
-            return { instrument: cross.instrument, candles };
-          })
-        );
-        for (const r of results) {
-          if (r.status === "fulfilled" && r.value.candles.length > 0) {
-            pairCandles[r.value.instrument] = r.value.candles;
-          }
-        }
-      }
-
-      console.log(`[LIVE-BT] INIT: Fetched ${Object.keys(pairCandles).length} pairs`);
-
-      // Compress and persist candle data only — defer heavy computation to "build" phase
-      const compactCandles: Record<string, Array<[string, number, number, number, number]>> = {};
-      for (const [inst, candles] of Object.entries(pairCandles)) {
-        compactCandles[inst] = candles.map(c => [c.time, c.open, c.high, c.low, c.close]);
-      }
-
-      await saveMemory(sb, CANDLE_KEY, { compactCandles });
-
-      // Save minimal state for next phase
+      // Save empty candle store + fetch state
+      await saveMemory(sb, CANDLE_KEY, { compactCandles: {} });
       await saveMemory(sb, STATE_KEY, {
-        phase: "build",
+        phase: "fetch",
         environment,
         topN,
         candleCount,
-        pairsLoaded: Object.keys(pairCandles).length,
+        fetchBatch: 0,
       });
 
       return new Response(JSON.stringify({
         success: true,
         phase: "init_complete",
-        pairsLoaded: Object.keys(pairCandles).length,
-        message: `Candles fetched. Call phase=build to compute ranks & signals.`,
+        message: `Init done. Call phase=fetch to start fetching candles.`,
+      }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
+
+    // ════════════════════════════════════════════
+    // PHASE: FETCH — Fetch 7 pairs per invocation
+    // ════════════════════════════════════════════
+    if (phase === "fetch") {
+      const state = await loadMemory(sb, STATE_KEY);
+      if (!state || state.phase !== "fetch") {
+        return new Response(JSON.stringify({ error: "Run phase=init first." }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+
+      const candleData = await loadMemory(sb, CANDLE_KEY);
+      if (!candleData) {
+        return new Response(JSON.stringify({ error: "Candle store missing." }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+
+      const fetchBatch = (state.fetchBatch as number) || 0;
+      const availableCrosses = ALL_28_CROSSES.filter(c => OANDA_AVAILABLE.has(c.instrument));
+      const BATCH_SIZE = 7;
+      const startIdx = fetchBatch * BATCH_SIZE;
+      const endIdx = Math.min(startIdx + BATCH_SIZE, availableCrosses.length);
+      const batch = availableCrosses.slice(startIdx, endIdx);
+
+      console.log(`[LIVE-BT] FETCH: batch ${fetchBatch}, pairs ${startIdx}-${endIdx} of ${availableCrosses.length}`);
+
+      const compactCandles = (candleData.compactCandles || {}) as Record<string, Array<[string, number, number, number, number]>>;
+
+      const results = await Promise.allSettled(
+        batch.map(async cross => {
+          const candles = await fetchCandles(cross.instrument, candleCount, environment, apiToken!);
+          return { instrument: cross.instrument, candles };
+        })
+      );
+
+      for (const r of results) {
+        if (r.status === "fulfilled" && r.value.candles.length > 0) {
+          compactCandles[r.value.instrument] = r.value.candles.map(c => [c.time, c.open, c.high, c.low, c.close]);
+        }
+      }
+
+      const done = endIdx >= availableCrosses.length;
+
+      await saveMemory(sb, CANDLE_KEY, { compactCandles });
+      await saveMemory(sb, STATE_KEY, {
+        ...state,
+        phase: done ? "build" : "fetch",
+        fetchBatch: fetchBatch + 1,
+        pairsLoaded: Object.keys(compactCandles).length,
+      });
+
+      return new Response(JSON.stringify({
+        success: true,
+        phase: done ? "fetch_complete" : "fetching",
+        pairsFetched: Object.keys(compactCandles).length,
+        totalPairs: availableCrosses.length,
+        progress: Math.round((endIdx / availableCrosses.length) * 100),
+        message: done
+          ? `All ${availableCrosses.length} pairs fetched. Call phase=build.`
+          : `Fetched ${endIdx}/${availableCrosses.length} pairs. Call phase=fetch again.`,
       }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
