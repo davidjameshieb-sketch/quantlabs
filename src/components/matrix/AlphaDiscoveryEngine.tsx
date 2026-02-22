@@ -620,7 +620,7 @@ export function AlphaDiscoveryEngine({ result }: { result: BacktestResult }) {
                     <div className="divide-y divide-slate-800/30">
                       {batchResult.top7.map((profile, idx) => (
                         <StrategyCard key={idx} profile={profile} idx={idx} expandedProfile={expandedProfile}
-                          setExpandedProfile={setExpandedProfile} maxCorrelation={0.4} showPair />
+                          setExpandedProfile={setExpandedProfile} maxCorrelation={0.4} showPair candleCount={candleCount} />
                       ))}
                     </div>
                   </div>
@@ -691,7 +691,7 @@ export function AlphaDiscoveryEngine({ result }: { result: BacktestResult }) {
                     ) : (
                       <div className="divide-y divide-slate-800/30">
                         {gaResult.uncorrelatedProfiles.map((profile, idx) => (
-                          <StrategyCard key={idx} profile={profile} idx={idx} expandedProfile={expandedProfile} setExpandedProfile={setExpandedProfile} maxCorrelation={maxCorrelation} />
+                          <StrategyCard key={idx} profile={profile} idx={idx} expandedProfile={expandedProfile} setExpandedProfile={setExpandedProfile} maxCorrelation={maxCorrelation} candleCount={candleCount} />
                         ))}
                       </div>
                     )}
@@ -707,10 +707,10 @@ export function AlphaDiscoveryEngine({ result }: { result: BacktestResult }) {
 }
 
 // ── Strategy Card ──
-function StrategyCard({ profile, idx, expandedProfile, setExpandedProfile, maxCorrelation, offset = 0, dateRange, showPair = false }: {
+function StrategyCard({ profile, idx, expandedProfile, setExpandedProfile, maxCorrelation, offset = 0, dateRange, showPair = false, candleCount = 5000 }: {
   profile: GAProfile; idx: number; expandedProfile: number | null;
   setExpandedProfile: (v: number | null) => void; maxCorrelation: number; offset?: number;
-  dateRange?: { start: string; end: string }; showPair?: boolean;
+  dateRange?: { start: string; end: string }; showPair?: boolean; candleCount?: number;
 }) {
   const cardIdx = idx + offset;
   const isExp = expandedProfile === cardIdx;
@@ -779,12 +779,12 @@ function StrategyCard({ profile, idx, expandedProfile, setExpandedProfile, maxCo
                 </div>
                 <EquityCurve curve={profile.equityCurve} height={80} />
                 {(() => {
-                  // Convert number[] equity curve to {time, equity}[] for TimePeriodBreakdown
+                  // M30 candles: ~44 candles per trading day (22hrs * 2 candles/hr)
+                  const actualDays = Math.max(7, Math.round(candleCount / 44));
                   const curveWithTime = profile.equityCurve.map((eq, i) => {
-                    const totalDays = 60; // approximate days span
-                    const dayOffset = (i / Math.max(1, profile.equityCurve.length - 1)) * totalDays;
+                    const dayOffset = (i / Math.max(1, profile.equityCurve.length - 1)) * actualDays;
                     const d = new Date();
-                    d.setDate(d.getDate() - totalDays + dayOffset);
+                    d.setDate(d.getDate() - actualDays + dayOffset);
                     return { time: d.toISOString(), equity: eq };
                   });
                   return <TimePeriodBreakdown curve={curveWithTime} totalPips={profile.totalPips} totalTrades={profile.trades} />;
