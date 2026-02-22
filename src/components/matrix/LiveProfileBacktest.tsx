@@ -1,4 +1,5 @@
-// Live Profile Backtest Panel — Single-call version (no phased polling)
+// Live Profile Backtest Panel v5.0 — MapReduce Parallel Orchestration
+// Fires 3 parallel edge function calls (one per predator rank), merges results.
 
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -29,7 +30,22 @@ interface LiveProfileResult {
   equityCurve: Array<{ time: string; equity: number }> | null;
 }
 
-interface LiveBacktestResponse {
+interface ChunkResponse {
+  success: boolean;
+  version: string;
+  timestamp: string;
+  environment: string;
+  candlesPerPair: number;
+  pairsLoaded: number;
+  totalSnapshots: number;
+  totalCombos: number;
+  profitableCombos: number;
+  topResults: LiveProfileResult[];
+  predatorRanks: number[];
+  dateRange: { start: string; end: string };
+}
+
+interface MergedResult {
   success: boolean;
   version: string;
   timestamp: string;
@@ -78,32 +94,70 @@ function MiniCurve({ curve, height = 70 }: { curve: Array<{ time: string; equity
 
 export function LiveProfileBacktest() {
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<LiveBacktestResponse | null>(null);
+  const [result, setResult] = useState<MergedResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
   const [candleCount, setCandleCount] = useState(5000);
   const [environment, setEnvironment] = useState<'practice' | 'live'>('practice');
+  const [progress, setProgress] = useState<{ completed: number; total: number; chunks: string[] }>({ completed: 0, total: 3, chunks: [] });
 
   const runBacktest = async () => {
     setLoading(true);
     setError(null);
     setResult(null);
+    setProgress({ completed: 0, total: 3, chunks: [] });
 
     try {
-      const { data, error: fnError } = await supabase.functions.invoke('profile-live-backtest', {
-        body: { environment, candles: candleCount, topN: 25 },
+      // MapReduce: fire 3 parallel calls, one per predator rank
+      const chunks: Array<{ predatorRanks: number[]; label: string }> = [
+        { predatorRanks: [1], label: "Predator R1" },
+        { predatorRanks: [2], label: "Predator R2" },
+        { predatorRanks: [3], label: "Predator R3" },
+      ];
+
+      const promises = chunks.map(async (chunk) => {
+        const { data, error: fnError } = await supabase.functions.invoke('profile-live-backtest', {
+          body: { environment, candles: candleCount, topN: 25, predatorRanks: chunk.predatorRanks },
+        });
+
+        if (fnError) {
+          const msg = typeof fnError === 'object' && fnError.message ? fnError.message : String(fnError);
+          throw new Error(`${chunk.label}: ${msg}`);
+        }
+        if (!data?.success) {
+          throw new Error(`${chunk.label}: ${data?.error || 'Failed'}`);
+        }
+
+        setProgress(prev => ({
+          ...prev,
+          completed: prev.completed + 1,
+          chunks: [...prev.chunks, chunk.label],
+        }));
+
+        return data as ChunkResponse;
       });
 
-      if (fnError) {
-        const msg = typeof fnError === 'object' && fnError.message ? fnError.message : String(fnError);
-        throw new Error(msg);
-      }
+      const results = await Promise.all(promises);
 
-      if (!data?.success) {
-        throw new Error(data?.error || 'Backtest failed');
-      }
+      // Merge results from all chunks
+      const allTopResults = results.flatMap(r => r.topResults);
+      allTopResults.sort((a, b) => b.netProfit - a.netProfit);
 
-      setResult(data as LiveBacktestResponse);
+      const merged: MergedResult = {
+        success: true,
+        version: "5.0-mapreduce",
+        timestamp: new Date().toISOString(),
+        environment,
+        candlesPerPair: results[0]?.candlesPerPair ?? 0,
+        pairsLoaded: results[0]?.pairsLoaded ?? 0,
+        totalSnapshots: results[0]?.totalSnapshots ?? 0,
+        totalCombos: results.reduce((sum, r) => sum + r.totalCombos, 0),
+        profitableCombos: results.reduce((sum, r) => sum + r.profitableCombos, 0),
+        topResults: allTopResults.slice(0, 25),
+        dateRange: results[0]?.dateRange ?? { start: '', end: '' },
+      };
+
+      setResult(merged);
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -120,11 +174,11 @@ export function LiveProfileBacktest() {
         <div className="flex items-center gap-2">
           <Cpu className="w-4 h-4 text-[#ff6600]" />
           <h2 className="text-[11px] font-bold tracking-widest text-slate-200 uppercase">
-            Live Profile Backtest · True Bar-by-Bar Simulation
+            Live Profile Backtest · MapReduce v5.0
           </h2>
         </div>
         <span className="text-[8px] font-mono text-slate-500 border border-slate-700 px-1.5 py-0.5 rounded">
-          NO SYNTHETIC DATA
+          3-WORKER PARALLEL
         </span>
       </div>
 
@@ -170,13 +224,13 @@ export function LiveProfileBacktest() {
       {/* Description */}
       {!result && !loading && !error && (
         <div className="text-[10px] text-slate-500 font-mono leading-relaxed max-w-2xl">
-          Tests all Profile Discovery combos (Rank × Gates × SL × TP × Session) against REAL historical candle data.
-          Every trade is simulated bar-by-bar with actual SL/TP hit detection on High/Low — zero synthetic randomness.
-          Uses 5% Risk Dynamic Sizing on $1,000 starting equity.
+          Fires 3 parallel workers (one per Predator Rank), each independently fetching candles, computing ranks,
+          and simulating ~1,800 combos. Results are merged client-side. Bitwise gate checks + pre-computed exits
+          for maximum CPU efficiency.
         </div>
       )}
 
-      {/* Loading */}
+      {/* Loading with chunk progress */}
       {loading && (
         <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="py-6 space-y-3">
           <div className="flex items-center gap-3">
@@ -185,20 +239,33 @@ export function LiveProfileBacktest() {
             </motion.div>
             <div className="flex-1">
               <span className="text-[10px] text-slate-300 font-mono uppercase tracking-widest">
-                Fetching candles & simulating combos…
+                MapReduce: {progress.completed}/{progress.total} workers complete
               </span>
               <div className="w-full h-2 bg-slate-800 rounded-full overflow-hidden mt-2">
                 <motion.div
                   className="h-full rounded-full"
                   style={{ background: '#ff6600' }}
-                  initial={{ width: '5%' }}
-                  animate={{ width: '85%' }}
-                  transition={{ duration: 30, ease: 'linear' }}
+                  animate={{ width: `${Math.max(5, (progress.completed / progress.total) * 100)}%` }}
+                  transition={{ duration: 0.3 }}
                 />
               </div>
-              <p className="text-[9px] text-slate-500 font-mono mt-1">
-                This may take 15–40 seconds depending on candle count.
-              </p>
+              <div className="flex gap-2 mt-2">
+                {['Predator R1', 'Predator R2', 'Predator R3'].map((label) => {
+                  const done = progress.chunks.includes(label);
+                  return (
+                    <span
+                      key={label}
+                      className={`text-[8px] font-mono px-2 py-0.5 rounded-lg border transition-all ${
+                        done
+                          ? 'border-emerald-500/40 text-emerald-400 bg-emerald-500/10'
+                          : 'border-slate-700 text-slate-500 bg-slate-900/50'
+                      }`}
+                    >
+                      {done ? '✓' : '⏳'} {label}
+                    </span>
+                  );
+                })}
+              </div>
             </div>
           </div>
         </motion.div>
