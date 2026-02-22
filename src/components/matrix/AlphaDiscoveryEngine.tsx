@@ -9,6 +9,7 @@ import {
   Loader2, CheckCircle2, Clock, Sparkles, Atom, Globe, Trophy,
 } from 'lucide-react';
 import type { BacktestResult } from '@/hooks/useRankExpectancy';
+import { PeriodPerformanceRow } from './TimePeriodBreakdown';
 
 interface StrategyDNA {
   rsiPeriod: number; rsiLow: number; rsiHigh: number; rsiMode: number;
@@ -773,6 +774,7 @@ function StrategyCard({ profile, idx, expandedProfile, setExpandedProfile, maxCo
                   </span>
                 </div>
                 <EquityCurve curve={profile.equityCurve} height={80} />
+                <PeriodPerformanceRow equityCurve={profile.equityCurve} dateRange={dateRange} />
               </div>
 
               <div className="bg-blue-950/20 border border-blue-500/20 rounded-lg p-3">
@@ -856,32 +858,4 @@ function StatBox({ label, value, color }: { label: string; value: string | numbe
   );
 }
 
-// ── Period Performance Row ──
-function PeriodPerformanceRow({ equityCurve, dateRange }: { equityCurve: number[]; dateRange?: { start: string; end: string } }) {
-  if (!equityCurve || equityCurve.length < 10) return null;
-  const totalBars = equityCurve.length;
-  const periods = [
-    { label: '7D', bars: Math.min(Math.round(totalBars * 0.05), totalBars) },
-    { label: '14D', bars: Math.min(Math.round(totalBars * 0.1), totalBars) },
-    { label: '30D', bars: Math.min(Math.round(totalBars * 0.2), totalBars) },
-    { label: '60D', bars: Math.min(Math.round(totalBars * 0.4), totalBars) },
-  ];
-
-  return (
-    <div className="flex items-center gap-1.5 mt-1.5">
-      <span className="text-[5px] text-slate-600 font-mono">PERIOD:</span>
-      {periods.map(p => {
-        const startIdx = Math.max(0, totalBars - p.bars);
-        const startVal = equityCurve[startIdx] || equityCurve[0];
-        const endVal = equityCurve[totalBars - 1];
-        const pctChange = ((endVal - startVal) / (startVal || 1)) * 100;
-        const color = pctChange >= 0 ? '#39ff14' : '#ff0055';
-        return (
-          <span key={p.label} className="text-[6px] font-mono px-1 py-0.5 rounded border border-slate-800/50 bg-slate-950/30" style={{ color }}>
-            {p.label}: {pctChange >= 0 ? '+' : ''}{pctChange.toFixed(1)}%
-          </span>
-        );
-      })}
-    </div>
-  );
-}
+// PeriodPerformanceRow imported from ./TimePeriodBreakdown

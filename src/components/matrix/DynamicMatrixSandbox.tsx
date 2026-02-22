@@ -9,6 +9,7 @@ import {
   Crosshair, OctagonX, Clock,
 } from 'lucide-react';
 import type { BacktestResult, RankComboResult } from '@/hooks/useRankExpectancy';
+import { TimePeriodBreakdown } from './TimePeriodBreakdown';
 
 // ── Trading Sessions ──
 const SESSION_OPTIONS = [
@@ -722,6 +723,9 @@ export const DynamicMatrixSandbox = ({ result }: Props) => {
                   <span>{sandbox.equityCurve.length > 0 ? new Date(sandbox.equityCurve[sandbox.equityCurve.length - 1].time).toLocaleDateString() : ''}</span>
                 </div>
               </div>
+
+              {/* Period Performance Breakdown */}
+              <TimePeriodBreakdown curve={sandbox.equityCurve} />
 
               {/* Trade Log */}
               <div className="bg-slate-950/60 border border-slate-800/50 rounded-xl p-4">

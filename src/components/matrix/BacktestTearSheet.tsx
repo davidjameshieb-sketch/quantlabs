@@ -4,6 +4,7 @@
 import { motion } from 'framer-motion';
 import { Shield, Zap, Target, Clock, TrendingUp, TrendingDown, BarChart3, Layers } from 'lucide-react';
 import type { BacktestResult, SessionStats, PillarSummary, RankComboResult } from '@/hooks/useRankExpectancy';
+import { TimePeriodBreakdown } from './TimePeriodBreakdown';
 
 interface Props {
   result: BacktestResult;
@@ -178,6 +179,17 @@ export const BacktestTearSheet = ({ result }: Props) => {
             sub={`${(combo4v5?.totalPips ?? 0) > 0 ? '+' : ''}${combo4v5?.totalPips ?? 0} pips — capital destruction`} />
         </div>
       </motion.div>
+
+      {/* ── Period Performance Breakdown ── */}
+      {result.equityCurves?.['1v8'] && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ delay: 0.45 }}
+        >
+          <TimePeriodBreakdown curve={result.equityCurves['1v8']} />
+        </motion.div>
+      )}
 
       {/* ── Session / Time Gate Analysis ── */}
       <motion.div

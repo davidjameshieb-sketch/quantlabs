@@ -9,6 +9,7 @@ import {
   AlertTriangle, CircleCheck, CircleAlert,
 } from 'lucide-react';
 import type { BacktestResult, RankComboResult } from '@/hooks/useRankExpectancy';
+import { TimePeriodBreakdown } from './TimePeriodBreakdown';
 
 // ── Reuse the same grid constants ──
 const SL_GRID = [
@@ -905,6 +906,7 @@ export const ExperimentalStrategies = ({ result }: Props) => {
                               Synthesized Equity Curve
                             </div>
                             <MiniCurve curve={strat.equityCurve} height={120} />
+                            <TimePeriodBreakdown curve={strat.equityCurve} />
                           </div>
 
                           {/* Thesis */}
