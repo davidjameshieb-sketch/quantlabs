@@ -1,11 +1,19 @@
-// Alpha Discovery Engine v6.0 — Advanced Multi-Indicator Alpha Mining
-// Full "Kitchen Sink" indicator library: RSI, MACD, BB, EMAs, ADX, Stochastic, CCI,
-// Donchian Channels, Price Action (Engulfing/Pin Bar/Inside Bar), Volume, Day-of-Week
-// Advanced exits: Trailing stops, partial TP, time-based exits
+// Alpha Discovery Engine v7.0 — Novel Micro-Structure Alpha Mining
+// Replaces ALL traditional indicators (RSI, MACD, BB, EMA, ADX, Stoch, CCI, Donchian)
+// with 8 creative micro-structure features:
+//   1. Efficiency Ratio (Kaufman) — trend quality measurement
+//   2. Close Location Value (CLV) — intra-bar positioning
+//   3. Range Expansion/Contraction — volatility cycling
+//   4. Consecutive Direction — momentum exhaustion/continuation
+//   5. Volume Delta — buy/sell pressure imbalance
+//   6. Fractal Dimension — market roughness/smoothness
+//   7. Gap Momentum — inter-bar gap patterns
+//   8. Candle Anatomy — body/wick structural analysis
 //
-// Phase 1: Fetch candles, compute 30+ indicators, store in sovereign_memory
-// Phase 2: Run N generations per invocation, persist population state
-// Phase 3: Extract top 10 mathematically distinct strategies
+// High-frequency design: TRADE_COOLDOWN=1, MIN_TRADES=150
+// Phase 1: Regime Classification + novel feature computation
+// Phase 2: GA evolution with novel genome
+// Phase 3: Extract top strategies
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
@@ -20,36 +28,34 @@ const OANDA_PRACTICE_HOST = "https://api-fxpractice.oanda.com";
 // ── Types ──────────────────────────────────────────────────────────────────
 interface Candle { time: string; volume: number; high: number; low: number; open: number; close: number; }
 
-// Expanded DNA — 34 genes
+// Novel DNA — 24 genes (down from 34)
 interface StrategyDNA {
-  // RSI
-  rsiPeriod: number; rsiLow: number; rsiHigh: number; rsiMode: number;
-  // MACD
-  macdFast: number; macdSlow: number; macdSignal: number; macdMode: number;
-  // Bollinger Bands
-  bbPeriod: number; bbStdDev: number; bbMode: number;
-  // EMA
-  emaFast: number; emaSlow: number; emaMode: number;
-  // ADX (trend strength)
-  adxPeriod: number; adxMode: number; // 0=off, 1=trend-only(>25), 2=range-only(<20), 3=ADX-rising
-  // Stochastic
-  stochK: number; stochD: number; stochMode: number; // 0=off, 1=oversold-buy, 2=overbought-sell, 3=K/D-cross
-  // CCI
-  cciPeriod: number; cciMode: number; // 0=off, 1=breakout(>100), 2=reversal(<-100), 3=zero-cross
-  // Donchian Channel
-  donchianPeriod: number; donchianMode: number; // 0=off, 1=high-breakout, 2=midline, 3=fade-extremes
-  // Price Action
-  paMode: number; // 0=off, 1=inside-bar-breakout, 2=engulfing, 3=pin-bar
+  // Efficiency Ratio (Kaufman)
+  erPeriod: number; erMode: number; // 0=off, 1=high-ER breakout, 2=low-ER reversion, 3=ER acceleration
+  // Close Location Value
+  clvSmooth: number; clvMode: number; // 0=off, 1=extreme CLV reversal, 2=CLV trend, 3=CLV divergence
+  // Range Expansion/Contraction
+  rangeExpPeriod: number; rangeExpMode: number; // 0=off, 1=expansion breakout, 2=contraction squeeze, 3=range acceleration
+  // Consecutive Direction
+  consecThreshold: number; consecMode: number; // 0=off, 1=exhaustion fade, 2=momentum follow, 3=direction change
+  // Volume Delta
+  volDeltaPeriod: number; volDeltaMode: number; // 0=off, 1=delta breakout, 2=delta divergence, 3=delta acceleration
+  // Fractal Dimension
+  fdPeriod: number; fdMode: number; // 0=off, 1=low-FD trend, 2=high-FD reversion, 3=FD shift
+  // Gap Momentum
+  gapMode: number; // 0=off, 1=gap-and-go, 2=gap-fill fade, 3=large-gap filter
+  // Candle Anatomy
+  candleMode: number; // 0=off, 1=strong-body momentum, 2=indecision breakout, 3=rejection reversal
   // Filters
   volMode: number; sessionFilter: number; dayFilter: number; direction: number;
-  // Risk (original)
+  // Risk
   slMultiplier: number; tpMultiplier: number;
   // Hurst
   hurstMin: number; hurstMax: number;
   // Advanced exits
-  trailingATR: number;    // 0=off, 0.5-3.0 ATR trailing stop
-  maxBarsInTrade: number; // 0=off, 4-48 bars max hold
-  partialTP: number;      // 0=off, 1=50% at 1R then trail, 2=33% at each R
+  trailingATR: number;
+  maxBarsInTrade: number;
+  partialTP: number;
 }
 
 interface SimResult {
@@ -66,46 +72,40 @@ interface ScoredIndividual {
 }
 
 // Market Regime Classification
-// 0 = TREND (directional expansion), 1 = RANGE (mean reversion), 2 = SHOCK (volatility spike)
 type RegimeTag = 0 | 1 | 2;
 const REGIME_TREND: RegimeTag = 0;
 const REGIME_RANGE: RegimeTag = 1;
 const REGIME_SHOCK: RegimeTag = 2;
 const REGIME_LABELS = ['TREND', 'RANGE', 'SHOCK'] as const;
 
-// Extended feature arrays
+// Feature arrays — novel micro-structure indicators
 interface BarArrays {
   close: number[]; high: number[]; low: number[]; open: number[];
   atr: number[];
-  rsi7: number[]; rsi14: number[]; rsi21: number[];
-  macdLine_12_26: number[]; macdSignal_12_26_9: number[]; macdHist_12_26_9: number[];
-  macdLine_8_21: number[]; macdSignal_8_21_5: number[]; macdHist_8_21_5: number[];
-  bbUpper: number[]; bbMiddle: number[]; bbLower: number[]; bbWidth: number[];
-  ema5: number[]; ema8: number[]; ema13: number[]; ema21: number[];
-  ema34: number[]; ema50: number[]; ema100: number[]; ema200: number[];
-  // NEW indicators
-  adx14: number[]; adx20: number[]; plusDI: number[]; minusDI: number[];
-  stochK5: number[]; stochD5: number[]; stochK9: number[]; stochD9: number[]; stochK14: number[]; stochD14: number[];
-  cci14: number[]; cci20: number[];
-  donchianHigh10: number[]; donchianLow10: number[]; donchianMid10: number[];
-  donchianHigh20: number[]; donchianLow20: number[]; donchianMid20: number[];
-  donchianHigh55: number[]; donchianLow55: number[]; donchianMid55: number[];
-  // Price action
-  isInsideBar: number[]; isEngulfingBull: number[]; isEngulfingBear: number[];
-  isPinBarBull: number[]; isPinBarBear: number[];
-  // Original
+  // Novel indicators
+  efficiencyRatio8: number[];  efficiencyRatio13: number[]; efficiencyRatio21: number[];
+  clvRaw: number[]; clvSmooth5: number[]; clvSmooth10: number[];
+  rangeRatio8: number[]; rangeRatio13: number[]; rangeRatio21: number[];
+  consecUp: number[]; consecDown: number[];
+  volDelta5: number[]; volDelta10: number[]; volDelta20: number[];
+  fractalDim10: number[]; fractalDim20: number[];
+  gapSize: number[]; gapDirection: number[];
+  bodyRatio: number[]; upperWickRatio: number[]; lowerWickRatio: number[];
+  isDoji: number[]; isHammer: number[]; isShootingStar: number[];
+  // Regime support (EMA/ATR for regime classification only)
+  ema21Internal: number[];
+  adx14Internal: number[];
+  // Original filters
   volRatio: number[]; session: number[]; dayOfWeek: number[];
   hurst: number[]; volBucket: number[]; isLongBias: number[];
   mfeLong: number[]; maeLong: number[]; mfeShort: number[]; maeShort: number[];
-  // For advanced sim: bar-by-bar high/low for trailing
   barHigh: number[]; barLow: number[];
   isJPY: number[];
-  // Phase 1: Regime Classification
   regimeTag: RegimeTag[];
   count: number;
 }
 
-// ── Indicator Calculations ─────────────────────────────────────────────────
+// ── Core Indicator Calculations (kept for regime + risk) ───────────────────
 
 function computeEMA(values: number[], period: number): number[] {
   const ema = new Array(values.length).fill(0);
@@ -118,55 +118,6 @@ function computeEMA(values: number[], period: number): number[] {
     ema[i] = values[i] * k + ema[i - 1] * (1 - k);
   }
   return ema;
-}
-
-function computeRSI(closes: number[], period: number): number[] {
-  const rsi = new Array(closes.length).fill(50);
-  if (closes.length < period + 1) return rsi;
-  let avgGain = 0, avgLoss = 0;
-  for (let i = 1; i <= period; i++) {
-    const delta = closes[i] - closes[i - 1];
-    if (delta > 0) avgGain += delta; else avgLoss -= delta;
-  }
-  avgGain /= period; avgLoss /= period;
-  rsi[period] = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
-  for (let i = period + 1; i < closes.length; i++) {
-    const delta = closes[i] - closes[i - 1];
-    avgGain = (avgGain * (period - 1) + (delta > 0 ? delta : 0)) / period;
-    avgLoss = (avgLoss * (period - 1) + (delta < 0 ? -delta : 0)) / period;
-    rsi[i] = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
-  }
-  return rsi;
-}
-
-function computeMACD(closes: number[], fast: number, slow: number, signal: number): { line: number[]; signal: number[]; hist: number[] } {
-  const emaFast = computeEMA(closes, fast);
-  const emaSlow = computeEMA(closes, slow);
-  const macdLine = closes.map((_, i) => emaFast[i] - emaSlow[i]);
-  const signalLine = computeEMA(macdLine, signal);
-  const hist = macdLine.map((v, i) => v - signalLine[i]);
-  return { line: macdLine, signal: signalLine, hist };
-}
-
-function computeBollingerBands(closes: number[], period: number, stdDevMult: number): { upper: number[]; middle: number[]; lower: number[]; width: number[] } {
-  const n = closes.length;
-  const upper = new Array(n).fill(0);
-  const middle = new Array(n).fill(0);
-  const lower = new Array(n).fill(0);
-  const width = new Array(n).fill(0);
-  for (let i = period - 1; i < n; i++) {
-    let sum = 0;
-    for (let j = i - period + 1; j <= i; j++) sum += closes[j];
-    const sma = sum / period;
-    let ssq = 0;
-    for (let j = i - period + 1; j <= i; j++) ssq += (closes[j] - sma) ** 2;
-    const std = Math.sqrt(ssq / period);
-    middle[i] = sma;
-    upper[i] = sma + stdDevMult * std;
-    lower[i] = sma - stdDevMult * std;
-    width[i] = sma > 0 ? (upper[i] - lower[i]) / sma : 0;
-  }
-  return { upper, middle, lower, width };
 }
 
 function computeATR(candles: Candle[], period = 14): number[] {
@@ -185,13 +136,13 @@ function computeATR(candles: Candle[], period = 14): number[] {
   return atrs;
 }
 
-// ADX (Average Directional Index)
-function computeADX(candles: Candle[], period: number): { adx: number[]; plusDI: number[]; minusDI: number[] } {
+// ADX for regime classification only
+function computeADXInternal(candles: Candle[], period: number): number[] {
   const n = candles.length;
   const adx = new Array(n).fill(0);
   const plusDI = new Array(n).fill(0);
   const minusDI = new Array(n).fill(0);
-  if (n < period * 2) return { adx, plusDI, minusDI };
+  if (n < period * 2) return adx;
 
   const smoothPlusDM = new Array(n).fill(0);
   const smoothMinusDM = new Array(n).fill(0);
@@ -240,67 +191,7 @@ function computeADX(candles: Candle[], period: number): { adx: number[]; plusDI:
       adx[i] = (adx[i - 1] * (period - 1) + dx) / period;
     }
   }
-  return { adx, plusDI, minusDI };
-}
-
-// Stochastic Oscillator
-function computeStochastic(candles: Candle[], kPeriod: number, dPeriod: number): { k: number[]; d: number[] } {
-  const n = candles.length;
-  const kArr = new Array(n).fill(50);
-  for (let i = kPeriod - 1; i < n; i++) {
-    let hh = -Infinity, ll = Infinity;
-    for (let j = i - kPeriod + 1; j <= i; j++) {
-      if (candles[j].high > hh) hh = candles[j].high;
-      if (candles[j].low < ll) ll = candles[j].low;
-    }
-    kArr[i] = (hh - ll) > 0 ? ((candles[i].close - ll) / (hh - ll)) * 100 : 50;
-  }
-  // %D = SMA of %K
-  const dArr = new Array(n).fill(50);
-  for (let i = kPeriod + dPeriod - 2; i < n; i++) {
-    let sum = 0;
-    for (let j = i - dPeriod + 1; j <= i; j++) sum += kArr[j];
-    dArr[i] = sum / dPeriod;
-  }
-  return { k: kArr, d: dArr };
-}
-
-// CCI (Commodity Channel Index)
-function computeCCI(candles: Candle[], period: number): number[] {
-  const n = candles.length;
-  const cci = new Array(n).fill(0);
-  for (let i = period - 1; i < n; i++) {
-    let sum = 0;
-    for (let j = i - period + 1; j <= i; j++) {
-      sum += (candles[j].high + candles[j].low + candles[j].close) / 3;
-    }
-    const tp = (candles[i].high + candles[i].low + candles[i].close) / 3;
-    const sma = sum / period;
-    let madSum = 0;
-    for (let j = i - period + 1; j <= i; j++) {
-      madSum += Math.abs((candles[j].high + candles[j].low + candles[j].close) / 3 - sma);
-    }
-    const mad = madSum / period;
-    cci[i] = mad > 0 ? (tp - sma) / (0.015 * mad) : 0;
-  }
-  return cci;
-}
-
-// Donchian Channels
-function computeDonchian(candles: Candle[], period: number): { high: number[]; low: number[]; mid: number[] } {
-  const n = candles.length;
-  const dHigh = new Array(n).fill(0);
-  const dLow = new Array(n).fill(0);
-  const dMid = new Array(n).fill(0);
-  for (let i = period - 1; i < n; i++) {
-    let hh = -Infinity, ll = Infinity;
-    for (let j = i - period + 1; j <= i; j++) {
-      if (candles[j].high > hh) hh = candles[j].high;
-      if (candles[j].low < ll) ll = candles[j].low;
-    }
-    dHigh[i] = hh; dLow[i] = ll; dMid[i] = (hh + ll) / 2;
-  }
-  return { high: dHigh, low: dLow, mid: dMid };
+  return adx;
 }
 
 function computeHurst(closes: number[], start: number, window: number): number {
@@ -322,6 +213,111 @@ function computeHurst(closes: number[], start: number, window: number): number {
   const S = Math.sqrt(ssq / returns.length);
   if (S === 0) return 0.5;
   return Math.log((cumMax - cumMin) / S) / Math.log(returns.length);
+}
+
+// ── Novel Indicator Computations ──────────────────────────────────────────
+
+/** Kaufman Efficiency Ratio: |net movement| / total path length */
+function computeEfficiencyRatio(closes: number[], period: number): number[] {
+  const n = closes.length;
+  const er = new Array(n).fill(0.5);
+  for (let i = period; i < n; i++) {
+    const netChange = Math.abs(closes[i] - closes[i - period]);
+    let totalPath = 0;
+    for (let j = i - period + 1; j <= i; j++) {
+      totalPath += Math.abs(closes[j] - closes[j - 1]);
+    }
+    er[i] = totalPath > 0 ? netChange / totalPath : 0;
+  }
+  return er;
+}
+
+/** Close Location Value: where close sits within H-L range, [-1 to +1] */
+function computeCLV(candles: Candle[]): number[] {
+  return candles.map(c => {
+    const range = c.high - c.low;
+    if (range <= 0) return 0;
+    return (2 * c.close - c.high - c.low) / range;
+  });
+}
+
+/** Range Ratio: current bar range / SMA(range, period) */
+function computeRangeRatio(candles: Candle[], period: number): number[] {
+  const n = candles.length;
+  const rr = new Array(n).fill(1);
+  for (let i = period; i < n; i++) {
+    let avgRange = 0;
+    for (let j = i - period; j < i; j++) {
+      avgRange += candles[j].high - candles[j].low;
+    }
+    avgRange /= period;
+    const curRange = candles[i].high - candles[i].low;
+    rr[i] = avgRange > 0 ? curRange / avgRange : 1;
+  }
+  return rr;
+}
+
+/** Consecutive direction counts */
+function computeConsecutive(candles: Candle[]): { up: number[]; down: number[] } {
+  const n = candles.length;
+  const up = new Array(n).fill(0);
+  const down = new Array(n).fill(0);
+  for (let i = 1; i < n; i++) {
+    if (candles[i].close > candles[i].open) {
+      up[i] = up[i - 1] + 1;
+      down[i] = 0;
+    } else if (candles[i].close < candles[i].open) {
+      down[i] = down[i - 1] + 1;
+      up[i] = 0;
+    } else {
+      up[i] = 0;
+      down[i] = 0;
+    }
+  }
+  return { up, down };
+}
+
+/** Volume Delta: cumulative (up-volume - down-volume) over N bars */
+function computeVolumeDelta(candles: Candle[], period: number): number[] {
+  const n = candles.length;
+  const vd = new Array(n).fill(0);
+  for (let i = period; i < n; i++) {
+    let delta = 0;
+    for (let j = i - period + 1; j <= i; j++) {
+      const isUp = candles[j].close >= candles[j].open;
+      delta += isUp ? candles[j].volume : -candles[j].volume;
+    }
+    // Normalize by total volume in window
+    let totalVol = 0;
+    for (let j = i - period + 1; j <= i; j++) totalVol += candles[j].volume;
+    vd[i] = totalVol > 0 ? delta / totalVol : 0; // -1 to +1
+  }
+  return vd;
+}
+
+/** Fractal Dimension (Higuchi-inspired): measures market roughness, 1.0=smooth trend, 2.0=pure noise */
+function computeFractalDimension(closes: number[], period: number): number[] {
+  const n = closes.length;
+  const fd = new Array(n).fill(1.5);
+  for (let i = period; i < n; i++) {
+    // Use two scales: k=1 and k=period/2
+    let L1 = 0, L2 = 0;
+    const halfP = Math.max(2, Math.floor(period / 2));
+    for (let j = i - period + 2; j <= i; j++) {
+      L1 += Math.abs(closes[j] - closes[j - 1]);
+    }
+    L1 = (L1 * (period - 1)) / (period - 1);
+    for (let j = i - period + halfP + 1; j <= i; j += halfP) {
+      if (j - halfP >= i - period) L2 += Math.abs(closes[j] - closes[j - halfP]);
+    }
+    const numSteps = Math.floor((period - 1) / halfP);
+    if (numSteps > 0) L2 = (L2 * (period - 1)) / (numSteps * halfP);
+    if (L2 > 0 && L1 > 0) {
+      fd[i] = Math.log(L1 / L2) / Math.log(halfP) + 1;
+      fd[i] = Math.max(1.0, Math.min(2.0, fd[i]));
+    }
+  }
+  return fd;
 }
 
 function getSession(time: string): number {
@@ -388,52 +384,36 @@ async function fetchCandles(
   return all.filter(c => { if (seen.has(c.time)) return false; seen.add(c.time); return true; });
 }
 
-// ── Build full indicator library ──────────────────────────────────────────
+// ── Build Novel Feature Arrays ──────────────────────────────────────────
 function buildFeatureArrays(pair: string, candles: Candle[]): BarArrays {
   const isJPY = pair.includes('JPY') ? 1 : 0;
   const n = candles.length;
   const closes = candles.map(c => c.close);
-  const highs = candles.map(c => c.high);
-  const lows = candles.map(c => c.low);
-  const opens = candles.map(c => c.open);
   const volumes = candles.map(c => c.volume);
 
-  // Pre-compute all indicators
+  // Core (for regime + risk)
   const atrs = computeATR(candles, 14);
-  const rsi7 = computeRSI(closes, 7);
-  const rsi14 = computeRSI(closes, 14);
-  const rsi21 = computeRSI(closes, 21);
-  const macd1 = computeMACD(closes, 12, 26, 9);
-  const macd2 = computeMACD(closes, 8, 21, 5);
-  const bb = computeBollingerBands(closes, 20, 2.0);
-  const ema5 = computeEMA(closes, 5);
-  const ema8 = computeEMA(closes, 8);
-  const ema13 = computeEMA(closes, 13);
   const ema21 = computeEMA(closes, 21);
-  const ema34 = computeEMA(closes, 34);
-  const ema50 = computeEMA(closes, 50);
-  const ema100 = computeEMA(closes, 100);
-  const ema200 = computeEMA(closes, 200);
+  const adx14 = computeADXInternal(candles, 14);
 
-  // NEW: ADX
-  const adx14Data = computeADX(candles, 14);
-  const adx20Data = computeADX(candles, 20);
+  // Novel indicators
+  const er8 = computeEfficiencyRatio(closes, 8);
+  const er13 = computeEfficiencyRatio(closes, 13);
+  const er21 = computeEfficiencyRatio(closes, 21);
+  const clvRaw = computeCLV(candles);
+  const clvSmooth5 = computeEMA(clvRaw, 5);
+  const clvSmooth10 = computeEMA(clvRaw, 10);
+  const rr8 = computeRangeRatio(candles, 8);
+  const rr13 = computeRangeRatio(candles, 13);
+  const rr21 = computeRangeRatio(candles, 21);
+  const consec = computeConsecutive(candles);
+  const vd5 = computeVolumeDelta(candles, 5);
+  const vd10 = computeVolumeDelta(candles, 10);
+  const vd20 = computeVolumeDelta(candles, 20);
+  const fd10 = computeFractalDimension(closes, 10);
+  const fd20 = computeFractalDimension(closes, 20);
 
-  // NEW: Stochastic
-  const stoch5 = computeStochastic(candles, 5, 3);
-  const stoch9 = computeStochastic(candles, 9, 3);
-  const stoch14 = computeStochastic(candles, 14, 5);
-
-  // NEW: CCI
-  const cci14 = computeCCI(candles, 14);
-  const cci20 = computeCCI(candles, 20);
-
-  // NEW: Donchian Channels
-  const don10 = computeDonchian(candles, 10);
-  const don20 = computeDonchian(candles, 20);
-  const don55 = computeDonchian(candles, 55);
-
-  // Volume ratio
+  // Volume ratio for filter
   const volAvg20: number[] = new Array(n).fill(0);
   for (let i = 19; i < n; i++) {
     let sum = 0; for (let j = i - 19; j <= i; j++) sum += volumes[j];
@@ -453,23 +433,19 @@ function buildFeatureArrays(pair: string, candles: Candle[]): BarArrays {
   const p33 = sortedVols[Math.floor(sortedVols.length * 0.33)] || 0;
   const p66 = sortedVols[Math.floor(sortedVols.length * 0.66)] || 0;
 
-  const START = 200;
+  const START = 100; // Reduced from 200 since we use shorter-period indicators
   const bars: BarArrays = {
     close: [], high: [], low: [], open: [], atr: [],
-    rsi7: [], rsi14: [], rsi21: [],
-    macdLine_12_26: [], macdSignal_12_26_9: [], macdHist_12_26_9: [],
-    macdLine_8_21: [], macdSignal_8_21_5: [], macdHist_8_21_5: [],
-    bbUpper: [], bbMiddle: [], bbLower: [], bbWidth: [],
-    ema5: [], ema8: [], ema13: [], ema21: [],
-    ema34: [], ema50: [], ema100: [], ema200: [],
-    adx14: [], adx20: [], plusDI: [], minusDI: [],
-    stochK5: [], stochD5: [], stochK9: [], stochD9: [], stochK14: [], stochD14: [],
-    cci14: [], cci20: [],
-    donchianHigh10: [], donchianLow10: [], donchianMid10: [],
-    donchianHigh20: [], donchianLow20: [], donchianMid20: [],
-    donchianHigh55: [], donchianLow55: [], donchianMid55: [],
-    isInsideBar: [], isEngulfingBull: [], isEngulfingBear: [],
-    isPinBarBull: [], isPinBarBear: [],
+    efficiencyRatio8: [], efficiencyRatio13: [], efficiencyRatio21: [],
+    clvRaw: [], clvSmooth5: [], clvSmooth10: [],
+    rangeRatio8: [], rangeRatio13: [], rangeRatio21: [],
+    consecUp: [], consecDown: [],
+    volDelta5: [], volDelta10: [], volDelta20: [],
+    fractalDim10: [], fractalDim20: [],
+    gapSize: [], gapDirection: [],
+    bodyRatio: [], upperWickRatio: [], lowerWickRatio: [],
+    isDoji: [], isHammer: [], isShootingStar: [],
+    ema21Internal: [], adx14Internal: [],
     volRatio: [], session: [], dayOfWeek: [],
     hurst: [], volBucket: [], isLongBias: [],
     mfeLong: [], maeLong: [], mfeShort: [], maeShort: [],
@@ -511,58 +487,37 @@ function buildFeatureArrays(pair: string, candles: Candle[]): BarArrays {
 
     const vr = volAvg20[i] > 0 ? volumes[i] / volAvg20[i] : 1;
 
-    // Price action patterns
-    const bodySize = Math.abs(candles[i].close - candles[i].open);
+    // Gap analysis
+    const gap = i > 0 ? candles[i].open - candles[i - 1].close : 0;
+    const gapNorm = currentATR > 0 ? gap / currentATR : 0;
+
+    // Candle anatomy
     const candleRange = candles[i].high - candles[i].low;
-    const prevBodySize = Math.abs(candles[i - 1].close - candles[i - 1].open);
-    const prevRange = candles[i - 1].high - candles[i - 1].low;
-
-    // Inside bar: current high < prev high AND current low > prev low
-    const isInside = candles[i].high < candles[i - 1].high && candles[i].low > candles[i - 1].low ? 1 : 0;
-
-    // Engulfing: current body engulfs previous body
-    const isBullEngulf = candles[i].close > candles[i].open &&
-      candles[i - 1].close < candles[i - 1].open &&
-      candles[i].close > candles[i - 1].open &&
-      candles[i].open < candles[i - 1].close ? 1 : 0;
-    const isBearEngulf = candles[i].close < candles[i].open &&
-      candles[i - 1].close > candles[i - 1].open &&
-      candles[i].close < candles[i - 1].open &&
-      candles[i].open > candles[i - 1].close ? 1 : 0;
-
-    // Pin bar: small body, long wick (>60% of range on one side)
+    const body = Math.abs(candles[i].close - candles[i].open);
     const upperWick = candles[i].high - Math.max(candles[i].open, candles[i].close);
     const lowerWick = Math.min(candles[i].open, candles[i].close) - candles[i].low;
-    const isPinBull = candleRange > 0 && lowerWick / candleRange > 0.6 && bodySize / candleRange < 0.3 ? 1 : 0;
-    const isPinBear = candleRange > 0 && upperWick / candleRange > 0.6 && bodySize / candleRange < 0.3 ? 1 : 0;
+    const bRatio = candleRange > 0 ? body / candleRange : 0;
+    const uwRatio = candleRange > 0 ? upperWick / candleRange : 0;
+    const lwRatio = candleRange > 0 ? lowerWick / candleRange : 0;
+    const isDoji = bRatio < 0.15 ? 1 : 0;
+    const isHammer = lwRatio > 0.6 && bRatio < 0.3 ? 1 : 0;
+    const isShootingStar = uwRatio > 0.6 && bRatio < 0.3 ? 1 : 0;
 
-    bars.close.push(closes[i]); bars.high.push(highs[i]); bars.low.push(lows[i]); bars.open.push(opens[i]);
+    bars.close.push(closes[i]); bars.high.push(candles[i].high);
+    bars.low.push(candles[i].low); bars.open.push(candles[i].open);
     bars.atr.push(currentATR);
-    bars.rsi7.push(rsi7[i]); bars.rsi14.push(rsi14[i]); bars.rsi21.push(rsi21[i]);
-    bars.macdLine_12_26.push(macd1.line[i]); bars.macdSignal_12_26_9.push(macd1.signal[i]); bars.macdHist_12_26_9.push(macd1.hist[i]);
-    bars.macdLine_8_21.push(macd2.line[i]); bars.macdSignal_8_21_5.push(macd2.signal[i]); bars.macdHist_8_21_5.push(macd2.hist[i]);
-    bars.bbUpper.push(bb.upper[i]); bars.bbMiddle.push(bb.middle[i]); bars.bbLower.push(bb.lower[i]); bars.bbWidth.push(bb.width[i]);
-    bars.ema5.push(ema5[i]); bars.ema8.push(ema8[i]); bars.ema13.push(ema13[i]); bars.ema21.push(ema21[i]);
-    bars.ema34.push(ema34[i]); bars.ema50.push(ema50[i]); bars.ema100.push(ema100[i]); bars.ema200.push(ema200[i]);
-    // ADX
-    bars.adx14.push(adx14Data.adx[i]); bars.adx20.push(adx20Data.adx[i]);
-    bars.plusDI.push(adx14Data.plusDI[i]); bars.minusDI.push(adx14Data.minusDI[i]);
-    // Stochastic
-    bars.stochK5.push(stoch5.k[i]); bars.stochD5.push(stoch5.d[i]);
-    bars.stochK9.push(stoch9.k[i]); bars.stochD9.push(stoch9.d[i]);
-    bars.stochK14.push(stoch14.k[i]); bars.stochD14.push(stoch14.d[i]);
-    // CCI
-    bars.cci14.push(cci14[i]); bars.cci20.push(cci20[i]);
-    // Donchian
-    bars.donchianHigh10.push(don10.high[i]); bars.donchianLow10.push(don10.low[i]); bars.donchianMid10.push(don10.mid[i]);
-    bars.donchianHigh20.push(don20.high[i]); bars.donchianLow20.push(don20.low[i]); bars.donchianMid20.push(don20.mid[i]);
-    bars.donchianHigh55.push(don55.high[i]); bars.donchianLow55.push(don55.low[i]); bars.donchianMid55.push(don55.mid[i]);
-    // Price action
-    bars.isInsideBar.push(isInside);
-    bars.isEngulfingBull.push(isBullEngulf); bars.isEngulfingBear.push(isBearEngulf);
-    bars.isPinBarBull.push(isPinBull); bars.isPinBarBear.push(isPinBear);
-    // Bar high/low for trailing sim
-    bars.barHigh.push(highs[i]); bars.barLow.push(lows[i]);
+
+    bars.efficiencyRatio8.push(er8[i]); bars.efficiencyRatio13.push(er13[i]); bars.efficiencyRatio21.push(er21[i]);
+    bars.clvRaw.push(clvRaw[i]); bars.clvSmooth5.push(clvSmooth5[i]); bars.clvSmooth10.push(clvSmooth10[i]);
+    bars.rangeRatio8.push(rr8[i]); bars.rangeRatio13.push(rr13[i]); bars.rangeRatio21.push(rr21[i]);
+    bars.consecUp.push(consec.up[i]); bars.consecDown.push(consec.down[i]);
+    bars.volDelta5.push(vd5[i]); bars.volDelta10.push(vd10[i]); bars.volDelta20.push(vd20[i]);
+    bars.fractalDim10.push(fd10[i]); bars.fractalDim20.push(fd20[i]);
+    bars.gapSize.push(Math.abs(gapNorm)); bars.gapDirection.push(gapNorm > 0 ? 1 : gapNorm < 0 ? -1 : 0);
+    bars.bodyRatio.push(bRatio); bars.upperWickRatio.push(uwRatio); bars.lowerWickRatio.push(lwRatio);
+    bars.isDoji.push(isDoji); bars.isHammer.push(isHammer); bars.isShootingStar.push(isShootingStar);
+    bars.ema21Internal.push(ema21[i]); bars.adx14Internal.push(adx14[i]);
+    bars.barHigh.push(candles[i].high); bars.barLow.push(candles[i].low);
 
     bars.volRatio.push(Math.round(vr * 100) / 100);
     bars.session.push(getSession(candles[i].time));
@@ -572,15 +527,12 @@ function buildFeatureArrays(pair: string, candles: Candle[]): BarArrays {
     bars.mfeShort.push(mfeShort); bars.maeShort.push(maeShort);
     bars.isJPY.push(isJPY);
 
-    // ── Phase 1: Regime Classification ──
-    // Compute EMA20 slope (normalized)
-    const ema20Val = ema21[i]; // using EMA21 as proxy for EMA20
+    // ── Regime Classification ──
+    const ema20Val = ema21[i];
     const ema20Prev = i >= 5 ? ema21[i - 5] : ema20Val;
     const emaSlope = ema20Val > 0 ? ((ema20Val - ema20Prev) / ema20Val) * 100 : 0;
-    const slopeThreshold = 0.05; // steep slope threshold
+    const slopeThreshold = 0.05;
 
-    // ATR expansion: current ATR vs 14-day average ATR (ATR of ATR)
-    // Use rolling average of ATR over last ~672 bars (14 days * 48 M30 bars)
     const ATR_AVG_LOOKBACK = Math.min(672, i);
     let atrAvg = currentATR;
     if (ATR_AVG_LOOKBACK > 20) {
@@ -592,22 +544,16 @@ function buildFeatureArrays(pair: string, candles: Candle[]): BarArrays {
     }
     const atrRatio = atrAvg > 0 ? currentATR / atrAvg : 1;
     const atrExpanding = atrRatio > 1.15;
-
-    // ADX value for regime
-    const adxVal = adx14Data.adx[i];
+    const adxVal = adx14[i];
 
     let regime: RegimeTag;
     if (atrRatio > 2.0) {
-      // SHOCK: ATR spike > 2x the 14-day average
       regime = REGIME_SHOCK;
     } else if (Math.abs(emaSlope) > slopeThreshold && atrExpanding && adxVal > 25) {
-      // TREND: steep EMA slope + expanding ATR + strong ADX
       regime = REGIME_TREND;
     } else if (adxVal < 20 || Math.abs(emaSlope) < slopeThreshold * 0.5) {
-      // RANGE: ADX < 20 or flat EMA slope
       regime = REGIME_RANGE;
     } else {
-      // Default to TREND if ADX > 20 and slope is moderate
       regime = REGIME_TREND;
     }
     bars.regimeTag.push(regime);
@@ -618,159 +564,213 @@ function buildFeatureArrays(pair: string, candles: Candle[]): BarArrays {
   return bars;
 }
 
-// ── Simulation Engine ─────────────────────────────────────────────────────
+// ── Entry Evaluation — Novel Micro-Structure Logic ───────────────────────
 
-function getRSI(bars: BarArrays, i: number, period: number): number {
-  if (period <= 10) return bars.rsi7[i];
-  if (period <= 17) return bars.rsi14[i];
-  return bars.rsi21[i];
+function getER(bars: BarArrays, i: number, period: number): number {
+  if (period <= 10) return bars.efficiencyRatio8[i];
+  if (period <= 17) return bars.efficiencyRatio13[i];
+  return bars.efficiencyRatio21[i];
 }
 
-function getMACD(bars: BarArrays, i: number, fast: number): { line: number; signal: number; hist: number } {
-  if (fast <= 10) return { line: bars.macdLine_8_21[i], signal: bars.macdSignal_8_21_5[i], hist: bars.macdHist_8_21_5[i] };
-  return { line: bars.macdLine_12_26[i], signal: bars.macdSignal_12_26_9[i], hist: bars.macdHist_12_26_9[i] };
+function getCLV(bars: BarArrays, i: number, smooth: number): number {
+  if (smooth <= 7) return bars.clvSmooth5[i];
+  return bars.clvSmooth10[i];
 }
 
-function getEMA(bars: BarArrays, i: number, period: number): number {
-  if (period <= 6) return bars.ema5[i];
-  if (period <= 10) return bars.ema8[i];
-  if (period <= 17) return bars.ema13[i];
-  if (period <= 27) return bars.ema21[i];
-  if (period <= 42) return bars.ema34[i];
-  if (period <= 75) return bars.ema50[i];
-  if (period <= 150) return bars.ema100[i];
-  return bars.ema200[i];
+function getRangeRatio(bars: BarArrays, i: number, period: number): number {
+  if (period <= 10) return bars.rangeRatio8[i];
+  if (period <= 17) return bars.rangeRatio13[i];
+  return bars.rangeRatio21[i];
 }
 
-function getADX(bars: BarArrays, i: number, period: number): number {
-  return period <= 16 ? bars.adx14[i] : bars.adx20[i];
+function getVolDelta(bars: BarArrays, i: number, period: number): number {
+  if (period <= 7) return bars.volDelta5[i];
+  if (period <= 15) return bars.volDelta10[i];
+  return bars.volDelta20[i];
 }
 
-function getStochK(bars: BarArrays, i: number, k: number): number {
-  if (k <= 6) return bars.stochK5[i];
-  if (k <= 11) return bars.stochK9[i];
-  return bars.stochK14[i];
-}
-function getStochD(bars: BarArrays, i: number, k: number): number {
-  if (k <= 6) return bars.stochD5[i];
-  if (k <= 11) return bars.stochD9[i];
-  return bars.stochD14[i];
-}
-
-function getCCI(bars: BarArrays, i: number, period: number): number {
-  return period <= 16 ? bars.cci14[i] : bars.cci20[i];
-}
-
-function getDonchian(bars: BarArrays, i: number, period: number): { high: number; low: number; mid: number } {
-  if (period <= 15) return { high: bars.donchianHigh10[i], low: bars.donchianLow10[i], mid: bars.donchianMid10[i] };
-  if (period <= 37) return { high: bars.donchianHigh20[i], low: bars.donchianLow20[i], mid: bars.donchianMid20[i] };
-  return { high: bars.donchianHigh55[i], low: bars.donchianLow55[i], mid: bars.donchianMid55[i] };
+function getFD(bars: BarArrays, i: number, period: number): number {
+  return period <= 15 ? bars.fractalDim10[i] : bars.fractalDim20[i];
 }
 
 function evaluateEntry(bars: BarArrays, i: number, dna: StrategyDNA): { long: boolean; short: boolean } {
   let longSignals = 0, shortSignals = 0;
   let activeIndicators = 0;
 
-  // RSI
-  if (dna.rsiMode > 0) {
+  // 1. Efficiency Ratio
+  if (dna.erMode > 0) {
     activeIndicators++;
-    const rsi = getRSI(bars, i, dna.rsiPeriod);
-    if (dna.rsiMode === 1) { if (rsi < dna.rsiLow) longSignals++; if (rsi > dna.rsiHigh) shortSignals++; }
-    else if (dna.rsiMode === 2) { if (rsi > dna.rsiHigh) shortSignals++; if (rsi < dna.rsiLow) longSignals++; }
-    else if (dna.rsiMode === 3) { if (rsi > 50) longSignals++; else shortSignals++; }
-  }
-
-  // MACD
-  if (dna.macdMode > 0) {
-    activeIndicators++;
-    const macd = getMACD(bars, i, dna.macdFast);
-    if (dna.macdMode === 1) { if (macd.line > macd.signal) longSignals++; else shortSignals++; }
-    else if (dna.macdMode === 2) { if (macd.line > 0) longSignals++; else shortSignals++; }
-    else if (dna.macdMode === 3) { if (macd.hist > 0) longSignals++; else shortSignals++; }
-  }
-
-  // Bollinger Bands
-  if (dna.bbMode > 0) {
-    activeIndicators++;
-    const c = bars.close[i];
-    if (dna.bbMode === 1) { if (c > bars.bbUpper[i]) longSignals++; if (c < bars.bbLower[i]) shortSignals++; }
-    else if (dna.bbMode === 2) { if (c < bars.bbLower[i]) longSignals++; if (c > bars.bbUpper[i]) shortSignals++; }
-    else if (dna.bbMode === 3) { if (c > bars.bbMiddle[i] && c < bars.bbUpper[i]) longSignals++; if (c < bars.bbMiddle[i] && c > bars.bbLower[i]) shortSignals++; }
-  }
-
-  // EMA
-  if (dna.emaMode > 0) {
-    activeIndicators++;
-    const fast = getEMA(bars, i, dna.emaFast);
-    const slow = getEMA(bars, i, dna.emaSlow);
-    if (dna.emaMode === 1) { if (fast > slow) longSignals++; else shortSignals++; }
-    else if (dna.emaMode === 2) { if (bars.close[i] > fast && bars.close[i] > slow) longSignals++; if (bars.close[i] < fast && bars.close[i] < slow) shortSignals++; }
-    else if (dna.emaMode === 3) {
-      if (i > 0) { const prevFast = getEMA(bars, i - 1, dna.emaFast); if (fast > prevFast) longSignals++; else shortSignals++; }
-    }
-  }
-
-  // ADX — trend quality filter / signal
-  if (dna.adxMode > 0) {
-    const adx = getADX(bars, i, dna.adxPeriod);
-    if (dna.adxMode === 1) { // trend-only: require ADX > 25
-      if (adx < 25) return { long: false, short: false };
-      activeIndicators++;
-      if (bars.plusDI[i] > bars.minusDI[i]) longSignals++; else shortSignals++;
-    } else if (dna.adxMode === 2) { // range-only: require ADX < 20
-      if (adx >= 20) return { long: false, short: false };
-      // In range, use mean-reversion bias
-    } else if (dna.adxMode === 3) { // ADX rising = strengthening trend
-      activeIndicators++;
-      if (i > 0 && adx > getADX(bars, i - 1, dna.adxPeriod)) {
-        if (bars.plusDI[i] > bars.minusDI[i]) longSignals++; else shortSignals++;
+    const er = getER(bars, i, dna.erPeriod);
+    const prevER = i > 0 ? getER(bars, i - 1, dna.erPeriod) : er;
+    if (dna.erMode === 1) {
+      // High ER = trending: trade in direction of price move
+      if (er > 0.55) {
+        if (bars.close[i] > bars.close[Math.max(0, i - 3)]) longSignals++;
+        else shortSignals++;
+      }
+    } else if (dna.erMode === 2) {
+      // Low ER = choppy: mean-revert
+      if (er < 0.35) {
+        if (bars.close[i] < bars.close[Math.max(0, i - 3)]) longSignals++; // buy dips
+        else shortSignals++; // sell rallies
+      }
+    } else if (dna.erMode === 3) {
+      // ER acceleration: ER rising = trend forming
+      if (er > prevER + 0.05) {
+        if (bars.close[i] > bars.close[Math.max(0, i - 3)]) longSignals++; else shortSignals++;
       }
     }
   }
 
-  // Stochastic
-  if (dna.stochMode > 0) {
+  // 2. Close Location Value
+  if (dna.clvMode > 0) {
     activeIndicators++;
-    const k = getStochK(bars, i, dna.stochK);
-    const d = getStochD(bars, i, dna.stochK);
-    if (dna.stochMode === 1) { if (k < 20) longSignals++; if (k > 80) shortSignals++; }
-    else if (dna.stochMode === 2) { if (k > 80) shortSignals++; if (k < 20) longSignals++; }
-    else if (dna.stochMode === 3) { if (k > d) longSignals++; else shortSignals++; }
+    const clv = getCLV(bars, i, dna.clvSmooth);
+    if (dna.clvMode === 1) {
+      // Extreme CLV reversal
+      if (clv < -0.6) longSignals++;
+      if (clv > 0.6) shortSignals++;
+    } else if (dna.clvMode === 2) {
+      // CLV trend following
+      if (clv > 0.2) longSignals++;
+      if (clv < -0.2) shortSignals++;
+    } else if (dna.clvMode === 3) {
+      // CLV divergence: CLV opposite to recent price direction
+      const priceUp = bars.close[i] > bars.close[Math.max(0, i - 5)];
+      if (priceUp && clv < -0.3) shortSignals++; // bearish divergence
+      if (!priceUp && clv > 0.3) longSignals++; // bullish divergence
+    }
   }
 
-  // CCI
-  if (dna.cciMode > 0) {
+  // 3. Range Expansion/Contraction
+  if (dna.rangeExpMode > 0) {
     activeIndicators++;
-    const cci = getCCI(bars, i, dna.cciPeriod);
-    if (dna.cciMode === 1) { if (cci > 100) longSignals++; if (cci < -100) shortSignals++; }
-    else if (dna.cciMode === 2) { if (cci < -100) longSignals++; if (cci > 100) shortSignals++; }
-    else if (dna.cciMode === 3) { if (cci > 0) longSignals++; else shortSignals++; }
-  }
-
-  // Donchian Channel
-  if (dna.donchianMode > 0) {
-    activeIndicators++;
-    const don = getDonchian(bars, i, dna.donchianPeriod);
-    const c = bars.close[i];
-    if (dna.donchianMode === 1) { if (c >= don.high) longSignals++; if (c <= don.low) shortSignals++; }
-    else if (dna.donchianMode === 2) { if (c > don.mid) longSignals++; else shortSignals++; }
-    else if (dna.donchianMode === 3) { if (c <= don.low) longSignals++; if (c >= don.high) shortSignals++; } // fade
-  }
-
-  // Price Action
-  if (dna.paMode > 0) {
-    activeIndicators++;
-    if (dna.paMode === 1) { // inside bar breakout
-      if (bars.isInsideBar[i] === 1) {
-        // direction from bias
+    const rr = getRangeRatio(bars, i, dna.rangeExpPeriod);
+    const prevRR = i > 0 ? getRangeRatio(bars, i - 1, dna.rangeExpPeriod) : rr;
+    if (dna.rangeExpMode === 1) {
+      // Expansion breakout: big bar = momentum
+      if (rr > 1.5) {
+        if (bars.close[i] > bars.open[i]) longSignals++; else shortSignals++;
+      }
+    } else if (dna.rangeExpMode === 2) {
+      // Contraction squeeze: tiny bar = about to break
+      if (rr < 0.5 && i > 0) {
+        // Trade the break direction of the NEXT bar's bias
         if (bars.isLongBias[i]) longSignals++; else shortSignals++;
       }
-    } else if (dna.paMode === 2) { // engulfing
-      if (bars.isEngulfingBull[i] === 1) longSignals++;
-      if (bars.isEngulfingBear[i] === 1) shortSignals++;
-    } else if (dna.paMode === 3) { // pin bar
-      if (bars.isPinBarBull[i] === 1) longSignals++;
-      if (bars.isPinBarBear[i] === 1) shortSignals++;
+    } else if (dna.rangeExpMode === 3) {
+      // Range acceleration: expanding from contraction
+      if (rr > 1.2 && prevRR < 0.8) {
+        if (bars.close[i] > bars.open[i]) longSignals++; else shortSignals++;
+      }
+    }
+  }
+
+  // 4. Consecutive Direction
+  if (dna.consecMode > 0) {
+    activeIndicators++;
+    const cUp = bars.consecUp[i];
+    const cDown = bars.consecDown[i];
+    const threshold = dna.consecThreshold;
+    if (dna.consecMode === 1) {
+      // Exhaustion fade: too many same-direction bars = reversal
+      if (cUp >= threshold) shortSignals++;
+      if (cDown >= threshold) longSignals++;
+    } else if (dna.consecMode === 2) {
+      // Momentum continuation: streak = strength
+      if (cUp >= 2) longSignals++;
+      if (cDown >= 2) shortSignals++;
+    } else if (dna.consecMode === 3) {
+      // Direction change trigger: streak just broke
+      if (cUp === 1 && i > 0 && bars.consecDown[i - 1] >= threshold) longSignals++;
+      if (cDown === 1 && i > 0 && bars.consecUp[i - 1] >= threshold) shortSignals++;
+    }
+  }
+
+  // 5. Volume Delta
+  if (dna.volDeltaMode > 0) {
+    activeIndicators++;
+    const vd = getVolDelta(bars, i, dna.volDeltaPeriod);
+    const prevVD = i > 0 ? getVolDelta(bars, i - 1, dna.volDeltaPeriod) : vd;
+    if (dna.volDeltaMode === 1) {
+      // Delta breakout: strong positive = buying pressure
+      if (vd > 0.3) longSignals++;
+      if (vd < -0.3) shortSignals++;
+    } else if (dna.volDeltaMode === 2) {
+      // Delta divergence: price up but volume selling
+      const priceUp = bars.close[i] > bars.close[Math.max(0, i - 3)];
+      if (priceUp && vd < -0.15) shortSignals++; // bearish divergence
+      if (!priceUp && vd > 0.15) longSignals++; // bullish divergence
+    } else if (dna.volDeltaMode === 3) {
+      // Delta acceleration
+      if (vd > prevVD + 0.1) longSignals++;
+      if (vd < prevVD - 0.1) shortSignals++;
+    }
+  }
+
+  // 6. Fractal Dimension
+  if (dna.fdMode > 0) {
+    activeIndicators++;
+    const fd = getFD(bars, i, dna.fdPeriod);
+    const prevFD = i > 0 ? getFD(bars, i - 1, dna.fdPeriod) : fd;
+    if (dna.fdMode === 1) {
+      // Low FD = smooth trend: trade trend direction
+      if (fd < 1.4) {
+        if (bars.close[i] > bars.close[Math.max(0, i - 5)]) longSignals++; else shortSignals++;
+      }
+    } else if (dna.fdMode === 2) {
+      // High FD = choppy: mean revert
+      if (fd > 1.6) {
+        if (bars.close[i] < bars.close[Math.max(0, i - 5)]) longSignals++; else shortSignals++;
+      }
+    } else if (dna.fdMode === 3) {
+      // FD regime shift: sudden drop in FD = trend starting
+      if (fd < prevFD - 0.1) {
+        if (bars.close[i] > bars.close[Math.max(0, i - 3)]) longSignals++; else shortSignals++;
+      }
+    }
+  }
+
+  // 7. Gap Momentum
+  if (dna.gapMode > 0) {
+    activeIndicators++;
+    const gapDir = bars.gapDirection[i];
+    const gapSz = bars.gapSize[i];
+    if (dna.gapMode === 1) {
+      // Gap-and-go: trade in gap direction
+      if (gapSz > 0.3) {
+        if (gapDir > 0) longSignals++; else shortSignals++;
+      }
+    } else if (dna.gapMode === 2) {
+      // Gap-fill fade: trade against gap
+      if (gapSz > 0.3) {
+        if (gapDir > 0) shortSignals++; else longSignals++;
+      }
+    } else if (dna.gapMode === 3) {
+      // Large gap only filter
+      if (gapSz > 0.8) {
+        if (gapDir > 0) longSignals++; else shortSignals++;
+      }
+    }
+  }
+
+  // 8. Candle Anatomy
+  if (dna.candleMode > 0) {
+    activeIndicators++;
+    if (dna.candleMode === 1) {
+      // Strong body momentum: big body = conviction
+      if (bars.bodyRatio[i] > 0.7) {
+        if (bars.close[i] > bars.open[i]) longSignals++; else shortSignals++;
+      }
+    } else if (dna.candleMode === 2) {
+      // Indecision then breakout: doji → next bar direction
+      if (bars.isDoji[i] === 1) {
+        if (bars.isLongBias[i]) longSignals++; else shortSignals++;
+      }
+    } else if (dna.candleMode === 3) {
+      // Rejection reversal: hammer/shooting star
+      if (bars.isHammer[i] === 1) longSignals++;
+      if (bars.isShootingStar[i] === 1) shortSignals++;
     }
   }
 
@@ -788,7 +788,8 @@ function evaluateEntry(bars: BarArrays, i: number, dna: StrategyDNA): { long: bo
 
   if (activeIndicators === 0) return { long: false, short: false };
 
-  const threshold = Math.ceil(activeIndicators / 2);
+  // Relaxed threshold: just need 1 signal from active indicators for high frequency
+  const threshold = activeIndicators === 1 ? 1 : Math.ceil(activeIndicators * 0.5);
   const isLong = longSignals >= threshold && longSignals > shortSignals;
   const isShort = shortSignals >= threshold && shortSignals > longSignals;
 
@@ -797,12 +798,12 @@ function evaluateEntry(bars: BarArrays, i: number, dna: StrategyDNA): { long: bo
   return { long: isLong, short: isShort };
 }
 
-// ── Advanced Simulation with trailing stops, partial TP, max bars ──────────
-// targetRegime: if set, only open trades when bar's regime matches (0=TREND, 1=RANGE, 2=SHOCK, -1=ALL)
+// ── Simulation Engine ─────────────────────────────────────────────────────
+// targetRegime: if set, only open trades when bar's regime matches
 function simulateStrategy(bars: BarArrays, dna: StrategyDNA, startIdx = 0, endIdx?: number, targetRegime = -1): SimResult {
   const START_EQ = 1000;
   const RISK_PER_TRADE = 0.01;
-  const TRADE_COOLDOWN = 4;
+  const TRADE_COOLDOWN = 1; // High frequency: only 1-bar cooldown
   let equity = START_EQ, peak = START_EQ, maxDD = 0;
   let trades = 0, wins = 0, grossProfit = 0, grossLoss = 0;
   const curve: number[] = [START_EQ];
@@ -826,7 +827,7 @@ function simulateStrategy(bars: BarArrays, dna: StrategyDNA, startIdx = 0, endId
     const isShort = entry.short;
     if (!isLong && !isShort) continue;
 
-    // Regime gate: skip entry if bar's regime doesn't match target
+    // Regime gate
     if (targetRegime >= 0 && bars.regimeTag[i] !== targetRegime) continue;
 
     const sl = bars.atr[i] * dna.slMultiplier;
@@ -836,12 +837,11 @@ function simulateStrategy(bars: BarArrays, dna: StrategyDNA, startIdx = 0, endId
     let pips: number;
 
     if (hasTrailing || hasMaxBars || hasPartialTP) {
-      // Advanced bar-by-bar simulation
       const entryPrice = bars.close[i];
       const trailATR = hasTrailing ? bars.atr[i] * dna.trailingATR : 0;
       const maxBars = hasMaxBars ? Math.round(dna.maxBarsInTrade) : 999;
       let trailStop = isLong ? entryPrice - sl : entryPrice + sl;
-      let tpPrice = isLong ? entryPrice + tp : entryPrice - tp;
+      const tpPrice = isLong ? entryPrice + tp : entryPrice - tp;
       let partialFilled = false;
       let remainingPct = 1.0;
       let partialPips = 0;
@@ -849,23 +849,20 @@ function simulateStrategy(bars: BarArrays, dna: StrategyDNA, startIdx = 0, endId
       let exited = false;
 
       for (let b = 1; b <= Math.min(16, maxBars) && (i + b) < end; b++) {
-        const barH = bars.barHigh ? bars.barHigh[i + b] : bars.high[i + b];
-        const barL = bars.barLow ? bars.barLow[i + b] : bars.low[i + b];
+        const barH = bars.barHigh[i + b];
+        const barL = bars.barLow[i + b];
 
-        // Partial TP at 1R
         if (hasPartialTP && !partialFilled) {
-          const partial1R = isLong ? entryPrice + sl : entryPrice - sl; // 1R level
+          const partial1R = isLong ? entryPrice + sl : entryPrice - sl;
           if ((isLong && barH >= partial1R) || (!isLong && barL <= partial1R)) {
             const partialSize = dna.partialTP === 1 ? 0.5 : 0.33;
             partialPips += sl * pipMult * partialSize;
             remainingPct -= partialSize;
             partialFilled = true;
-            // Move SL to breakeven
             trailStop = entryPrice;
           }
         }
 
-        // Trailing stop update
         if (hasTrailing) {
           if (isLong) {
             const newTrail = barH - trailATR;
@@ -876,33 +873,24 @@ function simulateStrategy(bars: BarArrays, dna: StrategyDNA, startIdx = 0, endId
           }
         }
 
-        // Check TP hit
         if ((isLong && barH >= tpPrice) || (!isLong && barL <= tpPrice)) {
           exitPips = tp * pipMult * remainingPct;
-          exited = true;
-          break;
+          exited = true; break;
         }
-
-        // Check SL/trailing stop hit
         if ((isLong && barL <= trailStop) || (!isLong && barH >= trailStop)) {
           const slDist = isLong ? (trailStop - entryPrice) : (entryPrice - trailStop);
           exitPips = slDist * pipMult * remainingPct;
-          exited = true;
-          break;
+          exited = true; break;
         }
-
-        // Max bars exit
         if (b >= maxBars) {
           const exitPrice = bars.close[Math.min(i + b, end - 1)];
           const dist = isLong ? (exitPrice - entryPrice) : (entryPrice - exitPrice);
           exitPips = dist * pipMult * remainingPct;
-          exited = true;
-          break;
+          exited = true; break;
         }
       }
 
       if (!exited) {
-        // Use MFE/MAE fallback
         if (isLong) {
           if (bars.mfeLong[i] >= tp) exitPips = tp * pipMult * remainingPct;
           else if (bars.maeLong[i] >= sl) exitPips = -sl * pipMult * remainingPct;
@@ -913,10 +901,8 @@ function simulateStrategy(bars: BarArrays, dna: StrategyDNA, startIdx = 0, endId
           else exitPips = (bars.mfeShort[i] - bars.maeShort[i] * 0.5) * pipMult * remainingPct;
         }
       }
-
       pips = partialPips + exitPips;
     } else {
-      // Original fast sim
       if (isLong) {
         if (bars.mfeLong[i] >= tp) pips = tp * pipMult;
         else if (bars.maeLong[i] >= sl) pips = -sl * pipMult;
@@ -967,46 +953,38 @@ function simulateStrategy(bars: BarArrays, dna: StrategyDNA, startIdx = 0, endId
 
 // ── GA Operators ──────────────────────────────────────────────────────────
 
-const RSI_PERIODS = [7, 14, 21];
-const MACD_FASTS = [8, 12, 16];
-const MACD_SLOWS = [21, 26, 34];
-const MACD_SIGNALS = [5, 9, 12];
-const BB_PERIODS = [14, 20, 30];
-const BB_STDDEVS = [1.5, 2.0, 2.5, 3.0];
-const EMA_FASTS = [5, 8, 13, 21];
-const EMA_SLOWS = [34, 50, 100, 200];
-const ADX_PERIODS = [10, 14, 20];
-const STOCH_KS = [5, 9, 14];
-const STOCH_DS = [3, 5];
-const CCI_PERIODS = [14, 20];
-const DONCHIAN_PERIODS = [10, 20, 55];
+const ER_PERIODS = [8, 13, 21];
+const CLV_SMOOTHS = [5, 10];
+const RANGE_EXP_PERIODS = [8, 13, 21];
+const CONSEC_THRESHOLDS = [2, 3, 4, 5];
+const VOL_DELTA_PERIODS = [5, 10, 20];
+const FD_PERIODS = [10, 20];
 
 function pick<T>(arr: T[]): T { return arr[Math.floor(Math.random() * arr.length)]; }
 function randRange(min: number, max: number): number { return min + Math.random() * (max - min); }
 
 const MAX_ACTIVE_INDICATORS = 3;
 
-/** Count active indicator modes in a DNA (excludes filters like vol/session/day) */
+/** Count active novel indicator modes */
 function countActiveIndicators(dna: StrategyDNA): number {
   let count = 0;
-  if (dna.rsiMode > 0) count++;
-  if (dna.macdMode > 0) count++;
-  if (dna.bbMode > 0) count++;
-  if (dna.emaMode > 0) count++;
-  if (dna.adxMode > 0) count++;
-  if (dna.stochMode > 0) count++;
-  if (dna.cciMode > 0) count++;
-  if (dna.donchianMode > 0) count++;
-  if (dna.paMode > 0) count++;
+  if (dna.erMode > 0) count++;
+  if (dna.clvMode > 0) count++;
+  if (dna.rangeExpMode > 0) count++;
+  if (dna.consecMode > 0) count++;
+  if (dna.volDeltaMode > 0) count++;
+  if (dna.fdMode > 0) count++;
+  if (dna.gapMode > 0) count++;
+  if (dna.candleMode > 0) count++;
   return count;
 }
 
-/** Enforce max indicator cap — randomly deactivate excess indicators */
+/** Enforce max indicator cap */
 function enforceIndicatorCap(dna: StrategyDNA): StrategyDNA {
   const d = { ...dna };
   const modeKeys: (keyof StrategyDNA)[] = [
-    'rsiMode', 'macdMode', 'bbMode', 'emaMode', 'adxMode',
-    'stochMode', 'cciMode', 'donchianMode', 'paMode',
+    'erMode', 'clvMode', 'rangeExpMode', 'consecMode',
+    'volDeltaMode', 'fdMode', 'gapMode', 'candleMode',
   ];
   let active = modeKeys.filter(k => (d[k] as number) > 0);
   while (active.length > MAX_ACTIVE_INDICATORS) {
@@ -1017,82 +995,72 @@ function enforceIndicatorCap(dna: StrategyDNA): StrategyDNA {
   return d;
 }
 
-// Expanded archetypes
+// Novel archetypes — each uses max 2-3 novel indicators
 const ARCHETYPES: Partial<StrategyDNA>[] = [
-  // Pure Bollinger
-  { rsiMode: 0, macdMode: 0, bbMode: 1, emaMode: 0, adxMode: 0, stochMode: 0, cciMode: 0, donchianMode: 0, paMode: 0 },
-  { rsiMode: 0, macdMode: 0, bbMode: 2, emaMode: 0, adxMode: 0, stochMode: 0, cciMode: 0, donchianMode: 0, paMode: 0 },
-  { rsiMode: 0, macdMode: 0, bbMode: 3, emaMode: 0 },
-  // Pure EMA
-  { rsiMode: 0, macdMode: 0, bbMode: 0, emaMode: 1 },
-  { rsiMode: 0, macdMode: 0, bbMode: 0, emaMode: 2 },
-  { rsiMode: 0, macdMode: 0, bbMode: 0, emaMode: 3 },
-  // BB + EMA hybrids
-  { rsiMode: 0, macdMode: 0, bbMode: 1, emaMode: 1 },
-  { rsiMode: 0, macdMode: 0, bbMode: 2, emaMode: 3 },
-  // NEW: ADX trend strategies
-  { adxMode: 1, emaMode: 1, rsiMode: 0, macdMode: 0, bbMode: 0 },  // ADX trend + EMA cross
-  { adxMode: 1, bbMode: 1, rsiMode: 0, macdMode: 0, emaMode: 0 },  // ADX trend + BB breakout
-  { adxMode: 2, bbMode: 2, rsiMode: 0, macdMode: 0, emaMode: 0 },  // ADX range + BB mean revert
-  { adxMode: 3, emaMode: 1, macdMode: 1 },  // ADX rising + EMA + MACD
-  // NEW: Stochastic strategies
-  { stochMode: 1, bbMode: 2, rsiMode: 0, macdMode: 0, emaMode: 0, adxMode: 0 },  // Stoch oversold + BB mean revert
-  { stochMode: 3, emaMode: 1, rsiMode: 0, macdMode: 0, adxMode: 0 },  // Stoch K/D cross + EMA trend
-  { stochMode: 1, adxMode: 2 },  // Stoch oversold in range (ADX<20)
-  // NEW: CCI strategies
-  { cciMode: 1, emaMode: 1, rsiMode: 0, macdMode: 0, adxMode: 0 },  // CCI breakout + EMA trend
-  { cciMode: 2, bbMode: 2, rsiMode: 0, macdMode: 0 },  // CCI reversal + BB mean revert
-  { cciMode: 3, adxMode: 1 },  // CCI zero-cross + ADX trend
-  // NEW: Donchian Channel strategies (Turtle-style)
-  { donchianMode: 1, adxMode: 1, rsiMode: 0, macdMode: 0, bbMode: 0, emaMode: 0 },  // Donchian breakout + ADX
-  { donchianMode: 2, emaMode: 1, rsiMode: 0, macdMode: 0 },  // Donchian midline + EMA
-  { donchianMode: 3, stochMode: 1 },  // Donchian fade + stoch
-  { donchianMode: 1, donchianPeriod: 55 },  // Turtle 55-day breakout
-  // NEW: Price Action strategies
-  { paMode: 2, emaMode: 1, rsiMode: 0, macdMode: 0, bbMode: 0 },  // Engulfing + EMA trend
-  { paMode: 3, bbMode: 2, rsiMode: 0, macdMode: 0 },  // Pin bar + BB mean revert
-  { paMode: 1, adxMode: 1, emaMode: 1 },  // Inside bar + ADX trend + EMA
-  { paMode: 2, stochMode: 1 },  // Engulfing + stoch oversold
-  { paMode: 3, cciMode: 2 },  // Pin bar + CCI reversal
-  // Advanced exit archetypes
-  { bbMode: 1, emaMode: 1, trailingATR: 2.0 },  // BB breakout + trailing
-  { donchianMode: 1, trailingATR: 1.5, maxBarsInTrade: 24 },  // Donchian + trail + time exit
-  { paMode: 2, partialTP: 1, trailingATR: 2.0 },  // Engulfing + partial TP + trail
-  // Multi-indicator combos (max 3 indicators each)
-  { stochMode: 3, cciMode: 1, donchianMode: 1 },  // Stoch + CCI + Donchian
-  { paMode: 2, adxMode: 1, stochMode: 1 },  // PA + ADX + Stoch
-  { rsiMode: 1, bbMode: 1, emaMode: 1 },  // RSI + BB + EMA
-  // Volume/session combos
-  { bbMode: 1, emaMode: 0, volMode: 3, sessionFilter: 1 },
-  { emaMode: 1, volMode: 1, sessionFilter: 2 },
-  // Hurst regime
-  { bbMode: 1, hurstMin: 0.55, hurstMax: 1.0 },
-  { bbMode: 2, hurstMin: 0.0, hurstMax: 0.45 },
+  // Pure single-indicator
+  { erMode: 1, clvMode: 0, rangeExpMode: 0, consecMode: 0, volDeltaMode: 0, fdMode: 0, gapMode: 0, candleMode: 0 },
+  { erMode: 2, clvMode: 0, rangeExpMode: 0, consecMode: 0, volDeltaMode: 0, fdMode: 0, gapMode: 0, candleMode: 0 },
+  { erMode: 3, clvMode: 0, rangeExpMode: 0, consecMode: 0, volDeltaMode: 0, fdMode: 0, gapMode: 0, candleMode: 0 },
+  { clvMode: 1, erMode: 0, rangeExpMode: 0, consecMode: 0, volDeltaMode: 0, fdMode: 0, gapMode: 0, candleMode: 0 },
+  { clvMode: 2, erMode: 0, rangeExpMode: 0, consecMode: 0, volDeltaMode: 0, fdMode: 0, gapMode: 0, candleMode: 0 },
+  { rangeExpMode: 1, erMode: 0, clvMode: 0, consecMode: 0, volDeltaMode: 0, fdMode: 0, gapMode: 0, candleMode: 0 },
+  { rangeExpMode: 2, erMode: 0, clvMode: 0, consecMode: 0, volDeltaMode: 0, fdMode: 0, gapMode: 0, candleMode: 0 },
+  { consecMode: 1, erMode: 0, clvMode: 0, rangeExpMode: 0, volDeltaMode: 0, fdMode: 0, gapMode: 0, candleMode: 0, consecThreshold: 3 },
+  { consecMode: 2, erMode: 0, clvMode: 0, rangeExpMode: 0, volDeltaMode: 0, fdMode: 0, gapMode: 0, candleMode: 0 },
+  { volDeltaMode: 1, erMode: 0, clvMode: 0, rangeExpMode: 0, consecMode: 0, fdMode: 0, gapMode: 0, candleMode: 0 },
+  { fdMode: 1, erMode: 0, clvMode: 0, rangeExpMode: 0, consecMode: 0, volDeltaMode: 0, gapMode: 0, candleMode: 0 },
+  { fdMode: 2, erMode: 0, clvMode: 0, rangeExpMode: 0, consecMode: 0, volDeltaMode: 0, gapMode: 0, candleMode: 0 },
+  { candleMode: 1, erMode: 0, clvMode: 0, rangeExpMode: 0, consecMode: 0, volDeltaMode: 0, fdMode: 0, gapMode: 0 },
+  { candleMode: 3, erMode: 0, clvMode: 0, rangeExpMode: 0, consecMode: 0, volDeltaMode: 0, fdMode: 0, gapMode: 0 },
+  { gapMode: 1, erMode: 0, clvMode: 0, rangeExpMode: 0, consecMode: 0, volDeltaMode: 0, fdMode: 0, candleMode: 0 },
+  { gapMode: 2, erMode: 0, clvMode: 0, rangeExpMode: 0, consecMode: 0, volDeltaMode: 0, fdMode: 0, candleMode: 0 },
+  // Creative combos (2 indicators)
+  { erMode: 1, candleMode: 1 }, // Efficiency breakout + strong body
+  { erMode: 2, clvMode: 1 },    // Low efficiency + extreme CLV reversal
+  { clvMode: 2, consecMode: 2 }, // CLV trend + momentum continuation
+  { rangeExpMode: 1, volDeltaMode: 1 }, // Expansion + volume confirmation
+  { rangeExpMode: 2, fdMode: 1 },  // Squeeze + smooth trend
+  { consecMode: 1, candleMode: 3 }, // Exhaustion + hammer/star reversal
+  { volDeltaMode: 2, erMode: 1 },   // Volume divergence + efficiency
+  { fdMode: 1, erMode: 1 },         // Smooth trend + high efficiency
+  { fdMode: 2, clvMode: 1 },        // Choppy market + CLV reversal
+  { gapMode: 1, rangeExpMode: 1 },  // Gap-and-go + range expansion
+  { gapMode: 2, consecMode: 1 },    // Gap-fill + exhaustion
+  { candleMode: 2, rangeExpMode: 3 }, // Doji breakout + range acceleration
+  { candleMode: 3, volDeltaMode: 1 }, // Rejection + volume delta
+  // Creative 3-indicator combos
+  { erMode: 1, rangeExpMode: 1, candleMode: 1 }, // Triple momentum
+  { clvMode: 1, consecMode: 1, fdMode: 2 },       // Reversal trifecta
+  { volDeltaMode: 1, erMode: 1, gapMode: 1 },     // Volume + efficiency + gap
+  { fdMode: 1, consecMode: 2, candleMode: 1 },    // Trend + continuation + body
+  { rangeExpMode: 3, clvMode: 2, volDeltaMode: 3 }, // Acceleration trio
+  // Session-filtered
+  { erMode: 1, candleMode: 1, sessionFilter: 1 }, // London session
+  { clvMode: 1, consecMode: 1, sessionFilter: 2 }, // NY session
+  // With advanced exits
+  { erMode: 1, candleMode: 1, trailingATR: 1.5 },
+  { consecMode: 1, fdMode: 2, maxBarsInTrade: 8 },
+  { rangeExpMode: 1, volDeltaMode: 1, partialTP: 1 },
 ];
 
 function randomDNA(archetype?: Partial<StrategyDNA>): StrategyDNA {
   const base: StrategyDNA = {
-    rsiPeriod: pick(RSI_PERIODS), rsiLow: 20 + Math.random() * 25, rsiHigh: 55 + Math.random() * 30,
-    rsiMode: Math.floor(Math.random() * 4),
-    macdFast: pick(MACD_FASTS), macdSlow: pick(MACD_SLOWS), macdSignal: pick(MACD_SIGNALS),
-    macdMode: Math.floor(Math.random() * 4),
-    bbPeriod: pick(BB_PERIODS), bbStdDev: pick(BB_STDDEVS),
-    bbMode: Math.floor(Math.random() * 4),
-    emaFast: pick(EMA_FASTS), emaSlow: pick(EMA_SLOWS),
-    emaMode: Math.floor(Math.random() * 4),
-    adxPeriod: pick(ADX_PERIODS), adxMode: Math.floor(Math.random() * 4),
-    stochK: pick(STOCH_KS), stochD: pick(STOCH_DS), stochMode: Math.floor(Math.random() * 4),
-    cciPeriod: pick(CCI_PERIODS), cciMode: Math.floor(Math.random() * 4),
-    donchianPeriod: pick(DONCHIAN_PERIODS), donchianMode: Math.floor(Math.random() * 4),
-    paMode: Math.floor(Math.random() * 4),
+    erPeriod: pick(ER_PERIODS), erMode: Math.floor(Math.random() * 4),
+    clvSmooth: pick(CLV_SMOOTHS), clvMode: Math.floor(Math.random() * 4),
+    rangeExpPeriod: pick(RANGE_EXP_PERIODS), rangeExpMode: Math.floor(Math.random() * 4),
+    consecThreshold: pick(CONSEC_THRESHOLDS), consecMode: Math.floor(Math.random() * 4),
+    volDeltaPeriod: pick(VOL_DELTA_PERIODS), volDeltaMode: Math.floor(Math.random() * 4),
+    fdPeriod: pick(FD_PERIODS), fdMode: Math.floor(Math.random() * 4),
+    gapMode: Math.floor(Math.random() * 4),
+    candleMode: Math.floor(Math.random() * 4),
     volMode: Math.floor(Math.random() * 4),
     sessionFilter: Math.floor(Math.random() * 5) - 1,
     dayFilter: Math.floor(Math.random() * 6) - 1,
     direction: Math.floor(Math.random() * 3),
-    slMultiplier: randRange(0.5, 3.5), tpMultiplier: randRange(0.5, 6.0),
+    slMultiplier: randRange(0.3, 2.5), tpMultiplier: randRange(0.5, 4.0),
     hurstMin: Math.random() * 0.5, hurstMax: 0.5 + Math.random() * 0.5,
-    trailingATR: Math.random() < 0.3 ? randRange(0.5, 3.0) : 0,
-    maxBarsInTrade: Math.random() < 0.25 ? Math.floor(randRange(4, 48)) : 0,
+    trailingATR: Math.random() < 0.3 ? randRange(0.5, 2.5) : 0,
+    maxBarsInTrade: Math.random() < 0.3 ? Math.floor(randRange(4, 24)) : 0,
     partialTP: Math.random() < 0.2 ? Math.floor(randRange(1, 3)) : 0,
   };
   if (archetype) Object.assign(base, archetype);
@@ -1102,19 +1070,14 @@ function randomDNA(archetype?: Partial<StrategyDNA>): StrategyDNA {
 function crossover(a: StrategyDNA, b: StrategyDNA): StrategyDNA {
   const r = () => Math.random() > 0.5;
   return {
-    rsiPeriod: r() ? a.rsiPeriod : b.rsiPeriod, rsiLow: r() ? a.rsiLow : b.rsiLow, rsiHigh: r() ? a.rsiHigh : b.rsiHigh,
-    rsiMode: r() ? a.rsiMode : b.rsiMode,
-    macdFast: r() ? a.macdFast : b.macdFast, macdSlow: r() ? a.macdSlow : b.macdSlow, macdSignal: r() ? a.macdSignal : b.macdSignal,
-    macdMode: r() ? a.macdMode : b.macdMode,
-    bbPeriod: r() ? a.bbPeriod : b.bbPeriod, bbStdDev: r() ? a.bbStdDev : b.bbStdDev,
-    bbMode: r() ? a.bbMode : b.bbMode,
-    emaFast: r() ? a.emaFast : b.emaFast, emaSlow: r() ? a.emaSlow : b.emaSlow,
-    emaMode: r() ? a.emaMode : b.emaMode,
-    adxPeriod: r() ? a.adxPeriod : b.adxPeriod, adxMode: r() ? a.adxMode : b.adxMode,
-    stochK: r() ? a.stochK : b.stochK, stochD: r() ? a.stochD : b.stochD, stochMode: r() ? a.stochMode : b.stochMode,
-    cciPeriod: r() ? a.cciPeriod : b.cciPeriod, cciMode: r() ? a.cciMode : b.cciMode,
-    donchianPeriod: r() ? a.donchianPeriod : b.donchianPeriod, donchianMode: r() ? a.donchianMode : b.donchianMode,
-    paMode: r() ? a.paMode : b.paMode,
+    erPeriod: r() ? a.erPeriod : b.erPeriod, erMode: r() ? a.erMode : b.erMode,
+    clvSmooth: r() ? a.clvSmooth : b.clvSmooth, clvMode: r() ? a.clvMode : b.clvMode,
+    rangeExpPeriod: r() ? a.rangeExpPeriod : b.rangeExpPeriod, rangeExpMode: r() ? a.rangeExpMode : b.rangeExpMode,
+    consecThreshold: r() ? a.consecThreshold : b.consecThreshold, consecMode: r() ? a.consecMode : b.consecMode,
+    volDeltaPeriod: r() ? a.volDeltaPeriod : b.volDeltaPeriod, volDeltaMode: r() ? a.volDeltaMode : b.volDeltaMode,
+    fdPeriod: r() ? a.fdPeriod : b.fdPeriod, fdMode: r() ? a.fdMode : b.fdMode,
+    gapMode: r() ? a.gapMode : b.gapMode,
+    candleMode: r() ? a.candleMode : b.candleMode,
     volMode: r() ? a.volMode : b.volMode,
     sessionFilter: r() ? a.sessionFilter : b.sessionFilter,
     dayFilter: r() ? a.dayFilter : b.dayFilter,
@@ -1131,43 +1094,30 @@ function crossover(a: StrategyDNA, b: StrategyDNA): StrategyDNA {
 
 function mutate(dna: StrategyDNA, rate = 0.15): StrategyDNA {
   const d = { ...dna };
-  if (Math.random() < rate) d.rsiPeriod = pick(RSI_PERIODS);
-  if (Math.random() < rate) d.rsiLow = Math.max(10, Math.min(50, d.rsiLow + (Math.random() - 0.5) * 10));
-  if (Math.random() < rate) d.rsiHigh = Math.max(50, Math.min(95, d.rsiHigh + (Math.random() - 0.5) * 10));
-  if (Math.random() < rate) d.rsiMode = Math.floor(Math.random() * 4);
-  if (Math.random() < rate) d.macdFast = pick(MACD_FASTS);
-  if (Math.random() < rate) d.macdSlow = pick(MACD_SLOWS);
-  if (Math.random() < rate) d.macdSignal = pick(MACD_SIGNALS);
-  if (Math.random() < rate) d.macdMode = Math.floor(Math.random() * 4);
-  if (Math.random() < rate) d.bbPeriod = pick(BB_PERIODS);
-  if (Math.random() < rate) d.bbStdDev = pick(BB_STDDEVS);
-  if (Math.random() < rate) d.bbMode = Math.floor(Math.random() * 4);
-  if (Math.random() < rate) d.emaFast = pick(EMA_FASTS);
-  if (Math.random() < rate) d.emaSlow = pick(EMA_SLOWS);
-  if (Math.random() < rate) d.emaMode = Math.floor(Math.random() * 4);
-  // New mutations
-  if (Math.random() < rate) d.adxPeriod = pick(ADX_PERIODS);
-  if (Math.random() < rate) d.adxMode = Math.floor(Math.random() * 4);
-  if (Math.random() < rate) d.stochK = pick(STOCH_KS);
-  if (Math.random() < rate) d.stochD = pick(STOCH_DS);
-  if (Math.random() < rate) d.stochMode = Math.floor(Math.random() * 4);
-  if (Math.random() < rate) d.cciPeriod = pick(CCI_PERIODS);
-  if (Math.random() < rate) d.cciMode = Math.floor(Math.random() * 4);
-  if (Math.random() < rate) d.donchianPeriod = pick(DONCHIAN_PERIODS);
-  if (Math.random() < rate) d.donchianMode = Math.floor(Math.random() * 4);
-  if (Math.random() < rate) d.paMode = Math.floor(Math.random() * 4);
-  // Original mutations
+  if (Math.random() < rate) d.erPeriod = pick(ER_PERIODS);
+  if (Math.random() < rate) d.erMode = Math.floor(Math.random() * 4);
+  if (Math.random() < rate) d.clvSmooth = pick(CLV_SMOOTHS);
+  if (Math.random() < rate) d.clvMode = Math.floor(Math.random() * 4);
+  if (Math.random() < rate) d.rangeExpPeriod = pick(RANGE_EXP_PERIODS);
+  if (Math.random() < rate) d.rangeExpMode = Math.floor(Math.random() * 4);
+  if (Math.random() < rate) d.consecThreshold = pick(CONSEC_THRESHOLDS);
+  if (Math.random() < rate) d.consecMode = Math.floor(Math.random() * 4);
+  if (Math.random() < rate) d.volDeltaPeriod = pick(VOL_DELTA_PERIODS);
+  if (Math.random() < rate) d.volDeltaMode = Math.floor(Math.random() * 4);
+  if (Math.random() < rate) d.fdPeriod = pick(FD_PERIODS);
+  if (Math.random() < rate) d.fdMode = Math.floor(Math.random() * 4);
+  if (Math.random() < rate) d.gapMode = Math.floor(Math.random() * 4);
+  if (Math.random() < rate) d.candleMode = Math.floor(Math.random() * 4);
   if (Math.random() < rate) d.volMode = Math.floor(Math.random() * 4);
   if (Math.random() < rate) d.sessionFilter = Math.floor(Math.random() * 5) - 1;
   if (Math.random() < rate) d.dayFilter = Math.floor(Math.random() * 6) - 1;
   if (Math.random() < rate) d.direction = Math.floor(Math.random() * 3);
-  if (Math.random() < rate) d.slMultiplier = Math.max(0.3, Math.min(3.5, d.slMultiplier + (Math.random() - 0.5) * 0.6));
-  if (Math.random() < rate) d.tpMultiplier = Math.max(0.5, Math.min(6.0, d.tpMultiplier + (Math.random() - 0.5) * 1.0));
+  if (Math.random() < rate) d.slMultiplier = Math.max(0.2, Math.min(2.5, d.slMultiplier + (Math.random() - 0.5) * 0.5));
+  if (Math.random() < rate) d.tpMultiplier = Math.max(0.3, Math.min(4.0, d.tpMultiplier + (Math.random() - 0.5) * 0.8));
   if (Math.random() < rate) d.hurstMin = Math.max(0, Math.min(0.9, d.hurstMin + (Math.random() - 0.5) * 0.15));
   if (Math.random() < rate) d.hurstMax = Math.max(d.hurstMin + 0.1, Math.min(1.0, d.hurstMax + (Math.random() - 0.5) * 0.15));
-  // Advanced exit mutations
-  if (Math.random() < rate) d.trailingATR = Math.random() < 0.3 ? 0 : Math.max(0.5, Math.min(3.0, (d.trailingATR || 1.5) + (Math.random() - 0.5) * 0.8));
-  if (Math.random() < rate) d.maxBarsInTrade = Math.random() < 0.3 ? 0 : Math.max(4, Math.min(48, Math.round((d.maxBarsInTrade || 16) + (Math.random() - 0.5) * 12)));
+  if (Math.random() < rate) d.trailingATR = Math.random() < 0.3 ? 0 : Math.max(0.5, Math.min(2.5, (d.trailingATR || 1.5) + (Math.random() - 0.5) * 0.6));
+  if (Math.random() < rate) d.maxBarsInTrade = Math.random() < 0.3 ? 0 : Math.max(4, Math.min(24, Math.round((d.maxBarsInTrade || 12) + (Math.random() - 0.5) * 8)));
   if (Math.random() < rate) d.partialTP = Math.floor(Math.random() * 3);
   return enforceIndicatorCap(d);
 }
@@ -1181,24 +1131,23 @@ function tournamentSelect(pop: { dna: StrategyDNA; fitness: number }[], k = 3): 
   return best!;
 }
 
-// ── Strategy naming & description ─────────────────────────────────────────
+// ── Strategy naming & description (Novel indicators) ─────────────────────
 
 let nameCounter = 0;
 
 function generateStrategyName(dna: StrategyDNA): string {
   nameCounter++;
-  
+
   const indicators: string[] = [];
-  if (dna.rsiMode > 0) indicators.push('RSI');
-  if (dna.macdMode > 0) indicators.push('MACD');
-  if (dna.bbMode > 0) indicators.push('BB');
-  if (dna.emaMode > 0) indicators.push('EMA');
-  if (dna.adxMode > 0) indicators.push('ADX');
-  if (dna.stochMode > 0) indicators.push('Stoch');
-  if (dna.cciMode > 0) indicators.push('CCI');
-  if (dna.donchianMode > 0) indicators.push('Donch');
-  if (dna.paMode > 0) indicators.push('PA');
-  
+  if (dna.erMode > 0) indicators.push('ER');
+  if (dna.clvMode > 0) indicators.push('CLV');
+  if (dna.rangeExpMode > 0) indicators.push('RngX');
+  if (dna.consecMode > 0) indicators.push('Consec');
+  if (dna.volDeltaMode > 0) indicators.push('VolΔ');
+  if (dna.fdMode > 0) indicators.push('FD');
+  if (dna.gapMode > 0) indicators.push('Gap');
+  if (dna.candleMode > 0) indicators.push('Anatomy');
+
   const filters: string[] = [];
   if (dna.volMode > 0) filters.push(['HighVol', 'LowVol', 'VolExpansion'][dna.volMode - 1] || 'Vol');
   const sessions = ['Asia', 'London', 'NewYork', 'NYClose'];
@@ -1212,42 +1161,38 @@ function generateStrategyName(dna: StrategyDNA): string {
   if (dna.partialTP > 0) exits.push('PartialTP');
 
   const singleNames: Record<string, Record<number, string>> = {
-    BB: { 1: 'The Volatility Squeeze Breakout', 2: 'The Mean Reversion Trap', 3: 'The Band Walker' },
-    EMA: { 1: 'The Golden Cross Hunter', 2: 'The Trend Confirmation Engine', 3: 'The Slope Momentum Rider' },
-    RSI: { 1: 'The Oversold Reversal Sniper', 2: 'The Overbought Fade Machine', 3: 'The Midline Momentum Pivot' },
-    MACD: { 1: 'The Signal Line Snapper', 2: 'The Zero-Line Breakout', 3: 'The Histogram Divergence Play' },
-    ADX: { 1: 'The Trend Strength Scanner', 2: 'The Range-Bound Scalper', 3: 'The Momentum Acceleration Detector' },
-    Stoch: { 1: 'The Stochastic Reversal Engine', 2: 'The Overbought Momentum Fade', 3: 'The K/D Crossover Hunter' },
-    CCI: { 1: 'The CCI Breakout Charger', 2: 'The CCI Mean Reversion Sniper', 3: 'The Zero-Line Trend Pivots' },
-    Donch: { 1: 'The Turtle Channel Breakout', 2: 'The Channel Midline Rider', 3: 'The Channel Fade Contrarian' },
-    PA: { 1: 'The Inside Bar Explosion', 2: 'The Engulfing Reversal Cannon', 3: 'The Pin Bar Rejection Sniper' },
+    ER: { 1: 'The Efficiency Breakout Scanner', 2: 'The Chaos Reversion Engine', 3: 'The Efficiency Accelerator' },
+    CLV: { 1: 'The Bar Location Reversal', 2: 'The Intra-Bar Trend Rider', 3: 'The CLV Divergence Detector' },
+    RngX: { 1: 'The Volatility Expansion Cannon', 2: 'The Squeeze Detonator', 3: 'The Range Acceleration Sniper' },
+    Consec: { 1: 'The Exhaustion Fade Machine', 2: 'The Momentum Cascade Rider', 3: 'The Direction Shift Trigger' },
+    'VolΔ': { 1: 'The Volume Pressure Breakout', 2: 'The Smart Money Divergence', 3: 'The Delta Acceleration Play' },
+    FD: { 1: 'The Fractal Trend Isolator', 2: 'The Roughness Reversion Engine', 3: 'The Dimension Shift Detector' },
+    Gap: { 1: 'The Gap-And-Go Momentum', 2: 'The Gap Fill Contrarian', 3: 'The Shock Gap Filter' },
+    Anatomy: { 1: 'The Conviction Body Scanner', 2: 'The Indecision Breakout Trap', 3: 'The Wick Rejection Sniper' },
   };
 
   const comboNames: Record<string, string[]> = {
-    'ADX+BB': ['The Trend-Volatility Fusion', 'The ADX-Bollinger Power Engine'],
-    'ADX+Donch': ['The Turtle Trend Machine', 'The ADX-Donchian Momentum'],
-    'ADX+EMA': ['The Trend-Confirmed Crossover', 'The ADX Acceleration Engine'],
-    'ADX+Stoch': ['The Trend-Oscillator Hybrid', 'The ADX-Stochastic Convergence'],
-    'BB+CCI': ['The Volatility-CCI Breakout', 'The Band-Channel Convergence'],
-    'BB+Donch': ['The Dual-Channel Breakout', 'The Bollinger-Donchian Fusion'],
-    'BB+EMA': ['The Structural Trend-Band Convergence', 'The Bollinger-EMA Fusion Engine'],
-    'BB+PA': ['The Price Action Volatility Engine', 'The Candlestick-Bollinger Hybrid'],
-    'BB+RSI': ['The Volatility-Momentum Reversal', 'The Band Squeeze Oscillator'],
-    'BB+Stoch': ['The Stochastic Volatility Reversal', 'The BB-Stoch Fade Machine'],
-    'CCI+Donch': ['The Channel Breakout Accelerator', 'The CCI-Donchian Momentum'],
-    'CCI+EMA': ['The CCI Trend Filter', 'The Channel-Trend Convergence'],
-    'CCI+Stoch': ['The Dual Oscillator Momentum', 'The CCI-Stoch Crossfire'],
-    'Donch+EMA': ['The Turtle-EMA Trend Machine', 'The Channel Trend Rider'],
-    'Donch+PA': ['The Channel Breakout + Price Action', 'The Structural Channel Engine'],
-    'EMA+PA': ['The Price Action Trend Sniper', 'The Candlestick Trend Engine'],
-    'EMA+Stoch': ['The Stochastic Trend Rider', 'The EMA-Stoch Momentum'],
-    'PA+Stoch': ['The Candlestick Oscillator', 'The Price Action Reversal Engine'],
-    'BB+EMA+RSI': ['The Triple-Layer Volatility Filter', 'The Full-Spectrum Reversal Engine'],
-    'ADX+BB+EMA': ['The Triple Trend-Volatility Machine', 'The ADX-BB-EMA Convergence'],
-    'ADX+EMA+Stoch': ['The Trend-Oscillator Trifecta', 'The ADX-Stoch-EMA Fusion'],
-    'BB+Donch+EMA': ['The Triple Channel Engine', 'The Multi-Channel Trend Machine'],
-    'ADX+CCI+Donch': ['The Channel Breakout Validator', 'The ADX-CCI-Donchian Machine'],
-    'BB+EMA+PA': ['The Price Action Trend-Band Engine', 'The PA-BB-EMA Convergence'],
+    'CLV+Consec': ['The Location-Momentum Fusion', 'The CLV Streak Engine'],
+    'CLV+ER': ['The Efficiency-Location Hybrid', 'The Bar Intelligence Engine'],
+    'CLV+FD': ['The Fractal Reversal Radar', 'The Roughness-Location Engine'],
+    'Anatomy+ER': ['The Body-Efficiency Scanner', 'The Conviction Trend Machine'],
+    'Anatomy+Consec': ['The Pattern Exhaustion Engine', 'The Body-Streak Reversal'],
+    'CLV+RngX': ['The Location-Volatility Engine', 'The Squeeze-Location Hybrid'],
+    'Consec+FD': ['The Fractal Streak Machine', 'The Exhaustion Dimension Engine'],
+    'ER+Gap': ['The Efficiency Gap Engine', 'The Gap-Trend Momentum'],
+    'ER+RngX': ['The Efficiency Expansion Cannon', 'The Trend-Volatility Machine'],
+    'ER+VolΔ': ['The Efficiency-Volume Brain', 'The Smart Trend Engine'],
+    'FD+RngX': ['The Fractal Squeeze Engine', 'The Dimension-Range Hybrid'],
+    'Gap+RngX': ['The Gap Expansion Reactor', 'The Shock Momentum Engine'],
+    'RngX+VolΔ': ['The Expansion-Delta Cannon', 'The Volume Breakout Engine'],
+    'Anatomy+VolΔ': ['The Body-Delta Intelligence', 'The Smart Conviction Engine'],
+    'Consec+Gap': ['The Gap Exhaustion Detector', 'The Streak-Gap Machine'],
+    'Gap+VolΔ': ['The Gap Volume Fusion', 'The Smart Gap Engine'],
+    'Anatomy+CLV+ER': ['The Triple Micro-Structure Engine', 'The Full Anatomy Scanner'],
+    'CLV+Consec+FD': ['The Reversal Trifecta', 'The Exhaustion-Dimension-Location Brain'],
+    'ER+Gap+VolΔ': ['The Momentum Intelligence Trifecta', 'The Gap-Delta-Efficiency Engine'],
+    'Anatomy+Consec+FD': ['The Pattern Dimension Engine', 'The Exhaustion Anatomy Brain'],
+    'CLV+RngX+VolΔ': ['The Acceleration Trio', 'The Location-Expansion-Delta Engine'],
   };
 
   if (indicators.length === 0) {
@@ -1258,7 +1203,9 @@ function generateStrategyName(dna: StrategyDNA): string {
   let baseName: string;
   if (indicators.length === 1) {
     const ind = indicators[0];
-    const modeKey = ind === 'PA' ? 'paMode' : ind === 'Stoch' ? 'stochMode' : ind === 'Donch' ? 'donchianMode' : `${ind.toLowerCase()}Mode`;
+    const modeKey = ind === 'ER' ? 'erMode' : ind === 'CLV' ? 'clvMode' : ind === 'RngX' ? 'rangeExpMode' :
+      ind === 'Consec' ? 'consecMode' : ind === 'VolΔ' ? 'volDeltaMode' : ind === 'FD' ? 'fdMode' :
+      ind === 'Gap' ? 'gapMode' : 'candleMode';
     const mode = (dna as Record<string, number>)[modeKey] || 1;
     baseName = singleNames[ind]?.[mode] || `The ${ind} Strategy`;
   } else {
@@ -1276,35 +1223,30 @@ function generateStrategyName(dna: StrategyDNA): string {
 
 function generateEdgeDescription(dna: StrategyDNA): string {
   const parts: string[] = [];
-  if (dna.rsiMode === 1) parts.push(`RSI(${dna.rsiPeriod}) oversold reversal below ${dna.rsiLow.toFixed(0)}`);
-  if (dna.rsiMode === 2) parts.push(`RSI(${dna.rsiPeriod}) overbought fade above ${dna.rsiHigh.toFixed(0)}`);
-  if (dna.rsiMode === 3) parts.push(`RSI(${dna.rsiPeriod}) midline cross at 50`);
-  if (dna.macdMode === 1) parts.push(`MACD(${dna.macdFast},${dna.macdSlow}) signal crossover`);
-  if (dna.macdMode === 2) parts.push(`MACD(${dna.macdFast},${dna.macdSlow}) zero-line cross`);
-  if (dna.macdMode === 3) parts.push(`MACD histogram divergence`);
-  if (dna.bbMode === 1) parts.push(`Bollinger(${dna.bbPeriod},${dna.bbStdDev}) squeeze breakout`);
-  if (dna.bbMode === 2) parts.push(`Bollinger(${dna.bbPeriod},${dna.bbStdDev}) mean reversion`);
-  if (dna.bbMode === 3) parts.push(`Bollinger band walk`);
-  if (dna.emaMode === 1) parts.push(`EMA(${dna.emaFast}/${dna.emaSlow}) crossover`);
-  if (dna.emaMode === 2) parts.push(`Price above EMA(${dna.emaFast}) & EMA(${dna.emaSlow})`);
-  if (dna.emaMode === 3) parts.push(`EMA(${dna.emaFast}) slope filter`);
-  // New indicators
-  if (dna.adxMode === 1) parts.push(`ADX(${dna.adxPeriod}) > 25 trend filter with +DI/-DI direction`);
-  if (dna.adxMode === 2) parts.push(`ADX(${dna.adxPeriod}) < 20 range-bound filter`);
-  if (dna.adxMode === 3) parts.push(`ADX(${dna.adxPeriod}) rising momentum acceleration`);
-  if (dna.stochMode === 1) parts.push(`Stochastic(${dna.stochK},${dna.stochD}) oversold <20 buy`);
-  if (dna.stochMode === 2) parts.push(`Stochastic(${dna.stochK},${dna.stochD}) overbought >80 sell`);
-  if (dna.stochMode === 3) parts.push(`Stochastic %K/%D crossover`);
-  if (dna.cciMode === 1) parts.push(`CCI(${dna.cciPeriod}) breakout >100`);
-  if (dna.cciMode === 2) parts.push(`CCI(${dna.cciPeriod}) reversal <-100`);
-  if (dna.cciMode === 3) parts.push(`CCI(${dna.cciPeriod}) zero-line cross`);
-  if (dna.donchianMode === 1) parts.push(`Donchian(${dna.donchianPeriod}) high breakout`);
-  if (dna.donchianMode === 2) parts.push(`Donchian(${dna.donchianPeriod}) midline crossover`);
-  if (dna.donchianMode === 3) parts.push(`Donchian(${dna.donchianPeriod}) fade extremes`);
-  if (dna.paMode === 1) parts.push(`Inside bar breakout pattern`);
-  if (dna.paMode === 2) parts.push(`Engulfing candle reversal`);
-  if (dna.paMode === 3) parts.push(`Pin bar rejection pattern`);
-  // Advanced exits
+  if (dna.erMode === 1) parts.push(`Efficiency Ratio(${dna.erPeriod}) > 0.55 = trending breakout`);
+  if (dna.erMode === 2) parts.push(`Efficiency Ratio(${dna.erPeriod}) < 0.35 = choppy mean-revert`);
+  if (dna.erMode === 3) parts.push(`Efficiency Ratio(${dna.erPeriod}) accelerating = trend forming`);
+  if (dna.clvMode === 1) parts.push(`Close Location Value extreme reversal (CLV < -0.6 / > 0.6)`);
+  if (dna.clvMode === 2) parts.push(`Close Location Value trend (CLV above/below 0.2)`);
+  if (dna.clvMode === 3) parts.push(`CLV divergence from price direction`);
+  if (dna.rangeExpMode === 1) parts.push(`Range Expansion > 1.5x = momentum breakout`);
+  if (dna.rangeExpMode === 2) parts.push(`Range Contraction < 0.5x = squeeze breakout`);
+  if (dna.rangeExpMode === 3) parts.push(`Range accelerating from contraction`);
+  if (dna.consecMode === 1) parts.push(`${dna.consecThreshold}+ consecutive bars = exhaustion fade`);
+  if (dna.consecMode === 2) parts.push(`2+ consecutive bars = momentum continuation`);
+  if (dna.consecMode === 3) parts.push(`Direction change after ${dna.consecThreshold}-bar streak`);
+  if (dna.volDeltaMode === 1) parts.push(`Volume Delta(${dna.volDeltaPeriod}) breakout > 0.3 = buying pressure`);
+  if (dna.volDeltaMode === 2) parts.push(`Volume Delta divergence from price`);
+  if (dna.volDeltaMode === 3) parts.push(`Volume Delta accelerating`);
+  if (dna.fdMode === 1) parts.push(`Fractal Dimension(${dna.fdPeriod}) < 1.4 = smooth trend`);
+  if (dna.fdMode === 2) parts.push(`Fractal Dimension(${dna.fdPeriod}) > 1.6 = choppy reversion`);
+  if (dna.fdMode === 3) parts.push(`Fractal Dimension shift = regime change`);
+  if (dna.gapMode === 1) parts.push(`Gap-and-go: trade in gap direction`);
+  if (dna.gapMode === 2) parts.push(`Gap-fill: fade the inter-bar gap`);
+  if (dna.gapMode === 3) parts.push(`Large shock gap filter`);
+  if (dna.candleMode === 1) parts.push(`Strong body > 70% = conviction momentum`);
+  if (dna.candleMode === 2) parts.push(`Doji/indecision = breakout trigger`);
+  if (dna.candleMode === 3) parts.push(`Hammer/shooting star rejection reversal`);
   if (dna.trailingATR > 0) parts.push(`Trailing stop ${dna.trailingATR.toFixed(1)}× ATR`);
   if (dna.maxBarsInTrade > 0) parts.push(`Time exit after ${Math.round(dna.maxBarsInTrade)} bars`);
   if (dna.partialTP === 1) parts.push(`50% partial TP at 1R then trail`);
@@ -1314,35 +1256,30 @@ function generateEdgeDescription(dna: StrategyDNA): string {
 
 function generateEntryRules(dna: StrategyDNA): string[] {
   const rules: string[] = [];
-  if (dna.rsiMode === 1) rules.push(`RSI(${dna.rsiPeriod}) < ${dna.rsiLow.toFixed(0)} for LONG / > ${dna.rsiHigh.toFixed(0)} for SHORT`);
-  if (dna.rsiMode === 2) rules.push(`RSI(${dna.rsiPeriod}) > ${dna.rsiHigh.toFixed(0)} for SHORT / < ${dna.rsiLow.toFixed(0)} for LONG`);
-  if (dna.rsiMode === 3) rules.push(`RSI(${dna.rsiPeriod}) crosses above/below 50`);
-  if (dna.macdMode === 1) rules.push(`MACD(${dna.macdFast},${dna.macdSlow},${dna.macdSignal}) line crosses signal`);
-  if (dna.macdMode === 2) rules.push(`MACD(${dna.macdFast},${dna.macdSlow}) crosses zero line`);
-  if (dna.macdMode === 3) rules.push(`MACD histogram turns positive/negative`);
-  if (dna.bbMode === 1) rules.push(`Price breaks above/below Bollinger(${dna.bbPeriod}, ${dna.bbStdDev}σ)`);
-  if (dna.bbMode === 2) rules.push(`Price touches lower/upper Bollinger Band — fade the move`);
-  if (dna.bbMode === 3) rules.push(`Price walks along upper/lower Bollinger Band`);
-  if (dna.emaMode === 1) rules.push(`EMA(${dna.emaFast}) crosses EMA(${dna.emaSlow})`);
-  if (dna.emaMode === 2) rules.push(`Price > EMA(${dna.emaFast}) AND EMA(${dna.emaSlow}) for LONG`);
-  if (dna.emaMode === 3) rules.push(`EMA(${dna.emaFast}) slope rising/falling`);
-  // New entry rules
-  if (dna.adxMode === 1) rules.push(`ADX(${dna.adxPeriod}) > 25 confirms trending regime; +DI > -DI = LONG`);
-  if (dna.adxMode === 2) rules.push(`ADX(${dna.adxPeriod}) < 20 confirms range-bound regime`);
-  if (dna.adxMode === 3) rules.push(`ADX(${dna.adxPeriod}) rising = accelerating momentum`);
-  if (dna.stochMode === 1) rules.push(`Stochastic %K(${dna.stochK}) < 20 = oversold buy signal`);
-  if (dna.stochMode === 2) rules.push(`Stochastic %K(${dna.stochK}) > 80 = overbought sell signal`);
-  if (dna.stochMode === 3) rules.push(`%K crosses above %D = LONG; %K below %D = SHORT`);
-  if (dna.cciMode === 1) rules.push(`CCI(${dna.cciPeriod}) > 100 = breakout LONG; < -100 = SHORT`);
-  if (dna.cciMode === 2) rules.push(`CCI(${dna.cciPeriod}) < -100 = reversal LONG; > 100 = SHORT`);
-  if (dna.cciMode === 3) rules.push(`CCI(${dna.cciPeriod}) crosses zero line`);
-  if (dna.donchianMode === 1) rules.push(`Price >= Donchian(${dna.donchianPeriod}) High = LONG breakout`);
-  if (dna.donchianMode === 2) rules.push(`Price above Donchian(${dna.donchianPeriod}) Midline = LONG`);
-  if (dna.donchianMode === 3) rules.push(`Price <= Donchian(${dna.donchianPeriod}) Low = LONG fade`);
-  if (dna.paMode === 1) rules.push(`Inside bar detected → breakout in dominant direction`);
-  if (dna.paMode === 2) rules.push(`Bullish/bearish engulfing candle reversal pattern`);
-  if (dna.paMode === 3) rules.push(`Pin bar rejection: long wick > 60% of range, small body < 30%`);
-  // Filters
+  if (dna.erMode === 1) rules.push(`Efficiency Ratio(${dna.erPeriod}) > 0.55 → LONG if price rising, SHORT if falling`);
+  if (dna.erMode === 2) rules.push(`Efficiency Ratio(${dna.erPeriod}) < 0.35 → LONG on dip, SHORT on rally (mean-revert)`);
+  if (dna.erMode === 3) rules.push(`Efficiency Ratio accelerating (+0.05) → trade momentum direction`);
+  if (dna.clvMode === 1) rules.push(`Close Location Value < -0.6 → LONG reversal / > 0.6 → SHORT reversal`);
+  if (dna.clvMode === 2) rules.push(`CLV(smooth ${dna.clvSmooth}) > 0.2 → LONG trend / < -0.2 → SHORT trend`);
+  if (dna.clvMode === 3) rules.push(`CLV diverges from price direction → counter-trend signal`);
+  if (dna.rangeExpMode === 1) rules.push(`Bar range > 1.5× average(${dna.rangeExpPeriod}) → momentum breakout trade`);
+  if (dna.rangeExpMode === 2) rules.push(`Bar range < 0.5× average → squeeze about to break, trade dominant bias`);
+  if (dna.rangeExpMode === 3) rules.push(`Range expanding from contraction (>1.2× after <0.8×) → acceleration trade`);
+  if (dna.consecMode === 1) rules.push(`${dna.consecThreshold}+ same-direction bars → exhaustion, fade the move`);
+  if (dna.consecMode === 2) rules.push(`2+ consecutive up closes → momentum LONG / down → SHORT`);
+  if (dna.consecMode === 3) rules.push(`First bar reversing a ${dna.consecThreshold}-bar streak → direction change trigger`);
+  if (dna.volDeltaMode === 1) rules.push(`Volume Delta(${dna.volDeltaPeriod}) > 0.3 → LONG / < -0.3 → SHORT`);
+  if (dna.volDeltaMode === 2) rules.push(`Price up but Volume Delta down → bearish divergence SHORT`);
+  if (dna.volDeltaMode === 3) rules.push(`Volume Delta accelerating → trade delta direction`);
+  if (dna.fdMode === 1) rules.push(`Fractal Dimension(${dna.fdPeriod}) < 1.4 → smooth trend, trade direction`);
+  if (dna.fdMode === 2) rules.push(`Fractal Dimension(${dna.fdPeriod}) > 1.6 → choppy, mean-revert`);
+  if (dna.fdMode === 3) rules.push(`Fractal Dimension dropping >0.1 → new trend forming, trade direction`);
+  if (dna.gapMode === 1) rules.push(`Gap > 0.3× ATR → gap-and-go in gap direction`);
+  if (dna.gapMode === 2) rules.push(`Gap > 0.3× ATR → fade the gap (gap-fill trade)`);
+  if (dna.gapMode === 3) rules.push(`Large gap > 0.8× ATR → trade in gap direction`);
+  if (dna.candleMode === 1) rules.push(`Body > 70% of range → strong conviction, trade body direction`);
+  if (dna.candleMode === 2) rules.push(`Doji (body < 15% range) → breakout trigger in dominant bias`);
+  if (dna.candleMode === 3) rules.push(`Hammer (lower wick >60%) → LONG / Shooting Star (upper wick >60%) → SHORT`);
   if (dna.volMode === 1) rules.push('High volatility regime only');
   if (dna.volMode === 2) rules.push('Low volatility regime only');
   if (dna.volMode === 3) rules.push('Volume expansion > 1.5x average');
@@ -1382,15 +1319,14 @@ function getJobKey(pair?: string): string {
 
 function getEdgeArchetype(dna: StrategyDNA): string {
   const parts: string[] = [];
-  if (dna.rsiMode > 0) parts.push('RSI');
-  if (dna.macdMode > 0) parts.push('MACD');
-  if (dna.bbMode > 0) parts.push('BB');
-  if (dna.emaMode > 0) parts.push('EMA');
-  if (dna.adxMode > 0) parts.push('ADX');
-  if (dna.stochMode > 0) parts.push('STOCH');
-  if (dna.cciMode > 0) parts.push('CCI');
-  if (dna.donchianMode > 0) parts.push('DONCH');
-  if (dna.paMode > 0) parts.push('PA');
+  if (dna.erMode > 0) parts.push('ER');
+  if (dna.clvMode > 0) parts.push('CLV');
+  if (dna.rangeExpMode > 0) parts.push('RNGX');
+  if (dna.consecMode > 0) parts.push('CONSEC');
+  if (dna.volDeltaMode > 0) parts.push('VOLDELTA');
+  if (dna.fdMode > 0) parts.push('FD');
+  if (dna.gapMode > 0) parts.push('GAP');
+  if (dna.candleMode > 0) parts.push('ANATOMY');
   if (dna.volMode > 0) parts.push('VOL');
   if (dna.sessionFilter >= 0) parts.push('SES');
   if (dna.dayFilter >= 0) parts.push('DAY');
@@ -1400,86 +1336,72 @@ function getEdgeArchetype(dna: StrategyDNA): string {
 }
 
 function computeFitness(sim: SimResult, baseDailyReturns: number[], maxCorrelation: number, dna?: StrategyDNA, unconstrained = false): number {
-  const MIN_TRADES = 60; // Minimum trades for a viable strategy
+  const MIN_TRADES = 150; // High frequency requirement
 
   // ── UNCONSTRAINED MODE ──
   if (unconstrained) {
-    if (sim.trades < 10) return 0;
+    if (sim.trades < 20) return 0;
 
-    // Core: Profit Factor × log(trades) — rewards consistency over raw return
     let fitness = sim.profitFactor * Math.log(Math.max(sim.trades, 2));
 
-    // Sharpe bonus
     if (sim.sharpe > 0.5) fitness *= 1 + (sim.sharpe * 0.3);
     if (sim.sharpe > 1.5) fitness *= 1.3;
 
-    // Drawdown penalty
     if (sim.maxDrawdown > 0.001) fitness /= (1 + sim.maxDrawdown * 3);
     if (sim.maxDrawdown > 0.3) fitness *= 0.3;
 
-    // ── Min Trade Penalty ──
-    if (sim.trades < MIN_TRADES) fitness *= 0.1; // Massive penalty for sniper strategies
-    else if (sim.trades < 100) fitness *= 0.6;
+    // Heavy penalty for low trade count
+    if (sim.trades < MIN_TRADES) fitness *= 0.05;
+    else if (sim.trades < 200) fitness *= 0.5;
 
-    // Moderate return bonuses (not exponential)
-    if (sim.totalReturn > 20) fitness *= 1.15;
-    if (sim.totalReturn > 50) fitness *= 1.1;
+    // Big bonus for high throughput
+    if (sim.trades > 300) fitness *= 1.2;
+    if (sim.trades > 500) fitness *= 1.2;
 
-    // ── Indicator Complexity Penalty ──
+    if (sim.totalReturn > 20) fitness *= 1.1;
+
     if (dna) {
       const activeCount = countActiveIndicators(dna);
-      if (activeCount > 3) fitness *= 0.2; // Should never happen with cap, but safety
-      if (activeCount === 1) fitness *= 1.1; // Reward simplicity
+      if (activeCount > 3) fitness *= 0.2;
+      if (activeCount === 1) fitness *= 1.1;
     }
 
     return Math.max(fitness, 0);
   }
 
   // ── CONSTRAINED MODE ──
-  if (sim.trades < 10) return 0;
+  if (sim.trades < 20) return 0;
 
-  // Core: Profit Factor × log(trades) — hunts for consistency
   let fitness = sim.profitFactor * Math.log(Math.max(sim.trades, 2));
 
-  // Sharpe integration
   if (sim.sharpe > 0.5) fitness *= 1 + (sim.sharpe * 0.3);
   if (sim.sharpe > 1.5) fitness *= 1.3;
   if (sim.sharpe > 2.5) fitness *= 1.2;
 
-  // Drawdown scaling
   if (sim.maxDrawdown > 0.001) fitness /= (1 + sim.maxDrawdown * 2);
   if (sim.maxDrawdown > 0.3) fitness *= 0.5;
   if (sim.maxDrawdown > 0.5) fitness *= 0.3;
 
-  // ── Min Trade Penalty — kill sniper strategies ──
-  if (sim.trades < MIN_TRADES) fitness *= 0.1;
-  else if (sim.trades < 100) fitness *= 0.6;
-  // Bonus for high throughput
-  if (sim.trades > 200) fitness *= 1.15;
-  if (sim.trades > 400) fitness *= 1.15;
+  // Heavy penalty for low trade count — we want 8+ trades per 3 days
+  if (sim.trades < MIN_TRADES) fitness *= 0.05;
+  else if (sim.trades < 200) fitness *= 0.5;
 
-  // Moderate return bonuses
-  if (sim.totalReturn > 20) fitness *= 1.15;
-  if (sim.totalReturn > 50) fitness *= 1.1;
+  // Big bonus for high throughput
+  if (sim.trades > 300) fitness *= 1.2;
+  if (sim.trades > 500) fitness *= 1.2;
+  if (sim.trades > 800) fitness *= 1.15;
 
-  // Correlation penalty
+  if (sim.totalReturn > 20) fitness *= 1.1;
+
   const corr = Math.abs(pearsonCorrelation(baseDailyReturns, sim.dailyReturns));
   if (corr > maxCorrelation) fitness *= Math.max(0.01, 1 - (corr - maxCorrelation) * 5);
 
   if (dna) {
     const activeCount = countActiveIndicators(dna);
+    if (activeCount === 1) fitness *= 1.2;
+    if (activeCount === 2) fitness *= 1.1;
+    if (activeCount > 3) fitness *= 0.2;
 
-    // ── Indicator Complexity Penalty ──
-    // Reward clean 1-2 indicator strategies, penalize 4+
-    if (activeCount === 1) fitness *= 1.2;   // Pure edge
-    if (activeCount === 2) fitness *= 1.1;   // Clean combo
-    if (activeCount > 3) fitness *= 0.2;     // Frankenstein penalty (safety)
-
-    // Reward advanced indicators mildly (not enough to encourage stacking)
-    if (dna.adxMode > 0 || dna.donchianMode > 0) fitness *= 1.1;
-    if (dna.paMode > 0) fitness *= 1.05;
-
-    // Reward advanced exits
     if (dna.trailingATR > 0) fitness *= 1.1;
     if (dna.partialTP > 0) fitness *= 1.05;
     if (dna.maxBarsInTrade > 0) fitness *= 1.05;
@@ -1500,7 +1422,6 @@ async function handlePhase1(body: Record<string, unknown>) {
   const mutationRate = Number(body.mutationRate) || 0.15;
   const gensPerCall = Math.min(Number(body.gensPerCall) || 5, 10);
   const unconstrained = Boolean(body.unconstrained);
-  // Phase 1: Target Regime (-1=ALL, 0=TREND, 1=RANGE, 2=SHOCK)
   const targetRegime = Number(body.targetRegime ?? -1);
 
   const apiToken = environment === "live"
@@ -1512,9 +1433,9 @@ async function handlePhase1(body: Record<string, unknown>) {
   const candles = await fetchCandles(pair, candleCount, environment, apiToken);
   if (candles.length < 250) throw new Error(`Insufficient candle data: ${candles.length}`);
 
-  console.log(`[GA-P1] Got ${candles.length} candles, building indicator library...`);
+  console.log(`[GA-P1] Got ${candles.length} candles, building novel micro-structure library...`);
   const bars = buildFeatureArrays(pair, candles);
-  console.log(`[GA-P1] Built ${bars.count} feature bars with 30+ indicator suite`);
+  console.log(`[GA-P1] Built ${bars.count} feature bars with 8 novel indicators`);
 
   const IS_SPLIT = Math.floor(bars.count * 0.7);
   console.log(`[GA-P1] Walk-forward split: IS=${IS_SPLIT} bars, OOS=${bars.count - IS_SPLIT} bars, targetRegime=${targetRegime >= 0 ? REGIME_LABELS[targetRegime] : 'ALL'}`);
@@ -1523,7 +1444,7 @@ async function handlePhase1(body: Record<string, unknown>) {
   const baseDailyReturns: number[] = [];
   let baseEq = 10000, dayCounter = 0, dayStart = baseEq;
   for (let i = 1; i < IS_SPLIT; i++) {
-    const isLong = bars.ema8[i] > bars.ema34[i];
+    const isLong = bars.close[i] > bars.close[Math.max(0, i - 10)];
     const baseReturn = isLong ? bars.mfeLong[i] * 0.5 : bars.mfeShort[i] * 0.5;
     baseEq += baseReturn * 10000 * 0.001;
     dayCounter++;
@@ -1555,7 +1476,6 @@ async function handlePhase1(body: Record<string, unknown>) {
   });
   if (barsErr) throw new Error(`Failed to save feature bars: ${barsErr.message}`);
 
-  // Compute regime distribution
   const regimeDist = { trend: 0, range: 0, shock: 0 };
   for (let i = 0; i < bars.count; i++) {
     if (bars.regimeTag[i] === REGIME_TREND) regimeDist.trend++;
@@ -1591,7 +1511,7 @@ async function handlePhase1(body: Record<string, unknown>) {
     targetRegime, targetRegimeLabel: targetRegime >= 0 ? REGIME_LABELS[targetRegime] : 'ALL',
     regimeDistribution: regimeDist,
     dateRange: { start: candles[0]?.time || '', end: candles[candles.length - 1]?.time || '' },
-    message: `Indicator library built. ${bars.count} bars. Regime: ${targetRegime >= 0 ? REGIME_LABELS[targetRegime] : 'ALL'} (T:${regimeDist.trend} R:${regimeDist.range} S:${regimeDist.shock}). Ready to evolve.`,
+    message: `Novel micro-structure library built. ${bars.count} bars. Regime: ${targetRegime >= 0 ? REGIME_LABELS[targetRegime] : 'ALL'} (T:${regimeDist.trend} R:${regimeDist.range} S:${regimeDist.shock}). Ready to evolve.`,
   };
 }
 
@@ -1712,24 +1632,18 @@ async function handlePhase3(body: Record<string, unknown>) {
 
   for (const p of population.slice(0, 60)) {
     const d = p.dna;
-    const key = `${d.rsiMode}-${d.rsiPeriod}-${d.macdMode}-${d.macdFast}-${d.bbMode}-${d.bbPeriod}-${d.emaMode}-${d.emaFast}-${d.emaSlow}-${d.adxMode}-${d.stochMode}-${d.cciMode}-${d.donchianMode}-${d.paMode}-${d.direction}-${d.volMode}-${d.sessionFilter}-${d.dayFilter}-${d.trailingATR > 0 ? 1 : 0}-${d.partialTP}`;
+    const key = `${d.erMode}-${d.erPeriod}-${d.clvMode}-${d.clvSmooth}-${d.rangeExpMode}-${d.rangeExpPeriod}-${d.consecMode}-${d.consecThreshold}-${d.volDeltaMode}-${d.fdMode}-${d.gapMode}-${d.candleMode}-${d.direction}-${d.volMode}-${d.sessionFilter}-${d.dayFilter}`;
     if (seen.has(key)) continue;
     seen.add(key);
 
-    // Full-dataset sim for equity curve display (regime-filtered)
     const sim = simulateStrategy(bars, p.dna, 0, undefined, targetRegime);
-    if (sim.trades < (targetRegime >= 0 ? 30 : 60)) continue; // Lower min for regime-specific
+    if (sim.trades < (targetRegime >= 0 ? 50 : 100)) continue; // High frequency minimum
 
-    // IS-only sim (candles 0 to isSplit)
     const isSim = isSplit < bars.count ? simulateStrategy(bars, p.dna, 0, isSplit, targetRegime) : sim;
-    // OOS sim (candles isSplit to end) — the blind test
     const oosSim = isSplit < bars.count ? simulateStrategy(bars, p.dna, isSplit, undefined, targetRegime) : undefined;
 
-    // ── OOS Survival Filter ──
-    if (oosSim && oosSim.trades >= 5) {
-      // Reject if OOS Profit Factor < 1.2
-      if (oosSim.profitFactor < 1.2) continue;
-      // Reject if OOS Max Drawdown > 2× IS Max Drawdown
+    if (oosSim && oosSim.trades >= 10) {
+      if (oosSim.profitFactor < 1.1) continue;
       if (isSim.maxDrawdown > 0.001 && oosSim.maxDrawdown > isSim.maxDrawdown * 2) continue;
     }
 
@@ -1746,8 +1660,7 @@ async function handlePhase3(body: Record<string, unknown>) {
       edgeDescription: generateEdgeDescription(p.dna),
       entryRules: generateEntryRules(p.dna),
       exitRules: generateExitRules(p.dna),
-      oosSim,
-      isSim,
+      oosSim, isSim,
     });
   }
 
@@ -1783,7 +1696,6 @@ async function handlePhase3(body: Record<string, unknown>) {
       if (p.correlation > maxCorrelation) continue;
       if (!canAddArchetype(p.dna)) continue;
       if (!isUncorrelatedWithPortfolio(p, diverseProfiles)) continue;
-      // OOS survival filter already applied above during extraction
       diverseProfiles.push(p);
     }
 
@@ -1837,14 +1749,12 @@ async function handlePhase3(body: Record<string, unknown>) {
     entryRules: p.entryRules,
     exitRules: p.exitRules,
     edgeArchetype: getEdgeArchetype(p.dna),
-    // Full IS/OOS metrics for Lie Detector panel
     oosReturn: p.oosSim ? Math.round(p.oosSim.totalReturn * 100) / 100 : null,
     oosWinRate: p.oosSim ? Math.round(p.oosSim.winRate * 10000) / 10000 : null,
     oosTrades: p.oosSim?.trades ?? null,
     oosProfitFactor: p.oosSim ? Math.round(p.oosSim.profitFactor * 100) / 100 : null,
     oosMaxDrawdown: p.oosSim ? Math.round(p.oosSim.maxDrawdown * 10000) / 10000 : null,
     oosPips: p.oosSim ? Math.round(p.oosSim.totalPips * 10) / 10 : null,
-    // IS-only metrics
     isReturn: p.isSim ? Math.round(p.isSim.totalReturn * 100) / 100 : null,
     isWinRate: p.isSim ? Math.round(p.isSim.winRate * 10000) / 10000 : null,
     isTrades: p.isSim?.trades ?? null,
@@ -1919,7 +1829,6 @@ async function handleBatchExtract(body: Record<string, unknown>) {
     isReturn?: number | null; isWinRate?: number | null; isTrades?: number | null;
     isProfitFactor?: number | null; isMaxDrawdown?: number | null;
     equityCurve: number[];
-    // Regime-specific performance
     regimeScores?: { trend: number; range: number; shock: number };
     bestRegime?: string;
   }
@@ -1947,23 +1856,21 @@ async function handleBatchExtract(body: Record<string, unknown>) {
     nameCounter = 0;
     for (const ind of population.slice(0, 30)) {
       const d = ind.dna;
-      const key = `${d.rsiMode}-${d.macdMode}-${d.bbMode}-${d.emaMode}-${d.adxMode}-${d.stochMode}-${d.cciMode}-${d.donchianMode}-${d.paMode}-${d.direction}-${d.sessionFilter}`;
+      const key = `${d.erMode}-${d.clvMode}-${d.rangeExpMode}-${d.consecMode}-${d.volDeltaMode}-${d.fdMode}-${d.gapMode}-${d.candleMode}-${d.direction}-${d.sessionFilter}`;
       if (seen.has(key)) continue;
       seen.add(key);
 
       const sim = simulateStrategy(bars, ind.dna);
-      if (sim.trades < 30) continue;
+      if (sim.trades < 50) continue;
 
       const isSim = isSplit < bars.count ? simulateStrategy(bars, ind.dna, 0, isSplit) : sim;
       const oosSim = isSplit < bars.count ? simulateStrategy(bars, ind.dna, isSplit) : undefined;
 
-      // OOS Survival Filter
-      if (oosSim && oosSim.trades >= 5) {
-        if (oosSim.profitFactor < 1.2) continue;
+      if (oosSim && oosSim.trades >= 10) {
+        if (oosSim.profitFactor < 1.1) continue;
         if (isSim.maxDrawdown > 0.001 && oosSim.maxDrawdown > isSim.maxDrawdown * 2) continue;
       }
 
-      // Compute regime-specific scores: run sim filtered to each regime
       const trendSim = bars.regimeTag ? simulateStrategy(bars, ind.dna, 0, undefined, REGIME_TREND) : null;
       const rangeSim = bars.regimeTag ? simulateStrategy(bars, ind.dna, 0, undefined, REGIME_RANGE) : null;
       const shockSim = bars.regimeTag ? simulateStrategy(bars, ind.dna, 0, undefined, REGIME_SHOCK) : null;
@@ -2046,7 +1953,6 @@ async function handleBatchExtract(body: Record<string, unknown>) {
   selectBestForRegime('RANGE', 2);
   selectBestForRegime('SHOCK', 1);
 
-  // Fill remaining slots (up to topN) with best overall
   if (selected.length < topN) {
     for (const strat of allStrategies) {
       if (selected.length >= topN) break;
