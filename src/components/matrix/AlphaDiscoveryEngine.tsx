@@ -9,7 +9,7 @@ import {
   Loader2, CheckCircle2, Clock, Sparkles, Atom, Globe, Trophy,
 } from 'lucide-react';
 import type { BacktestResult } from '@/hooks/useRankExpectancy';
-import { PeriodPerformanceRow } from './TimePeriodBreakdown';
+import { TimePeriodBreakdown } from './TimePeriodBreakdown';
 import { OOSValidationPanel, type OOSValidationResult } from './OOSValidationPanel';
 
 interface StrategyDNA {
@@ -778,7 +778,17 @@ function StrategyCard({ profile, idx, expandedProfile, setExpandedProfile, maxCo
                   </span>
                 </div>
                 <EquityCurve curve={profile.equityCurve} height={80} />
-                <PeriodPerformanceRow equityCurve={profile.equityCurve} totalPips={profile.totalPips} totalTrades={profile.trades} dateRange={dateRange} />
+                {(() => {
+                  // Convert number[] equity curve to {time, equity}[] for TimePeriodBreakdown
+                  const curveWithTime = profile.equityCurve.map((eq, i) => {
+                    const totalDays = 60; // approximate days span
+                    const dayOffset = (i / Math.max(1, profile.equityCurve.length - 1)) * totalDays;
+                    const d = new Date();
+                    d.setDate(d.getDate() - totalDays + dayOffset);
+                    return { time: d.toISOString(), equity: eq };
+                  });
+                  return <TimePeriodBreakdown curve={curveWithTime} totalPips={profile.totalPips} totalTrades={profile.trades} />;
+                })()}
               </div>
 
               <div className="bg-blue-950/20 border border-blue-500/20 rounded-lg p-3">
