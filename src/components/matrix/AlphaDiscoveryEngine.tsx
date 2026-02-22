@@ -41,6 +41,8 @@ interface GAProfile {
   oosProfitFactor?: number | null; oosMaxDrawdown?: number | null; oosPips?: number | null;
   isReturn?: number | null; isWinRate?: number | null; isTrades?: number | null;
   isProfitFactor?: number | null; isMaxDrawdown?: number | null; isPips?: number | null;
+  regimeScores?: { trend: number; range: number; shock: number };
+  bestRegime?: string;
 }
 
 interface EvolutionEntry { gen: number; bestFitness: number; avgFitness: number; bestTrades: number; }
@@ -215,6 +217,7 @@ export function AlphaDiscoveryEngine({ result }: { result: BacktestResult }) {
   const [candleCount, setCandleCount] = useState(5000);
   const [gensPerCall, setGensPerCall] = useState(5);
   const [unconstrained, setUnconstrained] = useState(false);
+  const [targetRegime, setTargetRegime] = useState(-1); // -1=ALL, 0=TREND, 1=RANGE, 2=SHOCK
 
   const [currentGen, setCurrentGen] = useState(0);
   const [bestFitness, setBestFitness] = useState(0);
@@ -249,7 +252,7 @@ export function AlphaDiscoveryEngine({ result }: { result: BacktestResult }) {
         action: 'init', environment: result.environment, pair,
         candles: candleCount, populationSize, generations,
         maxCorrelation: unconstrained ? 999 : maxCorrelation,
-        gensPerCall, unconstrained,
+        gensPerCall, unconstrained, targetRegime,
       });
       setBestFitness(initResult.bestFitness || 0);
 
@@ -279,7 +282,7 @@ export function AlphaDiscoveryEngine({ result }: { result: BacktestResult }) {
       setError((err as Error).message);
       setPhase('error');
     }
-  }, [result, pair, candleCount, populationSize, generations, maxCorrelation, gensPerCall, unconstrained, callEngine]);
+  }, [result, pair, candleCount, populationSize, generations, maxCorrelation, gensPerCall, unconstrained, targetRegime, callEngine]);
 
   // ── Multi-Pair Batch Run ──
   const BATCH_PAIRS = ['EUR_USD', 'GBP_USD', 'USD_JPY', 'AUD_USD', 'EUR_GBP', 'USD_CAD', 'NZD_USD'];

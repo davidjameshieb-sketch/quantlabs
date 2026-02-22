@@ -65,6 +65,14 @@ interface ScoredIndividual {
   entryRules: string[]; exitRules: string[];
 }
 
+// Market Regime Classification
+// 0 = TREND (directional expansion), 1 = RANGE (mean reversion), 2 = SHOCK (volatility spike)
+type RegimeTag = 0 | 1 | 2;
+const REGIME_TREND: RegimeTag = 0;
+const REGIME_RANGE: RegimeTag = 1;
+const REGIME_SHOCK: RegimeTag = 2;
+const REGIME_LABELS = ['TREND', 'RANGE', 'SHOCK'] as const;
+
 // Extended feature arrays
 interface BarArrays {
   close: number[]; high: number[]; low: number[]; open: number[];
@@ -92,6 +100,8 @@ interface BarArrays {
   // For advanced sim: bar-by-bar high/low for trailing
   barHigh: number[]; barLow: number[];
   isJPY: number[];
+  // Phase 1: Regime Classification
+  regimeTag: RegimeTag[];
   count: number;
 }
 
@@ -464,7 +474,9 @@ function buildFeatureArrays(pair: string, candles: Candle[]): BarArrays {
     hurst: [], volBucket: [], isLongBias: [],
     mfeLong: [], maeLong: [], mfeShort: [], maeShort: [],
     barHigh: [], barLow: [],
-    isJPY: [], count: 0,
+    isJPY: [],
+    regimeTag: [],
+    count: 0,
   };
 
   const MFE_MAE_HORIZON = 16;
@@ -559,6 +571,47 @@ function buildFeatureArrays(pair: string, candles: Candle[]): BarArrays {
     bars.mfeLong.push(mfeLong); bars.maeLong.push(maeLong);
     bars.mfeShort.push(mfeShort); bars.maeShort.push(maeShort);
     bars.isJPY.push(isJPY);
+
+    // ── Phase 1: Regime Classification ──
+    // Compute EMA20 slope (normalized)
+    const ema20Val = ema21[i]; // using EMA21 as proxy for EMA20
+    const ema20Prev = i >= 5 ? ema21[i - 5] : ema20Val;
+    const emaSlope = ema20Val > 0 ? ((ema20Val - ema20Prev) / ema20Val) * 100 : 0;
+    const slopeThreshold = 0.05; // steep slope threshold
+
+    // ATR expansion: current ATR vs 14-day average ATR (ATR of ATR)
+    // Use rolling average of ATR over last ~672 bars (14 days * 48 M30 bars)
+    const ATR_AVG_LOOKBACK = Math.min(672, i);
+    let atrAvg = currentATR;
+    if (ATR_AVG_LOOKBACK > 20) {
+      let atrSum = 0;
+      const sliceStart = bars.atr.length - ATR_AVG_LOOKBACK;
+      const sliceEnd = bars.atr.length;
+      for (let k = Math.max(0, sliceStart); k < sliceEnd; k++) atrSum += bars.atr[k];
+      atrAvg = atrSum / (sliceEnd - Math.max(0, sliceStart)) || currentATR;
+    }
+    const atrRatio = atrAvg > 0 ? currentATR / atrAvg : 1;
+    const atrExpanding = atrRatio > 1.15;
+
+    // ADX value for regime
+    const adxVal = adx14Data.adx[i];
+
+    let regime: RegimeTag;
+    if (atrRatio > 2.0) {
+      // SHOCK: ATR spike > 2x the 14-day average
+      regime = REGIME_SHOCK;
+    } else if (Math.abs(emaSlope) > slopeThreshold && atrExpanding && adxVal > 25) {
+      // TREND: steep EMA slope + expanding ATR + strong ADX
+      regime = REGIME_TREND;
+    } else if (adxVal < 20 || Math.abs(emaSlope) < slopeThreshold * 0.5) {
+      // RANGE: ADX < 20 or flat EMA slope
+      regime = REGIME_RANGE;
+    } else {
+      // Default to TREND if ADX > 20 and slope is moderate
+      regime = REGIME_TREND;
+    }
+    bars.regimeTag.push(regime);
+
     bars.count++;
   }
 
@@ -745,7 +798,8 @@ function evaluateEntry(bars: BarArrays, i: number, dna: StrategyDNA): { long: bo
 }
 
 // ── Advanced Simulation with trailing stops, partial TP, max bars ──────────
-function simulateStrategy(bars: BarArrays, dna: StrategyDNA, startIdx = 0, endIdx?: number): SimResult {
+// targetRegime: if set, only open trades when bar's regime matches (0=TREND, 1=RANGE, 2=SHOCK, -1=ALL)
+function simulateStrategy(bars: BarArrays, dna: StrategyDNA, startIdx = 0, endIdx?: number, targetRegime = -1): SimResult {
   const START_EQ = 1000;
   const RISK_PER_TRADE = 0.01;
   const TRADE_COOLDOWN = 4;
@@ -771,6 +825,9 @@ function simulateStrategy(bars: BarArrays, dna: StrategyDNA, startIdx = 0, endId
     const isLong = entry.long;
     const isShort = entry.short;
     if (!isLong && !isShort) continue;
+
+    // Regime gate: skip entry if bar's regime doesn't match target
+    if (targetRegime >= 0 && bars.regimeTag[i] !== targetRegime) continue;
 
     const sl = bars.atr[i] * dna.slMultiplier;
     const tp = bars.atr[i] * dna.tpMultiplier;
@@ -1443,6 +1500,8 @@ async function handlePhase1(body: Record<string, unknown>) {
   const mutationRate = Number(body.mutationRate) || 0.15;
   const gensPerCall = Math.min(Number(body.gensPerCall) || 5, 10);
   const unconstrained = Boolean(body.unconstrained);
+  // Phase 1: Target Regime (-1=ALL, 0=TREND, 1=RANGE, 2=SHOCK)
+  const targetRegime = Number(body.targetRegime ?? -1);
 
   const apiToken = environment === "live"
     ? (Deno.env.get("OANDA_LIVE_API_TOKEN") || Deno.env.get("OANDA_API_TOKEN"))
@@ -1458,7 +1517,7 @@ async function handlePhase1(body: Record<string, unknown>) {
   console.log(`[GA-P1] Built ${bars.count} feature bars with 30+ indicator suite`);
 
   const IS_SPLIT = Math.floor(bars.count * 0.7);
-  console.log(`[GA-P1] Walk-forward split: IS=${IS_SPLIT} bars, OOS=${bars.count - IS_SPLIT} bars`);
+  console.log(`[GA-P1] Walk-forward split: IS=${IS_SPLIT} bars, OOS=${bars.count - IS_SPLIT} bars, targetRegime=${targetRegime >= 0 ? REGIME_LABELS[targetRegime] : 'ALL'}`);
 
   // Baseline
   const baseDailyReturns: number[] = [];
@@ -1475,13 +1534,13 @@ async function handlePhase1(body: Record<string, unknown>) {
   const population: { dna: StrategyDNA; fitness: number }[] = [];
   for (let i = 0; i < Math.min(ARCHETYPES.length, populationSize); i++) {
     const dna = randomDNA(ARCHETYPES[i]);
-    const sim = simulateStrategy(bars, dna, 0, IS_SPLIT);
+    const sim = simulateStrategy(bars, dna, 0, IS_SPLIT, targetRegime);
     const fitness = computeFitness(sim, baseDailyReturns, maxCorrelation, dna, unconstrained);
     population.push({ dna, fitness });
   }
   while (population.length < populationSize) {
     const dna = randomDNA();
-    const sim = simulateStrategy(bars, dna, 0, IS_SPLIT);
+    const sim = simulateStrategy(bars, dna, 0, IS_SPLIT, targetRegime);
     const fitness = computeFitness(sim, baseDailyReturns, maxCorrelation, dna, unconstrained);
     population.push({ dna, fitness });
   }
@@ -1496,14 +1555,24 @@ async function handlePhase1(body: Record<string, unknown>) {
   });
   if (barsErr) throw new Error(`Failed to save feature bars: ${barsErr.message}`);
 
+  // Compute regime distribution
+  const regimeDist = { trend: 0, range: 0, shock: 0 };
+  for (let i = 0; i < bars.count; i++) {
+    if (bars.regimeTag[i] === REGIME_TREND) regimeDist.trend++;
+    else if (bars.regimeTag[i] === REGIME_RANGE) regimeDist.range++;
+    else regimeDist.shock++;
+  }
+
   const jobState = {
     status: "evolving", pair, environment, currentGen: 0,
     totalGenerations, populationSize, maxCorrelation, mutationRate, gensPerCall, unconstrained,
+    targetRegime,
     population: population.map(p => ({ dna: p.dna, fitness: Math.round(p.fitness * 1000) / 1000 })),
     baseDailyReturns, isSplit: IS_SPLIT,
     evolutionLog: [{ gen: 0, bestFitness: Math.round(population[0].fitness * 1000) / 1000, avgFitness: Math.round(population.reduce((s, p) => s + p.fitness, 0) / population.length * 1000) / 1000, bestTrades: 0 }],
     totalSimulations: populationSize, barCount: bars.count, startedAt: new Date().toISOString(),
     dateRange: { start: candles[0]?.time || '', end: candles[candles.length - 1]?.time || '' },
+    regimeDistribution: regimeDist,
   };
 
   const JOB_KEY = getJobKey(pair);
@@ -1514,13 +1583,15 @@ async function handlePhase1(body: Record<string, unknown>) {
   });
   if (upsertErr) throw new Error(`Failed to save GA job state: ${upsertErr.message}`);
 
-  console.log(`[GA-P1] Phase 1 complete. ${bars.count} bars, pop=${populationSize}, ready for evolution.`);
+  console.log(`[GA-P1] Phase 1 complete. ${bars.count} bars, pop=${populationSize}, regime=${targetRegime >= 0 ? REGIME_LABELS[targetRegime] : 'ALL'}, ready for evolution.`);
   return {
     phase: 1, status: "evolving", pair, barCount: bars.count,
     populationSize, totalGenerations, currentGen: 0,
     bestFitness: population[0].fitness,
+    targetRegime, targetRegimeLabel: targetRegime >= 0 ? REGIME_LABELS[targetRegime] : 'ALL',
+    regimeDistribution: regimeDist,
     dateRange: { start: candles[0]?.time || '', end: candles[candles.length - 1]?.time || '' },
-    message: `Indicator library built. ${bars.count} bars with RSI, MACD, BB, EMA, ADX, Stoch, CCI, Donchian, Price Action. Ready to evolve.`,
+    message: `Indicator library built. ${bars.count} bars. Regime: ${targetRegime >= 0 ? REGIME_LABELS[targetRegime] : 'ALL'} (T:${regimeDist.trend} R:${regimeDist.range} S:${regimeDist.shock}). Ready to evolve.`,
   };
 }
 
@@ -1553,6 +1624,7 @@ async function handlePhase2(body: Record<string, unknown>) {
   let evolutionLog = job.evolutionLog as { gen: number; bestFitness: number; avgFitness: number; bestTrades: number }[];
   let totalSimulations = job.totalSimulations as number;
   const unconstrained = Boolean(job.unconstrained);
+  const targetRegime = Number(job.targetRegime ?? -1);
 
   const { data: barsRow } = await sb.from("sovereign_memory").select("payload").eq("memory_key", `${DATA_KEY_PREFIX}${pair}`).eq("memory_type", "ga_dataset").maybeSingle();
   if (!barsRow) throw new Error("Feature data not found. Run Phase 1 first.");
@@ -1560,7 +1632,7 @@ async function handlePhase2(body: Record<string, unknown>) {
   const isSplit = (job.isSplit as number) || bars.count;
 
   const gensToRun = Math.min(gensPerCall, totalGenerations - currentGen);
-  console.log(`[GA-P2] Gen ${currentGen + 1}→${currentGen + gensToRun} of ${totalGenerations} (IS=${isSplit}/${bars.count})`);
+  console.log(`[GA-P2] Gen ${currentGen + 1}→${currentGen + gensToRun} of ${totalGenerations} (IS=${isSplit}/${bars.count}, regime=${targetRegime >= 0 ? REGIME_LABELS[targetRegime] : 'ALL'})`);
 
   for (let g = 0; g < gensToRun; g++) {
     const gen = currentGen + g + 1;
@@ -1573,7 +1645,7 @@ async function handlePhase2(body: Record<string, unknown>) {
       const p2 = tournamentSelect(population);
       let child = crossover(p1.dna, p2.dna);
       child = mutate(child, mutationRate);
-      const sim = simulateStrategy(bars, child, 0, isSplit);
+      const sim = simulateStrategy(bars, child, 0, isSplit, targetRegime);
       const fitness = computeFitness(sim, baseDailyReturns, maxCorrelation, child, unconstrained);
       newPop.push({ dna: child, fitness });
       totalSimulations++;
@@ -1581,7 +1653,7 @@ async function handlePhase2(body: Record<string, unknown>) {
 
     population = newPop.sort((a, b) => b.fitness - a.fitness);
     const avgFitness = population.reduce((s, p) => s + p.fitness, 0) / population.length;
-    const bestSim = simulateStrategy(bars, population[0].dna, 0, isSplit);
+    const bestSim = simulateStrategy(bars, population[0].dna, 0, isSplit, targetRegime);
     evolutionLog.push({
       gen, bestFitness: Math.round(population[0].fitness * 1000) / 1000,
       avgFitness: Math.round(avgFitness * 1000) / 1000, bestTrades: bestSim.trades,
@@ -1625,13 +1697,14 @@ async function handlePhase3(body: Record<string, unknown>) {
   const evolutionLog = job.evolutionLog as { gen: number; bestFitness: number; avgFitness: number; bestTrades: number }[];
   const totalSimulations = job.totalSimulations as number;
   const unconstrained = Boolean(job.unconstrained);
+  const targetRegime = Number(job.targetRegime ?? -1);
 
   const { data: barsRow } = await sb.from("sovereign_memory").select("payload").eq("memory_key", `${DATA_KEY_PREFIX}${pair}`).eq("memory_type", "ga_dataset").maybeSingle();
   if (!barsRow) throw new Error("Feature data not found.");
   const bars = barsRow.payload as BarArrays;
   const isSplit = (job.isSplit as number) || bars.count;
 
-  console.log(`[GA-P3] Extracting top strategies from ${population.length} individuals (full dataset: ${bars.count} bars)`);
+  console.log(`[GA-P3] Extracting top strategies from ${population.length} individuals (full dataset: ${bars.count} bars, regime=${targetRegime >= 0 ? REGIME_LABELS[targetRegime] : 'ALL'})`);
   nameCounter = 0;
 
   const seen = new Set<string>();
@@ -1643,14 +1716,14 @@ async function handlePhase3(body: Record<string, unknown>) {
     if (seen.has(key)) continue;
     seen.add(key);
 
-    // Full-dataset sim for equity curve display
-    const sim = simulateStrategy(bars, p.dna);
-    if (sim.trades < 60) continue; // Anti-overfit: require ≥ 60 total trades
+    // Full-dataset sim for equity curve display (regime-filtered)
+    const sim = simulateStrategy(bars, p.dna, 0, undefined, targetRegime);
+    if (sim.trades < (targetRegime >= 0 ? 30 : 60)) continue; // Lower min for regime-specific
 
     // IS-only sim (candles 0 to isSplit)
-    const isSim = isSplit < bars.count ? simulateStrategy(bars, p.dna, 0, isSplit) : sim;
+    const isSim = isSplit < bars.count ? simulateStrategy(bars, p.dna, 0, isSplit, targetRegime) : sim;
     // OOS sim (candles isSplit to end) — the blind test
-    const oosSim = isSplit < bars.count ? simulateStrategy(bars, p.dna, isSplit) : undefined;
+    const oosSim = isSplit < bars.count ? simulateStrategy(bars, p.dna, isSplit, undefined, targetRegime) : undefined;
 
     // ── OOS Survival Filter ──
     if (oosSim && oosSim.trades >= 5) {
@@ -1803,6 +1876,8 @@ async function handlePhase3(body: Record<string, unknown>) {
     correlationFallback: finalUncorrelated.length === 0,
     dateRange: (job as Record<string, unknown>).dateRange || { start: '', end: '' },
     config: { pair, populationSize: (job as Record<string, unknown>).populationSize, generations: (job as Record<string, unknown>).totalGenerations, maxCorrelation, candleCount: (job as Record<string, unknown>).barCount, mutationRate: (job as Record<string, unknown>).mutationRate },
+    targetRegime, targetRegimeLabel: targetRegime >= 0 ? REGIME_LABELS[targetRegime] : 'ALL',
+    regimeDistribution: (job as Record<string, unknown>).regimeDistribution || null,
   };
 }
 
@@ -1840,7 +1915,13 @@ async function handleBatchExtract(body: Record<string, unknown>) {
     entryRules: string[]; exitRules: string[];
     edgeArchetype: string;
     oosReturn?: number | null; oosWinRate?: number | null; oosTrades?: number | null;
+    oosProfitFactor?: number | null; oosMaxDrawdown?: number | null;
+    isReturn?: number | null; isWinRate?: number | null; isTrades?: number | null;
+    isProfitFactor?: number | null; isMaxDrawdown?: number | null;
     equityCurve: number[];
+    // Regime-specific performance
+    regimeScores?: { trend: number; range: number; shock: number };
+    bestRegime?: string;
   }
 
   const allStrategies: PairStrategy[] = [];
@@ -1871,7 +1952,7 @@ async function handleBatchExtract(body: Record<string, unknown>) {
       seen.add(key);
 
       const sim = simulateStrategy(bars, ind.dna);
-      if (sim.trades < 60) continue; // ≥ 60 trades required
+      if (sim.trades < 30) continue;
 
       const isSim = isSplit < bars.count ? simulateStrategy(bars, ind.dna, 0, isSplit) : sim;
       const oosSim = isSplit < bars.count ? simulateStrategy(bars, ind.dna, isSplit) : undefined;
@@ -1881,6 +1962,19 @@ async function handleBatchExtract(body: Record<string, unknown>) {
         if (oosSim.profitFactor < 1.2) continue;
         if (isSim.maxDrawdown > 0.001 && oosSim.maxDrawdown > isSim.maxDrawdown * 2) continue;
       }
+
+      // Compute regime-specific scores: run sim filtered to each regime
+      const trendSim = bars.regimeTag ? simulateStrategy(bars, ind.dna, 0, undefined, REGIME_TREND) : null;
+      const rangeSim = bars.regimeTag ? simulateStrategy(bars, ind.dna, 0, undefined, REGIME_RANGE) : null;
+      const shockSim = bars.regimeTag ? simulateStrategy(bars, ind.dna, 0, undefined, REGIME_SHOCK) : null;
+
+      const regimeScores = {
+        trend: trendSim && trendSim.trades >= 10 ? trendSim.profitFactor * Math.log(Math.max(trendSim.trades, 2)) : 0,
+        range: rangeSim && rangeSim.trades >= 10 ? rangeSim.profitFactor * Math.log(Math.max(rangeSim.trades, 2)) : 0,
+        shock: shockSim && shockSim.trades >= 5 ? shockSim.profitFactor * Math.log(Math.max(shockSim.trades, 2)) : 0,
+      };
+      const bestRegime = regimeScores.trend >= regimeScores.range && regimeScores.trend >= regimeScores.shock
+        ? 'TREND' : regimeScores.range >= regimeScores.shock ? 'RANGE' : 'SHOCK';
 
       const corr = Math.abs(pearsonCorrelation(baseDailyReturns, sim.dailyReturns));
 
@@ -1909,6 +2003,8 @@ async function handleBatchExtract(body: Record<string, unknown>) {
         isProfitFactor: isSim ? Math.round(isSim.profitFactor * 100) / 100 : null,
         isMaxDrawdown: isSim ? Math.round(isSim.maxDrawdown * 10000) / 10000 : null,
         equityCurve: dsCurve,
+        regimeScores,
+        bestRegime,
       });
     }
   }
@@ -1916,27 +2012,41 @@ async function handleBatchExtract(body: Record<string, unknown>) {
   console.log(`[GA-BATCH] ${allStrategies.length} candidate strategies from ${pairs.length} pairs`);
   allStrategies.sort((a, b) => b.sim.totalReturn - a.sim.totalReturn);
 
+  // ── REGIME MATRIX SELECTION: Top 2 Trend + Top 2 Range + Top 1 Shock ──
   const selected: PairStrategy[] = [];
   const pairCounts: Record<string, number> = {};
   const MAX_PER_PAIR = 2;
 
-  for (const strat of allStrategies) {
-    if (selected.length >= topN) break;
-    const pc = pairCounts[strat.pair] || 0;
-    if (pc >= MAX_PER_PAIR) continue;
-    // OOS survival filter already applied during extraction — no need for extra return check
-
-    let uncorrelated = true;
-    for (const existing of selected) {
-      const interCorr = Math.abs(pearsonCorrelation(strat.sim.dailyReturns, existing.sim.dailyReturns));
-      if (interCorr > maxInterCorr) { uncorrelated = false; break; }
+  function selectBestForRegime(regime: string, count: number) {
+    const sorted = [...allStrategies]
+      .filter(s => s.bestRegime === regime)
+      .sort((a, b) => {
+        const scoreA = regime === 'TREND' ? (a.regimeScores?.trend ?? 0) : regime === 'RANGE' ? (a.regimeScores?.range ?? 0) : (a.regimeScores?.shock ?? 0);
+        const scoreB = regime === 'TREND' ? (b.regimeScores?.trend ?? 0) : regime === 'RANGE' ? (b.regimeScores?.range ?? 0) : (b.regimeScores?.shock ?? 0);
+        return scoreB - scoreA;
+      });
+    let added = 0;
+    for (const strat of sorted) {
+      if (added >= count) break;
+      if (selected.includes(strat)) continue;
+      const pc = pairCounts[strat.pair] || 0;
+      if (pc >= MAX_PER_PAIR) continue;
+      let uncorrelated = true;
+      for (const existing of selected) {
+        if (Math.abs(pearsonCorrelation(strat.sim.dailyReturns, existing.sim.dailyReturns)) > maxInterCorr) { uncorrelated = false; break; }
+      }
+      if (!uncorrelated) continue;
+      selected.push(strat);
+      pairCounts[strat.pair] = pc + 1;
+      added++;
     }
-    if (!uncorrelated) continue;
-
-    selected.push(strat);
-    pairCounts[strat.pair] = pc + 1;
   }
 
+  selectBestForRegime('TREND', 2);
+  selectBestForRegime('RANGE', 2);
+  selectBestForRegime('SHOCK', 1);
+
+  // Fill remaining slots (up to topN) with best overall
   if (selected.length < topN) {
     for (const strat of allStrategies) {
       if (selected.length >= topN) break;
@@ -1953,7 +2063,13 @@ async function handleBatchExtract(body: Record<string, unknown>) {
     }
   }
 
-  console.log(`[GA-BATCH] Selected ${selected.length} uncorrelated strategies across ${Object.keys(pairCounts).length} pairs`);
+  const regimeDistribution = {
+    trend: selected.filter(s => s.bestRegime === 'TREND').length,
+    range: selected.filter(s => s.bestRegime === 'RANGE').length,
+    shock: selected.filter(s => s.bestRegime === 'SHOCK').length,
+  };
+
+  console.log(`[GA-BATCH] Regime Matrix: ${regimeDistribution.trend}T + ${regimeDistribution.range}R + ${regimeDistribution.shock}S = ${selected.length} strategies`);
 
   const fmt = (s: PairStrategy) => ({
     pair: s.pair, dna: s.dna,
@@ -1977,6 +2093,15 @@ async function handleBatchExtract(body: Record<string, unknown>) {
     oosReturn: s.oosReturn,
     oosWinRate: s.oosWinRate,
     oosTrades: s.oosTrades,
+    oosProfitFactor: s.oosProfitFactor,
+    oosMaxDrawdown: s.oosMaxDrawdown,
+    isReturn: s.isReturn,
+    isWinRate: s.isWinRate,
+    isTrades: s.isTrades,
+    isProfitFactor: s.isProfitFactor,
+    isMaxDrawdown: s.isMaxDrawdown,
+    regimeScores: s.regimeScores,
+    bestRegime: s.bestRegime,
   });
 
   return {
@@ -1986,6 +2111,7 @@ async function handleBatchExtract(body: Record<string, unknown>) {
     selected: selected.length,
     pairDistribution: pairCounts,
     maxInterCorrelation: maxInterCorr,
+    regimeDistribution,
     top7: selected.map(fmt),
     allCandidates: allStrategies.slice(0, 30).map(fmt),
   };
