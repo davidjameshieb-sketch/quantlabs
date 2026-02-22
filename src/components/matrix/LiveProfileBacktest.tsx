@@ -7,7 +7,7 @@ import {
   Cpu, Trophy, AlertTriangle,
   Play, Loader2, ChevronDown, ChevronUp,
 } from 'lucide-react';
-import { supabase } from '@/integrations/supabase/client';
+// Raw fetch used for parallel calls to avoid auth lock contention
 
 interface LiveProfileResult {
   predator: number;
@@ -115,15 +115,27 @@ export function LiveProfileBacktest() {
         { predatorRanks: [3], label: "Predator R3" },
       ];
 
+      // Use raw fetch to avoid Supabase auth lock contention on parallel calls
+      const fnUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/profile-live-backtest`;
+      const anonKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+
       const promises = chunks.map(async (chunk) => {
-        const { data, error: fnError } = await supabase.functions.invoke('profile-live-backtest', {
-          body: { environment, candles: candleCount, topN: 25, predatorRanks: chunk.predatorRanks },
+        const res = await fetch(fnUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'apikey': anonKey,
+            'Authorization': `Bearer ${anonKey}`,
+          },
+          body: JSON.stringify({ environment, candles: candleCount, topN: 25, predatorRanks: chunk.predatorRanks }),
         });
 
-        if (fnError) {
-          const msg = typeof fnError === 'object' && fnError.message ? fnError.message : String(fnError);
-          throw new Error(`${chunk.label}: ${msg}`);
+        if (!res.ok) {
+          const errBody = await res.text().catch(() => res.statusText);
+          throw new Error(`${chunk.label}: ${errBody}`);
         }
+
+        const data = await res.json();
         if (!data?.success) {
           throw new Error(`${chunk.label}: ${data?.error || 'Failed'}`);
         }
