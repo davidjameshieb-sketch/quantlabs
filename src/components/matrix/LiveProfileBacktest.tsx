@@ -1,7 +1,6 @@
-// Live Profile Backtest Panel — Phased polling UI
-// Drives init → compute (chunked) → extract phases
+// Live Profile Backtest Panel — Single-call version (no phased polling)
 
-import { useState, useRef } from 'react';
+import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Cpu, Trophy, AlertTriangle,
@@ -84,98 +83,29 @@ export function LiveProfileBacktest() {
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
   const [candleCount, setCandleCount] = useState(5000);
   const [environment, setEnvironment] = useState<'practice' | 'live'>('practice');
-  const [progress, setProgress] = useState<{ phase: string; pct: number; msg: string } | null>(null);
-  const cancelRef = useRef(false);
-
-  const invoke = async (body: Record<string, unknown>, retries = 1) => {
-    for (let attempt = 0; attempt <= retries; attempt++) {
-      try {
-        console.log(`[LIVE-BT UI] Calling phase=${body.phase} (attempt ${attempt + 1})`);
-        const { data, error: fnError } = await supabase.functions.invoke('profile-live-backtest', { body });
-        if (fnError) {
-          console.error(`[LIVE-BT UI] Error:`, fnError);
-          if (attempt < retries) {
-            setProgress(prev => prev ? { ...prev, msg: `Retrying (${attempt + 1})… ${prev.msg}` } : null);
-            await new Promise(r => setTimeout(r, 2000));
-            continue;
-          }
-          throw new Error(typeof fnError === 'object' && fnError.message ? fnError.message : String(fnError));
-        }
-        return data;
-      } catch (err) {
-        console.error(`[LIVE-BT UI] Catch:`, err);
-        if (attempt < retries) {
-          setProgress(prev => prev ? { ...prev, msg: `Retrying… connection issue` } : null);
-          await new Promise(r => setTimeout(r, 2000));
-          continue;
-        }
-        throw err;
-      }
-    }
-  };
 
   const runBacktest = async () => {
     setLoading(true);
     setError(null);
     setResult(null);
-    cancelRef.current = false;
 
     try {
-      // Phase 1a: Init (clear state)
-      setProgress({ phase: 'init', pct: 0, msg: 'Initializing…' });
-      const initRes = await invoke({ phase: 'init', environment, candles: candleCount, topN: 25 });
-      if (!initRes?.success) throw new Error(initRes?.error || 'Init failed');
-      if (cancelRef.current) { setLoading(false); setProgress(null); return; }
+      const { data, error: fnError } = await supabase.functions.invoke('profile-live-backtest', {
+        body: { environment, candles: candleCount, topN: 25 },
+      });
 
-      // Phase 1b: Fetch candles (chunked, 7 pairs per call)
-      let fetchDone = false;
-      while (!fetchDone && !cancelRef.current) {
-        setProgress(prev => ({
-          phase: 'init',
-          pct: prev?.pct ?? 1,
-          msg: `Fetching candles from OANDA…`,
-        }));
-        const fetchRes = await invoke({ phase: 'fetch', environment, candles: candleCount, topN: 25 });
-        if (!fetchRes?.success) throw new Error(fetchRes?.error || 'Fetch failed');
-        const fetchPct = Math.round((fetchRes.progress || 0) * 0.3); // 0-30% range
-        setProgress({ phase: 'init', pct: fetchPct, msg: `Fetched ${fetchRes.pairsFetched}/${fetchRes.totalPairs} pairs…` });
-        if (fetchRes.phase === 'fetch_complete') fetchDone = true;
+      if (fnError) {
+        const msg = typeof fnError === 'object' && fnError.message ? fnError.message : String(fnError);
+        throw new Error(msg);
       }
-      if (cancelRef.current) { setLoading(false); setProgress(null); return; }
 
-      // Phase 1c: Build (compute ranks & signals)
-      setProgress({ phase: 'init', pct: 32, msg: 'Building rank snapshots & signal cache…' });
-      const buildRes = await invoke({ phase: 'build', environment, candles: candleCount, topN: 25 });
-      if (!buildRes?.success) throw new Error(buildRes?.error || 'Build failed');
-      if (cancelRef.current) { setLoading(false); setProgress(null); return; }
-
-      const totalCombos = buildRes.totalCombos;
-
-      // Phase 2: Compute (loop)
-      let done = false;
-      while (!done && !cancelRef.current) {
-        const compRes = await invoke({ phase: 'compute', environment, candles: candleCount, topN: 25 });
-        if (!compRes?.success) throw new Error(compRes?.error || 'Compute failed');
-        const pct = 35 + Math.round((compRes.progress || 0) * 0.6); // 35-95% range
-        setProgress({
-          phase: 'compute',
-          pct,
-          msg: `Simulated ${compRes.processedCombos.toLocaleString()}/${totalCombos.toLocaleString()} combos`,
-        });
-        if (compRes.phase === 'compute_complete') done = true;
+      if (!data?.success) {
+        throw new Error(data?.error || 'Backtest failed');
       }
-      if (cancelRef.current) { setLoading(false); setProgress(null); return; }
 
-      // Phase 3: Extract
-      setProgress({ phase: 'extract', pct: 96, msg: 'Building equity curves…' });
-      const extractRes = await invoke({ phase: 'extract', environment, candles: candleCount, topN: 25 });
-      if (!extractRes?.success) throw new Error(extractRes?.error || 'Extract failed');
-
-      setResult(extractRes as LiveBacktestResponse);
-      setProgress(null);
+      setResult(data as LiveBacktestResponse);
     } catch (err) {
       setError((err as Error).message);
-      setProgress(null);
     } finally {
       setLoading(false);
     }
@@ -223,16 +153,17 @@ export function LiveProfileBacktest() {
         </select>
 
         <button
-          onClick={loading ? () => { cancelRef.current = true; } : runBacktest}
-          className="inline-flex items-center gap-2 px-5 py-2 rounded-xl font-bold text-[10px] uppercase tracking-widest transition-all"
+          onClick={runBacktest}
+          disabled={loading}
+          className="inline-flex items-center gap-2 px-5 py-2 rounded-xl font-bold text-[10px] uppercase tracking-widest transition-all disabled:opacity-50"
           style={{
-            background: loading ? '#ef4444' : '#ff6600',
+            background: '#ff6600',
             color: '#0f172a',
-            boxShadow: loading ? 'none' : '0 0 20px rgba(255,102,0,0.3)',
+            boxShadow: '0 0 20px rgba(255,102,0,0.3)',
           }}
         >
           {loading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}
-          {loading ? 'Cancel' : 'Run Live Backtest'}
+          {loading ? 'Running…' : 'Run Live Backtest'}
         </button>
       </div>
 
@@ -245,30 +176,29 @@ export function LiveProfileBacktest() {
         </div>
       )}
 
-      {/* Progress */}
-      {loading && progress && (
+      {/* Loading */}
+      {loading && (
         <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="py-6 space-y-3">
           <div className="flex items-center gap-3">
             <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 2, ease: 'linear' }}>
               <Cpu className="w-6 h-6 text-[#ff6600]" />
             </motion.div>
             <div className="flex-1">
-              <div className="flex justify-between items-center mb-1">
-                <span className="text-[10px] text-slate-300 font-mono uppercase tracking-widest">
-                  {progress.phase === 'init' ? 'Initializing' : progress.phase === 'compute' ? 'Computing' : 'Extracting'}
-                </span>
-                <span className="text-[10px] text-[#ff6600] font-mono font-bold">{progress.pct}%</span>
-              </div>
-              <div className="w-full h-2 bg-slate-800 rounded-full overflow-hidden">
+              <span className="text-[10px] text-slate-300 font-mono uppercase tracking-widest">
+                Fetching candles & simulating combos…
+              </span>
+              <div className="w-full h-2 bg-slate-800 rounded-full overflow-hidden mt-2">
                 <motion.div
                   className="h-full rounded-full"
                   style={{ background: '#ff6600' }}
-                  initial={{ width: 0 }}
-                  animate={{ width: `${progress.pct}%` }}
-                  transition={{ duration: 0.3 }}
+                  initial={{ width: '5%' }}
+                  animate={{ width: '85%' }}
+                  transition={{ duration: 30, ease: 'linear' }}
                 />
               </div>
-              <p className="text-[9px] text-slate-500 font-mono mt-1">{progress.msg}</p>
+              <p className="text-[9px] text-slate-500 font-mono mt-1">
+                This may take 15–40 seconds depending on candle count.
+              </p>
             </div>
           </div>
         </motion.div>

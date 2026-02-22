@@ -1,10 +1,6 @@
-// Profile Live Backtest Engine v2.0 — Phased State Machine
-// Splits heavy computation across multiple invocations to avoid CPU time limits.
-// Phase 1 (init): Fetch candles, build rank snapshots, persist compressed state.
-// Phase 2 (compute): Process combos in chunks, persist partial results.
-// Phase 3 (extract): Build final results + equity curves.
-
-import { createClient } from "npm:@supabase/supabase-js@2";
+// Profile Live Backtest Engine v3.0 — Single-Call In-Memory
+// No database dependency. Fetches candles, builds ranks, simulates all combos,
+// and returns results in a single invocation.
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -54,8 +50,8 @@ const SESSIONS = [
   { id: "NY_CLOSE", hours: [17, 21] as [number, number] },
 ];
 
-// Build full combo list for chunking
 interface ComboKey { predRank: number; preyRank: number; gateIdx: number; sessionIdx: number; exitIdx: number; }
+
 function buildAllCombos(): ComboKey[] {
   const exitModes: Array<{ slPips: number; tpRatio: number | "flip" }> = [];
   for (const sl of SL_PIPS) {
@@ -133,15 +129,6 @@ function computeLinRegSlope(candles: Candle[], idx: number, lookback = 20): numb
   return denom === 0 ? 0 : (n * sumXY - sumX * sumY) / denom;
 }
 
-function getSessionId(isoTime: string): string {
-  const hour = new Date(isoTime).getUTCHours();
-  if (hour >= 0 && hour < 7) return "ASIA";
-  if (hour >= 7 && hour < 12) return "LONDON";
-  if (hour >= 12 && hour < 17) return "NEW_YORK";
-  if (hour >= 17 && hour < 21) return "NY_CLOSE";
-  return "ASIA";
-}
-
 function matchesSession(isoTime: string, session: typeof SESSIONS[number]): boolean {
   if (!session.hours) return true;
   const hour = new Date(isoTime).getUTCHours();
@@ -153,13 +140,21 @@ function computePips(entry: number, exit: number, dir: "long" | "short", isJPY: 
   return isJPY ? raw * 100 : raw * 10000;
 }
 
-// ── Signal generation for a rank pair ──
+function getSessionId(isoTime: string): string {
+  const hour = new Date(isoTime).getUTCHours();
+  if (hour >= 0 && hour < 7) return "ASIA";
+  if (hour >= 7 && hour < 12) return "LONDON";
+  if (hour >= 12 && hour < 17) return "NEW_YORK";
+  if (hour >= 17 && hour < 21) return "NY_CLOSE";
+  return "ASIA";
+}
+
+// ── Signal generation ──
 interface TradeSignal {
   time: string; instrument: string; direction: "long" | "short";
   entryPrice: number; isJPY: boolean; candleIdx: number;
   sessionId: string; g2Pass: boolean; g3Pass: boolean;
 }
-
 interface RankSnap { time: string; ranks: Record<string, number>; }
 
 function generateSignals(
@@ -306,7 +301,7 @@ function simulateCombo(
   };
 }
 
-// ── Build equity curve for a result ──
+// ── Build equity curve ──
 function buildEquityCurve(
   r: LiveProfileResult, rankSnaps: RankSnap[],
   pairCandles: Record<string, Candle[]>, pairTimeIndex: Record<string, Record<string, number>>
@@ -367,70 +362,9 @@ function buildEquityCurve(
   return curve.filter((_, idx) => idx % step === 0);
 }
 
-// ── Supabase helper ──
-function getSupabase() {
-  return createClient(
-    Deno.env.get("SUPABASE_URL")!,
-    Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
-    { db: { schema: "public" }, global: { headers: {} } }
-  );
-}
-
-const STATE_KEY = "live_backtest_state";
-const CANDLE_KEY = "live_backtest_candles";
-const CHUNK_SIZE = 150;
-
-// DB operations with timeout to avoid hanging on DB connection issues
-async function withTimeout<T>(promise: Promise<T>, ms = 8000): Promise<T> {
-  const timeout = new Promise<never>((_, reject) =>
-    setTimeout(() => reject(new Error("DB operation timed out")), ms)
-  );
-  return Promise.race([promise, timeout]);
-}
-
-async function loadMemory(sb: ReturnType<typeof createClient>, key: string, retries = 3) {
-  for (let attempt = 0; attempt < retries; attempt++) {
-    try {
-      const { data } = await withTimeout(
-        sb.from("sovereign_memory").select("payload").eq("memory_key", key).single()
-      );
-      if (data?.payload) return data.payload as Record<string, unknown>;
-    } catch { /* retry */ }
-    if (attempt < retries - 1) await new Promise(r => setTimeout(r, 2000));
-  }
-  return null;
-}
-
-async function saveMemory(sb: ReturnType<typeof createClient>, key: string, payload: Record<string, unknown>) {
-  const { data: existing } = await withTimeout(
-    sb.from("sovereign_memory").select("id").eq("memory_key", key).single()
-  );
-  if (existing) {
-    await withTimeout(sb.from("sovereign_memory").update({
-      payload: payload as unknown,
-      updated_at: new Date().toISOString(),
-      version: 1,
-    }).eq("memory_key", key));
-  } else {
-    await withTimeout(sb.from("sovereign_memory").insert({
-      memory_key: key,
-      memory_type: "backtest_state",
-      payload: payload as unknown,
-      created_by: "profile-live-backtest",
-      version: 1,
-    }));
-  }
-}
-
-async function clearAll(sb: ReturnType<typeof createClient>) {
-  try {
-    await withTimeout(sb.from("sovereign_memory").delete().eq("memory_key", STATE_KEY), 5000);
-    await withTimeout(sb.from("sovereign_memory").delete().eq("memory_key", CANDLE_KEY), 5000);
-  } catch (err) {
-    console.warn("[LIVE-BT] clearAll failed (non-fatal):", (err as Error).message);
-  }
-}
-
+// ════════════════════════════════════════════
+// MAIN HANDLER — Single call, no DB needed
+// ════════════════════════════════════════════
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -438,7 +372,6 @@ Deno.serve(async (req) => {
 
   try {
     const body = await req.json().catch(() => ({}));
-    const phase: string = body.phase || "init";
     const environment: "practice" | "live" = body.environment || "practice";
     const candleCount: number = Math.min(body.candles || 5000, 42000);
     const topN: number = body.topN || 25;
@@ -452,368 +385,133 @@ Deno.serve(async (req) => {
         { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
-    const sb = getSupabase();
+    const availableCrosses = ALL_28_CROSSES.filter(c => OANDA_AVAILABLE.has(c.instrument));
 
-    // ════════════════════════════════════════════
-    // PHASE: INIT — Start fetching candles in batches of 7 pairs
-    // First call clears old state and fetches batch 0.
-    // Subsequent calls with phase=fetch continue fetching.
-    // ════════════════════════════════════════════
-    if (phase === "init") {
-      console.log(`[LIVE-BT] INIT: Starting candle fetch for 28 pairs (${environment})`);
-      await clearAll(sb);
+    // ── Step 1: Fetch all candles in parallel ──
+    console.log(`[LIVE-BT v3] Fetching ${candleCount} candles for ${availableCrosses.length} pairs (${environment})`);
 
-      // Save empty candle store + fetch state
-      await saveMemory(sb, CANDLE_KEY, { compactCandles: {} });
-      await saveMemory(sb, STATE_KEY, {
-        phase: "fetch",
-        environment,
-        topN,
-        candleCount,
-        fetchBatch: 0,
-      });
-
-      return new Response(JSON.stringify({
-        success: true,
-        phase: "init_complete",
-        message: `Init done. Call phase=fetch to start fetching candles.`,
-      }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
-    }
-
-    // ════════════════════════════════════════════
-    // PHASE: FETCH — Fetch 7 pairs per invocation
-    // ════════════════════════════════════════════
-    if (phase === "fetch") {
-      const state = await loadMemory(sb, STATE_KEY);
-      if (!state || state.phase !== "fetch") {
-        return new Response(JSON.stringify({ error: "Run phase=init first." }),
-          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-      }
-
-      const candleData = await loadMemory(sb, CANDLE_KEY);
-      if (!candleData) {
-        return new Response(JSON.stringify({ error: "Candle store missing." }),
-          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-      }
-
-      const fetchBatch = (state.fetchBatch as number) || 0;
-      const availableCrosses = ALL_28_CROSSES.filter(c => OANDA_AVAILABLE.has(c.instrument));
-      const BATCH_SIZE = 7;
-      const startIdx = fetchBatch * BATCH_SIZE;
-      const endIdx = Math.min(startIdx + BATCH_SIZE, availableCrosses.length);
-      const batch = availableCrosses.slice(startIdx, endIdx);
-
-      console.log(`[LIVE-BT] FETCH: batch ${fetchBatch}, pairs ${startIdx}-${endIdx} of ${availableCrosses.length}`);
-
-      const compactCandles = (candleData.compactCandles || {}) as Record<string, Array<[string, number, number, number, number]>>;
-
+    const pairCandles: Record<string, Candle[]> = {};
+    // Fetch in batches of 7 to avoid overwhelming OANDA
+    for (let i = 0; i < availableCrosses.length; i += 7) {
+      const batch = availableCrosses.slice(i, i + 7);
       const results = await Promise.allSettled(
-        batch.map(async cross => {
-          const candles = await fetchCandles(cross.instrument, candleCount, environment, apiToken!);
-          return { instrument: cross.instrument, candles };
-        })
+        batch.map(cross => fetchCandles(cross.instrument, candleCount, environment, apiToken))
       );
-
-      for (const r of results) {
-        if (r.status === "fulfilled" && r.value.candles.length > 0) {
-          compactCandles[r.value.instrument] = r.value.candles.map(c => [c.time, c.open, c.high, c.low, c.close]);
+      for (let j = 0; j < results.length; j++) {
+        if (results[j].status === "fulfilled") {
+          const candles = (results[j] as PromiseFulfilledResult<Candle[]>).value;
+          if (candles.length > 0) pairCandles[batch[j].instrument] = candles;
         }
       }
-
-      const done = endIdx >= availableCrosses.length;
-
-      await saveMemory(sb, CANDLE_KEY, { compactCandles });
-      await saveMemory(sb, STATE_KEY, {
-        ...state,
-        phase: done ? "build" : "fetch",
-        fetchBatch: fetchBatch + 1,
-        pairsLoaded: Object.keys(compactCandles).length,
-      });
-
-      return new Response(JSON.stringify({
-        success: true,
-        phase: done ? "fetch_complete" : "fetching",
-        pairsFetched: Object.keys(compactCandles).length,
-        totalPairs: availableCrosses.length,
-        progress: Math.round((endIdx / availableCrosses.length) * 100),
-        message: done
-          ? `All ${availableCrosses.length} pairs fetched. Call phase=build.`
-          : `Fetched ${endIdx}/${availableCrosses.length} pairs. Call phase=fetch again.`,
-      }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
-    // ════════════════════════════════════════════
-    // PHASE: BUILD — Compute ranks, signals, persist for compute
-    // ════════════════════════════════════════════
-    if (phase === "build") {
-      const state = await loadMemory(sb, STATE_KEY);
-      if (!state || state.phase !== "build") {
-        return new Response(JSON.stringify({ error: "Run phase=init first." }),
-          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-      }
+    const pairsLoaded = Object.keys(pairCandles).length;
+    console.log(`[LIVE-BT v3] Loaded ${pairsLoaded} pairs`);
 
-      const candleData = await loadMemory(sb, CANDLE_KEY);
-      if (!candleData) {
-        return new Response(JSON.stringify({ error: "Candle data missing." }),
-          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-      }
-
-      const compactCandles = candleData.compactCandles as Record<string, Array<[string, number, number, number, number]>>;
-      const availableCrosses = ALL_28_CROSSES.filter(c => OANDA_AVAILABLE.has(c.instrument));
-
-      // Reconstruct candle objects
-      const pairCandles: Record<string, Candle[]> = {};
-      for (const [inst, arr] of Object.entries(compactCandles)) {
-        pairCandles[inst] = arr.map(([time, open, high, low, close]) => ({
-          time: time as string, open: open as number, high: high as number,
-          low: low as number, close: close as number, volume: 0,
-        }));
-      }
-
-      // Build time-indexed lookups
-      const pairTimeIndex: Record<string, Record<string, number>> = {};
-      for (const [inst, candles] of Object.entries(pairCandles)) {
-        pairTimeIndex[inst] = {};
-        for (let i = 0; i < candles.length; i++) pairTimeIndex[inst][candles[i].time] = i;
-      }
-
-      // Build rank snapshots
-      const allTimestamps = new Set<string>();
-      for (const candles of Object.values(pairCandles)) {
-        for (const c of candles) allTimestamps.add(c.time);
-      }
-      const sortedTimes = [...allTimestamps].sort();
-
-      if (sortedTimes.length < 100) {
-        return new Response(JSON.stringify({ error: "Insufficient data" }),
-          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-      }
-
-      // Compute 20-period rolling returns
-      const LOOKBACK = 20;
-      const pairReturns: Record<string, Record<string, number>> = {};
-      for (const [inst, candles] of Object.entries(pairCandles)) {
-        pairReturns[inst] = {};
-        for (let i = LOOKBACK; i < candles.length; i++) {
-          let totalRet = 0;
-          for (let k = i - LOOKBACK; k < i; k++) {
-            if (candles[k].open !== 0) totalRet += ((candles[k].close - candles[k].open) / candles[k].open) * 100;
-          }
-          pairReturns[inst][candles[i].time] = totalRet / LOOKBACK;
-        }
-      }
-
-      const rankSnaps: RankSnap[] = [];
-      for (const time of sortedTimes) {
-        const flows: Record<string, number[]> = {};
-        for (const c of ALL_CURRENCIES) flows[c] = [];
-        for (const cross of availableCrosses) {
-          const ret = pairReturns[cross.instrument]?.[time];
-          if (ret === undefined) continue;
-          flows[cross.base].push(ret);
-          flows[cross.quote].push(-ret);
-        }
-        let hasData = false;
-        const scores: Record<string, number> = {};
-        for (const cur of ALL_CURRENCIES) {
-          if (flows[cur].length === 0) { scores[cur] = 0; continue; }
-          hasData = true;
-          scores[cur] = flows[cur].reduce((a, b) => a + b, 0) / flows[cur].length;
-        }
-        if (!hasData) continue;
-        const sorted = [...ALL_CURRENCIES].sort((a, b) => scores[b] - scores[a]);
-        const ranks: Record<string, number> = {};
-        sorted.forEach((cur, idx) => { ranks[cur] = idx + 1; });
-        rankSnaps.push({ time, ranks });
-      }
-
-      console.log(`[LIVE-BT] BUILD: ${rankSnaps.length} rank snapshots`);
-
-      // Pre-generate signals for all 9 rank pairs
-      const signalCache: Record<string, TradeSignal[]> = {};
-      for (const pr of PREDATOR_RANKS) {
-        for (const py of PREY_RANKS) {
-          signalCache[`${pr}_${py}`] = generateSignals(pr, py, rankSnaps, pairCandles, pairTimeIndex);
-        }
-      }
-
-      const allCombos = buildAllCombos();
-
-      // Persist enriched candle data (with ranks + signals)
-      await saveMemory(sb, CANDLE_KEY, {
-        compactCandles,
-        pairTimeIndex,
-        rankSnaps,
-        signalCache,
-      });
-
-      // Update state for compute phase
-      await saveMemory(sb, STATE_KEY, {
-        phase: "compute",
-        environment: state.environment,
-        topN: state.topN,
-        candleCount: state.candleCount,
-        allCombos: allCombos.length,
-        chunkIdx: 0,
-        partialResults: [],
-        dateRange: { start: sortedTimes[0], end: sortedTimes[sortedTimes.length - 1] },
-        pairsLoaded: state.pairsLoaded,
-      });
-
-      return new Response(JSON.stringify({
-        success: true,
-        phase: "build_complete",
-        totalCombos: allCombos.length,
-        pairsLoaded: state.pairsLoaded as number,
-        totalSnapshots: rankSnaps.length,
-        message: `Build complete. ${allCombos.length} combos ready. Call phase=compute.`,
-      }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    // ── Step 2: Build time index ──
+    const pairTimeIndex: Record<string, Record<string, number>> = {};
+    for (const [inst, candles] of Object.entries(pairCandles)) {
+      pairTimeIndex[inst] = {};
+      for (let i = 0; i < candles.length; i++) pairTimeIndex[inst][candles[i].time] = i;
     }
 
-    // ════════════════════════════════════════════
-    // PHASE: COMPUTE — Process a chunk of combos
-    // ════════════════════════════════════════════
-    if (phase === "compute") {
-      const state = await loadMemory(sb, STATE_KEY);
-      if (!state || state.phase !== "compute") {
-        return new Response(JSON.stringify({ error: "No init state found. Run phase=init first." }),
-          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-      }
+    // ── Step 3: Build rank snapshots ──
+    const allTimestamps = new Set<string>();
+    for (const candles of Object.values(pairCandles)) {
+      for (const c of candles) allTimestamps.add(c.time);
+    }
+    const sortedTimes = [...allTimestamps].sort();
 
-      const candleData = await loadMemory(sb, CANDLE_KEY);
-      if (!candleData) {
-        return new Response(JSON.stringify({ error: "Candle data missing. Run phase=init first." }),
-          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-      }
-
-      const chunkIdx = (state.chunkIdx as number) || 0;
-      const totalCombos = state.allCombos as number;
-      const compactCandles = candleData.compactCandles as Record<string, Array<[string, number, number, number, number]>>;
-      const pairTimeIndex = candleData.pairTimeIndex as Record<string, Record<string, number>>;
-      const signalCache = candleData.signalCache as Record<string, TradeSignal[]>;
-      const partialResults = (state.partialResults as LiveProfileResult[]) || [];
-
-      // Reconstruct candle objects from compact format
-      const pairCandles: Record<string, Candle[]> = {};
-      for (const [inst, arr] of Object.entries(compactCandles)) {
-        pairCandles[inst] = arr.map(([time, open, high, low, close]) => ({
-          time: time as string, open: open as number, high: high as number,
-          low: low as number, close: close as number, volume: 0,
-        }));
-      }
-
-      const allCombos = buildAllCombos();
-      const startIdx = chunkIdx * CHUNK_SIZE;
-      const endIdx = Math.min(startIdx + CHUNK_SIZE, allCombos.length);
-      const chunk = allCombos.slice(startIdx, endIdx);
-
-      console.log(`[LIVE-BT] COMPUTE: chunk ${chunkIdx}, combos ${startIdx}-${endIdx} of ${totalCombos}`);
-
-      const newResults: LiveProfileResult[] = [];
-      for (const combo of chunk) {
-        const result = simulateCombo(combo, signalCache, pairCandles);
-        if (result) newResults.push(result);
-      }
-
-      // Merge with partials, keep only top 100 to save memory
-      const merged = [...partialResults, ...newResults]
-        .sort((a, b) => b.netProfit - a.netProfit)
-        .slice(0, 100);
-
-      const done = endIdx >= allCombos.length;
-      const nextChunkIdx = chunkIdx + 1;
-
-      // Only update lightweight state (not candle data)
-      await saveMemory(sb, STATE_KEY, {
-        ...state,
-        phase: done ? "extract" : "compute",
-        chunkIdx: nextChunkIdx,
-        partialResults: merged,
-        ...(done ? { processedCombos: allCombos.length } : {}),
-      });
-
-      return new Response(JSON.stringify({
-        success: true,
-        phase: done ? "compute_complete" : "computing",
-        processedCombos: endIdx,
-        totalCombos,
-        progress: Math.round((endIdx / totalCombos) * 100),
-        topNetProfit: merged[0]?.netProfit ?? 0,
-        message: done
-          ? `All ${totalCombos} combos done. Call phase=extract.`
-          : `Processed ${endIdx}/${totalCombos}. Call phase=compute again.`,
-      }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    if (sortedTimes.length < 100) {
+      return new Response(JSON.stringify({ error: "Insufficient data" }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
-    // ════════════════════════════════════════════
-    // PHASE: EXTRACT — Build final results + equity curves
-    // ════════════════════════════════════════════
-    if (phase === "extract") {
-      const state = await loadMemory(sb, STATE_KEY);
-      if (!state || state.phase !== "extract") {
-        return new Response(JSON.stringify({ error: "Compute not finished. Run phase=compute until done." }),
-          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    const LOOKBACK = 20;
+    const pairReturns: Record<string, Record<string, number>> = {};
+    for (const [inst, candles] of Object.entries(pairCandles)) {
+      pairReturns[inst] = {};
+      for (let i = LOOKBACK; i < candles.length; i++) {
+        let totalRet = 0;
+        for (let k = i - LOOKBACK; k < i; k++) {
+          if (candles[k].open !== 0) totalRet += ((candles[k].close - candles[k].open) / candles[k].open) * 100;
+        }
+        pairReturns[inst][candles[i].time] = totalRet / LOOKBACK;
       }
-
-      const candleData = await loadMemory(sb, CANDLE_KEY);
-      if (!candleData) {
-        return new Response(JSON.stringify({ error: "Candle data missing." }),
-          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-      }
-
-      const partialResults = state.partialResults as LiveProfileResult[];
-      const rankSnaps = candleData.rankSnaps as RankSnap[];
-      const compactCandles = candleData.compactCandles as Record<string, Array<[string, number, number, number, number]>>;
-      const pairTimeIndex = candleData.pairTimeIndex as Record<string, Record<string, number>>;
-      const dateRange = state.dateRange as { start: string; end: string };
-      const pairsLoaded = state.pairsLoaded as number;
-      const totalCombos = state.allCombos as number;
-      const topNVal = (state.topN as number) || 25;
-
-      // Reconstruct candles
-      const pairCandles: Record<string, Candle[]> = {};
-      for (const [inst, arr] of Object.entries(compactCandles)) {
-        pairCandles[inst] = arr.map(([time, open, high, low, close]) => ({
-          time: time as string, open: open as number, high: high as number,
-          low: low as number, close: close as number, volume: 0,
-        }));
-      }
-
-      const topResults = partialResults.slice(0, topNVal);
-
-      // Build equity curves for top 10
-      for (let i = 0; i < Math.min(10, topResults.length); i++) {
-        topResults[i].equityCurve = buildEquityCurve(topResults[i], rankSnaps, pairCandles, pairTimeIndex);
-      }
-
-      const profitable = partialResults.filter(r => r.netProfit > 0).length;
-
-      console.log(`[LIVE-BT] EXTRACT: Top net profit: $${topResults[0]?.netProfit ?? 0}`);
-
-      // Clean up state
-      await clearAll(sb);
-
-      return new Response(JSON.stringify({
-        success: true,
-        phase: "complete",
-        version: "2.0",
-        timestamp: new Date().toISOString(),
-        environment,
-        candlesPerPair: Object.values(pairCandles)[0]?.length ?? 0,
-        pairsLoaded,
-        totalSnapshots: rankSnaps.length,
-        totalCombos,
-        profitableCombos: profitable,
-        topResults,
-        dateRange,
-      }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
-    return new Response(JSON.stringify({ error: `Unknown phase: ${phase}` }),
-      { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    const rankSnaps: RankSnap[] = [];
+    for (const time of sortedTimes) {
+      const flows: Record<string, number[]> = {};
+      for (const c of ALL_CURRENCIES) flows[c] = [];
+      for (const cross of availableCrosses) {
+        const ret = pairReturns[cross.instrument]?.[time];
+        if (ret === undefined) continue;
+        flows[cross.base].push(ret);
+        flows[cross.quote].push(-ret);
+      }
+      let hasData = false;
+      const scores: Record<string, number> = {};
+      for (const cur of ALL_CURRENCIES) {
+        if (flows[cur].length === 0) { scores[cur] = 0; continue; }
+        hasData = true;
+        scores[cur] = flows[cur].reduce((a, b) => a + b, 0) / flows[cur].length;
+      }
+      if (!hasData) continue;
+      const sorted = [...ALL_CURRENCIES].sort((a, b) => scores[b] - scores[a]);
+      const ranks: Record<string, number> = {};
+      sorted.forEach((cur, idx) => { ranks[cur] = idx + 1; });
+      rankSnaps.push({ time, ranks });
+    }
+
+    console.log(`[LIVE-BT v3] ${rankSnaps.length} rank snapshots`);
+
+    // ── Step 4: Pre-generate signals for all 9 rank pairs ──
+    const signalCache: Record<string, TradeSignal[]> = {};
+    for (const pr of PREDATOR_RANKS) {
+      for (const py of PREY_RANKS) {
+        signalCache[`${pr}_${py}`] = generateSignals(pr, py, rankSnaps, pairCandles, pairTimeIndex);
+      }
+    }
+
+    // ── Step 5: Simulate all combos ──
+    const allCombos = buildAllCombos();
+    console.log(`[LIVE-BT v3] Simulating ${allCombos.length} combos`);
+
+    const allResults: LiveProfileResult[] = [];
+    for (const combo of allCombos) {
+      const result = simulateCombo(combo, signalCache, pairCandles);
+      if (result) allResults.push(result);
+    }
+
+    // Sort by net profit
+    allResults.sort((a, b) => b.netProfit - a.netProfit);
+    const topResults = allResults.slice(0, topN);
+
+    // Build equity curves for top 10
+    for (let i = 0; i < Math.min(10, topResults.length); i++) {
+      topResults[i].equityCurve = buildEquityCurve(topResults[i], rankSnaps, pairCandles, pairTimeIndex);
+    }
+
+    const profitable = allResults.filter(r => r.netProfit > 0).length;
+    console.log(`[LIVE-BT v3] Complete. ${allCombos.length} combos, ${profitable} profitable. Top: $${topResults[0]?.netProfit ?? 0}`);
+
+    return new Response(JSON.stringify({
+      success: true,
+      version: "3.0",
+      timestamp: new Date().toISOString(),
+      environment,
+      candlesPerPair: Object.values(pairCandles)[0]?.length ?? 0,
+      pairsLoaded,
+      totalSnapshots: rankSnaps.length,
+      totalCombos: allCombos.length,
+      profitableCombos: profitable,
+      topResults,
+      dateRange: { start: sortedTimes[0], end: sortedTimes[sortedTimes.length - 1] },
+    }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
   } catch (err) {
-    console.error("[LIVE-BT] Error:", err);
+    console.error("[LIVE-BT v3] Error:", err);
     return new Response(JSON.stringify({ error: (err as Error).message }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
   }
