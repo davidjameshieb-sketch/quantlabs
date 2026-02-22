@@ -35,7 +35,12 @@ export function computeOOSValidation(
       totalPips += pips;
       if (pips > 0) { wins++; grossProfit += pips; }
       else { grossLoss += Math.abs(pips); }
-      equity += pips * 0.20; // standard pip-to-equity ($0.20/pip = 2000 units)
+      // 5% Risk Dynamic Sizing
+      const riskAmt = equity * 0.05;
+      const stdSL = 15; // standardized SL for OOS validation
+      const pipVal = 0.0001;
+      const dynUnits = stdSL > 0 ? riskAmt / (stdSL * pipVal) : 2000;
+      equity += pips * (dynUnits * pipVal);
       if (equity > peak) peak = equity;
       const dd = ((equity - peak) / peak) * 100;
       if (dd < maxDD) maxDD = dd;
@@ -49,7 +54,13 @@ export function computeOOSValidation(
   const isStats = calcStats(isTrades, startingEquity);
   // OOS starts from where IS ended
   let isEndEquity = startingEquity;
-  for (const p of isTrades) isEndEquity += p * 0.20;
+  for (const p of isTrades) {
+    const riskAmt = isEndEquity * 0.05;
+    const stdSL = 15;
+    const pipVal = 0.0001;
+    const dynUnits = stdSL > 0 ? riskAmt / (stdSL * pipVal) : 2000;
+    isEndEquity += p * (dynUnits * pipVal);
+  }
   const oosStats = calcStats(oosTrades, isEndEquity);
 
   const failReasons: string[] = [];

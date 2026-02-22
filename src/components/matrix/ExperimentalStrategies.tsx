@@ -133,7 +133,14 @@ function simulateSingle(
     let tradeIdx = 0;
     for (let i = 0; i < timePoints.length; i++) {
       const targetIdx = Math.min(tradeCount, Math.round((i + 1) * tradesPerPoint));
-      while (tradeIdx < targetIdx) { equity += tradeResults[tradeIdx] * 0.20; tradeIdx++; } // $0.20/pip (2000 units)
+      while (tradeIdx < targetIdx) {
+        // 5% Risk Dynamic Sizing
+        const riskAmt = equity * 0.05;
+        const pipVal = 0.0001;
+        const dynUnits = slPips > 0 ? riskAmt / (slPips * pipVal) : 2000;
+        equity += tradeResults[tradeIdx] * (dynUnits * pipVal);
+        tradeIdx++;
+      }
       if (equity > peak) peak = equity;
       const dd = ((equity - peak) / peak) * 100;
       if (dd < maxDD) maxDD = dd;
@@ -635,7 +642,10 @@ export const ExperimentalStrategies = ({ result }: Props) => {
             if (i > 0 && idx > 0) {
               const prevIdx = Math.min(i - 1, selectedCurve.length - 1);
               const delta = selectedCurve[idx].equity - selectedCurve[prevIdx].equity;
-              equity += delta * 0.20; // Maintain 2:1 ratio for experimental synthesis
+              // 5% Risk Dynamic Sizing for adaptive synthesis
+              const riskAmtAdapt = equity * 0.05;
+              const scaleFactor = riskAmtAdapt / 50; // normalized against $1000 base
+              equity += delta * scaleFactor;
             }
             if (equity > peak) peak = equity;
             const dd = ((equity - peak) / peak) * 100;

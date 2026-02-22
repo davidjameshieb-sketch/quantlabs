@@ -417,7 +417,13 @@ Deno.serve(async (req) => {
                 }
               }
 
-              equity += closePips * 0.20; // $0.20 per pip (2000 units) on $1,000 base equity
+              // 5% Risk Dynamic Sizing: units scale with equity
+              const riskAmt = equity * 0.05;
+              const slPipsEst = 15; // standardized SL estimate for rank engine
+              const pipVal = openTrade.isJPY ? 0.01 : 0.0001;
+              const dynUnits = slPipsEst > 0 ? riskAmt / (slPipsEst * pipVal) : 2000;
+              const dynDollarPerPip = dynUnits * pipVal;
+              equity += closePips * dynDollarPerPip;
               openTrade = null;
             }
           }

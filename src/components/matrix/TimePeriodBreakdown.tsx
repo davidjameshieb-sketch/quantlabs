@@ -2,8 +2,8 @@
 // Used across all backtest dashboards: BacktestTearSheet, DynamicMatrixSandbox,
 // ProfileDiscoveryEngine, ExperimentalStrategies, AlphaDiscoveryEngine
 //
-// REALISTIC RETURNS: All period stats are calculated as simple (non-compounded)
-// returns on $1,000 base equity using $0.20/pip (2000 units) position sizing.
+// REALISTIC RETURNS: All period stats use 5% risk dynamic position sizing.
+// Units scale geometrically with equity: Risk = Equity * 0.05, Units = Risk / (SL * pipValue).
 
 import { Calendar } from 'lucide-react';
 
@@ -17,7 +17,8 @@ const TIME_PERIODS = [
 ] as const;
 
 const BASE_EQUITY = 1000;
-const PIP_VALUE = 0.20; // $0.20 per pip on $1,000 (2000 units)
+const RISK_PCT = 0.05; // 5% risk per trade
+const STD_SL_PIPS = 15; // standardized SL for period breakdown sizing
 
 interface PeriodStats {
   simpleReturn: number;   // % return on $1,000 base
@@ -91,19 +92,22 @@ function getTimePeriodStats(
     netPips = overallTotalPips * fraction;
   } else {
     // Fallback: use equity curve % change but deflate via log-return
-    // to approximate fixed-sizing (conservative estimate)
+    // With dynamic 5% risk sizing, approximate pip value from current equity
     const startEq = slice[0].equity;
     const endEq = slice[slice.length - 1].equity;
     if (startEq > 0 && endEq > 0) {
       const logReturn = Math.log(endEq / startEq);
-      // Convert log-return to approximate fixed-sizing pips
-      // log-return ≈ sum of per-trade risk-adjusted returns
-      // Conservative: treat log-return as the "edge" and scale to $1K/$0.10
-      netPips = (logReturn * BASE_EQUITY) / PIP_VALUE;
+      // Approximate pip value at avg equity level using 5% risk formula
+      const avgEq = (startEq + endEq) / 2;
+      const dynPipValue = (avgEq * RISK_PCT) / STD_SL_PIPS; // $/pip at this equity level
+      netPips = dynPipValue > 0 ? (logReturn * avgEq) / dynPipValue : 0;
     }
   }
 
-  const simpleReturn = (netPips * PIP_VALUE / BASE_EQUITY) * 100;
+  // Approximate simple return from equity change
+  const startEqFinal = slice[0]?.equity ?? BASE_EQUITY;
+  const endEqFinal = slice[slice.length - 1]?.equity ?? BASE_EQUITY;
+  const simpleReturn = startEqFinal > 0 ? ((endEqFinal - startEqFinal) / startEqFinal) * 100 : 0;
   const totalTrades = wins + losses;
   const wr = totalTrades > 0 ? (wins / totalTrades) * 100 : 0;
   // Approximate PF from win/loss ratio (since we don't have exact pip breakdown per trade)
@@ -239,18 +243,14 @@ export function PeriodPerformanceRow({ equityCurve, totalPips, totalTrades, date
           }
           const fraction = windowActiveBars / overallActiveBars;
           const periodPips = totalPips * fraction;
-          simpleReturn = (periodPips * PIP_VALUE / BASE_EQUITY) * 100;
+          // Dynamic sizing: return is directly from equity change
+          const periodStartEq = equityCurve[startIdx];
+          const periodEndEq = equityCurve[totalBars - 1];
+          simpleReturn = periodStartEq > 0 ? ((periodEndEq - periodStartEq) / periodStartEq) * 100 : 0;
         } else {
-          // Fallback: log-return deflation
           const startEq = equityCurve[startIdx];
           const endEq = equityCurve[totalBars - 1];
-          if (startEq > 0 && endEq > 0) {
-            const logReturn = Math.log(endEq / startEq);
-            const netPips = (logReturn * BASE_EQUITY) / PIP_VALUE;
-            simpleReturn = (netPips * PIP_VALUE / BASE_EQUITY) * 100;
-          } else {
-            simpleReturn = 0;
-          }
+          simpleReturn = startEq > 0 ? ((endEq - startEq) / startEq) * 100 : 0;
         }
 
         const color = simpleReturn >= 0 ? '#39ff14' : '#ff0055';
