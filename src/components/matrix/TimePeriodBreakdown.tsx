@@ -3,7 +3,7 @@
 // ProfileDiscoveryEngine, ExperimentalStrategies, AlphaDiscoveryEngine
 //
 // REALISTIC RETURNS: All period stats are calculated as simple (non-compounded)
-// returns on $1,000 base equity using $0.10/pip position sizing.
+// returns on $1,000 base equity using $0.20/pip (2000 units) position sizing.
 
 import { Calendar } from 'lucide-react';
 
@@ -17,7 +17,7 @@ const TIME_PERIODS = [
 ] as const;
 
 const BASE_EQUITY = 1000;
-const PIP_VALUE = 0.10; // $0.10 per pip on $1,000
+const PIP_VALUE = 0.20; // $0.20 per pip on $1,000 (2000 units)
 
 interface PeriodStats {
   simpleReturn: number;   // % return on $1,000 base

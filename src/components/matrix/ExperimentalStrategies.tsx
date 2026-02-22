@@ -133,7 +133,7 @@ function simulateSingle(
     let tradeIdx = 0;
     for (let i = 0; i < timePoints.length; i++) {
       const targetIdx = Math.min(tradeCount, Math.round((i + 1) * tradesPerPoint));
-      while (tradeIdx < targetIdx) { equity += tradeResults[tradeIdx] * 0.10; tradeIdx++; }
+      while (tradeIdx < targetIdx) { equity += tradeResults[tradeIdx] * 0.20; tradeIdx++; } // $0.20/pip (2000 units)
       if (equity > peak) peak = equity;
       const dd = ((equity - peak) / peak) * 100;
       if (dd < maxDD) maxDD = dd;
@@ -635,7 +635,7 @@ export const ExperimentalStrategies = ({ result }: Props) => {
             if (i > 0 && idx > 0) {
               const prevIdx = Math.min(i - 1, selectedCurve.length - 1);
               const delta = selectedCurve[idx].equity - selectedCurve[prevIdx].equity;
-              equity += delta * 0.10;
+              equity += delta * 0.20; // Maintain 2:1 ratio for experimental synthesis
             }
             if (equity > peak) peak = equity;
             const dd = ((equity - peak) / peak) * 100;

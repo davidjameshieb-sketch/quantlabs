@@ -187,7 +187,7 @@ function filterAndRecalc(
       const targetIdx = Math.min(tradeCount, Math.round((i + 1) * tradesPerPoint));
       while (tradeIdx < targetIdx) {
         const pipResult = tradeResults[tradeIdx] - slippagePips;
-        equity += pipResult * 0.10; // $0.10 per pip per micro lot
+        equity += pipResult * 0.20; // $0.20 per pip (2000 units) per micro lot equivalent
         tradeIdx++;
       }
       simulatedCurve.push({ time: timePoints[i], equity: Math.max(0, Math.round(equity * 100) / 100) });

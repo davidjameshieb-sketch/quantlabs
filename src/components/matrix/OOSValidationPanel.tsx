@@ -35,7 +35,7 @@ export function computeOOSValidation(
       totalPips += pips;
       if (pips > 0) { wins++; grossProfit += pips; }
       else { grossLoss += Math.abs(pips); }
-      equity += pips * 0.10; // standard pip-to-equity
+      equity += pips * 0.20; // standard pip-to-equity ($0.20/pip = 2000 units)
       if (equity > peak) peak = equity;
       const dd = ((equity - peak) / peak) * 100;
       if (dd < maxDD) maxDD = dd;
@@ -49,7 +49,7 @@ export function computeOOSValidation(
   const isStats = calcStats(isTrades, startingEquity);
   // OOS starts from where IS ended
   let isEndEquity = startingEquity;
-  for (const p of isTrades) isEndEquity += p * 0.10;
+  for (const p of isTrades) isEndEquity += p * 0.20;
   const oosStats = calcStats(oosTrades, isEndEquity);
 
   const failReasons: string[] = [];
