@@ -100,12 +100,19 @@ export function LiveProfileBacktest() {
     cancelRef.current = false;
 
     try {
-      // Phase 1: Init
+      // Phase 1: Init (fetch candles only)
       setProgress({ phase: 'init', pct: 0, msg: `Fetching ${candleCount.toLocaleString()} candles × 28 pairs…` });
       const initRes = await invoke({ phase: 'init', environment, candles: candleCount, topN: 25 });
       if (!initRes?.success) throw new Error(initRes?.error || 'Init failed');
+      if (cancelRef.current) { setLoading(false); setProgress(null); return; }
 
-      const totalCombos = initRes.totalCombos;
+      // Phase 1b: Build (compute ranks & signals)
+      setProgress({ phase: 'init', pct: 5, msg: 'Building rank snapshots & signal cache…' });
+      const buildRes = await invoke({ phase: 'build', environment, candles: candleCount, topN: 25 });
+      if (!buildRes?.success) throw new Error(buildRes?.error || 'Build failed');
+      if (cancelRef.current) { setLoading(false); setProgress(null); return; }
+
+      const totalCombos = buildRes.totalCombos;
 
       // Phase 2: Compute (loop)
       let done = false;
