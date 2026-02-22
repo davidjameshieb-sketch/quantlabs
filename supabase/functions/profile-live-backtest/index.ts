@@ -433,7 +433,7 @@ Deno.serve(async (req) => {
     const sb = getSupabase();
 
     // ════════════════════════════════════════════
-    // PHASE: INIT — Fetch candles, build ranks, persist
+    // PHASE: INIT — Fetch candles only, persist raw data
     // ════════════════════════════════════════════
     if (phase === "init") {
       console.log(`[LIVE-BT] INIT: Fetching ${candleCount} M30 candles for 28 pairs (${environment})`);
@@ -449,7 +449,7 @@ Deno.serve(async (req) => {
         const batch = availableCrosses.slice(b, b + BATCH);
         const results = await Promise.allSettled(
           batch.map(async cross => {
-            const candles = await fetchCandles(cross.instrument, candleCount, environment, apiToken);
+            const candles = await fetchCandles(cross.instrument, candleCount, environment, apiToken!);
             return { instrument: cross.instrument, candles };
           })
         );
@@ -462,6 +462,66 @@ Deno.serve(async (req) => {
 
       console.log(`[LIVE-BT] INIT: Fetched ${Object.keys(pairCandles).length} pairs`);
 
+      // Compress and persist candle data only — defer heavy computation to "build" phase
+      const compactCandles: Record<string, Array<[string, number, number, number, number]>> = {};
+      for (const [inst, candles] of Object.entries(pairCandles)) {
+        compactCandles[inst] = candles.map(c => [c.time, c.open, c.high, c.low, c.close]);
+      }
+
+      await saveMemory(sb, CANDLE_KEY, { compactCandles });
+
+      // Save minimal state for next phase
+      await saveMemory(sb, STATE_KEY, {
+        phase: "build",
+        environment,
+        topN,
+        candleCount,
+        pairsLoaded: Object.keys(pairCandles).length,
+      });
+
+      return new Response(JSON.stringify({
+        success: true,
+        phase: "init_complete",
+        pairsLoaded: Object.keys(pairCandles).length,
+        message: `Candles fetched. Call phase=build to compute ranks & signals.`,
+      }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
+
+    // ════════════════════════════════════════════
+    // PHASE: BUILD — Compute ranks, signals, persist for compute
+    // ════════════════════════════════════════════
+    if (phase === "build") {
+      const state = await loadMemory(sb, STATE_KEY);
+      if (!state || state.phase !== "build") {
+        return new Response(JSON.stringify({ error: "Run phase=init first." }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+
+      const candleData = await loadMemory(sb, CANDLE_KEY);
+      if (!candleData) {
+        return new Response(JSON.stringify({ error: "Candle data missing." }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+
+      const compactCandles = candleData.compactCandles as Record<string, Array<[string, number, number, number, number]>>;
+      const availableCrosses = ALL_28_CROSSES.filter(c => OANDA_AVAILABLE.has(c.instrument));
+
+      // Reconstruct candle objects
+      const pairCandles: Record<string, Candle[]> = {};
+      for (const [inst, arr] of Object.entries(compactCandles)) {
+        pairCandles[inst] = arr.map(([time, open, high, low, close]) => ({
+          time: time as string, open: open as number, high: high as number,
+          low: low as number, close: close as number, volume: 0,
+        }));
+      }
+
+      // Build time-indexed lookups
+      const pairTimeIndex: Record<string, Record<string, number>> = {};
+      for (const [inst, candles] of Object.entries(pairCandles)) {
+        pairTimeIndex[inst] = {};
+        for (let i = 0; i < candles.length; i++) pairTimeIndex[inst][candles[i].time] = i;
+      }
+
       // Build rank snapshots
       const allTimestamps = new Set<string>();
       for (const candles of Object.values(pairCandles)) {
@@ -472,13 +532,6 @@ Deno.serve(async (req) => {
       if (sortedTimes.length < 100) {
         return new Response(JSON.stringify({ error: "Insufficient data" }),
           { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-      }
-
-      // Build time-indexed lookups
-      const pairTimeIndex: Record<string, Record<string, number>> = {};
-      for (const [inst, candles] of Object.entries(pairCandles)) {
-        pairTimeIndex[inst] = {};
-        for (let i = 0; i < candles.length; i++) pairTimeIndex[inst][candles[i].time] = i;
       }
 
       // Compute 20-period rolling returns
@@ -495,7 +548,6 @@ Deno.serve(async (req) => {
         }
       }
 
-      // Build rank snapshots (compact — just time + ranks)
       const rankSnaps: RankSnap[] = [];
       for (const time of sortedTimes) {
         const flows: Record<string, number[]> = {};
@@ -520,7 +572,7 @@ Deno.serve(async (req) => {
         rankSnaps.push({ time, ranks });
       }
 
-      console.log(`[LIVE-BT] INIT: ${rankSnaps.length} rank snapshots built`);
+      console.log(`[LIVE-BT] BUILD: ${rankSnaps.length} rank snapshots`);
 
       // Pre-generate signals for all 9 rank pairs
       const signalCache: Record<string, TradeSignal[]> = {};
@@ -530,16 +582,9 @@ Deno.serve(async (req) => {
         }
       }
 
-      // Compress candle data — only keep what we need for simulation
-      // Store: per instrument, array of {time, open, high, low, close}
-      const compactCandles: Record<string, Array<[string, number, number, number, number]>> = {};
-      for (const [inst, candles] of Object.entries(pairCandles)) {
-        compactCandles[inst] = candles.map(c => [c.time, c.open, c.high, c.low, c.close]);
-      }
-
       const allCombos = buildAllCombos();
 
-      // Persist candle data separately (read-only after init)
+      // Persist enriched candle data (with ranks + signals)
       await saveMemory(sb, CANDLE_KEY, {
         compactCandles,
         pairTimeIndex,
@@ -547,26 +592,26 @@ Deno.serve(async (req) => {
         signalCache,
       });
 
-      // Persist lightweight state (updated each compute chunk)
+      // Update state for compute phase
       await saveMemory(sb, STATE_KEY, {
         phase: "compute",
-        environment,
-        topN,
-        candleCount,
+        environment: state.environment,
+        topN: state.topN,
+        candleCount: state.candleCount,
         allCombos: allCombos.length,
         chunkIdx: 0,
         partialResults: [],
         dateRange: { start: sortedTimes[0], end: sortedTimes[sortedTimes.length - 1] },
-        pairsLoaded: Object.keys(pairCandles).length,
+        pairsLoaded: state.pairsLoaded,
       });
 
       return new Response(JSON.stringify({
         success: true,
-        phase: "init_complete",
+        phase: "build_complete",
         totalCombos: allCombos.length,
-        pairsLoaded: Object.keys(pairCandles).length,
+        pairsLoaded: state.pairsLoaded as number,
         totalSnapshots: rankSnaps.length,
-        message: `Init complete. ${allCombos.length} combos ready. Call phase=compute to start.`,
+        message: `Build complete. ${allCombos.length} combos ready. Call phase=compute.`,
       }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
