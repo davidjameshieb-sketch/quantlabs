@@ -448,6 +448,30 @@ export function AlphaDiscoveryEngine({ result }: { result: BacktestResult }) {
                 </div>
               </div>
 
+              {/* Regime Selector */}
+              <div className="bg-slate-950/50 border border-slate-800/50 rounded-lg p-3">
+                <label className="text-[7px] text-slate-500 font-mono uppercase tracking-widest block mb-1.5">Target Regime</label>
+                <div className="flex items-center gap-1.5">
+                  {[
+                    { value: -1, label: 'ALL', color: 'slate' },
+                    { value: 0, label: '📈 TREND', color: 'emerald' },
+                    { value: 1, label: '📊 RANGE', color: 'cyan' },
+                    { value: 2, label: '⚡ SHOCK', color: 'red' },
+                  ].map(r => (
+                    <button key={r.value} onClick={() => setTargetRegime(r.value)} disabled={isRunning}
+                      className={`text-[8px] font-mono font-bold px-2 py-1 rounded border transition-all ${
+                        targetRegime === r.value
+                          ? r.color === 'emerald' ? 'bg-emerald-400/10 border-emerald-400/50 text-emerald-400'
+                          : r.color === 'cyan' ? 'bg-cyan-400/10 border-cyan-400/50 text-cyan-400'
+                          : r.color === 'red' ? 'bg-red-400/10 border-red-400/50 text-red-400'
+                          : 'bg-slate-400/10 border-slate-400/50 text-slate-300'
+                          : 'border-slate-700 text-slate-500 hover:text-slate-300'
+                      }`}
+                    >{r.label}</button>
+                  ))}
+                </div>
+              </div>
+
               <div className="grid grid-cols-4 gap-3">
                 <div className="bg-slate-950/50 border border-slate-800/50 rounded-lg p-3">
                   <label className="text-[7px] text-slate-500 font-mono uppercase tracking-widest block mb-1.5">Search Mode</label>
@@ -609,6 +633,30 @@ export function AlphaDiscoveryEngine({ result }: { result: BacktestResult }) {
                     </div>
                   </div>
 
+                  {/* Regime Distribution */}
+                  {batchResult.top7.some(s => s.bestRegime) && (
+                    <div className="bg-slate-950/50 border border-slate-800/40 rounded-lg p-3">
+                      <div className="text-[7px] font-mono text-slate-500 uppercase tracking-widest mb-2">Regime Matrix</div>
+                      <div className="flex flex-wrap gap-2">
+                        {(() => {
+                          const regimeCounts: Record<string, number> = {};
+                          batchResult.top7.forEach(s => {
+                            if (s.bestRegime) regimeCounts[s.bestRegime] = (regimeCounts[s.bestRegime] || 0) + 1;
+                          });
+                          return Object.entries(regimeCounts).map(([regime, count]) => (
+                            <span key={regime} className={`text-[8px] font-mono px-2 py-1 rounded border font-bold ${
+                              regime === 'TREND' ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' :
+                              regime === 'RANGE' ? 'bg-cyan-500/10 border-cyan-500/30 text-cyan-400' :
+                              'bg-red-500/10 border-red-500/30 text-red-400'
+                            }`}>
+                              {regime === 'TREND' ? '📈' : regime === 'RANGE' ? '📊' : '⚡'} {regime} × {count}
+                            </span>
+                          ));
+                        })()}
+                      </div>
+                    </div>
+                  )}
+
                   {/* Top 7 Strategy Cards */}
                   <div className="border border-amber-500/30 rounded-xl overflow-hidden">
                     <div className="bg-amber-950/30 px-4 py-3 border-b border-amber-500/20 flex items-center justify-between">
@@ -738,6 +786,16 @@ function StrategyCard({ profile, idx, expandedProfile, setExpandedProfile, maxCo
                   {profile.edgeArchetype}
                 </span>
               )}
+              {profile.bestRegime && (
+                <span className={`text-[6px] font-mono px-1.5 py-0.5 rounded border uppercase tracking-wider font-bold ${
+                  profile.bestRegime === 'TREND' ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' :
+                  profile.bestRegime === 'RANGE' ? 'bg-cyan-500/10 border-cyan-500/30 text-cyan-400' :
+                  profile.bestRegime === 'SHOCK' ? 'bg-red-500/10 border-red-500/30 text-red-400' :
+                  'bg-slate-500/10 border-slate-500/30 text-slate-400'
+                }`}>
+                  {profile.bestRegime === 'TREND' ? '📈' : profile.bestRegime === 'RANGE' ? '📊' : '⚡'} {profile.bestRegime}
+                </span>
+              )}
             </div>
             <IndicatorBadges dna={profile.dna} />
           </div>
@@ -823,6 +881,36 @@ function StrategyCard({ profile, idx, expandedProfile, setExpandedProfile, maxCo
                   ))}
                 </div>
               </div>
+
+              {/* ── Regime Scores ── */}
+              {profile.regimeScores && (
+                <div className="bg-slate-950/50 border border-slate-800/40 rounded-lg p-3">
+                  <div className="flex items-center gap-1.5 mb-2">
+                    <Activity className="w-3 h-3 text-amber-400" />
+                    <span className="text-[7px] font-mono text-amber-400 uppercase tracking-widest font-bold">Regime Performance</span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    {[
+                      { label: '📈 TREND', value: profile.regimeScores.trend, color: '#10b981' },
+                      { label: '📊 RANGE', value: profile.regimeScores.range, color: '#06b6d4' },
+                      { label: '⚡ SHOCK', value: profile.regimeScores.shock, color: '#ef4444' },
+                    ].map(r => {
+                      const maxScore = Math.max(profile.regimeScores!.trend, profile.regimeScores!.range, profile.regimeScores!.shock, 1);
+                      const pct = Math.min(100, (r.value / maxScore) * 100);
+                      const isBest = profile.bestRegime === r.label.split(' ')[1];
+                      return (
+                        <div key={r.label} className={`bg-slate-900/50 rounded-md p-2 ${isBest ? 'ring-1 ring-amber-400/30' : ''}`}>
+                          <div className="text-[7px] font-mono text-slate-400 mb-1">{r.label}</div>
+                          <div className="relative w-full h-1.5 bg-slate-800 rounded-full overflow-hidden mb-1">
+                            <div className="absolute top-0 left-0 h-full rounded-full" style={{ width: `${pct}%`, backgroundColor: r.color }} />
+                          </div>
+                          <div className="text-[8px] font-mono font-bold" style={{ color: r.color }}>{r.value.toFixed(2)}</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
 
               {/* ── OOS Validation — The Lie Detector ── */}
               {profile.isReturn != null && profile.oosReturn != null && (() => {
