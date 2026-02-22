@@ -894,11 +894,11 @@ function simulateStrategy(bars: BarArrays, dna: StrategyDNA, startIdx = 0, endId
         if (isLong) {
           if (bars.mfeLong[i] >= tp) exitPips = tp * pipMult * remainingPct;
           else if (bars.maeLong[i] >= sl) exitPips = -sl * pipMult * remainingPct;
-          else exitPips = (bars.mfeLong[i] - bars.maeLong[i] * 0.5) * pipMult * remainingPct;
+          else exitPips = (bars.mfeLong[i] * 0.5 - bars.maeLong[i] * 0.5) * pipMult * remainingPct;
         } else {
           if (bars.mfeShort[i] >= tp) exitPips = tp * pipMult * remainingPct;
           else if (bars.maeShort[i] >= sl) exitPips = -sl * pipMult * remainingPct;
-          else exitPips = (bars.mfeShort[i] - bars.maeShort[i] * 0.5) * pipMult * remainingPct;
+          else exitPips = (bars.mfeShort[i] * 0.5 - bars.maeShort[i] * 0.5) * pipMult * remainingPct;
         }
       }
       pips = partialPips + exitPips;
@@ -906,11 +906,11 @@ function simulateStrategy(bars: BarArrays, dna: StrategyDNA, startIdx = 0, endId
       if (isLong) {
         if (bars.mfeLong[i] >= tp) pips = tp * pipMult;
         else if (bars.maeLong[i] >= sl) pips = -sl * pipMult;
-        else pips = (bars.mfeLong[i] - bars.maeLong[i] * 0.5) * pipMult;
+        else pips = (bars.mfeLong[i] * 0.5 - bars.maeLong[i] * 0.5) * pipMult;
       } else {
         if (bars.mfeShort[i] >= tp) pips = tp * pipMult;
         else if (bars.maeShort[i] >= sl) pips = -sl * pipMult;
-        else pips = (bars.mfeShort[i] - bars.maeShort[i] * 0.5) * pipMult;
+        else pips = (bars.mfeShort[i] * 0.5 - bars.maeShort[i] * 0.5) * pipMult;
       }
     }
 
