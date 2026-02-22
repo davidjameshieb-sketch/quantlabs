@@ -155,3 +155,6 @@ verify_jwt = false
 
 [functions.flash-crash-killswitch]
 verify_jwt = false
+
+[functions.ensemble-portfolio]
+verify_jwt = false
