@@ -87,17 +87,28 @@ export function LiveProfileBacktest() {
   const [progress, setProgress] = useState<{ phase: string; pct: number; msg: string } | null>(null);
   const cancelRef = useRef(false);
 
-  const invoke = async (body: Record<string, unknown>, retries = 2) => {
+  const invoke = async (body: Record<string, unknown>, retries = 1) => {
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
+        console.log(`[LIVE-BT UI] Calling phase=${body.phase} (attempt ${attempt + 1})`);
         const { data, error: fnError } = await supabase.functions.invoke('profile-live-backtest', { body });
         if (fnError) {
-          if (attempt < retries) { await new Promise(r => setTimeout(r, 3000)); continue; }
-          throw fnError;
+          console.error(`[LIVE-BT UI] Error:`, fnError);
+          if (attempt < retries) {
+            setProgress(prev => prev ? { ...prev, msg: `Retrying (${attempt + 1})… ${prev.msg}` } : null);
+            await new Promise(r => setTimeout(r, 2000));
+            continue;
+          }
+          throw new Error(typeof fnError === 'object' && fnError.message ? fnError.message : String(fnError));
         }
         return data;
       } catch (err) {
-        if (attempt < retries) { await new Promise(r => setTimeout(r, 3000)); continue; }
+        console.error(`[LIVE-BT UI] Catch:`, err);
+        if (attempt < retries) {
+          setProgress(prev => prev ? { ...prev, msg: `Retrying… connection issue` } : null);
+          await new Promise(r => setTimeout(r, 2000));
+          continue;
+        }
         throw err;
       }
     }
