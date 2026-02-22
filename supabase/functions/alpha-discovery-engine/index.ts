@@ -927,6 +927,39 @@ const DONCHIAN_PERIODS = [10, 20, 55];
 function pick<T>(arr: T[]): T { return arr[Math.floor(Math.random() * arr.length)]; }
 function randRange(min: number, max: number): number { return min + Math.random() * (max - min); }
 
+const MAX_ACTIVE_INDICATORS = 3;
+
+/** Count active indicator modes in a DNA (excludes filters like vol/session/day) */
+function countActiveIndicators(dna: StrategyDNA): number {
+  let count = 0;
+  if (dna.rsiMode > 0) count++;
+  if (dna.macdMode > 0) count++;
+  if (dna.bbMode > 0) count++;
+  if (dna.emaMode > 0) count++;
+  if (dna.adxMode > 0) count++;
+  if (dna.stochMode > 0) count++;
+  if (dna.cciMode > 0) count++;
+  if (dna.donchianMode > 0) count++;
+  if (dna.paMode > 0) count++;
+  return count;
+}
+
+/** Enforce max indicator cap — randomly deactivate excess indicators */
+function enforceIndicatorCap(dna: StrategyDNA): StrategyDNA {
+  const d = { ...dna };
+  const modeKeys: (keyof StrategyDNA)[] = [
+    'rsiMode', 'macdMode', 'bbMode', 'emaMode', 'adxMode',
+    'stochMode', 'cciMode', 'donchianMode', 'paMode',
+  ];
+  let active = modeKeys.filter(k => (d[k] as number) > 0);
+  while (active.length > MAX_ACTIVE_INDICATORS) {
+    const removeIdx = Math.floor(Math.random() * active.length);
+    (d as Record<string, number>)[active[removeIdx] as string] = 0;
+    active.splice(removeIdx, 1);
+  }
+  return d;
+}
+
 // Expanded archetypes
 const ARCHETYPES: Partial<StrategyDNA>[] = [
   // Pure Bollinger
@@ -968,19 +1001,16 @@ const ARCHETYPES: Partial<StrategyDNA>[] = [
   { bbMode: 1, emaMode: 1, trailingATR: 2.0 },  // BB breakout + trailing
   { donchianMode: 1, trailingATR: 1.5, maxBarsInTrade: 24 },  // Donchian + trail + time exit
   { paMode: 2, partialTP: 1, trailingATR: 2.0 },  // Engulfing + partial TP + trail
-  // Multi-indicator combos
-  { rsiMode: 1, bbMode: 1, emaMode: 1, adxMode: 1 },  // RSI + BB + EMA + ADX (4 indicators)
+  // Multi-indicator combos (max 3 indicators each)
   { stochMode: 3, cciMode: 1, donchianMode: 1 },  // Stoch + CCI + Donchian
-  { paMode: 2, adxMode: 1, stochMode: 1, emaMode: 1 },  // PA + ADX + Stoch + EMA
+  { paMode: 2, adxMode: 1, stochMode: 1 },  // PA + ADX + Stoch
+  { rsiMode: 1, bbMode: 1, emaMode: 1 },  // RSI + BB + EMA
   // Volume/session combos
   { bbMode: 1, emaMode: 0, volMode: 3, sessionFilter: 1 },
   { emaMode: 1, volMode: 1, sessionFilter: 2 },
   // Hurst regime
   { bbMode: 1, hurstMin: 0.55, hurstMax: 1.0 },
   { bbMode: 2, hurstMin: 0.0, hurstMax: 0.45 },
-  // Full kitchen sink
-  { rsiMode: 1, macdMode: 1, bbMode: 1, emaMode: 1, adxMode: 1, stochMode: 1 },
-  { rsiMode: 2, macdMode: 3, bbMode: 2, emaMode: 3, cciMode: 2, paMode: 3 },
 ];
 
 function randomDNA(archetype?: Partial<StrategyDNA>): StrategyDNA {
@@ -1009,7 +1039,7 @@ function randomDNA(archetype?: Partial<StrategyDNA>): StrategyDNA {
     partialTP: Math.random() < 0.2 ? Math.floor(randRange(1, 3)) : 0,
   };
   if (archetype) Object.assign(base, archetype);
-  return base;
+  return enforceIndicatorCap(base);
 }
 
 function crossover(a: StrategyDNA, b: StrategyDNA): StrategyDNA {
@@ -1082,7 +1112,7 @@ function mutate(dna: StrategyDNA, rate = 0.15): StrategyDNA {
   if (Math.random() < rate) d.trailingATR = Math.random() < 0.3 ? 0 : Math.max(0.5, Math.min(3.0, (d.trailingATR || 1.5) + (Math.random() - 0.5) * 0.8));
   if (Math.random() < rate) d.maxBarsInTrade = Math.random() < 0.3 ? 0 : Math.max(4, Math.min(48, Math.round((d.maxBarsInTrade || 16) + (Math.random() - 0.5) * 12)));
   if (Math.random() < rate) d.partialTP = Math.floor(Math.random() * 3);
-  return d;
+  return enforceIndicatorCap(d);
 }
 
 function tournamentSelect(pop: { dna: StrategyDNA; fitness: number }[], k = 3): { dna: StrategyDNA; fitness: number } {
@@ -1313,95 +1343,89 @@ function getEdgeArchetype(dna: StrategyDNA): string {
 }
 
 function computeFitness(sim: SimResult, baseDailyReturns: number[], maxCorrelation: number, dna?: StrategyDNA, unconstrained = false): number {
+  const MIN_TRADES = 60; // Minimum trades for a viable strategy
+
+  // ── UNCONSTRAINED MODE ──
   if (unconstrained) {
-    if (sim.trades < 15) return 0;
-    let fitness = sim.totalReturn * Math.sqrt(Math.max(sim.trades, 1));
-    if (sim.maxDrawdown > 0.001) fitness /= (sim.maxDrawdown * 2);
-    if (sim.sharpe > 0.5) fitness *= 1 + (sim.sharpe * 0.2);
-    if (sim.profitFactor > 1.5) fitness *= 1.2;
-    if (sim.profitFactor > 2.0) fitness *= 1.2;
-    if (sim.totalReturn > 50) fitness *= 1.3;
-    if (sim.totalReturn > 100) fitness *= 1.4;
-    if (sim.totalReturn > 200) fitness *= 1.5;
-    if (sim.totalReturn > 500) fitness *= 1.5;
-    // Bonus for using advanced features
+    if (sim.trades < 10) return 0;
+
+    // Core: Profit Factor × log(trades) — rewards consistency over raw return
+    let fitness = sim.profitFactor * Math.log(Math.max(sim.trades, 2));
+
+    // Sharpe bonus
+    if (sim.sharpe > 0.5) fitness *= 1 + (sim.sharpe * 0.3);
+    if (sim.sharpe > 1.5) fitness *= 1.3;
+
+    // Drawdown penalty
+    if (sim.maxDrawdown > 0.001) fitness /= (1 + sim.maxDrawdown * 3);
+    if (sim.maxDrawdown > 0.3) fitness *= 0.3;
+
+    // ── Min Trade Penalty ──
+    if (sim.trades < MIN_TRADES) fitness *= 0.1; // Massive penalty for sniper strategies
+    else if (sim.trades < 100) fitness *= 0.6;
+
+    // Moderate return bonuses (not exponential)
+    if (sim.totalReturn > 20) fitness *= 1.15;
+    if (sim.totalReturn > 50) fitness *= 1.1;
+
+    // ── Indicator Complexity Penalty ──
     if (dna) {
-      const advCount = [dna.adxMode > 0, dna.stochMode > 0, dna.cciMode > 0, dna.donchianMode > 0, dna.paMode > 0].filter(Boolean).length;
-      if (advCount >= 1) fitness *= 1.1;
-      if (advCount >= 2) fitness *= 1.15;
-      if (dna.trailingATR > 0) fitness *= 1.1;
-      if (dna.partialTP > 0) fitness *= 1.05;
+      const activeCount = countActiveIndicators(dna);
+      if (activeCount > 3) fitness *= 0.2; // Should never happen with cap, but safety
+      if (activeCount === 1) fitness *= 1.1; // Reward simplicity
     }
+
     return Math.max(fitness, 0);
   }
 
-  let fitness = 0;
-  if (sim.trades >= 20 && sim.maxDrawdown > 0.001) {
-    fitness = (sim.profitFactor * sim.winRate * Math.sqrt(sim.trades)) / sim.maxDrawdown;
-    if (sim.sharpe > 0.5) fitness *= 1 + (sim.sharpe * 0.3);
-    if (sim.sharpe > 1.5) fitness *= 1.3;
-    if (sim.sharpe > 2.5) fitness *= 1.2;
-  } else if (sim.trades >= 20) {
-    fitness = sim.profitFactor * sim.winRate * Math.sqrt(sim.trades) * 10;
-  }
-  if (sim.trades < 30) fitness *= 0.05;
-  else if (sim.trades < 50) fitness *= 0.3;
-  else if (sim.trades < 100) fitness *= 0.7;
-  if (sim.trades > 200) fitness *= 1.15;
-  if (sim.trades > 400) fitness *= 1.15;
+  // ── CONSTRAINED MODE ──
+  if (sim.trades < 10) return 0;
 
-  if (sim.totalReturn > 20) fitness *= 1.2;
-  if (sim.totalReturn > 50) fitness *= 1.3;
-  if (sim.totalReturn > 100) fitness *= 1.4;
-  if (sim.totalReturn > 200) fitness *= 1.3;
+  // Core: Profit Factor × log(trades) — hunts for consistency
+  let fitness = sim.profitFactor * Math.log(Math.max(sim.trades, 2));
 
+  // Sharpe integration
+  if (sim.sharpe > 0.5) fitness *= 1 + (sim.sharpe * 0.3);
+  if (sim.sharpe > 1.5) fitness *= 1.3;
+  if (sim.sharpe > 2.5) fitness *= 1.2;
+
+  // Drawdown scaling
+  if (sim.maxDrawdown > 0.001) fitness /= (1 + sim.maxDrawdown * 2);
   if (sim.maxDrawdown > 0.3) fitness *= 0.5;
   if (sim.maxDrawdown > 0.5) fitness *= 0.3;
 
+  // ── Min Trade Penalty — kill sniper strategies ──
+  if (sim.trades < MIN_TRADES) fitness *= 0.1;
+  else if (sim.trades < 100) fitness *= 0.6;
+  // Bonus for high throughput
+  if (sim.trades > 200) fitness *= 1.15;
+  if (sim.trades > 400) fitness *= 1.15;
+
+  // Moderate return bonuses
+  if (sim.totalReturn > 20) fitness *= 1.15;
+  if (sim.totalReturn > 50) fitness *= 1.1;
+
+  // Correlation penalty
   const corr = Math.abs(pearsonCorrelation(baseDailyReturns, sim.dailyReturns));
   if (corr > maxCorrelation) fitness *= Math.max(0.01, 1 - (corr - maxCorrelation) * 5);
 
   if (dna) {
-    const hasRSI = dna.rsiMode > 0;
-    const hasMACD = dna.macdMode > 0;
-    const hasBB = dna.bbMode > 0;
-    const hasEMA = dna.emaMode > 0;
-    const hasADX = dna.adxMode > 0;
-    const hasStoch = dna.stochMode > 0;
-    const hasCCI = dna.cciMode > 0;
-    const hasDonch = dna.donchianMode > 0;
-    const hasPA = dna.paMode > 0;
-    const hasVol = dna.volMode > 0;
-    const hasSes = dna.sessionFilter >= 0;
-    const hasDay = dna.dayFilter >= 0;
+    const activeCount = countActiveIndicators(dna);
 
-    // Penalize basic RSI+MACD combos
-    if (hasRSI && hasMACD && !hasBB && !hasEMA && !hasADX && !hasStoch && !hasCCI && !hasDonch && !hasPA) fitness *= 0.3;
-    if ((hasRSI || hasMACD) && !hasBB && !hasEMA && !hasADX && !hasStoch && !hasCCI && !hasDonch && !hasPA) fitness *= 0.6;
+    // ── Indicator Complexity Penalty ──
+    // Reward clean 1-2 indicator strategies, penalize 4+
+    if (activeCount === 1) fitness *= 1.2;   // Pure edge
+    if (activeCount === 2) fitness *= 1.1;   // Clean combo
+    if (activeCount > 3) fitness *= 0.2;     // Frankenstein penalty (safety)
 
-    // Reward structural indicators
-    if (hasBB) fitness *= 1.3;
-    if (hasEMA) fitness *= 1.2;
-    if (hasVol) fitness *= 1.15;
-    if (hasSes) fitness *= 1.1;
-    if (hasDay) fitness *= 1.1;
-
-    // Reward advanced indicators
-    if (hasADX) fitness *= 1.25;
-    if (hasStoch) fitness *= 1.15;
-    if (hasCCI) fitness *= 1.2;
-    if (hasDonch) fitness *= 1.25;
-    if (hasPA) fitness *= 1.3;
+    // Reward advanced indicators mildly (not enough to encourage stacking)
+    if (dna.adxMode > 0 || dna.donchianMode > 0) fitness *= 1.1;
+    if (dna.paMode > 0) fitness *= 1.05;
 
     // Reward advanced exits
-    if (dna.trailingATR > 0) fitness *= 1.15;
-    if (dna.partialTP > 0) fitness *= 1.1;
+    if (dna.trailingATR > 0) fitness *= 1.1;
+    if (dna.partialTP > 0) fitness *= 1.05;
     if (dna.maxBarsInTrade > 0) fitness *= 1.05;
-
-    const activeCount = [hasRSI, hasMACD, hasBB, hasEMA, hasADX, hasStoch, hasCCI, hasDonch, hasPA].filter(Boolean).length;
-    if (activeCount >= 3) fitness *= 1.3;
-    if (activeCount >= 4) fitness *= 1.2;
-    if (activeCount >= 5) fitness *= 1.15;
   }
 
   return fitness;
@@ -1621,7 +1645,7 @@ async function handlePhase3(body: Record<string, unknown>) {
 
     // Full-dataset sim for equity curve display
     const sim = simulateStrategy(bars, p.dna);
-    if (sim.trades < 50) continue; // Overfitting filter: require ≥ 50 total trades
+    if (sim.trades < 60) continue; // Anti-overfit: require ≥ 60 total trades
 
     // IS-only sim (candles 0 to isSplit)
     const isSim = isSplit < bars.count ? simulateStrategy(bars, p.dna, 0, isSplit) : sim;
@@ -1847,7 +1871,7 @@ async function handleBatchExtract(body: Record<string, unknown>) {
       seen.add(key);
 
       const sim = simulateStrategy(bars, ind.dna);
-      if (sim.trades < 50) continue; // ≥ 50 trades required
+      if (sim.trades < 60) continue; // ≥ 60 trades required
 
       const isSim = isSplit < bars.count ? simulateStrategy(bars, ind.dna, 0, isSplit) : sim;
       const oosSim = isSplit < bars.count ? simulateStrategy(bars, ind.dna, isSplit) : undefined;
