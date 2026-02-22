@@ -27,6 +27,7 @@ import { ProfileDiscoveryEngine } from '@/components/matrix/ProfileDiscoveryEngi
 import { ExperimentalStrategies } from '@/components/matrix/ExperimentalStrategies';
 import { AlphaDiscoveryEngine } from '@/components/matrix/AlphaDiscoveryEngine';
 import { EnsemblePortfolio } from '@/components/matrix/EnsemblePortfolio';
+import { LiveProfileBacktest } from '@/components/matrix/LiveProfileBacktest';
 import { useRankExpectancy } from '@/hooks/useRankExpectancy';
 
 type Env = 'practice' | 'live';
@@ -908,6 +909,9 @@ const SovereignMatrix = () => {
 
             {/* Profile Discovery Engine — Automated Grid Search */}
             <ProfileDiscoveryEngine result={backtestResult} />
+
+            {/* Live Profile Backtest — True bar-by-bar validation */}
+            <LiveProfileBacktest />
 
             {/* Alpha Discovery Engine — ML Rule Miner */}
             <AlphaDiscoveryEngine result={backtestResult} onStrategiesDiscovered={setDiscoveredStrategies} />

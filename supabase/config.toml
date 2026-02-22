@@ -158,3 +158,6 @@ verify_jwt = false
 
 [functions.ensemble-portfolio]
 verify_jwt = false
+
+[functions.profile-live-backtest]
+verify_jwt = false
