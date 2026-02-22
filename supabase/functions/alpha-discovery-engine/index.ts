@@ -922,9 +922,9 @@ function simulateStrategy(bars: BarArrays, dna: StrategyDNA, startIdx = 0, endId
     if (pips > 0) { wins++; grossProfit += pips; } else { grossLoss += Math.abs(pips); }
 
     // ── Fixed Fractional Position Sizing ──
-    // Flat $0.10/pip on $1,000 base equity — no geometric compounding.
+    // Flat $0.20/pip on $1,000 base equity (2000 units) — no geometric compounding.
     // This ensures returns are directly proportional to net pips captured.
-    const DOLLAR_PER_PIP = 0.10;
+    const DOLLAR_PER_PIP = 0.20;
     const rawPnl = pips * DOLLAR_PER_PIP;
     // Cap max gain/loss per trade to 10% of equity to prevent single-trade blowup
     const maxPnl = equity * 0.10;

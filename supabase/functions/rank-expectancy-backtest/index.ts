@@ -417,7 +417,7 @@ Deno.serve(async (req) => {
                 }
               }
 
-              equity += closePips * 0.10;
+              equity += closePips * 0.20; // $0.20 per pip (2000 units) on $1,000 base equity
               openTrade = null;
             }
           }

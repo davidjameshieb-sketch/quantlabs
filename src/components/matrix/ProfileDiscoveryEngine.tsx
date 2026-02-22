@@ -185,7 +185,7 @@ function simulateProfile(
     for (let i = 0; i < timePoints.length; i++) {
       const targetIdx = Math.min(tradeCount, Math.round((i + 1) * tradesPerPoint));
       while (tradeIdx < targetIdx) {
-        equity += tradeResults[tradeIdx] * 0.10;
+        equity += tradeResults[tradeIdx] * 0.20; // $0.20 per pip (2000 units)
         tradeIdx++;
       }
       if (equity > peak) peak = equity;
