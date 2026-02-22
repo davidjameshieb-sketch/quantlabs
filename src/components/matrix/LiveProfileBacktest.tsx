@@ -87,10 +87,20 @@ export function LiveProfileBacktest() {
   const [progress, setProgress] = useState<{ phase: string; pct: number; msg: string } | null>(null);
   const cancelRef = useRef(false);
 
-  const invoke = async (body: Record<string, unknown>) => {
-    const { data, error: fnError } = await supabase.functions.invoke('profile-live-backtest', { body });
-    if (fnError) throw fnError;
-    return data;
+  const invoke = async (body: Record<string, unknown>, retries = 2) => {
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        const { data, error: fnError } = await supabase.functions.invoke('profile-live-backtest', { body });
+        if (fnError) {
+          if (attempt < retries) { await new Promise(r => setTimeout(r, 3000)); continue; }
+          throw fnError;
+        }
+        return data;
+      } catch (err) {
+        if (attempt < retries) { await new Promise(r => setTimeout(r, 3000)); continue; }
+        throw err;
+      }
+    }
   };
 
   const runBacktest = async () => {
@@ -100,14 +110,30 @@ export function LiveProfileBacktest() {
     cancelRef.current = false;
 
     try {
-      // Phase 1: Init (fetch candles only)
-      setProgress({ phase: 'init', pct: 0, msg: `Fetching ${candleCount.toLocaleString()} candles × 28 pairs…` });
+      // Phase 1a: Init (clear state)
+      setProgress({ phase: 'init', pct: 0, msg: 'Initializing…' });
       const initRes = await invoke({ phase: 'init', environment, candles: candleCount, topN: 25 });
       if (!initRes?.success) throw new Error(initRes?.error || 'Init failed');
       if (cancelRef.current) { setLoading(false); setProgress(null); return; }
 
-      // Phase 1b: Build (compute ranks & signals)
-      setProgress({ phase: 'init', pct: 5, msg: 'Building rank snapshots & signal cache…' });
+      // Phase 1b: Fetch candles (chunked, 7 pairs per call)
+      let fetchDone = false;
+      while (!fetchDone && !cancelRef.current) {
+        setProgress(prev => ({
+          phase: 'init',
+          pct: prev?.pct ?? 1,
+          msg: `Fetching candles from OANDA…`,
+        }));
+        const fetchRes = await invoke({ phase: 'fetch', environment, candles: candleCount, topN: 25 });
+        if (!fetchRes?.success) throw new Error(fetchRes?.error || 'Fetch failed');
+        const fetchPct = Math.round((fetchRes.progress || 0) * 0.3); // 0-30% range
+        setProgress({ phase: 'init', pct: fetchPct, msg: `Fetched ${fetchRes.pairsFetched}/${fetchRes.totalPairs} pairs…` });
+        if (fetchRes.phase === 'fetch_complete') fetchDone = true;
+      }
+      if (cancelRef.current) { setLoading(false); setProgress(null); return; }
+
+      // Phase 1c: Build (compute ranks & signals)
+      setProgress({ phase: 'init', pct: 32, msg: 'Building rank snapshots & signal cache…' });
       const buildRes = await invoke({ phase: 'build', environment, candles: candleCount, topN: 25 });
       if (!buildRes?.success) throw new Error(buildRes?.error || 'Build failed');
       if (cancelRef.current) { setLoading(false); setProgress(null); return; }
@@ -117,29 +143,20 @@ export function LiveProfileBacktest() {
       // Phase 2: Compute (loop)
       let done = false;
       while (!done && !cancelRef.current) {
-        setProgress(prev => ({
-          phase: 'compute',
-          pct: prev?.pct ?? 5,
-          msg: `Simulating combos… ${prev?.pct ?? 5}%`,
-        }));
-
         const compRes = await invoke({ phase: 'compute', environment, candles: candleCount, topN: 25 });
         if (!compRes?.success) throw new Error(compRes?.error || 'Compute failed');
-
-        const pct = compRes.progress || 0;
+        const pct = 35 + Math.round((compRes.progress || 0) * 0.6); // 35-95% range
         setProgress({
           phase: 'compute',
           pct,
-          msg: `Simulated ${compRes.processedCombos.toLocaleString()}/${totalCombos.toLocaleString()} combos (${pct}%)`,
+          msg: `Simulated ${compRes.processedCombos.toLocaleString()}/${totalCombos.toLocaleString()} combos`,
         });
-
         if (compRes.phase === 'compute_complete') done = true;
       }
-
       if (cancelRef.current) { setLoading(false); setProgress(null); return; }
 
       // Phase 3: Extract
-      setProgress({ phase: 'extract', pct: 95, msg: 'Building equity curves…' });
+      setProgress({ phase: 'extract', pct: 96, msg: 'Building equity curves…' });
       const extractRes = await invoke({ phase: 'extract', environment, candles: candleCount, topN: 25 });
       if (!extractRes?.success) throw new Error(extractRes?.error || 'Extract failed');
 
