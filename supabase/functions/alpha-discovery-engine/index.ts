@@ -917,10 +917,18 @@ function simulateStrategy(bars: BarArrays, dna: StrategyDNA, startIdx = 0, endId
     trades++;
     if (pips > 0) { wins++; grossProfit += pips; } else { grossLoss += Math.abs(pips); }
 
+    // ── JPY-safe position sizing ──
+    // For JPY pairs, pipMult=100 produces ~100x smaller pip values than non-JPY (pipMult=10000).
+    // Normalize so dollarPerPip is comparable across all pairs.
+    const isJPYTrade = bars.isJPY[i] === 1;
     const dollarRisk = equity * RISK_PER_TRADE;
     const slPips = sl * pipMult;
     const dollarPerPip = slPips > 0 ? dollarRisk / slPips : 0.10;
-    equity += pips * dollarPerPip;
+    // Cap max gain/loss per trade to 10% of equity to prevent compounding overflow
+    const maxPnl = equity * 0.10;
+    const rawPnl = pips * dollarPerPip;
+    const clampedPnl = Math.max(-maxPnl, Math.min(maxPnl, rawPnl));
+    equity += clampedPnl;
 
     if (equity > peak) peak = equity;
     const dd = (peak - equity) / peak;
@@ -1057,13 +1065,17 @@ function randomDNA(archetype?: Partial<StrategyDNA>): StrategyDNA {
     sessionFilter: Math.floor(Math.random() * 5) - 1,
     dayFilter: Math.floor(Math.random() * 6) - 1,
     direction: Math.floor(Math.random() * 3),
-    slMultiplier: randRange(0.3, 2.5), tpMultiplier: randRange(0.5, 4.0),
+    slMultiplier: randRange(0.3, 2.5), tpMultiplier: 0, // will be set below
     hurstMin: Math.random() * 0.5, hurstMax: 0.5 + Math.random() * 0.5,
     trailingATR: Math.random() < 0.3 ? randRange(0.5, 2.5) : 0,
     maxBarsInTrade: Math.random() < 0.3 ? Math.floor(randRange(4, 24)) : 0,
     partialTP: Math.random() < 0.2 ? Math.floor(randRange(1, 3)) : 0,
   };
+  // Enforce minimum 1:1 R:R — TP must be >= SL
+  base.tpMultiplier = randRange(base.slMultiplier, Math.max(base.slMultiplier * 3, 4.0));
   if (archetype) Object.assign(base, archetype);
+  // Re-enforce R:R after archetype override
+  if (base.tpMultiplier < base.slMultiplier) base.tpMultiplier = base.slMultiplier * (1 + Math.random());
   return enforceIndicatorCap(base);
 }
 
@@ -1114,6 +1126,8 @@ function mutate(dna: StrategyDNA, rate = 0.15): StrategyDNA {
   if (Math.random() < rate) d.direction = Math.floor(Math.random() * 3);
   if (Math.random() < rate) d.slMultiplier = Math.max(0.2, Math.min(2.5, d.slMultiplier + (Math.random() - 0.5) * 0.5));
   if (Math.random() < rate) d.tpMultiplier = Math.max(0.3, Math.min(4.0, d.tpMultiplier + (Math.random() - 0.5) * 0.8));
+  // Enforce minimum 1:1 R:R after mutation
+  if (d.tpMultiplier < d.slMultiplier) d.tpMultiplier = d.slMultiplier * (1 + Math.random() * 0.5);
   if (Math.random() < rate) d.hurstMin = Math.max(0, Math.min(0.9, d.hurstMin + (Math.random() - 0.5) * 0.15));
   if (Math.random() < rate) d.hurstMax = Math.max(d.hurstMin + 0.1, Math.min(1.0, d.hurstMax + (Math.random() - 0.5) * 0.15));
   if (Math.random() < rate) d.trailingATR = Math.random() < 0.3 ? 0 : Math.max(0.5, Math.min(2.5, (d.trailingATR || 1.5) + (Math.random() - 0.5) * 0.6));
@@ -1337,6 +1351,9 @@ function getEdgeArchetype(dna: StrategyDNA): string {
 
 function computeFitness(sim: SimResult, baseDailyReturns: number[], maxCorrelation: number, dna?: StrategyDNA, unconstrained = false): number {
   const MIN_TRADES = 150; // High frequency requirement
+
+  // ── R:R Constraint — kill strategies with TP < SL (micro-pip exploits) ──
+  if (dna && dna.tpMultiplier < dna.slMultiplier) return 0;
 
   // ── UNCONSTRAINED MODE ──
   if (unconstrained) {
