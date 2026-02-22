@@ -9,12 +9,13 @@ import { OandaOrderLog } from '@/components/forex/OandaOrderLog';
 import { useOandaExecution } from '@/hooks/useOandaExecution';
 
 const ForexOanda = () => {
-  const { fetchAccountSummary, fetchOrderHistory } = useOandaExecution();
+  // OandaConnectionPanel already fetches account summary on mount — 
+  // do NOT duplicate here to avoid concurrent auth lock contention
+  const { fetchOrderHistory } = useOandaExecution();
 
   useEffect(() => {
-    fetchAccountSummary('practice');
-    fetchOrderHistory('practice');
-  }, [fetchAccountSummary, fetchOrderHistory]);
+    fetchOrderHistory('live');
+  }, [fetchOrderHistory]);
 
   return (
     <div className="min-h-screen bg-background p-6">
