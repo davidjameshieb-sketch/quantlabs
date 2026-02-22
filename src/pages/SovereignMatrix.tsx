@@ -26,6 +26,7 @@ import { DynamicMatrixSandbox } from '@/components/matrix/DynamicMatrixSandbox';
 import { ProfileDiscoveryEngine } from '@/components/matrix/ProfileDiscoveryEngine';
 import { ExperimentalStrategies } from '@/components/matrix/ExperimentalStrategies';
 import { AlphaDiscoveryEngine } from '@/components/matrix/AlphaDiscoveryEngine';
+import { EnsemblePortfolio } from '@/components/matrix/EnsemblePortfolio';
 import { useRankExpectancy } from '@/hooks/useRankExpectancy';
 
 type Env = 'practice' | 'live';
@@ -773,6 +774,7 @@ const LiveTradesPanel = ({ environment }: { environment: Env }) => {
 // ─── MAIN DASHBOARD ─────────────────────────────────────────────────────────
 const SovereignMatrix = () => {
   const [environment, setEnvironment] = useState<Env>('live');
+  const [discoveredStrategies, setDiscoveredStrategies] = useState<any[]>([]);
   const { loading, matrixResult, error, scanMatrix, fireT1, fireT2, fireT3 } = useSovereignMatrix();
   const { loading: backtestLoading, result: backtestResult, runBacktest } = useRankExpectancy();
 
@@ -908,7 +910,10 @@ const SovereignMatrix = () => {
             <ProfileDiscoveryEngine result={backtestResult} />
 
             {/* Alpha Discovery Engine — ML Rule Miner */}
-            <AlphaDiscoveryEngine result={backtestResult} />
+            <AlphaDiscoveryEngine result={backtestResult} onStrategiesDiscovered={setDiscoveredStrategies} />
+
+            {/* Ensemble Meta-Portfolio Engine */}
+            <EnsemblePortfolio strategies={discoveredStrategies} />
 
             {/* Experimental Strategies Lab */}
             <ExperimentalStrategies result={backtestResult} />

@@ -202,7 +202,7 @@ function PairProgressGrid({ pairProgress }: { pairProgress: PairProgress[] }) {
 }
 
 // ── Main Component ──
-export function AlphaDiscoveryEngine({ result }: { result: BacktestResult }) {
+export function AlphaDiscoveryEngine({ result, onStrategiesDiscovered }: { result: BacktestResult; onStrategiesDiscovered?: (strategies: GAProfile[]) => void }) {
   const [expanded, setExpanded] = useState(false);
   const [phase, setPhase] = useState<JobPhase>('idle');
   const [gaResult, setGaResult] = useState<GAResult | null>(null);
@@ -278,6 +278,9 @@ export function AlphaDiscoveryEngine({ result }: { result: BacktestResult }) {
       const extractResult = await callEngine({ action: 'extract', pair });
       setGaResult(extractResult);
       setPhase('complete');
+      if (onStrategiesDiscovered && extractResult.uncorrelatedProfiles) {
+        onStrategiesDiscovered(extractResult.uncorrelatedProfiles);
+      }
     } catch (err) {
       setError((err as Error).message);
       setPhase('error');
@@ -353,6 +356,9 @@ export function AlphaDiscoveryEngine({ result }: { result: BacktestResult }) {
       });
       setBatchResult(batchData);
       setPhase('batch-complete');
+      if (onStrategiesDiscovered && batchData.top7) {
+        onStrategiesDiscovered(batchData.top7);
+      }
     } catch (err) {
       setError((err as Error).message);
       setPhase('error');
