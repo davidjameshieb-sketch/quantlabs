@@ -185,7 +185,11 @@ function simulateProfile(
     for (let i = 0; i < timePoints.length; i++) {
       const targetIdx = Math.min(tradeCount, Math.round((i + 1) * tradesPerPoint));
       while (tradeIdx < targetIdx) {
-        equity += tradeResults[tradeIdx] * 0.20; // $0.20 per pip (2000 units)
+        // 5% Risk Dynamic Sizing: units = (equity * 0.05) / (slPips * pipValue)
+        const riskAmt = equity * 0.05;
+        const pipVal = 0.0001;
+        const dynUnits = slPips > 0 ? riskAmt / (slPips * pipVal) : 2000;
+        equity += tradeResults[tradeIdx] * (dynUnits * pipVal);
         tradeIdx++;
       }
       if (equity > peak) peak = equity;

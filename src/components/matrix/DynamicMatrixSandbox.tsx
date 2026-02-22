@@ -187,7 +187,11 @@ function filterAndRecalc(
       const targetIdx = Math.min(tradeCount, Math.round((i + 1) * tradesPerPoint));
       while (tradeIdx < targetIdx) {
         const pipResult = tradeResults[tradeIdx] - slippagePips;
-        equity += pipResult * 0.20; // $0.20 per pip (2000 units) per micro lot equivalent
+        // 5% Risk Dynamic Sizing: units = (equity * 0.05) / (slPips * pipValue)
+        const riskAmt = equity * 0.05;
+        const pipVal = 0.0001; // standard non-JPY
+        const dynUnits = slPips > 0 ? riskAmt / (slPips * pipVal) : 2000;
+        equity += pipResult * (dynUnits * pipVal);
         tradeIdx++;
       }
       simulatedCurve.push({ time: timePoints[i], equity: Math.max(0, Math.round(equity * 100) / 100) });

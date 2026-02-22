@@ -921,11 +921,17 @@ function simulateStrategy(bars: BarArrays, dna: StrategyDNA, startIdx = 0, endId
     trades++;
     if (pips > 0) { wins++; grossProfit += pips; } else { grossLoss += Math.abs(pips); }
 
-    // ── Fixed Fractional Position Sizing ──
-    // Flat $0.20/pip on $1,000 base equity (2000 units) — no geometric compounding.
-    // This ensures returns are directly proportional to net pips captured.
-    const DOLLAR_PER_PIP = 0.20;
-    const rawPnl = pips * DOLLAR_PER_PIP;
+    // ── 5% Risk Dynamic Position Sizing (Geometric Compounding) ──
+    // Risk_Amount = Current_Equity * 0.05
+    // Target_Units = Risk_Amount / (SL_pips * pip_value_per_unit)
+    // PnL = pips * (Target_Units * pip_value_per_unit)
+    const RISK_PCT = 0.05;
+    const slPips = sl * pipMult; // SL distance in pips
+    const pipValuePerUnit = bars.isJPY[i] ? 0.01 : 0.0001; // value of 1 pip for 1 unit
+    const riskAmount = equity * RISK_PCT;
+    const targetUnits = slPips > 0 ? riskAmount / (slPips * pipValuePerUnit) : 2000;
+    const dollarPerPip = targetUnits * pipValuePerUnit;
+    const rawPnl = pips * dollarPerPip;
     // Cap max gain/loss per trade to 10% of equity to prevent single-trade blowup
     const maxPnl = equity * 0.10;
     const clampedPnl = Math.max(-maxPnl, Math.min(maxPnl, rawPnl));
