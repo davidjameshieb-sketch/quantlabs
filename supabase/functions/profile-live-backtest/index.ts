@@ -1,11 +1,14 @@
-// Profile Live Backtest Engine v1.0
-// True bar-by-bar simulation of ALL Profile Discovery combos against real OANDA candle data.
-// No synthetic PRNG — every trade is simulated with real SL/TP hit detection on H/L.
-// Paginated fetch: up to 42,000 M30 candles per pair across 28 crosses.
+// Profile Live Backtest Engine v2.0 — Phased State Machine
+// Splits heavy computation across multiple invocations to avoid CPU time limits.
+// Phase 1 (init): Fetch candles, build rank snapshots, persist compressed state.
+// Phase 2 (compute): Process combos in chunks, persist partial results.
+// Phase 3 (extract): Build final results + equity curves.
+
+import { createClient } from "npm:@supabase/supabase-js@2";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
 const OANDA_HOST = "https://api-fxtrade.oanda.com";
@@ -24,27 +27,15 @@ const OANDA_AVAILABLE = new Set([
 const ALL_28_CROSSES: Array<{ base: string; quote: string; instrument: string }> = [];
 for (let i = 0; i < ALL_CURRENCIES.length; i++) {
   for (let j = i + 1; j < ALL_CURRENCIES.length; j++) {
-    ALL_28_CROSSES.push({
-      base: ALL_CURRENCIES[i],
-      quote: ALL_CURRENCIES[j],
-      instrument: `${ALL_CURRENCIES[i]}_${ALL_CURRENCIES[j]}`,
-    });
+    ALL_28_CROSSES.push({ base: ALL_CURRENCIES[i], quote: ALL_CURRENCIES[j], instrument: `${ALL_CURRENCIES[i]}_${ALL_CURRENCIES[j]}` });
   }
 }
 
-interface Candle {
-  time: string;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume: number;
-}
+interface Candle { time: string; open: number; high: number; low: number; close: number; volume: number; }
 
 // ── Profile Discovery Parameter Grid ──
 const PREDATOR_RANKS = [1, 2, 3];
 const PREY_RANKS = [6, 7, 8];
-
 const GATE_COMBOS = [
   { g1: true, g2: true, g3: true, label: "G1+G2+G3" },
   { g1: true, g2: true, g3: false, label: "G1+G2" },
@@ -53,11 +44,8 @@ const GATE_COMBOS = [
   { g1: true, g2: false, g3: false, label: "G1 only" },
   { g1: false, g2: false, g3: false, label: "No Gates" },
 ];
-
-const SL_PIPS = [10, 15, 20, 30, 42]; // fixed pip SLs
-const TP_RATIOS = [1.5, 2.0, 3.0]; // R:R ratios
-// Plus signal-flip exit (no fixed TP)
-
+const SL_PIPS = [10, 15, 20, 30, 42];
+const TP_RATIOS = [1.5, 2.0, 3.0];
 const SESSIONS = [
   { id: "ALL", hours: null as null | [number, number] },
   { id: "ASIA", hours: [0, 7] as [number, number] },
@@ -66,16 +54,35 @@ const SESSIONS = [
   { id: "NY_CLOSE", hours: [17, 21] as [number, number] },
 ];
 
-// ── Candle Fetching (paginated) ──
-async function fetchCandlePage(
-  instrument: string, count: number, env: "practice" | "live", token: string, to?: string
-): Promise<Candle[]> {
+// Build full combo list for chunking
+interface ComboKey { predRank: number; preyRank: number; gateIdx: number; sessionIdx: number; exitIdx: number; }
+function buildAllCombos(): ComboKey[] {
+  const exitModes: Array<{ slPips: number; tpRatio: number | "flip" }> = [];
+  for (const sl of SL_PIPS) {
+    for (const tp of TP_RATIOS) exitModes.push({ slPips: sl, tpRatio: tp });
+    exitModes.push({ slPips: sl, tpRatio: "flip" });
+  }
+  const combos: ComboKey[] = [];
+  for (const predRank of PREDATOR_RANKS) {
+    for (const preyRank of PREY_RANKS) {
+      for (let gi = 0; gi < GATE_COMBOS.length; gi++) {
+        for (let si = 0; si < SESSIONS.length; si++) {
+          for (let ei = 0; ei < exitModes.length; ei++) {
+            combos.push({ predRank, preyRank, gateIdx: gi, sessionIdx: si, exitIdx: ei });
+          }
+        }
+      }
+    }
+  }
+  return combos;
+}
+
+// ── Candle Fetching ──
+async function fetchCandlePage(instrument: string, count: number, env: "practice" | "live", token: string, to?: string): Promise<Candle[]> {
   const host = env === "live" ? OANDA_HOST : OANDA_PRACTICE_HOST;
   let url = `${host}/v3/instruments/${instrument}/candles?count=${count}&granularity=M30&price=M`;
   if (to) url += `&to=${to}`;
-  const res = await fetch(url, {
-    headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
-  });
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" } });
   if (!res.ok) return [];
   const data = await res.json();
   return (data.candles || [])
@@ -87,9 +94,7 @@ async function fetchCandlePage(
     }));
 }
 
-async function fetchCandles(
-  instrument: string, count: number, env: "practice" | "live", token: string
-): Promise<Candle[]> {
+async function fetchCandles(instrument: string, count: number, env: "practice" | "live", token: string): Promise<Candle[]> {
   const PAGE_SIZE = 5000;
   if (count <= PAGE_SIZE) return fetchCandlePage(instrument, count, env, token);
   let all: Candle[] = [];
@@ -108,7 +113,7 @@ async function fetchCandles(
   return all.filter(c => { if (seen.has(c.time)) return false; seen.add(c.time); return true; });
 }
 
-// ── Pillar 2: Atlas Walls (20-period breakout) ──
+// ── Gate helpers ──
 function checkAtlasWalls(candles: Candle[], idx: number, direction: "long" | "short", lookback = 20): boolean {
   if (idx < lookback + 1) return false;
   const slice = candles.slice(idx - lookback, idx);
@@ -117,22 +122,17 @@ function checkAtlasWalls(candles: Candle[], idx: number, direction: "long" | "sh
   return currentClose < Math.min(...slice.map(c => c.low));
 }
 
-// ── Pillar 3: David Vector (LinReg slope) ──
 function computeLinRegSlope(candles: Candle[], idx: number, lookback = 20): number {
   if (idx < lookback) return 0;
   const slice = candles.slice(idx - lookback, idx);
   const n = slice.length;
   if (n < 5) return 0;
   let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
-  for (let i = 0; i < n; i++) {
-    sumX += i; sumY += slice[i].close; sumXY += i * slice[i].close; sumX2 += i * i;
-  }
+  for (let i = 0; i < n; i++) { sumX += i; sumY += slice[i].close; sumXY += i * slice[i].close; sumX2 += i * i; }
   const denom = n * sumX2 - sumX * sumX;
-  if (denom === 0) return 0;
-  return (n * sumXY - sumX * sumY) / denom;
+  return denom === 0 ? 0 : (n * sumXY - sumX * sumY) / denom;
 }
 
-// ── Session check ──
 function getSessionId(isoTime: string): string {
   const hour = new Date(isoTime).getUTCHours();
   if (hour >= 0 && hour < 7) return "ASIA";
@@ -143,37 +143,268 @@ function getSessionId(isoTime: string): string {
 }
 
 function matchesSession(isoTime: string, session: typeof SESSIONS[number]): boolean {
-  if (!session.hours) return true; // ALL
+  if (!session.hours) return true;
   const hour = new Date(isoTime).getUTCHours();
   return hour >= session.hours[0] && hour < session.hours[1];
 }
 
-// ── Pip calculation ──
 function computePips(entry: number, exit: number, dir: "long" | "short", isJPY: boolean): number {
   const raw = dir === "long" ? exit - entry : entry - exit;
   return isJPY ? raw * 100 : raw * 10000;
 }
 
+// ── Signal generation for a rank pair ──
+interface TradeSignal {
+  time: string; instrument: string; direction: "long" | "short";
+  entryPrice: number; isJPY: boolean; candleIdx: number;
+  sessionId: string; g2Pass: boolean; g3Pass: boolean;
+}
+
+interface RankSnap { time: string; ranks: Record<string, number>; }
+
+function generateSignals(
+  predRank: number, preyRank: number, rankSnaps: RankSnap[],
+  pairCandles: Record<string, Candle[]>, pairTimeIndex: Record<string, Record<string, number>>
+): TradeSignal[] {
+  const signals: TradeSignal[] = [];
+  let prevInst: string | null = null;
+  let prevDir: "long" | "short" | null = null;
+
+  for (const snap of rankSnaps) {
+    const strongCur = ALL_CURRENCIES.find(c => snap.ranks[c] === predRank);
+    const weakCur = ALL_CURRENCIES.find(c => snap.ranks[c] === preyRank);
+    if (!strongCur || !weakCur) continue;
+
+    const directInst = `${strongCur}_${weakCur}`;
+    const inverseInst = `${weakCur}_${strongCur}`;
+    let instrument: string | null = null;
+    let direction: "long" | "short" = "long";
+
+    if (pairTimeIndex[directInst]?.[snap.time] !== undefined) { instrument = directInst; direction = "long"; }
+    else if (pairTimeIndex[inverseInst]?.[snap.time] !== undefined) { instrument = inverseInst; direction = "short"; }
+    if (!instrument) continue;
+
+    if (instrument !== prevInst || direction !== prevDir) {
+      const candleIdx = pairTimeIndex[instrument][snap.time];
+      const candles = pairCandles[instrument];
+      const g2Pass = checkAtlasWalls(candles, candleIdx, direction);
+      const slope = computeLinRegSlope(candles, candleIdx);
+      const g3Pass = direction === "long" ? slope > 0 : slope < 0;
+
+      signals.push({
+        time: snap.time, instrument, direction,
+        entryPrice: candles[candleIdx].close,
+        isJPY: instrument.includes("JPY"),
+        candleIdx, sessionId: getSessionId(snap.time),
+        g2Pass, g3Pass,
+      });
+      prevInst = instrument;
+      prevDir = direction;
+    }
+  }
+  return signals;
+}
+
 // ── Result interface ──
 interface LiveProfileResult {
-  predator: number;
-  prey: number;
-  gates: string;
-  slPips: number;
-  tpRatio: number | "flip"; // R:R or "flip" for signal-flip exit
-  session: string;
-  trades: number;
-  wins: number;
-  losses: number;
-  winRate: number;
-  profitFactor: number;
-  totalPips: number;
-  netProfit: number;
-  maxDrawdown: number;
-  expectancy: number;
-  avgWin: number;
-  avgLoss: number;
+  predator: number; prey: number; gates: string;
+  slPips: number; tpRatio: number | "flip"; session: string;
+  trades: number; wins: number; losses: number;
+  winRate: number; profitFactor: number; totalPips: number;
+  netProfit: number; maxDrawdown: number; expectancy: number;
+  avgWin: number; avgLoss: number;
   equityCurve: Array<{ time: string; equity: number }> | null;
+}
+
+// ── Simulate one combo ──
+function simulateCombo(
+  combo: ComboKey,
+  signalCache: Record<string, TradeSignal[]>,
+  pairCandles: Record<string, Candle[]>,
+): LiveProfileResult | null {
+  const exitModes: Array<{ slPips: number; tpRatio: number | "flip" }> = [];
+  for (const sl of SL_PIPS) {
+    for (const tp of TP_RATIOS) exitModes.push({ slPips: sl, tpRatio: tp });
+    exitModes.push({ slPips: sl, tpRatio: "flip" });
+  }
+
+  const gate = GATE_COMBOS[combo.gateIdx];
+  const session = SESSIONS[combo.sessionIdx];
+  const exit = exitModes[combo.exitIdx];
+  const cacheKey = `${combo.predRank}_${combo.preyRank}`;
+  const signals = signalCache[cacheKey];
+  if (!signals) return null;
+
+  const filtered = signals.filter(sig => {
+    if (gate.g1 && (combo.predRank > 3 || combo.preyRank < 6)) return false;
+    if (gate.g2 && !sig.g2Pass) return false;
+    if (gate.g3 && !sig.g3Pass) return false;
+    if (session.hours && !matchesSession(sig.time, session)) return false;
+    return true;
+  });
+
+  if (filtered.length < 3) return null;
+
+  let equity = 1000, peak = 1000, maxDD = 0, wins = 0, losses = 0, totalPips = 0;
+  let grossProfit = 0, grossLoss = 0;
+
+  for (let fi = 0; fi < filtered.length; fi++) {
+    const sig = filtered[fi];
+    const candles = pairCandles[sig.instrument];
+    if (!candles) continue;
+    const isJPY = sig.isJPY;
+    const pipMul = isJPY ? 100 : 10000;
+    const pipVal = isJPY ? 0.01 : 0.0001;
+    const slPrice = exit.slPips / pipMul;
+    const tpPrice = exit.tpRatio === "flip" ? Infinity : (exit.slPips * (exit.tpRatio as number)) / pipMul;
+
+    const nextSignalTime = fi + 1 < filtered.length ? filtered[fi + 1].time : null;
+    let exitPrice = sig.entryPrice;
+
+    for (let ci = sig.candleIdx + 1; ci < candles.length; ci++) {
+      const bar = candles[ci];
+      if (exit.tpRatio === "flip" && nextSignalTime && bar.time >= nextSignalTime) { exitPrice = bar.open; break; }
+      if (sig.direction === "long") {
+        if (bar.low <= sig.entryPrice - slPrice) { exitPrice = sig.entryPrice - slPrice; break; }
+        if (exit.tpRatio !== "flip" && bar.high >= sig.entryPrice + tpPrice) { exitPrice = sig.entryPrice + tpPrice; break; }
+      } else {
+        if (bar.high >= sig.entryPrice + slPrice) { exitPrice = sig.entryPrice + slPrice; break; }
+        if (exit.tpRatio !== "flip" && bar.low <= sig.entryPrice - tpPrice) { exitPrice = sig.entryPrice - tpPrice; break; }
+      }
+      if (exit.tpRatio === "flip" && !nextSignalTime && ci === candles.length - 1) { exitPrice = bar.close; break; }
+    }
+
+    const tradePips = computePips(sig.entryPrice, exitPrice, sig.direction, isJPY);
+    const riskAmt = equity * 0.05;
+    const dynUnits = exit.slPips > 0 ? riskAmt / (exit.slPips * pipVal) : 2000;
+    equity += tradePips * (dynUnits * pipVal);
+    totalPips += tradePips;
+    if (tradePips > 0) { wins++; grossProfit += tradePips; } else { losses++; grossLoss += Math.abs(tradePips); }
+    if (equity > peak) peak = equity;
+    const dd = ((equity - peak) / peak) * 100;
+    if (dd < maxDD) maxDD = dd;
+  }
+
+  const trades = wins + losses;
+  if (trades < 3) return null;
+  const wr = (wins / trades) * 100;
+  const pf = grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? 999 : 0;
+
+  return {
+    predator: combo.predRank, prey: combo.preyRank, gates: gate.label,
+    slPips: exit.slPips, tpRatio: exit.tpRatio, session: session.id,
+    trades, wins, losses,
+    winRate: Math.round(wr * 10) / 10,
+    profitFactor: Math.round(pf * 100) / 100,
+    totalPips: Math.round(totalPips * 10) / 10,
+    netProfit: Math.round((equity - 1000) * 100) / 100,
+    maxDrawdown: Math.round(maxDD * 10) / 10,
+    expectancy: Math.round((totalPips / trades) * 100) / 100,
+    avgWin: wins > 0 ? Math.round((grossProfit / wins) * 10) / 10 : 0,
+    avgLoss: losses > 0 ? Math.round((grossLoss / losses) * 10) / 10 : 0,
+    equityCurve: null,
+  };
+}
+
+// ── Build equity curve for a result ──
+function buildEquityCurve(
+  r: LiveProfileResult, rankSnaps: RankSnap[],
+  pairCandles: Record<string, Candle[]>, pairTimeIndex: Record<string, Record<string, number>>
+): Array<{ time: string; equity: number }> {
+  const signals = generateSignals(r.predator, r.prey, rankSnaps, pairCandles, pairTimeIndex);
+  const gate = GATE_COMBOS.find(g => g.label === r.gates)!;
+
+  const filtered = signals.filter(sig => {
+    if (gate.g2 && !sig.g2Pass) return false;
+    if (gate.g3 && !sig.g3Pass) return false;
+    if (r.session !== "ALL") {
+      const sess = SESSIONS.find(s => s.id === r.session);
+      if (sess && !matchesSession(sig.time, sess)) return false;
+    }
+    return true;
+  });
+
+  const curve: Array<{ time: string; equity: number }> = [];
+  let equity = 1000;
+
+  for (let fi = 0; fi < filtered.length; fi++) {
+    const sig = filtered[fi];
+    const candles = pairCandles[sig.instrument];
+    if (!candles) continue;
+    const isJPY = sig.isJPY;
+    const pipMul = isJPY ? 100 : 10000;
+    const pipVal = isJPY ? 0.01 : 0.0001;
+    const slPrice = r.slPips / pipMul;
+    const tpPrice = r.tpRatio === "flip" ? Infinity : (r.slPips * (r.tpRatio as number)) / pipMul;
+
+    const nextSignalTime = fi + 1 < filtered.length ? filtered[fi + 1].time : null;
+    let exitPrice = sig.entryPrice;
+
+    for (let ci = sig.candleIdx + 1; ci < candles.length; ci++) {
+      const bar = candles[ci];
+      let hit = false;
+      if (sig.direction === "long") {
+        if (bar.low <= sig.entryPrice - slPrice) { exitPrice = sig.entryPrice - slPrice; hit = true; }
+        else if (r.tpRatio !== "flip" && bar.high >= sig.entryPrice + tpPrice) { exitPrice = sig.entryPrice + tpPrice; hit = true; }
+      } else {
+        if (bar.high >= sig.entryPrice + slPrice) { exitPrice = sig.entryPrice + slPrice; hit = true; }
+        else if (r.tpRatio !== "flip" && bar.low <= sig.entryPrice - tpPrice) { exitPrice = sig.entryPrice - tpPrice; hit = true; }
+      }
+      if (hit || (r.tpRatio === "flip" && nextSignalTime && bar.time >= nextSignalTime)) {
+        if (!hit) exitPrice = bar.open;
+        break;
+      }
+    }
+
+    const tradePips = computePips(sig.entryPrice, exitPrice, sig.direction, isJPY);
+    const riskAmt = equity * 0.05;
+    const dynUnits = r.slPips > 0 ? riskAmt / (r.slPips * pipVal) : 2000;
+    equity += tradePips * (dynUnits * pipVal);
+    curve.push({ time: sig.time, equity: Math.round(equity * 100) / 100 });
+  }
+
+  const step = Math.max(1, Math.floor(curve.length / 300));
+  return curve.filter((_, idx) => idx % step === 0);
+}
+
+// ── Supabase helper ──
+function getSupabase() {
+  return createClient(
+    Deno.env.get("SUPABASE_URL")!,
+    Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
+  );
+}
+
+const MEMORY_KEY = "live_backtest_state";
+const CHUNK_SIZE = 600; // combos per invocation
+
+async function loadState(sb: ReturnType<typeof createClient>) {
+  const { data } = await sb.from("sovereign_memory").select("payload").eq("memory_key", MEMORY_KEY).single();
+  return data?.payload as Record<string, unknown> | null;
+}
+
+async function saveState(sb: ReturnType<typeof createClient>, payload: Record<string, unknown>) {
+  const { data: existing } = await sb.from("sovereign_memory")
+    .select("id").eq("memory_key", MEMORY_KEY).single();
+  if (existing) {
+    await sb.from("sovereign_memory").update({
+      payload: payload as unknown,
+      updated_at: new Date().toISOString(),
+      version: 1,
+    }).eq("memory_key", MEMORY_KEY);
+  } else {
+    await sb.from("sovereign_memory").insert({
+      memory_key: MEMORY_KEY,
+      memory_type: "backtest_state",
+      payload: payload as unknown,
+      created_by: "profile-live-backtest",
+      version: 1,
+    });
+  }
+}
+
+async function clearState(sb: ReturnType<typeof createClient>) {
+  await sb.from("sovereign_memory").delete().eq("memory_key", MEMORY_KEY);
 }
 
 Deno.serve(async (req) => {
@@ -183,6 +414,7 @@ Deno.serve(async (req) => {
 
   try {
     const body = await req.json().catch(() => ({}));
+    const phase: string = body.phase || "init";
     const environment: "practice" | "live" = body.environment || "practice";
     const candleCount: number = Math.min(body.candles || 5000, 42000);
     const topN: number = body.topN || 25;
@@ -196,475 +428,279 @@ Deno.serve(async (req) => {
         { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
-    console.log(`[LIVE-BT] Fetching ${candleCount} M30 candles for 28 pairs (${environment})`);
+    const sb = getSupabase();
 
-    // ── STEP 1: Fetch all 28 pairs in parallel (batched to avoid overwhelming) ──
-    const availableCrosses = ALL_28_CROSSES.filter(c => OANDA_AVAILABLE.has(c.instrument));
-    const BATCH_SIZE = 7;
-    const pairCandles: Record<string, Candle[]> = {};
+    // ════════════════════════════════════════════
+    // PHASE: INIT — Fetch candles, build ranks, persist
+    // ════════════════════════════════════════════
+    if (phase === "init") {
+      console.log(`[LIVE-BT] INIT: Fetching ${candleCount} M30 candles for 28 pairs (${environment})`);
 
-    for (let b = 0; b < availableCrosses.length; b += BATCH_SIZE) {
-      const batch = availableCrosses.slice(b, b + BATCH_SIZE);
-      const results = await Promise.allSettled(
-        batch.map(async cross => {
-          const candles = await fetchCandles(cross.instrument, candleCount, environment, apiToken);
-          return { instrument: cross.instrument, candles };
-        })
-      );
-      for (const r of results) {
-        if (r.status === "fulfilled" && r.value.candles.length > 0) {
-          pairCandles[r.value.instrument] = r.value.candles;
-        }
-      }
-    }
+      // Clear any old state
+      await clearState(sb);
 
-    console.log(`[LIVE-BT] Fetched ${Object.keys(pairCandles).length} pairs, building rank snapshots...`);
+      const availableCrosses = ALL_28_CROSSES.filter(c => OANDA_AVAILABLE.has(c.instrument));
+      const pairCandles: Record<string, Candle[]> = {};
+      const BATCH = 7;
 
-    // ── STEP 2: Build unified timeline & rank snapshots ──
-    const allTimestamps = new Set<string>();
-    for (const candles of Object.values(pairCandles)) {
-      for (const c of candles) allTimestamps.add(c.time);
-    }
-    const sortedTimes = [...allTimestamps].sort();
-
-    if (sortedTimes.length < 100) {
-      return new Response(JSON.stringify({ error: "Insufficient data" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-    }
-
-    // Build time-indexed lookups
-    const pairTimeIndex: Record<string, Record<string, number>> = {}; // instrument -> time -> candle array index
-    for (const [inst, candles] of Object.entries(pairCandles)) {
-      pairTimeIndex[inst] = {};
-      for (let i = 0; i < candles.length; i++) {
-        pairTimeIndex[inst][candles[i].time] = i;
-      }
-    }
-
-    // Compute 20-period rolling returns for rank scoring
-    const LOOKBACK = 20;
-    const pairReturns: Record<string, Record<string, number>> = {};
-    for (const [inst, candles] of Object.entries(pairCandles)) {
-      pairReturns[inst] = {};
-      for (let i = LOOKBACK; i < candles.length; i++) {
-        let totalRet = 0;
-        for (let k = i - LOOKBACK; k < i; k++) {
-          if (candles[k].open !== 0) totalRet += ((candles[k].close - candles[k].open) / candles[k].open) * 100;
-        }
-        pairReturns[inst][candles[i].time] = totalRet / LOOKBACK;
-      }
-    }
-
-    // Build rank snapshots
-    interface RankSnap {
-      time: string;
-      ranks: Record<string, number>;
-      g2: Record<string, boolean>; // Atlas Walls pass per instrument+direction
-      g3Slope: Record<string, number>; // LinReg slope per instrument
-    }
-
-    const rankSnaps: RankSnap[] = [];
-
-    for (const time of sortedTimes) {
-      const flows: Record<string, number[]> = {};
-      for (const c of ALL_CURRENCIES) flows[c] = [];
-
-      for (const cross of availableCrosses) {
-        const ret = pairReturns[cross.instrument]?.[time];
-        if (ret === undefined) continue;
-        flows[cross.base].push(ret);
-        flows[cross.quote].push(-ret);
-      }
-
-      let hasData = false;
-      const scores: Record<string, number> = {};
-      for (const cur of ALL_CURRENCIES) {
-        if (flows[cur].length === 0) { scores[cur] = 0; continue; }
-        hasData = true;
-        scores[cur] = flows[cur].reduce((a, b) => a + b, 0) / flows[cur].length;
-      }
-      if (!hasData) continue;
-
-      const sorted = [...ALL_CURRENCIES].sort((a, b) => scores[b] - scores[a]);
-      const ranks: Record<string, number> = {};
-      sorted.forEach((cur, idx) => { ranks[cur] = idx + 1; });
-
-      // Pre-compute gate states for all relevant instruments at this timestamp
-      const g2: Record<string, boolean> = {};
-      const g3Slope: Record<string, number> = {};
-
-      // We compute gates lazily per instrument — store time index for later
-      rankSnaps.push({ time, ranks, g2, g3Slope });
-    }
-
-    console.log(`[LIVE-BT] ${rankSnaps.length} rank snapshots. Running ${PREDATOR_RANKS.length * PREY_RANKS.length * GATE_COMBOS.length * SL_PIPS.length * (TP_RATIOS.length + 1) * SESSIONS.length} combos...`);
-
-    // ── STEP 3: Simulation engine ──
-    // For each rank combo, walk through all snapshots once and collect trade signals.
-    // Then test each SL/TP/session/gate combo against those signals.
-
-    const allResults: LiveProfileResult[] = [];
-
-    for (const predRank of PREDATOR_RANKS) {
-      for (const preyRank of PREY_RANKS) {
-        // Walk through snapshots and identify trade entries for this rank combo
-        interface TradeSignal {
-          snapIdx: number;
-          time: string;
-          instrument: string;
-          direction: "long" | "short";
-          entryPrice: number;
-          isJPY: boolean;
-          candleIdx: number; // index in pairCandles[instrument]
-          sessionId: string;
-          g2Pass: boolean;
-          g3Pass: boolean;
-        }
-
-        const signals: TradeSignal[] = [];
-        let prevInstrument: string | null = null;
-        let prevDirection: "long" | "short" | null = null;
-
-        for (let si = 0; si < rankSnaps.length; si++) {
-          const snap = rankSnaps[si];
-          const strongCur = ALL_CURRENCIES.find(c => snap.ranks[c] === predRank);
-          const weakCur = ALL_CURRENCIES.find(c => snap.ranks[c] === preyRank);
-          if (!strongCur || !weakCur) continue;
-
-          const directInst = `${strongCur}_${weakCur}`;
-          const inverseInst = `${weakCur}_${strongCur}`;
-          let instrument: string | null = null;
-          let direction: "long" | "short" = "long";
-
-          const directIdx = pairTimeIndex[directInst]?.[snap.time];
-          const inverseIdx = pairTimeIndex[inverseInst]?.[snap.time];
-
-          if (directIdx !== undefined) {
-            instrument = directInst;
-            direction = "long";
-          } else if (inverseIdx !== undefined) {
-            instrument = inverseInst;
-            direction = "short";
-          }
-
-          if (!instrument) continue;
-
-          // Only create a new signal when instrument or direction changes (signal flip)
-          if (instrument !== prevInstrument || direction !== prevDirection) {
-            const candleIdx = pairTimeIndex[instrument][snap.time];
-            const candles = pairCandles[instrument];
-            const entryPrice = candles[candleIdx].close;
-            const isJPY = instrument.includes("JPY");
-
-            // Compute gates
-            const g2Pass = checkAtlasWalls(candles, candleIdx, direction);
-            const slope = computeLinRegSlope(candles, candleIdx);
-            const g3Pass = direction === "long" ? slope > 0 : slope < 0;
-
-            signals.push({
-              snapIdx: si,
-              time: snap.time,
-              instrument,
-              direction,
-              entryPrice,
-              isJPY,
-              candleIdx,
-              sessionId: getSessionId(snap.time),
-              g2Pass,
-              g3Pass,
-            });
-
-            prevInstrument = instrument;
-            prevDirection = direction;
-          }
-        }
-
-        // Now simulate each gate × session × SL × TP combo using these signals
-        const exitModes: Array<{ tpRatio: number | "flip"; slPips: number }> = [];
-        for (const sl of SL_PIPS) {
-          for (const tp of TP_RATIOS) {
-            exitModes.push({ tpRatio: tp, slPips: sl });
-          }
-          exitModes.push({ tpRatio: "flip", slPips: sl }); // signal-flip exit
-        }
-
-        for (const gate of GATE_COMBOS) {
-          for (const session of SESSIONS) {
-            for (const exit of exitModes) {
-              // Filter signals by gate requirements and session
-              const filteredSignals = signals.filter(sig => {
-                // Gate filter
-                if (gate.g1 && (predRank > 3 || preyRank < 6)) return false; // g1 = rank extremity
-                if (gate.g2 && !sig.g2Pass) return false;
-                if (gate.g3 && !sig.g3Pass) return false;
-                // Session filter
-                if (session.hours && !matchesSession(sig.time, session)) return false;
-                return true;
-              });
-
-              if (filteredSignals.length < 3) continue;
-
-              // Simulate trades
-              let equity = 1000;
-              let peak = 1000;
-              let maxDD = 0;
-              let wins = 0, losses = 0, totalPips = 0;
-              let grossProfit = 0, grossLoss = 0;
-
-              for (let fi = 0; fi < filteredSignals.length; fi++) {
-                const sig = filteredSignals[fi];
-                const candles = pairCandles[sig.instrument];
-                const isJPY = sig.isJPY;
-                const pipMul = isJPY ? 100 : 10000;
-                const pipVal = isJPY ? 0.01 : 0.0001;
-                const slPrice = exit.slPips / pipMul;
-                const tpPrice = exit.tpRatio === "flip"
-                  ? Infinity
-                  : (exit.slPips * exit.tpRatio) / pipMul;
-
-                // Find exit: walk forward from entry candle
-                const entryIdx = sig.candleIdx;
-                const nextSignalIdx = fi + 1 < filteredSignals.length
-                  ? filteredSignals[fi + 1].candleIdx
-                  : candles.length;
-                // For signal-flip exit on different instruments, use time-based cutoff
-                const nextSignalTime = fi + 1 < filteredSignals.length
-                  ? filteredSignals[fi + 1].time
-                  : null;
-
-                let exitPrice = sig.entryPrice; // fallback
-                let exited = false;
-
-                for (let ci = entryIdx + 1; ci < candles.length; ci++) {
-                  const bar = candles[ci];
-
-                  // Check signal-flip exit (by time)
-                  if (exit.tpRatio === "flip" && nextSignalTime && bar.time >= nextSignalTime) {
-                    exitPrice = bar.open;
-                    exited = true;
-                    break;
-                  }
-
-                  // Check SL hit
-                  if (sig.direction === "long") {
-                    if (bar.low <= sig.entryPrice - slPrice) {
-                      exitPrice = sig.entryPrice - slPrice;
-                      exited = true;
-                      break;
-                    }
-                    // Check TP hit
-                    if (exit.tpRatio !== "flip" && bar.high >= sig.entryPrice + tpPrice) {
-                      exitPrice = sig.entryPrice + tpPrice;
-                      exited = true;
-                      break;
-                    }
-                  } else {
-                    if (bar.high >= sig.entryPrice + slPrice) {
-                      exitPrice = sig.entryPrice + slPrice;
-                      exited = true;
-                      break;
-                    }
-                    if (exit.tpRatio !== "flip" && bar.low <= sig.entryPrice - tpPrice) {
-                      exitPrice = sig.entryPrice - tpPrice;
-                      exited = true;
-                      break;
-                    }
-                  }
-
-                  // For signal-flip without nextSignalTime, exit at same-instrument boundary
-                  if (exit.tpRatio === "flip" && ci >= nextSignalIdx) {
-                    exitPrice = bar.open;
-                    exited = true;
-                    break;
-                  }
-                }
-
-                if (!exited) {
-                  // Close at last available candle
-                  exitPrice = candles[candles.length - 1].close;
-                }
-
-                const tradePips = computePips(sig.entryPrice, exitPrice, sig.direction, isJPY);
-
-                // 5% Risk Dynamic Sizing
-                const riskAmt = equity * 0.05;
-                const dynUnits = exit.slPips > 0 ? riskAmt / (exit.slPips * pipVal) : 2000;
-                const equityChange = tradePips * (dynUnits * pipVal);
-                equity += equityChange;
-
-                totalPips += tradePips;
-                if (tradePips > 0) { wins++; grossProfit += tradePips; }
-                else { losses++; grossLoss += Math.abs(tradePips); }
-
-                if (equity > peak) peak = equity;
-                const dd = ((equity - peak) / peak) * 100;
-                if (dd < maxDD) maxDD = dd;
-              }
-
-              const trades = wins + losses;
-              if (trades < 3) continue;
-
-              const wr = (wins / trades) * 100;
-              const pf = grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? 999 : 0;
-              const netProfit = equity - 1000;
-
-              allResults.push({
-                predator: predRank,
-                prey: preyRank,
-                gates: gate.label,
-                slPips: exit.slPips,
-                tpRatio: exit.tpRatio,
-                session: session.id,
-                trades,
-                wins,
-                losses,
-                winRate: Math.round(wr * 10) / 10,
-                profitFactor: Math.round(pf * 100) / 100,
-                totalPips: Math.round(totalPips * 10) / 10,
-                netProfit: Math.round(netProfit * 100) / 100,
-                maxDrawdown: Math.round(maxDD * 10) / 10,
-                expectancy: Math.round((totalPips / trades) * 100) / 100,
-                avgWin: wins > 0 ? Math.round((grossProfit / wins) * 10) / 10 : 0,
-                avgLoss: losses > 0 ? Math.round((grossLoss / losses) * 10) / 10 : 0,
-                equityCurve: null, // populated for top N only
-              });
-            }
+      for (let b = 0; b < availableCrosses.length; b += BATCH) {
+        const batch = availableCrosses.slice(b, b + BATCH);
+        const results = await Promise.allSettled(
+          batch.map(async cross => {
+            const candles = await fetchCandles(cross.instrument, candleCount, environment, apiToken);
+            return { instrument: cross.instrument, candles };
+          })
+        );
+        for (const r of results) {
+          if (r.status === "fulfilled" && r.value.candles.length > 0) {
+            pairCandles[r.value.instrument] = r.value.candles;
           }
         }
       }
-    }
 
-    // Sort by net profit descending
-    allResults.sort((a, b) => b.netProfit - a.netProfit);
-    const topResults = allResults.slice(0, topN);
+      console.log(`[LIVE-BT] INIT: Fetched ${Object.keys(pairCandles).length} pairs`);
 
-    // Rebuild equity curves for top 10
-    for (let ri = 0; ri < Math.min(10, topResults.length); ri++) {
-      const r = topResults[ri];
-      // Re-simulate to get equity curve
-      const curve: Array<{ time: string; equity: number }> = [];
-      let equity = 1000;
+      // Build rank snapshots
+      const allTimestamps = new Set<string>();
+      for (const candles of Object.values(pairCandles)) {
+        for (const c of candles) allTimestamps.add(c.time);
+      }
+      const sortedTimes = [...allTimestamps].sort();
 
-      // Find matching signals
-      const filteredSignals: Array<{
-        time: string; instrument: string; direction: "long" | "short";
-        entryPrice: number; isJPY: boolean; candleIdx: number;
-      }> = [];
+      if (sortedTimes.length < 100) {
+        return new Response(JSON.stringify({ error: "Insufficient data" }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
 
-      let prevInst: string | null = null;
-      let prevDir: "long" | "short" | null = null;
+      // Build time-indexed lookups
+      const pairTimeIndex: Record<string, Record<string, number>> = {};
+      for (const [inst, candles] of Object.entries(pairCandles)) {
+        pairTimeIndex[inst] = {};
+        for (let i = 0; i < candles.length; i++) pairTimeIndex[inst][candles[i].time] = i;
+      }
 
-      for (const snap of rankSnaps) {
-        const strongCur = ALL_CURRENCIES.find(c => snap.ranks[c] === r.predator);
-        const weakCur = ALL_CURRENCIES.find(c => snap.ranks[c] === r.prey);
-        if (!strongCur || !weakCur) continue;
-
-        const directInst = `${strongCur}_${weakCur}`;
-        const inverseInst = `${weakCur}_${strongCur}`;
-        let inst: string | null = null;
-        let dir: "long" | "short" = "long";
-
-        if (pairTimeIndex[directInst]?.[snap.time] !== undefined) { inst = directInst; dir = "long"; }
-        else if (pairTimeIndex[inverseInst]?.[snap.time] !== undefined) { inst = inverseInst; dir = "short"; }
-
-        if (!inst) continue;
-
-        if (inst !== prevInst || dir !== prevDir) {
-          const cidx = pairTimeIndex[inst][snap.time];
-          const candles = pairCandles[inst];
-
-          // Apply gate filter
-          const gate = GATE_COMBOS.find(g => g.label === r.gates)!;
-          const g2Pass = checkAtlasWalls(candles, cidx, dir);
-          const slope = computeLinRegSlope(candles, cidx);
-          const g3Pass = dir === "long" ? slope > 0 : slope < 0;
-
-          if (gate.g2 && !g2Pass) continue;
-          if (gate.g3 && !g3Pass) continue;
-
-          // Session filter
-          if (r.session !== "ALL") {
-            const sess = SESSIONS.find(s => s.id === r.session);
-            if (sess && !matchesSession(snap.time, sess)) continue;
+      // Compute 20-period rolling returns
+      const LOOKBACK = 20;
+      const pairReturns: Record<string, Record<string, number>> = {};
+      for (const [inst, candles] of Object.entries(pairCandles)) {
+        pairReturns[inst] = {};
+        for (let i = LOOKBACK; i < candles.length; i++) {
+          let totalRet = 0;
+          for (let k = i - LOOKBACK; k < i; k++) {
+            if (candles[k].open !== 0) totalRet += ((candles[k].close - candles[k].open) / candles[k].open) * 100;
           }
-
-          filteredSignals.push({
-            time: snap.time,
-            instrument: inst,
-            direction: dir,
-            entryPrice: candles[cidx].close,
-            isJPY: inst.includes("JPY"),
-            candleIdx: cidx,
-          });
-
-          prevInst = inst;
-          prevDir = dir;
+          pairReturns[inst][candles[i].time] = totalRet / LOOKBACK;
         }
       }
 
-      // Simulate with equity curve tracking
-      for (let fi = 0; fi < filteredSignals.length; fi++) {
-        const sig = filteredSignals[fi];
-        const candles = pairCandles[sig.instrument];
-        const isJPY = sig.isJPY;
-        const pipMul = isJPY ? 100 : 10000;
-        const pipVal = isJPY ? 0.01 : 0.0001;
-        const slPrice = r.slPips / pipMul;
-        const tpPrice = r.tpRatio === "flip" ? Infinity : (r.slPips * (r.tpRatio as number)) / pipMul;
-
-        let exitPrice = sig.entryPrice;
-        for (let ci = sig.candleIdx + 1; ci < candles.length; ci++) {
-          const bar = candles[ci];
-          let hit = false;
-
-          if (sig.direction === "long") {
-            if (bar.low <= sig.entryPrice - slPrice) { exitPrice = sig.entryPrice - slPrice; hit = true; }
-            else if (r.tpRatio !== "flip" && bar.high >= sig.entryPrice + tpPrice) { exitPrice = sig.entryPrice + tpPrice; hit = true; }
-          } else {
-            if (bar.high >= sig.entryPrice + slPrice) { exitPrice = sig.entryPrice + slPrice; hit = true; }
-            else if (r.tpRatio !== "flip" && bar.low <= sig.entryPrice - tpPrice) { exitPrice = sig.entryPrice - tpPrice; hit = true; }
-          }
-
-          if (hit || (r.tpRatio === "flip" && fi + 1 < filteredSignals.length && bar.time >= filteredSignals[fi + 1].time)) {
-            if (!hit) exitPrice = bar.open;
-            break;
-          }
+      // Build rank snapshots (compact — just time + ranks)
+      const rankSnaps: RankSnap[] = [];
+      for (const time of sortedTimes) {
+        const flows: Record<string, number[]> = {};
+        for (const c of ALL_CURRENCIES) flows[c] = [];
+        for (const cross of availableCrosses) {
+          const ret = pairReturns[cross.instrument]?.[time];
+          if (ret === undefined) continue;
+          flows[cross.base].push(ret);
+          flows[cross.quote].push(-ret);
         }
-
-        const tradePips = computePips(sig.entryPrice, exitPrice, sig.direction, isJPY);
-        const riskAmt = equity * 0.05;
-        const dynUnits = r.slPips > 0 ? riskAmt / (r.slPips * pipVal) : 2000;
-        equity += tradePips * (dynUnits * pipVal);
-
-        curve.push({ time: sig.time, equity: Math.round(equity * 100) / 100 });
+        let hasData = false;
+        const scores: Record<string, number> = {};
+        for (const cur of ALL_CURRENCIES) {
+          if (flows[cur].length === 0) { scores[cur] = 0; continue; }
+          hasData = true;
+          scores[cur] = flows[cur].reduce((a, b) => a + b, 0) / flows[cur].length;
+        }
+        if (!hasData) continue;
+        const sorted = [...ALL_CURRENCIES].sort((a, b) => scores[b] - scores[a]);
+        const ranks: Record<string, number> = {};
+        sorted.forEach((cur, idx) => { ranks[cur] = idx + 1; });
+        rankSnaps.push({ time, ranks });
       }
 
-      // Downsample curve
-      const step = Math.max(1, Math.floor(curve.length / 300));
-      topResults[ri].equityCurve = curve.filter((_, idx) => idx % step === 0);
+      console.log(`[LIVE-BT] INIT: ${rankSnaps.length} rank snapshots built`);
+
+      // Pre-generate signals for all 9 rank pairs
+      const signalCache: Record<string, TradeSignal[]> = {};
+      for (const pr of PREDATOR_RANKS) {
+        for (const py of PREY_RANKS) {
+          signalCache[`${pr}_${py}`] = generateSignals(pr, py, rankSnaps, pairCandles, pairTimeIndex);
+        }
+      }
+
+      // Compress candle data — only keep what we need for simulation
+      // Store: per instrument, array of {time, open, high, low, close}
+      const compactCandles: Record<string, Array<[string, number, number, number, number]>> = {};
+      for (const [inst, candles] of Object.entries(pairCandles)) {
+        compactCandles[inst] = candles.map(c => [c.time, c.open, c.high, c.low, c.close]);
+      }
+
+      const allCombos = buildAllCombos();
+
+      // Persist state
+      await saveState(sb, {
+        phase: "compute",
+        environment,
+        topN,
+        candleCount,
+        compactCandles,
+        pairTimeIndex,
+        rankSnaps,
+        signalCache,
+        allCombos: allCombos.length,
+        chunkIdx: 0,
+        partialResults: [],
+        dateRange: { start: sortedTimes[0], end: sortedTimes[sortedTimes.length - 1] },
+        pairsLoaded: Object.keys(pairCandles).length,
+      });
+
+      return new Response(JSON.stringify({
+        success: true,
+        phase: "init_complete",
+        totalCombos: allCombos.length,
+        pairsLoaded: Object.keys(pairCandles).length,
+        totalSnapshots: rankSnaps.length,
+        message: `Init complete. ${allCombos.length} combos ready. Call phase=compute to start.`,
+      }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
-    const totalCombos = allResults.length;
-    const profitable = allResults.filter(r => r.netProfit > 0).length;
+    // ════════════════════════════════════════════
+    // PHASE: COMPUTE — Process a chunk of combos
+    // ════════════════════════════════════════════
+    if (phase === "compute") {
+      const state = await loadState(sb);
+      if (!state || state.phase !== "compute") {
+        return new Response(JSON.stringify({ error: "No init state found. Run phase=init first." }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
 
-    console.log(`[LIVE-BT] Complete. ${totalCombos} combos tested, ${profitable} profitable. Top net profit: $${topResults[0]?.netProfit ?? 0}`);
+      const chunkIdx = (state.chunkIdx as number) || 0;
+      const totalCombos = state.allCombos as number;
+      const compactCandles = state.compactCandles as Record<string, Array<[string, number, number, number, number]>>;
+      const pairTimeIndex = state.pairTimeIndex as Record<string, Record<string, number>>;
+      const signalCache = state.signalCache as Record<string, TradeSignal[]>;
+      const partialResults = (state.partialResults as LiveProfileResult[]) || [];
 
-    return new Response(JSON.stringify({
-      success: true,
-      version: "1.0",
-      timestamp: new Date().toISOString(),
-      environment,
-      candlesPerPair: Object.values(pairCandles)[0]?.length ?? 0,
-      pairsLoaded: Object.keys(pairCandles).length,
-      totalSnapshots: rankSnaps.length,
-      totalCombos,
-      profitableCombos: profitable,
-      topResults,
-      dateRange: {
-        start: sortedTimes[0],
-        end: sortedTimes[sortedTimes.length - 1],
-      },
-    }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      // Reconstruct candle objects from compact format
+      const pairCandles: Record<string, Candle[]> = {};
+      for (const [inst, arr] of Object.entries(compactCandles)) {
+        pairCandles[inst] = arr.map(([time, open, high, low, close]) => ({
+          time: time as string, open: open as number, high: high as number,
+          low: low as number, close: close as number, volume: 0,
+        }));
+      }
+
+      const allCombos = buildAllCombos();
+      const startIdx = chunkIdx * CHUNK_SIZE;
+      const endIdx = Math.min(startIdx + CHUNK_SIZE, allCombos.length);
+      const chunk = allCombos.slice(startIdx, endIdx);
+
+      console.log(`[LIVE-BT] COMPUTE: chunk ${chunkIdx}, combos ${startIdx}-${endIdx} of ${totalCombos}`);
+
+      const newResults: LiveProfileResult[] = [];
+      for (const combo of chunk) {
+        const result = simulateCombo(combo, signalCache, pairCandles);
+        if (result) newResults.push(result);
+      }
+
+      // Merge with partials, keep only top 100 to save memory
+      const merged = [...partialResults, ...newResults]
+        .sort((a, b) => b.netProfit - a.netProfit)
+        .slice(0, 100);
+
+      const done = endIdx >= allCombos.length;
+      const nextChunkIdx = chunkIdx + 1;
+
+      if (done) {
+        // Move to extract phase
+        await saveState(sb, {
+          ...state,
+          phase: "extract",
+          chunkIdx: nextChunkIdx,
+          partialResults: merged,
+          processedCombos: allCombos.length,
+        });
+      } else {
+        await saveState(sb, {
+          ...state,
+          chunkIdx: nextChunkIdx,
+          partialResults: merged,
+        });
+      }
+
+      return new Response(JSON.stringify({
+        success: true,
+        phase: done ? "compute_complete" : "computing",
+        processedCombos: endIdx,
+        totalCombos,
+        progress: Math.round((endIdx / totalCombos) * 100),
+        topNetProfit: merged[0]?.netProfit ?? 0,
+        message: done
+          ? `All ${totalCombos} combos done. Call phase=extract.`
+          : `Processed ${endIdx}/${totalCombos}. Call phase=compute again.`,
+      }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
+
+    // ════════════════════════════════════════════
+    // PHASE: EXTRACT — Build final results + equity curves
+    // ════════════════════════════════════════════
+    if (phase === "extract") {
+      const state = await loadState(sb);
+      if (!state || state.phase !== "extract") {
+        return new Response(JSON.stringify({ error: "Compute not finished. Run phase=compute until done." }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+
+      const partialResults = state.partialResults as LiveProfileResult[];
+      const rankSnaps = state.rankSnaps as RankSnap[];
+      const compactCandles = state.compactCandles as Record<string, Array<[string, number, number, number, number]>>;
+      const pairTimeIndex = state.pairTimeIndex as Record<string, Record<string, number>>;
+      const dateRange = state.dateRange as { start: string; end: string };
+      const pairsLoaded = state.pairsLoaded as number;
+      const totalCombos = state.allCombos as number;
+      const topNVal = (state.topN as number) || 25;
+
+      // Reconstruct candles
+      const pairCandles: Record<string, Candle[]> = {};
+      for (const [inst, arr] of Object.entries(compactCandles)) {
+        pairCandles[inst] = arr.map(([time, open, high, low, close]) => ({
+          time: time as string, open: open as number, high: high as number,
+          low: low as number, close: close as number, volume: 0,
+        }));
+      }
+
+      const topResults = partialResults.slice(0, topNVal);
+
+      // Build equity curves for top 10
+      for (let i = 0; i < Math.min(10, topResults.length); i++) {
+        topResults[i].equityCurve = buildEquityCurve(topResults[i], rankSnaps, pairCandles, pairTimeIndex);
+      }
+
+      const profitable = partialResults.filter(r => r.netProfit > 0).length;
+
+      console.log(`[LIVE-BT] EXTRACT: Top net profit: $${topResults[0]?.netProfit ?? 0}`);
+
+      // Clean up state
+      await clearState(sb);
+
+      return new Response(JSON.stringify({
+        success: true,
+        phase: "complete",
+        version: "2.0",
+        timestamp: new Date().toISOString(),
+        environment,
+        candlesPerPair: Object.values(pairCandles)[0]?.length ?? 0,
+        pairsLoaded,
+        totalSnapshots: rankSnaps.length,
+        totalCombos,
+        profitableCombos: profitable,
+        topResults,
+        dateRange,
+      }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
+
+    return new Response(JSON.stringify({ error: `Unknown phase: ${phase}` }),
+      { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
   } catch (err) {
     console.error("[LIVE-BT] Error:", err);

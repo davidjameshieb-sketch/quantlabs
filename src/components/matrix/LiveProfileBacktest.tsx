@@ -1,11 +1,11 @@
-// Live Profile Backtest Panel — True bar-by-bar validation of all Profile Discovery combos
-// against real OANDA candle data (no synthetic PRNG)
+// Live Profile Backtest Panel — Phased polling UI
+// Drives init → compute (chunked) → extract phases
 
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  Cpu, Trophy, TrendingUp, Flame, Shield, Activity, AlertTriangle,
-  Play, Loader2, ChevronDown, ChevronUp, BarChart3,
+  Cpu, Trophy, AlertTriangle,
+  Play, Loader2, ChevronDown, ChevronUp,
 } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 
@@ -44,7 +44,6 @@ interface LiveBacktestResponse {
   dateRange: { start: string; end: string };
 }
 
-// ── Mini equity chart ──
 function MiniCurve({ curve, height = 70 }: { curve: Array<{ time: string; equity: number }>; height?: number }) {
   if (!curve || curve.length < 2) return null;
   const w = 280;
@@ -85,20 +84,63 @@ export function LiveProfileBacktest() {
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
   const [candleCount, setCandleCount] = useState(5000);
   const [environment, setEnvironment] = useState<'practice' | 'live'>('practice');
+  const [progress, setProgress] = useState<{ phase: string; pct: number; msg: string } | null>(null);
+  const cancelRef = useRef(false);
+
+  const invoke = async (body: Record<string, unknown>) => {
+    const { data, error: fnError } = await supabase.functions.invoke('profile-live-backtest', { body });
+    if (fnError) throw fnError;
+    return data;
+  };
 
   const runBacktest = async () => {
     setLoading(true);
     setError(null);
     setResult(null);
+    cancelRef.current = false;
+
     try {
-      const { data, error: fnError } = await supabase.functions.invoke('profile-live-backtest', {
-        body: { environment, candles: candleCount, topN: 25 },
-      });
-      if (fnError) throw fnError;
-      if (!data?.success) throw new Error(data?.error || 'Unknown error');
-      setResult(data as LiveBacktestResponse);
+      // Phase 1: Init
+      setProgress({ phase: 'init', pct: 0, msg: `Fetching ${candleCount.toLocaleString()} candles × 28 pairs…` });
+      const initRes = await invoke({ phase: 'init', environment, candles: candleCount, topN: 25 });
+      if (!initRes?.success) throw new Error(initRes?.error || 'Init failed');
+
+      const totalCombos = initRes.totalCombos;
+
+      // Phase 2: Compute (loop)
+      let done = false;
+      while (!done && !cancelRef.current) {
+        setProgress(prev => ({
+          phase: 'compute',
+          pct: prev?.pct ?? 5,
+          msg: `Simulating combos… ${prev?.pct ?? 5}%`,
+        }));
+
+        const compRes = await invoke({ phase: 'compute', environment, candles: candleCount, topN: 25 });
+        if (!compRes?.success) throw new Error(compRes?.error || 'Compute failed');
+
+        const pct = compRes.progress || 0;
+        setProgress({
+          phase: 'compute',
+          pct,
+          msg: `Simulated ${compRes.processedCombos.toLocaleString()}/${totalCombos.toLocaleString()} combos (${pct}%)`,
+        });
+
+        if (compRes.phase === 'compute_complete') done = true;
+      }
+
+      if (cancelRef.current) { setLoading(false); setProgress(null); return; }
+
+      // Phase 3: Extract
+      setProgress({ phase: 'extract', pct: 95, msg: 'Building equity curves…' });
+      const extractRes = await invoke({ phase: 'extract', environment, candles: candleCount, topN: 25 });
+      if (!extractRes?.success) throw new Error(extractRes?.error || 'Extract failed');
+
+      setResult(extractRes as LiveBacktestResponse);
+      setProgress(null);
     } catch (err) {
       setError((err as Error).message);
+      setProgress(null);
     } finally {
       setLoading(false);
     }
@@ -127,6 +169,7 @@ export function LiveProfileBacktest() {
           value={candleCount}
           onChange={e => setCandleCount(Number(e.target.value))}
           className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 text-[10px] font-mono text-slate-300"
+          disabled={loading}
         >
           <option value={5000}>5,000 candles (~4 months)</option>
           <option value={10000}>10,000 candles (~8 months)</option>
@@ -138,23 +181,23 @@ export function LiveProfileBacktest() {
           value={environment}
           onChange={e => setEnvironment(e.target.value as 'practice' | 'live')}
           className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 text-[10px] font-mono text-slate-300"
+          disabled={loading}
         >
           <option value="practice">Practice</option>
           <option value="live">Live</option>
         </select>
 
         <button
-          onClick={runBacktest}
-          disabled={loading}
-          className="inline-flex items-center gap-2 px-5 py-2 rounded-xl font-bold text-[10px] uppercase tracking-widest transition-all disabled:opacity-50"
+          onClick={loading ? () => { cancelRef.current = true; } : runBacktest}
+          className="inline-flex items-center gap-2 px-5 py-2 rounded-xl font-bold text-[10px] uppercase tracking-widest transition-all"
           style={{
-            background: loading ? '#334155' : '#ff6600',
-            color: loading ? '#94a3b8' : '#0f172a',
+            background: loading ? '#ef4444' : '#ff6600',
+            color: '#0f172a',
             boxShadow: loading ? 'none' : '0 0 20px rgba(255,102,0,0.3)',
           }}
         >
           {loading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}
-          {loading ? 'Running…' : 'Run Live Backtest'}
+          {loading ? 'Cancel' : 'Run Live Backtest'}
         </button>
       </div>
 
@@ -167,23 +210,32 @@ export function LiveProfileBacktest() {
         </div>
       )}
 
-      {/* Loading */}
-      {loading && (
-        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="py-10 text-center space-y-3">
-          <div className="flex justify-center">
-            <motion.div
-              animate={{ rotate: 360 }}
-              transition={{ repeat: Infinity, duration: 2, ease: 'linear' }}
-            >
-              <Cpu className="w-8 h-8 text-[#ff6600]" />
+      {/* Progress */}
+      {loading && progress && (
+        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="py-6 space-y-3">
+          <div className="flex items-center gap-3">
+            <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 2, ease: 'linear' }}>
+              <Cpu className="w-6 h-6 text-[#ff6600]" />
             </motion.div>
+            <div className="flex-1">
+              <div className="flex justify-between items-center mb-1">
+                <span className="text-[10px] text-slate-300 font-mono uppercase tracking-widest">
+                  {progress.phase === 'init' ? 'Initializing' : progress.phase === 'compute' ? 'Computing' : 'Extracting'}
+                </span>
+                <span className="text-[10px] text-[#ff6600] font-mono font-bold">{progress.pct}%</span>
+              </div>
+              <div className="w-full h-2 bg-slate-800 rounded-full overflow-hidden">
+                <motion.div
+                  className="h-full rounded-full"
+                  style={{ background: '#ff6600' }}
+                  initial={{ width: 0 }}
+                  animate={{ width: `${progress.pct}%` }}
+                  transition={{ duration: 0.3 }}
+                />
+              </div>
+              <p className="text-[9px] text-slate-500 font-mono mt-1">{progress.msg}</p>
+            </div>
           </div>
-          <p className="text-[10px] text-slate-400 tracking-widest font-mono animate-pulse">
-            FETCHING {candleCount.toLocaleString()} CANDLES × 28 PAIRS · SIMULATING ALL COMBOS…
-          </p>
-          <p className="text-[9px] text-slate-600 font-mono">
-            This may take 30-60 seconds depending on data depth
-          </p>
         </motion.div>
       )}
 
@@ -215,7 +267,7 @@ export function LiveProfileBacktest() {
               </span>
             </div>
 
-            {/* Top Results Table */}
+            {/* Top Results */}
             <div className="space-y-2">
               <div className="flex items-center gap-2 mb-2">
                 <Trophy className="w-4 h-4 text-yellow-400" />
@@ -237,12 +289,10 @@ export function LiveProfileBacktest() {
                     transition={{ delay: idx * 0.03 }}
                     className="bg-slate-800/60 border border-slate-700/40 rounded-xl overflow-hidden"
                   >
-                    {/* Row header */}
                     <button
                       onClick={() => setExpandedIdx(isExpanded ? null : idx)}
                       className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-slate-800/80 transition-colors"
                     >
-                      {/* Rank badge */}
                       <span
                         className="text-[10px] font-bold font-mono w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0"
                         style={{
@@ -254,7 +304,6 @@ export function LiveProfileBacktest() {
                         #{idx + 1}
                       </span>
 
-                      {/* Config */}
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 flex-wrap">
                           <span className="text-[10px] font-bold text-white">
@@ -275,7 +324,6 @@ export function LiveProfileBacktest() {
                         </div>
                       </div>
 
-                      {/* Key stats */}
                       <div className="flex items-center gap-4 flex-shrink-0">
                         <div className="text-right">
                           <div className="text-[9px] text-slate-500">Net P&L</div>
@@ -303,7 +351,6 @@ export function LiveProfileBacktest() {
                       </div>
                     </button>
 
-                    {/* Expanded details */}
                     <AnimatePresence>
                       {isExpanded && (
                         <motion.div
@@ -313,7 +360,6 @@ export function LiveProfileBacktest() {
                           className="border-t border-slate-700/30"
                         >
                           <div className="p-4 grid grid-cols-2 lg:grid-cols-4 gap-4">
-                            {/* Stats grid */}
                             <div className="space-y-2">
                               <StatRow label="Total Pips" value={`${profile.totalPips > 0 ? '+' : ''}${profile.totalPips}`} positive={profile.totalPips > 0} />
                               <StatRow label="Avg Win" value={`+${profile.avgWin} pips`} positive />
@@ -326,7 +372,6 @@ export function LiveProfileBacktest() {
                               <StatRow label="R:R Ratio" value={profile.avgLoss > 0 ? (profile.avgWin / profile.avgLoss).toFixed(2) : '∞'} positive />
                             </div>
 
-                            {/* Equity Curve */}
                             {profile.equityCurve && (
                               <div className="col-span-2">
                                 <div className="text-[9px] text-slate-500 mb-1 font-mono">EQUITY CURVE (REAL DATA)</div>
@@ -355,7 +400,6 @@ export function LiveProfileBacktest() {
   );
 }
 
-// ── Stat row helper ──
 function StatRow({ label, value, positive }: { label: string; value: string; positive: boolean }) {
   return (
     <div className="flex items-center justify-between">
