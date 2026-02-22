@@ -778,7 +778,7 @@ function StrategyCard({ profile, idx, expandedProfile, setExpandedProfile, maxCo
                   </span>
                 </div>
                 <EquityCurve curve={profile.equityCurve} height={80} />
-                <PeriodPerformanceRow equityCurve={profile.equityCurve} dateRange={dateRange} />
+                <PeriodPerformanceRow equityCurve={profile.equityCurve} totalPips={profile.totalPips} totalTrades={profile.trades} dateRange={dateRange} />
               </div>
 
               <div className="bg-blue-950/20 border border-blue-500/20 rounded-lg p-3">
