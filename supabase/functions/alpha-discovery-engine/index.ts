@@ -1050,6 +1050,38 @@ const ARCHETYPES: Partial<StrategyDNA>[] = [
   { erMode: 1, candleMode: 1, trailingATR: 1.5 },
   { consecMode: 1, fdMode: 2, maxBarsInTrade: 8 },
   { rangeExpMode: 1, volDeltaMode: 1, partialTP: 1 },
+
+  // ── Sovereign Matrix-Inspired Seeds ──────────────────────────────────
+  // These encode the Triple-Lock edge (structural breakout + momentum + volume)
+  // into the Alpha Engine's micro-structure genome, giving the GA a head start
+  // on the proven SM edge while letting it optimize exits and filters.
+
+  // Core Triple-Lock: breakout + efficiency + volume (Gate 2 + Gate 3 + SOB)
+  { rangeExpMode: 1, erMode: 1, volDeltaMode: 1, clvMode: 0, consecMode: 0, fdMode: 0, gapMode: 0, candleMode: 0 },
+  // Triple-Lock with body conviction (institutional commitment candles)
+  { rangeExpMode: 1, erMode: 1, candleMode: 1, clvMode: 0, consecMode: 0, volDeltaMode: 0, fdMode: 0, gapMode: 0 },
+  // Breakout + volume + momentum streak (rank divergence momentum)
+  { rangeExpMode: 1, volDeltaMode: 1, consecMode: 2, erMode: 0, clvMode: 0, fdMode: 0, gapMode: 0, candleMode: 0 },
+  // Efficiency + volume + streak (pure trend-following SM variant)
+  { erMode: 1, volDeltaMode: 1, consecMode: 2, clvMode: 0, rangeExpMode: 0, fdMode: 0, gapMode: 0, candleMode: 0 },
+  // SM London session focus (peak volume window)
+  { rangeExpMode: 1, erMode: 1, volDeltaMode: 1, sessionFilter: 1, clvMode: 0, consecMode: 0, fdMode: 0, gapMode: 0, candleMode: 0 },
+  // SM NY session focus
+  { rangeExpMode: 1, erMode: 1, volDeltaMode: 1, sessionFilter: 2, clvMode: 0, consecMode: 0, fdMode: 0, gapMode: 0, candleMode: 0 },
+  // SM with trailing stop (let winners run)
+  { rangeExpMode: 1, erMode: 1, volDeltaMode: 1, trailingATR: 1.5, clvMode: 0, consecMode: 0, fdMode: 0, gapMode: 0, candleMode: 0 },
+  // SM with partial TP (scale out at 1R)
+  { rangeExpMode: 1, erMode: 1, volDeltaMode: 1, partialTP: 1, clvMode: 0, consecMode: 0, fdMode: 0, gapMode: 0, candleMode: 0 },
+  // SM breakout + smooth fractal trend (low FD = clean trend)
+  { rangeExpMode: 1, fdMode: 1, volDeltaMode: 1, erMode: 0, clvMode: 0, consecMode: 0, gapMode: 0, candleMode: 0 },
+  // SM range acceleration + efficiency (squeeze → breakout)
+  { rangeExpMode: 3, erMode: 1, candleMode: 1, clvMode: 0, consecMode: 0, volDeltaMode: 0, fdMode: 0, gapMode: 0 },
+  // SM with time exit (prevent holding through consolidation)
+  { rangeExpMode: 1, erMode: 1, volDeltaMode: 1, maxBarsInTrade: 12, clvMode: 0, consecMode: 0, fdMode: 0, gapMode: 0, candleMode: 0 },
+  // SM LONG only (strongest vs weakest = buy strong)
+  { rangeExpMode: 1, erMode: 1, volDeltaMode: 1, direction: 0, clvMode: 0, consecMode: 0, fdMode: 0, gapMode: 0, candleMode: 0 },
+  // SM SHORT only (weakest vs strongest = sell weak)
+  { rangeExpMode: 1, erMode: 1, volDeltaMode: 1, direction: 1, clvMode: 0, consecMode: 0, fdMode: 0, gapMode: 0, candleMode: 0 },
 ];
 
 function randomDNA(archetype?: Partial<StrategyDNA>): StrategyDNA {
