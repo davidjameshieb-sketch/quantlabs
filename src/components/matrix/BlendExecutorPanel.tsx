@@ -1,8 +1,35 @@
-// Decorrelated Portfolio Blend — Auto-Executor Control Panel
+// Decorrelated Portfolio Blend — Auto-Executor Control Panel + Live Backtest
+import { useState } from 'react';
 import { motion } from 'framer-motion';
-import { Layers, Play, Square, RefreshCw, Zap, Shield, AlertTriangle, Target, TrendingUp, TrendingDown } from 'lucide-react';
+import { Layers, Play, Square, RefreshCw, Zap, Shield, AlertTriangle, Target, TrendingUp, TrendingDown, Cpu, Loader2, ShieldCheck, Flame, BarChart3 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useBlendExecutor, type BlendExecution } from '@/hooks/useBlendExecutor';
+
+interface BlendComponentSummary {
+  id: string; label: string; weight: number; trades: number; wins: number; losses: number;
+  winRate: number; totalPips: number; profitFactor: number; avgWin: number; avgLoss: number;
+}
+interface BlendBacktestResult {
+  success: boolean;
+  error?: string;
+  version?: string;
+  environment?: string;
+  candlesPerPair?: number;
+  pairsLoaded?: number;
+  totalSnapshots?: number;
+  dateRange?: { start: string; end: string };
+  portfolio?: {
+    totalTrades: number; wins: number; losses: number; winRate: number; profitFactor: number;
+    totalPips: number; maxDrawdown: number; aggressiveMaxDD: number;
+    institutionalProfit: number; aggressiveProfit: number;
+    finalEquity: number; aggressiveFinalEquity: number;
+    expectancy: number; avgWin: number; avgLoss: number;
+  };
+  components?: BlendComponentSummary[];
+  periodStats?: Array<{ period: string; returnPct: number; winRate: number; profitFactor: number; maxDD: number; netPips: number; trades: number }>;
+  equityCurve?: Array<{ time: string; equity: number }>;
+  aggressiveEquityCurve?: Array<{ time: string; equity: number }>;
+}
 
 const COMPONENT_SPECS = [
   { id: '3v8', weight: '44%', gates: 'G1+G2+G3', sl: 'Swing low (5-bar)', entry: 'Z-OFI > 2.0' },
@@ -19,6 +46,11 @@ function StatusDot({ status }: { status: string }) {
 
 export const BlendExecutorPanel = () => {
   const { running, autoMode, lastResult, cycleCount, runCycle, startAuto, stopAuto } = useBlendExecutor();
+  const [btLoading, setBtLoading] = useState(false);
+  const [btResult, setBtResult] = useState<BlendBacktestResult | null>(null);
+  const [btError, setBtError] = useState<string | null>(null);
+  const [btEnv, setBtEnv] = useState<'practice' | 'live'>('live');
+  const [btCandles, setBtCandles] = useState(15000);
 
   const filled = lastResult?.cycle?.executed ?? 0;
   const existing = lastResult?.cycle?.existingPositions ?? 0;
@@ -224,6 +256,264 @@ export const BlendExecutorPanel = () => {
           </div>
         </div>
       )}
+      {/* ═══ BLEND LIVE BACKTEST ═══ */}
+      <div className="border-t border-slate-700/40 pt-4 mt-4">
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-2">
+            <BarChart3 className="w-4 h-4 text-[#ff6600]" />
+            <h3 className="text-[11px] font-bold tracking-widest text-slate-200 uppercase">
+              Live Strategy Backtest — 100% Forward Test
+            </h3>
+            <span className="text-[8px] font-mono text-[#ff6600] border border-[#ff6600]/30 px-1.5 py-0.5 rounded bg-[#ff6600]/10">
+              BLEND PORTFOLIO
+            </span>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-3 flex-wrap mb-4">
+          <select value={btCandles} onChange={e => setBtCandles(Number(e.target.value))}
+            className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 text-[10px] font-mono text-slate-300"
+            disabled={btLoading}>
+            <option value={5000}>5,000 candles (~4 months)</option>
+            <option value={10000}>10,000 candles (~8 months)</option>
+            <option value={15000}>15,000 candles (~14 months)</option>
+            <option value={20000}>20,000 candles (~16 months)</option>
+          </select>
+          <select value={btEnv} onChange={e => setBtEnv(e.target.value as 'practice' | 'live')}
+            className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 text-[10px] font-mono text-slate-300"
+            disabled={btLoading}>
+            <option value="practice">Practice</option>
+            <option value="live">Live</option>
+          </select>
+          <button onClick={runBlendBacktest} disabled={btLoading}
+            className="inline-flex items-center gap-2 px-5 py-2 rounded-xl font-bold text-[10px] uppercase tracking-widest transition-all disabled:opacity-50"
+            style={{ background: '#ff6600', color: '#0f172a', boxShadow: '0 0 20px rgba(255,102,0,0.3)' }}>
+            {btLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}
+            {btLoading ? 'Running…' : 'Run Blend Backtest'}
+          </button>
+        </div>
+
+        {btError && (
+          <div className="flex items-center gap-2 p-3 rounded-lg bg-red-500/10 border border-red-500/30 text-red-400 text-[10px] font-mono mb-3">
+            <AlertTriangle className="w-4 h-4 flex-shrink-0" /> {btError}
+          </div>
+        )}
+
+        {btLoading && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="py-4 flex items-center gap-3">
+            <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 2, ease: 'linear' }}>
+              <Cpu className="w-5 h-5 text-[#ff6600]" />
+            </motion.div>
+            <span className="text-[10px] text-slate-400 font-mono">Fetching candles & simulating 5-component blend portfolio…</span>
+          </motion.div>
+        )}
+
+        {btResult?.portfolio && (
+          <div className="space-y-4">
+            {/* Portfolio KPIs */}
+            <div className="grid grid-cols-3 sm:grid-cols-7 gap-2">
+              {[
+                { label: 'TOTAL RETURN', value: `$${btResult.portfolio.institutionalProfit.toLocaleString()}`, positive: btResult.portfolio.institutionalProfit > 0 },
+                { label: 'WIN RATE', value: `${btResult.portfolio.winRate}%`, positive: btResult.portfolio.winRate >= 50 },
+                { label: 'PROFIT FACTOR', value: `${btResult.portfolio.profitFactor}`, positive: btResult.portfolio.profitFactor >= 1.3 },
+                { label: 'MAX DD', value: `${btResult.portfolio.maxDrawdown}%`, positive: btResult.portfolio.maxDrawdown > -20 },
+                { label: 'NET PIPS', value: `${btResult.portfolio.totalPips > 0 ? '+' : ''}${btResult.portfolio.totalPips}`, positive: btResult.portfolio.totalPips > 0 },
+                { label: 'FINAL EQUITY', value: `$${btResult.portfolio.finalEquity.toLocaleString()}`, positive: btResult.portfolio.finalEquity > 1000 },
+                { label: 'TRADES', value: `${btResult.portfolio.totalTrades}`, positive: true },
+              ].map(kpi => (
+                <div key={kpi.label} className="bg-slate-800/60 border border-slate-700/30 rounded-lg p-2 text-center">
+                  <div className="text-[7px] text-slate-500 uppercase tracking-wider">{kpi.label}</div>
+                  <div className={cn('text-[12px] font-bold font-mono', kpi.positive ? 'text-[#39ff14]' : 'text-[#ff0055]')}>
+                    {kpi.value}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Dual Models */}
+            <div className="grid grid-cols-2 gap-3">
+              <div className="bg-slate-800/40 border border-emerald-500/20 rounded-lg p-3">
+                <div className="text-[8px] font-bold text-emerald-400 uppercase tracking-widest flex items-center gap-1 mb-2">
+                  <ShieldCheck className="w-3 h-3" /> Institutional (1% Risk)
+                </div>
+                <div className="text-[14px] font-bold font-mono text-emerald-400">
+                  ${btResult.portfolio.institutionalProfit.toLocaleString()}
+                </div>
+                <div className="text-[9px] text-slate-500 font-mono">Final: ${btResult.portfolio.finalEquity.toLocaleString()} · DD: {btResult.portfolio.maxDrawdown}%</div>
+              </div>
+              <div className="bg-slate-800/40 border border-[#ff6600]/20 rounded-lg p-3">
+                <div className="text-[8px] font-bold text-[#ff6600] uppercase tracking-widest flex items-center gap-1 mb-2">
+                  <Flame className="w-3 h-3" /> Aggressive (5% Risk)
+                </div>
+                <div className="text-[14px] font-bold font-mono text-[#ff6600]">
+                  ${btResult.portfolio.aggressiveProfit.toLocaleString()}
+                </div>
+                <div className="text-[9px] text-slate-500 font-mono">Final: ${btResult.portfolio.aggressiveFinalEquity?.toLocaleString()} · DD: {btResult.portfolio.aggressiveMaxDD}%</div>
+              </div>
+            </div>
+
+            {/* Equity Curve */}
+            {btResult.equityCurve && btResult.equityCurve.length > 2 && (
+              <div>
+                <div className="text-[8px] text-slate-500 uppercase tracking-wider mb-1">PORTFOLIO EQUITY CURVE</div>
+                <div className="flex items-center gap-3 mb-1">
+                  <span className="text-[8px] font-mono text-emerald-400">━ 1% Risk</span>
+                  <span className="text-[8px] font-mono text-[#ff6600]">╌ 5% Risk</span>
+                </div>
+                <BlendEquityCurve instCurve={btResult.equityCurve} aggCurve={btResult.aggressiveEquityCurve || []} />
+                <div className="flex justify-between text-[8px] text-slate-600 font-mono mt-1">
+                  <span>{btResult.dateRange?.start?.slice(0, 10)}</span>
+                  <span>{btResult.dateRange?.end?.slice(0, 10)}</span>
+                </div>
+              </div>
+            )}
+
+            {/* Period Stats */}
+            {btResult.periodStats && btResult.periodStats.length > 0 && (
+              <div>
+                <div className="text-[8px] text-slate-500 uppercase tracking-wider mb-2">REALISTIC PERIOD EXPECTATIONS ($1K BASE)</div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-[9px] font-mono">
+                    <thead>
+                      <tr className="text-slate-500 border-b border-slate-700/30">
+                        <th className="text-left py-1 px-2">PERIOD</th>
+                        <th className="text-right py-1 px-2">RETURN</th>
+                        <th className="text-right py-1 px-2">WR</th>
+                        <th className="text-right py-1 px-2">PF</th>
+                        <th className="text-right py-1 px-2">MAX DD</th>
+                        <th className="text-right py-1 px-2">NET PIPS</th>
+                        <th className="text-right py-1 px-2">TRADES</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {btResult.periodStats.map(ps => (
+                        <tr key={ps.period} className="border-b border-slate-800/30">
+                          <td className="py-1.5 px-2 text-white font-bold">{ps.period}</td>
+                          <td className={cn('text-right py-1.5 px-2', ps.returnPct > 0 ? 'text-[#39ff14]' : 'text-[#ff0055]')}>
+                            {ps.returnPct > 0 ? '+' : ''}{ps.returnPct}%
+                          </td>
+                          <td className="text-right py-1.5 px-2 text-slate-300">{ps.winRate}%</td>
+                          <td className="text-right py-1.5 px-2 text-slate-300">{ps.profitFactor}</td>
+                          <td className={cn('text-right py-1.5 px-2', ps.maxDD > -15 ? 'text-[#39ff14]' : 'text-[#ff0055]')}>{ps.maxDD}%</td>
+                          <td className={cn('text-right py-1.5 px-2', ps.netPips > 0 ? 'text-[#39ff14]' : 'text-[#ff0055]')}>
+                            {ps.netPips > 0 ? '+' : ''}{ps.netPips}
+                          </td>
+                          <td className="text-right py-1.5 px-2 text-slate-400">{ps.trades}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* Per-Component Breakdown */}
+            {btResult.components && (
+              <div>
+                <div className="text-[8px] text-slate-500 uppercase tracking-wider mb-2">PER-COMPONENT BREAKDOWN</div>
+                <div className="space-y-1">
+                  {btResult.components.map(comp => (
+                    <div key={comp.id} className="flex items-center gap-3 text-[9px] font-mono bg-slate-800/30 rounded-lg px-3 py-2">
+                      <span className="text-[#00ffea] font-bold w-8">#{comp.id}</span>
+                      <span className="text-yellow-400 w-8">{(comp.weight * 100).toFixed(0)}%</span>
+                      <span className="text-slate-300 w-14">{comp.trades} trades</span>
+                      <span className={cn('w-12', comp.winRate >= 50 ? 'text-[#39ff14]' : 'text-[#ff0055]')}>
+                        {comp.winRate}% WR
+                      </span>
+                      <span className={cn('w-10', comp.profitFactor >= 1.3 ? 'text-[#39ff14]' : comp.profitFactor >= 1.0 ? 'text-yellow-400' : 'text-[#ff0055]')}>
+                        PF {comp.profitFactor}
+                      </span>
+                      <span className={cn('w-16', comp.totalPips > 0 ? 'text-[#39ff14]' : 'text-[#ff0055]')}>
+                        {comp.totalPips > 0 ? '+' : ''}{comp.totalPips}p
+                      </span>
+                      <span className="text-slate-500 truncate flex-1">{comp.label}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Metadata */}
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-[8px] font-mono px-2 py-0.5 rounded border border-slate-700 text-slate-500">
+                {btResult.candlesPerPair?.toLocaleString()} candles · {btResult.pairsLoaded} pairs
+              </span>
+              <span className="text-[8px] font-mono px-2 py-0.5 rounded border border-slate-700 text-slate-500">
+                {btResult.dateRange?.start?.slice(0, 10)} → {btResult.dateRange?.end?.slice(0, 10)}
+              </span>
+              <span className="text-[8px] font-mono px-2 py-0.5 rounded border border-[#ff6600]/30 text-[#ff6600]">
+                100% FORWARD TEST · NO IS/OOS SPLIT
+              </span>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
+
+  async function runBlendBacktest() {
+    setBtLoading(true);
+    setBtError(null);
+    setBtResult(null);
+    try {
+      const res = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/blend-live-backtest`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
+            Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+          },
+          body: JSON.stringify({ environment: btEnv, candles: btCandles }),
+        }
+      );
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || 'Backtest failed');
+      setBtResult(data);
+    } catch (err) {
+      setBtError((err as Error).message);
+    } finally {
+      setBtLoading(false);
+    }
+  }
 };
+
+function BlendEquityCurve({ instCurve, aggCurve }: { instCurve: Array<{ time: string; equity: number }>; aggCurve: Array<{ time: string; equity: number }> }) {
+  const w = 600, h = 120, pad = 4;
+  const allVals = [...instCurve.map(c => c.equity), ...aggCurve.map(c => c.equity)];
+  const min = Math.min(...allVals);
+  const max = Math.max(...allVals);
+  const range = max - min || 1;
+
+  const mapPoints = (curve: Array<{ equity: number }>) =>
+    curve.map((pt, i) => {
+      const x = pad + (i / (curve.length - 1)) * (w - 2 * pad);
+      const y = h - pad - ((pt.equity - min) / range) * (h - 2 * pad);
+      return `${x},${y}`;
+    });
+
+  const instPoints = mapPoints(instCurve);
+  const aggPoints = aggCurve.length > 0 ? mapPoints(aggCurve) : [];
+  const instPositive = instCurve[instCurve.length - 1]?.equity >= 1000;
+  const aggPositive = aggCurve.length > 0 ? aggCurve[aggCurve.length - 1]?.equity >= 1000 : true;
+
+  return (
+    <svg viewBox={`0 0 ${w} ${h}`} className="w-full" style={{ height: h }} preserveAspectRatio="none">
+      {aggPoints.length > 0 && (
+        <polyline points={aggPoints.join(' ')} fill="none" stroke={aggPositive ? '#ff6600' : '#ff0055'} strokeWidth="1" strokeOpacity="0.5" strokeDasharray="3,2" />
+      )}
+      <defs>
+        <linearGradient id="blend-inst-grad" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={instPositive ? '#39ff14' : '#ff0055'} stopOpacity="0.15" />
+          <stop offset="100%" stopColor={instPositive ? '#39ff14' : '#ff0055'} stopOpacity="0" />
+        </linearGradient>
+      </defs>
+      <polygon
+        points={`${pad},${h - pad} ${instPoints.join(' ')} ${w - pad},${h - pad}`}
+        fill="url(#blend-inst-grad)"
+      />
+      <polyline points={instPoints.join(' ')} fill="none" stroke={instPositive ? '#39ff14' : '#ff0055'} strokeWidth="1.5" />
+    </svg>
+  );
+}
