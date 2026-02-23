@@ -29,6 +29,7 @@ import { AlphaDiscoveryEngine } from '@/components/matrix/AlphaDiscoveryEngine';
 import { EnsemblePortfolio } from '@/components/matrix/EnsemblePortfolio';
 import { LiveProfileBacktest } from '@/components/matrix/LiveProfileBacktest';
 import { BlendExecutorPanel } from '@/components/matrix/BlendExecutorPanel';
+import { LiveStrategiesPortfolio } from '@/components/matrix/LiveStrategiesPortfolio';
 import { useRankExpectancy } from '@/hooks/useRankExpectancy';
 
 type Env = 'practice' | 'live';
@@ -922,6 +923,9 @@ const SovereignMatrix = () => {
 
             {/* Experimental Strategies Lab */}
             <ExperimentalStrategies result={backtestResult} />
+
+            {/* Live Strategies Portfolio — All activated strategies + portfolio analytics */}
+            <LiveStrategiesPortfolio />
 
             <RankHeatmap
               comboResults={backtestResult.comboResults}
