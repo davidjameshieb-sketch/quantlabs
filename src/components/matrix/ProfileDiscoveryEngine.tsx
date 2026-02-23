@@ -206,7 +206,8 @@ function simulateProfile(
   const pf = grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? 999 : 0;
 
   const oosValidation = computeOOSValidation(tradeResults, 1000, 0.7, 50);
-  const validation = tradeResults.length >= 20 ? runValidationPipeline(tradeResults, sl.pips) : null;
+  // Validation pipeline is computed lazily on-demand (not during grid search) to prevent page freeze
+  const validation: ValidationResult | null = null;
 
   return {
     g1, g2, g3,
@@ -878,7 +879,43 @@ function FullEquityChart({ curve, profile }: { curve: Array<{ time: string; equi
   );
 }
 
-// ── Main Component ──
+// ── Lazy Validation Pipeline — computes only when user clicks expand ──
+function LazyValidationPanel({ tradeResults, slPips }: { tradeResults: number[]; slPips: number }) {
+  const [validation, setValidation] = useState<ValidationResult | null>(null);
+  const [computing, setComputing] = useState(false);
+
+  const handleExpand = useCallback(() => {
+    if (validation || computing || tradeResults.length < 20) return;
+    setComputing(true);
+    // Defer heavy computation to next frame to keep UI responsive
+    requestAnimationFrame(() => {
+      const result = runValidationPipeline(tradeResults, slPips);
+      setValidation(result);
+      setComputing(false);
+    });
+  }, [validation, computing, tradeResults, slPips]);
+
+  if (tradeResults.length < 20) return null;
+
+  if (!validation) {
+    return (
+      <div className="mt-2">
+        <button
+          onClick={(e) => { e.stopPropagation(); handleExpand(); }}
+          className="flex items-center gap-1.5 text-[8px] font-mono text-slate-500 hover:text-[#39ff14] transition-colors"
+        >
+          <Shield className="w-3 h-3" />
+          <span className="uppercase tracking-widest font-bold">
+            {computing ? 'Computing 3-Phase Validation...' : '3-Phase Validation Pipeline — Click to Run'}
+          </span>
+        </button>
+      </div>
+    );
+  }
+
+  return <ValidationPipelinePanel validation={validation} />;
+}
+
 interface Props {
   result: BacktestResult;
 }
@@ -1166,11 +1203,11 @@ export const ProfileDiscoveryEngine = ({ result }: Props) => {
                        {/* Time Period Breakdown */}
                        <TimePeriodBreakdown curve={p.equityCurve} />
 
-                       {/* 3-Phase Validation Pipeline */}
-                       {p.validation && <ValidationPipelinePanel validation={p.validation} />}
+                       {/* 3-Phase Validation Pipeline (lazy — computed on expand) */}
+                       <LazyValidationPanel tradeResults={p.tradeResults} slPips={p.slPips} />
 
                        {/* OOS Validation — The Lie Detector (legacy) */}
-                       {p.oosValidation && !p.validation && <OOSValidationPanel validation={p.oosValidation} />}
+                       {p.oosValidation && <OOSValidationPanel validation={p.oosValidation} />}
 
                        {/* Strategy Intelligence */}
                        <StrategyIntelligencePanel profile={p} allTop={topProfiles} idx={idx} />
