@@ -28,6 +28,7 @@ import { ExperimentalStrategies } from '@/components/matrix/ExperimentalStrategi
 import { AlphaDiscoveryEngine } from '@/components/matrix/AlphaDiscoveryEngine';
 import { EnsemblePortfolio } from '@/components/matrix/EnsemblePortfolio';
 import { LiveProfileBacktest } from '@/components/matrix/LiveProfileBacktest';
+import { BlendExecutorPanel } from '@/components/matrix/BlendExecutorPanel';
 import { useRankExpectancy } from '@/hooks/useRankExpectancy';
 
 type Env = 'practice' | 'live';
@@ -1099,6 +1100,9 @@ const SovereignMatrix = () => {
                     ))}
                   </div>
                 )}
+
+                {/* Decorrelated Portfolio Blend Auto-Executor */}
+                <BlendExecutorPanel />
 
                 {/* Live Trades */}
                 <LiveTradesPanel environment={environment} />

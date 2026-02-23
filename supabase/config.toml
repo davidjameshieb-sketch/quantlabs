@@ -161,3 +161,6 @@ verify_jwt = false
 
 [functions.profile-live-backtest]
 verify_jwt = false
+
+[functions.decorrelated-blend-executor]
+verify_jwt = false
