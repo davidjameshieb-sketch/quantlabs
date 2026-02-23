@@ -19,6 +19,21 @@ interface ActiveStrategy {
     slPips?: number;
     tpRatio?: number | string;
     session?: string;
+    pair?: string;
+    dna?: {
+      slMultiplier?: number;
+      tpMultiplier?: number;
+      direction?: number;
+      sessionFilter?: number;
+      [key: string]: unknown;
+    };
+    backtestMetrics?: {
+      trades?: number;
+      winRate?: number;
+      profitFactor?: number;
+      totalPips?: number;
+      maxDrawdown?: number;
+    };
   };
 }
 
@@ -60,19 +75,42 @@ function StatusDot({ status }: { status: string }) {
 }
 
 /** Convert an activated strategy to a BlendComponent for the edge function */
-function strategyToBlendComponent(config: ActiveStrategy['config'], weight: number): BlendComponent {
+function strategyToBlendComponent(config: ActiveStrategy['config'], weight: number): BlendComponent & { fixedPair?: string; atrSlMultiplier?: number; atrTpMultiplier?: number } {
+  const isRankBased = !!(config.predator && config.prey);
   const gates = config.gates || '';
+
+  if (isRankBased) {
+    return {
+      id: `${config.predator}v${config.prey}`,
+      predatorRank: config.predator!,
+      preyRank: config.prey!,
+      requireG3: gates.includes('G3'),
+      slType: 'fixed_custom',
+      entryType: 'order_block',
+      weight,
+      label: config.strategyName || `R${config.predator}vR${config.prey}`,
+      fixedPips: config.slPips || 30,
+      tpRatio: typeof config.tpRatio === 'number' ? config.tpRatio : 2.0,
+    };
+  }
+
+  // Alpha-discovery / pair-specific strategy
   return {
-    id: `${config.predator || '?'}v${config.prey || '?'}`,
-    predatorRank: config.predator || 1,
-    preyRank: config.prey || 8,
-    requireG3: gates.includes('G3'),
+    id: config.pair?.replace('_', '') || 'UNK',
+    predatorRank: 0,
+    preyRank: 0,
+    requireG3: false,
     slType: 'fixed_custom',
     entryType: 'order_block',
     weight,
-    label: config.strategyName || `R${config.predator}vR${config.prey}`,
-    fixedPips: config.slPips || 30,
-    tpRatio: typeof config.tpRatio === 'number' ? config.tpRatio : 2.0,
+    label: config.strategyName || config.pair || 'Unknown',
+    fixedPair: config.pair,
+    fixedPips: config.dna?.slMultiplier ? Math.round(config.dna.slMultiplier * 14) : 30,
+    tpRatio: config.dna?.tpMultiplier && config.dna?.slMultiplier
+      ? Math.round((config.dna.tpMultiplier / config.dna.slMultiplier) * 100) / 100
+      : 2.0,
+    atrSlMultiplier: config.dna?.slMultiplier,
+    atrTpMultiplier: config.dna?.tpMultiplier,
   };
 }
 
@@ -99,7 +137,7 @@ export const BlendExecutorPanel = () => {
     if (data) {
       const parsed = data
         .map(d => ({ agent_id: d.agent_id, config: parseConfig(d.config) }))
-        .filter(s => s.config.predator && s.config.prey); // Only rank-based strategies
+        .filter(s => (s.config.predator && s.config.prey) || s.config.pair); // Rank-based OR pair-specific
       setStrategies(parsed);
     }
     setLoadingStrategies(false);
@@ -121,16 +159,22 @@ export const BlendExecutorPanel = () => {
 
   // Build display specs from strategies
   const componentSpecs = useMemo(() => {
-    return strategies.map(s => ({
-      id: `${s.config.predator}v${s.config.prey}`,
-      weight: `${Math.round(100 / strategies.length)}%`,
-      gates: s.config.gates || 'G1+G2',
-      sl: `${s.config.slPips || 30} pip fixed`,
-      entry: 'Order block',
-      tp: typeof s.config.tpRatio === 'number' ? `${s.config.tpRatio}:1 R:R` : s.config.tpRatio === 'flip' ? 'Signal Flip' : '2:1 R:R',
-      session: s.config.session || 'all',
-      name: s.config.strategyName || `R${s.config.predator}vR${s.config.prey}`,
-    }));
+    return strategies.map(s => {
+      const isRank = !!(s.config.predator && s.config.prey);
+      return {
+        id: isRank ? `${s.config.predator}v${s.config.prey}` : s.config.pair?.replace('_', '/') || '?',
+        weight: `${Math.round(100 / strategies.length)}%`,
+        gates: isRank ? (s.config.gates || 'G1+G2') : 'DNA',
+        sl: isRank ? `${s.config.slPips || 30} pip fixed` : `${s.config.dna?.slMultiplier?.toFixed(1) || '?'}× ATR`,
+        entry: isRank ? 'Order block' : (s.config.engineSource || 'alpha'),
+        tp: isRank
+          ? (typeof s.config.tpRatio === 'number' ? `${s.config.tpRatio}:1 R:R` : '2:1 R:R')
+          : `${s.config.dna?.tpMultiplier?.toFixed(1) || '?'}× ATR`,
+        session: s.config.session || 'all',
+        name: s.config.strategyName || (isRank ? `R${s.config.predator}vR${s.config.prey}` : s.config.pair || '?'),
+        source: s.config.engineSource || 'unknown',
+      };
+    });
   }, [strategies]);
 
   const filled = lastResult?.cycle?.executed ?? 0;
