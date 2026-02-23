@@ -293,7 +293,7 @@ export function MultiTimeframeDiscovery() {
 
               {/* Summary Table */}
               <div className="overflow-x-auto">
-                <table className="w-full text-left min-w-[700px]">
+              <table className="w-full text-left min-w-[850px]">
                   <thead>
                     <tr className="text-[8px] text-slate-500 uppercase tracking-widest">
                       <th className="pb-2 pr-2">#</th>
@@ -303,7 +303,8 @@ export function MultiTimeframeDiscovery() {
                       <th className="pb-2 pr-2 text-right">Win%</th>
                       <th className="pb-2 pr-2 text-right">PF</th>
                       <th className="pb-2 pr-2 text-right">Pips/Trade</th>
-                      <th className="pb-2 pr-2 text-right">Return</th>
+                      <th className="pb-2 pr-2 text-right">Flat Return</th>
+                      <th className="pb-2 pr-2 text-right">Compounded</th>
                       <th className="pb-2 pr-2 text-right">Max DD</th>
                       <th className="pb-2 pr-2 text-right">Regime</th>
                       <th className="pb-2 text-center">Equity</th>
@@ -313,6 +314,9 @@ export function MultiTimeframeDiscovery() {
                     {profiles.map((p, i) => {
                       const pipsPerTrade = p.trades > 0 ? Math.round((p.totalPips / p.trades) * 10) / 10 : 0;
                       const tradesPerDay = p.trades > 0 ? Math.round((p.trades / dataDays) * 10) / 10 : 0;
+                      // Flat return: totalPips × $0.20/pip on $1,000 base
+                      const flatDollarReturn = p.totalPips * 0.20;
+                      const flatPctReturn = (flatDollarReturn / 1000) * 100;
                       const meetsTarget = pipsPerTrade >= 8 && p.maxDrawdown <= 0.15;
                       
                       return (
@@ -340,7 +344,11 @@ export function MultiTimeframeDiscovery() {
                           <td className="py-2 pr-2 text-right text-[9px] font-mono font-bold" style={{ color: pipsPerTrade >= 8 ? '#39ff14' : '#ff0055' }}>
                             {pipsPerTrade >= 0 ? '+' : ''}{pipsPerTrade}
                           </td>
-                          <td className="py-2 pr-2 text-right text-[9px] font-mono font-bold" style={{ color: p.totalReturn >= 100 ? '#39ff14' : '#f59e0b' }}>
+                          <td className="py-2 pr-2 text-right text-[9px] font-mono font-bold" style={{ color: flatPctReturn >= 50 ? '#39ff14' : flatPctReturn >= 0 ? '#f59e0b' : '#ff0055' }}>
+                            {flatPctReturn >= 0 ? '+' : ''}{flatPctReturn.toFixed(1)}%
+                            <div className="text-[6px] text-slate-500 font-normal">${(1000 + flatDollarReturn).toFixed(0)}</div>
+                          </td>
+                          <td className="py-2 pr-2 text-right text-[9px] font-mono" style={{ color: p.totalReturn >= 100 ? '#39ff14' : '#f59e0b' }}>
                             {p.totalReturn >= 0 ? '+' : ''}{p.totalReturn.toFixed(0)}%
                           </td>
                           <td className="py-2 pr-2 text-right text-[9px] font-mono" style={{ color: p.maxDrawdown <= 0.15 ? '#39ff14' : p.maxDrawdown <= 0.25 ? '#f59e0b' : '#ff0055' }}>
@@ -401,13 +409,15 @@ export function MultiTimeframeDiscovery() {
                         </div>
 
                         {/* Metrics Grid */}
-                        <div className="grid grid-cols-4 lg:grid-cols-8 gap-2 text-center">
+                        <div className="grid grid-cols-5 lg:grid-cols-10 gap-2 text-center">
                           {[
                             { label: 'TRADES', value: p.trades.toString(), color: '#39ff14' },
                             { label: 'WIN RATE', value: `${(p.winRate * 100).toFixed(1)}%`, color: p.winRate >= 0.55 ? '#39ff14' : '#f59e0b' },
                             { label: 'PROFIT FACTOR', value: p.profitFactor.toFixed(2), color: p.profitFactor >= 1.5 ? '#39ff14' : '#f59e0b' },
                             { label: 'PIPS/TRADE', value: `${pipsPerTrade >= 0 ? '+' : ''}${pipsPerTrade.toFixed(1)}`, color: pipsPerTrade >= 8 ? '#39ff14' : '#ff0055' },
                             { label: 'TOTAL RETURN', value: `${p.totalReturn.toFixed(0)}%`, color: p.totalReturn >= 100 ? '#39ff14' : '#f59e0b' },
+                            { label: 'FLAT RETURN', value: `${((p.totalPips * 0.20) / 1000 * 100).toFixed(1)}%`, color: (p.totalPips * 0.20 / 1000 * 100) >= 50 ? '#39ff14' : '#f59e0b' },
+                            { label: 'FLAT $', value: `$${(1000 + p.totalPips * 0.20).toFixed(0)}`, color: p.totalPips > 0 ? '#39ff14' : '#ff0055' },
                             { label: 'MAX DD', value: `${(p.maxDrawdown * 100).toFixed(1)}%`, color: p.maxDrawdown <= 0.15 ? '#39ff14' : '#ff0055' },
                             { label: 'SHARPE', value: (p.sharpe || 0).toFixed(2), color: (p.sharpe || 0) >= 1 ? '#39ff14' : '#f59e0b' },
                             { label: 'GROSS P/L', value: `${p.grossProfit.toFixed(0)}/${p.grossLoss.toFixed(0)}`, color: '#a855f7' },
