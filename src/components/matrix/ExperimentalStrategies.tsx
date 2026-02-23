@@ -172,17 +172,26 @@ export const ExperimentalStrategies = ({ result }: Props) => {
   const runExperimental = useCallback(async () => {
     setIsRunning(true);
     try {
-      // Fetch real live backtest results
-      const res = await fetch(
-        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/profile-live-backtest`,
-        {
+      const fnUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/profile-live-backtest`;
+      const anonKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+
+      // Split by predator rank to avoid CPU limits
+      const chunks = [1, 2, 3].map(rank =>
+        fetch(fnUrl, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY },
-          body: JSON.stringify({ environment, candles: candleCount, topN: 25, predatorRanks: [1, 2, 3] }),
-        }
+          headers: { 'Content-Type': 'application/json', apikey: anonKey, Authorization: `Bearer ${anonKey}` },
+          body: JSON.stringify({ environment, candles: candleCount, topN: 25, predatorRanks: [rank] }),
+        }).then(r => r.json())
       );
-      const data = await res.json();
-      if (!data.success) throw new Error(data.error || 'Backtest failed');
+
+      const results = await Promise.all(chunks);
+      const failed = results.find(r => !r.success);
+      if (failed) throw new Error(failed.error || 'Backtest failed');
+
+      // Merge results
+      const allTopResults = results.flatMap(r => r.topResults || []);
+      allTopResults.sort((a: any, b: any) => b.institutionalPF - a.institutionalPF || b.institutionalProfit - a.institutionalProfit);
+      const data = { success: true, topResults: allTopResults.slice(0, 25) };
 
       const liveResults: LiveResult[] = data.topResults || [];
       if (liveResults.length < 3) {

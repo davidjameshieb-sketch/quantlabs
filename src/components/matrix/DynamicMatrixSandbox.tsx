@@ -80,18 +80,27 @@ export const DynamicMatrixSandbox = ({ result }: Props) => {
   const fetchResults = useCallback(async () => {
     setIsLoading(true);
     try {
-      const res = await fetch(
-        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/profile-live-backtest`,
-        {
+      const fnUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/profile-live-backtest`;
+      const anonKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+
+      // Split by predator rank to avoid CPU limits
+      const chunks = [1, 2, 3].map(rank =>
+        fetch(fnUrl, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY },
-          body: JSON.stringify({ environment, candles: candleCount, topN: 100, predatorRanks: [1, 2, 3] }),
-        }
+          headers: { 'Content-Type': 'application/json', apikey: anonKey, Authorization: `Bearer ${anonKey}` },
+          body: JSON.stringify({ environment, candles: candleCount, topN: 100, predatorRanks: [rank] }),
+        }).then(r => r.json())
       );
-      const data = await res.json();
-      if (!data.success) throw new Error(data.error || 'Failed');
-      setAllResults(data.topResults || []);
-      setDateRange(data.dateRange || null);
+
+      const results = await Promise.all(chunks);
+      const failed = results.find(r => !r.success);
+      if (failed) throw new Error(failed.error || 'Failed');
+
+      const allTopResults = results.flatMap(r => r.topResults || []);
+      allTopResults.sort((a: any, b: any) => b.institutionalPF - a.institutionalPF || b.institutionalProfit - a.institutionalProfit);
+
+      setAllResults(allTopResults.slice(0, 100));
+      setDateRange(results[0]?.dateRange || null);
       setHasLoaded(true);
     } catch (err) {
       console.error('[Sandbox] Error:', err);
