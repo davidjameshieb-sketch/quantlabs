@@ -11,6 +11,7 @@ import {
 import type { BacktestResult } from '@/hooks/useRankExpectancy';
 import { TimePeriodBreakdown } from './TimePeriodBreakdown';
 import { OOSValidationPanel, type OOSValidationResult } from './OOSValidationPanel';
+import { StrategyActivationButtons } from './StrategyActivationButtons';
 
 interface StrategyDNA {
   rsiPeriod: number; rsiLow: number; rsiHigh: number; rsiMode: number;
@@ -953,6 +954,20 @@ function StrategyCard({ profile, idx, expandedProfile, setExpandedProfile, maxCo
                 }
                 return <OOSValidationPanel validation={oosValidation} />;
               })()}
+
+              <StrategyActivationButtons strategy={{
+                strategyId: `alpha-${profile.pair || 'multi'}-${idx}`,
+                strategyName: profile.strategyName || `Alpha Strategy #${idx + 1}`,
+                engineSource: 'alpha-discovery',
+                pair: profile.pair,
+                dna: profile.dna as any,
+                entryRules: profile.entryRules,
+                exitRules: profile.exitRules,
+                winRate: Math.round(profile.winRate * 100 * 10) / 10,
+                profitFactor: profile.profitFactor,
+                maxDrawdown: Math.round((profile.maxDrawdown ?? 0) * 100 * 10) / 10,
+                trades: profile.trades, totalPips: profile.totalPips,
+              }} />
 
               <div className="grid grid-cols-2 gap-3">
                 <div className="bg-slate-950/50 border border-slate-800/40 rounded-lg p-3">

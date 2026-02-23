@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { TimePeriodBreakdown } from './TimePeriodBreakdown';
 import { computeOOSValidation, OOSValidationPanel, type OOSValidationResult } from './OOSValidationPanel';
+import { StrategyActivationButtons, type StrategyConfig } from './StrategyActivationButtons';
 
 interface ProfileResult {
   rank: number;
@@ -641,6 +642,15 @@ export const ProfileDiscoveryEngine = ({ result }: Props) => {
                         ))}
                       </div>
                       <TimePeriodBreakdown curve={p.equityCurve} />
+                      <StrategyActivationButtons strategy={{
+                        strategyId: `R${p.predator}v${p.prey}-${p.slPips}p-${p.tpRatio}-${p.session}`,
+                        strategyName: `#${p.predator}v#${p.prey} · ${p.slLabel} · ${p.session}`,
+                        engineSource: 'profile-discovery',
+                        predator: p.predator, prey: p.prey, gates: p.gates,
+                        slPips: p.slPips, tpRatio: p.tpRatio, session: p.session,
+                        winRate: p.winRate, profitFactor: p.profitFactor, institutionalPF: p.institutionalPF,
+                        maxDrawdown: p.maxDrawdown, trades: p.trades, totalPips: p.totalPips, expectancy: p.expectancy,
+                      }} />
                       <StrategyIntelligencePanel profile={p} allTop={topProfiles} idx={idx} />
                       <CircuitBreakerPanel profile={p} />
                     </motion.button>
