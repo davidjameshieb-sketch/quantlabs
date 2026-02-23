@@ -113,8 +113,8 @@ export function LiveProfileBacktest() {
   const [result, setResult] = useState<MergedResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
-  const [candleCount, setCandleCount] = useState(5000);
-  const [environment, setEnvironment] = useState<'practice' | 'live'>('practice');
+  const [candleCount, setCandleCount] = useState(15000);
+  const [environment, setEnvironment] = useState<'practice' | 'live'>('live');
   const [progress, setProgress] = useState<{ completed: number; total: number; chunks: string[] }>({ completed: 0, total: 3, chunks: [] });
 
   const runBacktest = async () => {
@@ -230,8 +230,8 @@ export function LiveProfileBacktest() {
         >
           <option value={5000}>5,000 candles (~4 months)</option>
           <option value={10000}>10,000 candles (~8 months)</option>
+          <option value={15000}>15,000 candles (~14 months)</option>
           <option value={20000}>20,000 candles (~16 months)</option>
-          <option value={42000}>42,000 candles (~2.6 years)</option>
         </select>
 
         <select
