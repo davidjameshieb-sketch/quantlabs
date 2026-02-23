@@ -42,6 +42,9 @@ interface BlendComponent {
   label: string;
   fixedPips?: number;
   tpRatio?: number;
+  fixedPair?: string;         // If set, trade this specific pair instead of rank-based lookup
+  atrSlMultiplier?: number;   // ATR multiplier for SL (alpha-discovery strategies)
+  atrTpMultiplier?: number;   // ATR multiplier for TP (alpha-discovery strategies)
 }
 
 const DEFAULT_COMPONENTS: BlendComponent[] = [
@@ -295,8 +298,11 @@ Deno.serve(async (req) => {
         label: c.label || `#${c.predatorRank}v${c.preyRank}`,
         fixedPips: c.fixedPips,
         tpRatio: c.tpRatio,
+        fixedPair: c.fixedPair || undefined,
+        atrSlMultiplier: c.atrSlMultiplier || undefined,
+        atrTpMultiplier: c.atrTpMultiplier || undefined,
       }));
-      console.log(`[BLEND-BT] Using ${activeComponents.length} dynamic components from portfolio`);
+      console.log(`[BLEND-BT] Using ${activeComponents.length} dynamic components (${activeComponents.filter(c => c.fixedPair).length} fixed-pair, ${activeComponents.filter(c => !c.fixedPair).length} rank-based)`);
     }
 
     const maxWeight = Math.max(...activeComponents.map(c => c.weight));
@@ -401,6 +407,71 @@ Deno.serve(async (req) => {
       for (const comp of activeComponents) {
         if (activeTradeEnd[comp.id] !== undefined && si <= activeTradeEnd[comp.id]) continue;
 
+        let instrument: string;
+        let direction: 'long' | 'short';
+
+        if (comp.fixedPair) {
+          // Fixed-pair strategy (alpha-discovery): trade specific pair
+          instrument = comp.fixedPair;
+          if (!pairCandles[instrument]) continue;
+
+          const candles = pairCandles[instrument];
+          const candleIdx = pairTimeIndex[instrument]?.[snap.time];
+          if (candleIdx === undefined || candleIdx < 21) continue;
+
+          // Use order block as entry trigger for fixed-pair strategies
+          if (!checkEntryTrigger(comp, candles, candleIdx, 'long')) continue;
+
+          // Determine direction from price action (close vs open of current bar)
+          const bar = candles[candleIdx];
+          direction = bar.close > bar.open ? 'long' : 'short';
+
+          const currentPrice = bar.close;
+          const pv = pipValue(instrument);
+          const isJPY = instrument.includes('JPY');
+
+          // Use ATR-based SL/TP if available, otherwise fixed pips
+          let slDist: number;
+          let tpDist: number;
+          if (comp.atrSlMultiplier) {
+            const atr = computeATR(candles, candleIdx, 14);
+            slDist = atr * comp.atrSlMultiplier;
+            tpDist = atr * (comp.atrTpMultiplier || comp.atrSlMultiplier * 2);
+            if (slDist < 3 * pv) slDist = 10 * pv;
+          } else {
+            slDist = (comp.fixedPips || 30) * pv;
+            const compTpRatio = comp.tpRatio || 2.0;
+            tpDist = slDist * compTpRatio;
+          }
+
+          const slPrice = direction === 'long' ? currentPrice - slDist : currentPrice + slDist;
+          const tpPrice = direction === 'long' ? currentPrice + tpDist : currentPrice - tpDist;
+
+          const result = simulateTradeForward(candles, candleIdx, currentPrice, slPrice, tpPrice, direction, isJPY);
+          let tradePips = computePips(currentPrice, result.exitPrice, direction, isJPY);
+          tradePips = tradePips > 0 ? tradePips - FRICTION_PIPS : tradePips - FRICTION_PIPS;
+
+          allTrades.push({
+            componentId: comp.id, instrument, direction, entryPrice: currentPrice,
+            exitPrice: result.exitPrice, slPrice, tpPrice,
+            pips: Math.round(tradePips * 10) / 10, weight: comp.weight,
+            entryTime: snap.time, exitTime: candles[result.exitIdx].time,
+            slType: comp.atrSlMultiplier ? `atr_${comp.atrSlMultiplier}x` : comp.slType,
+            entryType: comp.entryType,
+          });
+
+          const cs = componentStats[comp.id];
+          cs.trades++;
+          cs.totalPips += tradePips;
+          if (tradePips > 0) { cs.wins++; cs.grossWin += tradePips; }
+          else { cs.losses++; cs.grossLoss += Math.abs(tradePips); }
+
+          const exitSnapIdx = rankSnaps.findIndex((s, idx) => idx > si && s.time >= candles[result.exitIdx].time);
+          activeTradeEnd[comp.id] = exitSnapIdx >= 0 ? exitSnapIdx : rankSnaps.length;
+          continue;
+        }
+
+        // Rank-based strategy (original logic)
         const predCurrency = ALL_CURRENCIES.find(c => snap.ranks[c] === comp.predatorRank);
         const preyCurrency = ALL_CURRENCIES.find(c => snap.ranks[c] === comp.preyRank);
         if (!predCurrency || !preyCurrency) continue;
@@ -408,8 +479,8 @@ Deno.serve(async (req) => {
         const instrInfo = findInstrument(predCurrency, preyCurrency);
         if (!instrInfo) continue;
 
-        const { instrument, inverted } = instrInfo;
-        const direction: 'long' | 'short' = inverted ? 'short' : 'long';
+        instrument = instrInfo.instrument;
+        direction = instrInfo.inverted ? 'short' : 'long';
         const candles = pairCandles[instrument];
         if (!candles) continue;
 
@@ -433,19 +504,11 @@ Deno.serve(async (req) => {
         tradePips = tradePips > 0 ? tradePips - FRICTION_PIPS : tradePips - FRICTION_PIPS;
 
         const trade: TradeResult = {
-          componentId: comp.id,
-          instrument,
-          direction,
-          entryPrice: currentPrice,
-          exitPrice: result.exitPrice,
-          slPrice,
-          tpPrice,
-          pips: Math.round(tradePips * 10) / 10,
-          weight: comp.weight,
-          entryTime: snap.time,
-          exitTime: candles[result.exitIdx].time,
-          slType: comp.slType,
-          entryType: comp.entryType,
+          componentId: comp.id, instrument, direction, entryPrice: currentPrice,
+          exitPrice: result.exitPrice, slPrice, tpPrice,
+          pips: Math.round(tradePips * 10) / 10, weight: comp.weight,
+          entryTime: snap.time, exitTime: candles[result.exitIdx].time,
+          slType: comp.slType, entryType: comp.entryType,
         };
 
         allTrades.push(trade);
