@@ -2,25 +2,39 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { toast } from 'sonner';
 
+export interface BlendExecution {
+  component: string;
+  label: string;
+  pair: string;
+  direction: string;
+  status: string;
+  units?: number;
+  weight?: number;
+  entryPrice?: number;
+  slPrice?: number;
+  tpPrice?: number;
+  slType?: string;
+  entryTrigger?: string;
+  oandaTradeId?: string;
+  error?: string;
+  skipReason?: string;
+}
+
 export interface BlendCycleResult {
   success: boolean;
   reason?: string;
+  detail?: string;
   cycle?: {
-    signalsScanned: number;
-    candidatesMatched: number;
+    componentsEvaluated: number;
     executed: number;
-    rejected: number;
+    skipped: number;
+    errors: number;
     existingPositions: number;
     maxPositions: number;
   };
-  executions?: Array<{
-    pair: string;
-    direction: string;
-    status: string;
-    oandaTradeId?: string;
-    entryPrice?: number;
-    error?: string;
-  }>;
+  currencyRanks?: Record<string, number>;
+  sortedCurrencies?: string[];
+  executions?: BlendExecution[];
   timestamp?: string;
   error?: string;
 }
@@ -69,7 +83,6 @@ export function useBlendExecutor() {
   const startAuto = useCallback(() => {
     if (intervalRef.current) return;
     setAutoMode(true);
-    // Run immediately, then every 10 minutes (aligned with sovereign-matrix 30m candles)
     runCycle();
     intervalRef.current = setInterval(runCycle, 10 * 60 * 1000);
     toast.success('Decorrelated Blend auto-executor STARTED (10min cycles)');
@@ -84,7 +97,6 @@ export function useBlendExecutor() {
     toast.info('Decorrelated Blend auto-executor STOPPED');
   }, []);
 
-  // Cleanup on unmount
   useEffect(() => {
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
