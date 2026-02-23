@@ -90,20 +90,39 @@ async function fetchCandlePage(instrument: string, count: number, env: "practice
 async function fetchCandles(instrument: string, count: number, env: "practice" | "live", token: string): Promise<Candle[]> {
   const PAGE_SIZE = 5000;
   if (count <= PAGE_SIZE) return fetchCandlePage(instrument, count, env, token);
+
+  // Paginated fetch: walk backwards using `to` cursor
   const all: Candle[] = [];
   let remaining = count;
   let cursor: string | undefined = undefined;
-  while (remaining > 0) {
+  let iteration = 0;
+  const MAX_ITERATIONS = 12; // Safety: max 12 pages × 5000 = 60,000 candles
+
+  while (remaining > 0 && iteration < MAX_ITERATIONS) {
+    iteration++;
     const batch = Math.min(remaining, PAGE_SIZE);
     const page = await fetchCandlePage(instrument, batch, env, token, cursor);
+    console.log(`[LIVE-BT v6] ${instrument} page ${iteration}: got ${page.length} candles (requested ${batch}, remaining ${remaining}, cursor=${cursor?.slice(0,20) ?? 'none'})`);
     if (page.length === 0) break;
+
     all.unshift(...page);
     remaining -= page.length;
-    if (page.length < batch) break;
+
+    // OANDA often returns count-1 (filters incomplete candle). Only stop if significantly fewer.
+    if (page.length < batch * 0.9) {
+      console.log(`[LIVE-BT v6] ${instrument}: received significantly fewer than requested (${page.length} < ${batch}), ending pagination`);
+      break;
+    }
+
+    // Set cursor to earliest candle's time for next backward page
     cursor = page[0].time;
   }
+
+  // Deduplicate by timestamp
   const seen = new Set<string>();
-  return all.filter(c => { if (seen.has(c.time)) return false; seen.add(c.time); return true; });
+  const deduped = all.filter(c => { if (seen.has(c.time)) return false; seen.add(c.time); return true; });
+  console.log(`[LIVE-BT v6] ${instrument}: total ${deduped.length} unique candles after ${iteration} pages`);
+  return deduped;
 }
 
 // ── Gate helpers (return bitwise flags) ──
@@ -452,7 +471,7 @@ Deno.serve(async (req) => {
 
     const availableCrosses = ALL_28_CROSSES.filter(c => OANDA_AVAILABLE.has(c.instrument));
 
-    // ── Step 1: Fetch candles in batches of 7 ──
+    // ── Step 1: Fetch candles in batches of 7 (memory-safe) ──
     console.log(`[LIVE-BT v6] Sovereign-Alpha — predators [${predatorRanks}] — ${candleCount} candles (${environment})`);
     const pairCandles: Record<string, Candle[]> = {};
     for (let i = 0; i < availableCrosses.length; i += 7) {
@@ -467,7 +486,7 @@ Deno.serve(async (req) => {
         }
       }
     }
-    console.log(`[LIVE-BT v6] Loaded ${Object.keys(pairCandles).length} pairs`);
+    console.log(`[LIVE-BT v6] Loaded ${Object.keys(pairCandles).length} pairs, avg candles: ${Math.round(Object.values(pairCandles).reduce((s, c) => s + c.length, 0) / Object.keys(pairCandles).length)}`);
 
     // ── Step 2: Build time index + rank snapshots ──
     const pairTimeIndex: Record<string, Record<string, number>> = {};
