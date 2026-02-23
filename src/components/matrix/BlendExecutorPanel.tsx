@@ -146,8 +146,7 @@ export const BlendExecutorPanel = () => {
 
     if (data) {
       const parsed = data
-        .map(d => ({ agent_id: d.agent_id, config: parseConfig(d.config) }))
-        .filter(s => (s.config.predator && s.config.prey) || s.config.pair); // Rank-based OR pair-specific
+        .map(d => ({ agent_id: d.agent_id, config: parseConfig(d.config) }));
       setStrategies(parsed);
     }
     setLoadingStrategies(false);
