@@ -8,6 +8,7 @@ import {
   Cpu, Trophy, AlertTriangle,
   Play, Loader2, ChevronDown, ChevronUp, ShieldCheck, Flame,
 } from 'lucide-react';
+import { StrategyActivationButtons } from './StrategyActivationButtons';
 
 interface LiveProfileResult {
   predator: number;
@@ -442,7 +443,18 @@ export function LiveProfileBacktest() {
                           exit={{ height: 0, opacity: 0 }}
                           className="border-t border-slate-700/30"
                         >
-                          <div className="p-4 grid grid-cols-2 lg:grid-cols-4 gap-4">
+                          <div className="p-4 space-y-4">
+                            <StrategyActivationButtons strategy={{
+                              strategyId: `R${profile.predator}v${profile.prey}-${profile.slPips}p-${profile.tpRatio}-${profile.session}`,
+                              strategyName: `R${profile.predator}v${profile.prey} · ${profile.slPips}p SL · ${formatTP(profile.tpRatio)} · ${profile.session}`,
+                              engineSource: 'live-backtest',
+                              predator: profile.predator, prey: profile.prey, gates: profile.gates,
+                              slPips: profile.slPips, tpRatio: profile.tpRatio, session: profile.session,
+                              winRate: profile.winRate, profitFactor: profile.profitFactor,
+                              institutionalPF: profile.institutionalPF, maxDrawdown: profile.maxDrawdown,
+                              trades: profile.trades, totalPips: profile.totalPips, expectancy: profile.expectancy,
+                            }} />
+                            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
                             {/* Institutional Stats */}
                             <div className="space-y-2">
                               <div className="text-[9px] font-bold text-emerald-400 uppercase tracking-widest flex items-center gap-1 mb-1">
@@ -492,6 +504,7 @@ export function LiveProfileBacktest() {
                                 </div>
                               </div>
                             )}
+                          </div>
                           </div>
                         </motion.div>
                       )}

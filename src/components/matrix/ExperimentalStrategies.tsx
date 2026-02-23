@@ -10,6 +10,7 @@ import {
   AlertTriangle,
 } from 'lucide-react';
 import { TimePeriodBreakdown } from './TimePeriodBreakdown';
+import { StrategyActivationButtons } from './StrategyActivationButtons';
 
 // ── Circuit Breaker Types ──
 interface CircuitBreakerData {
@@ -502,6 +503,13 @@ export const ExperimentalStrategies = ({ result }: Props) => {
                             <div className="text-[8px] font-bold text-slate-400 uppercase tracking-widest mb-2 flex items-center gap-1.5"><BarChart3 className="w-3 h-3" style={{ color: strat.color }} />Strategy Components ({strat.components.length})</div>
                             <div className="space-y-1">{strat.components.map((comp, i) => (<div key={i} className="flex items-center gap-2 text-[8px] font-mono text-slate-400"><div className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: strat.color }} />{comp}</div>))}</div>
                           </div>
+                          <StrategyActivationButtons strategy={{
+                            strategyId: strat.id,
+                            strategyName: strat.name,
+                            engineSource: 'experimental-lab',
+                            winRate: strat.winRate, profitFactor: strat.profitFactor,
+                            maxDrawdown: strat.maxDrawdown, trades: strat.trades, totalPips: strat.netPips,
+                          }} />
                           <div className="bg-slate-950/40 border rounded-lg p-3 space-y-3" style={{ borderColor: strat.circuitBreaker.status === 'BROKEN' ? '#ff005555' : strat.circuitBreaker.status === 'WARNING' ? '#ff880055' : '#1e293b40' }}>
                             <div className="flex items-center justify-between">
                               <div className="flex items-center gap-1.5">

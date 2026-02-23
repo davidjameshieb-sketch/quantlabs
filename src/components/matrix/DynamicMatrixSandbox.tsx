@@ -10,6 +10,7 @@ import {
   Crosshair, Clock, Cpu,
 } from 'lucide-react';
 import { TimePeriodBreakdown } from './TimePeriodBreakdown';
+import { StrategyActivationButtons } from './StrategyActivationButtons';
 
 // ── Live backtest result type ──
 interface LiveResult {
@@ -317,6 +318,20 @@ export const DynamicMatrixSandbox = ({ result }: Props) => {
                     <MiniEquityChart curve={equityCurve} />
                     <TimePeriodBreakdown curve={equityCurve} />
                   </div>
+                )}
+
+                {/* Activation Buttons */}
+                {selectedResult && (
+                  <StrategyActivationButtons strategy={{
+                    strategyId: `R${selectedResult.predator}v${selectedResult.prey}-${selectedResult.slPips}p-${selectedResult.tpRatio}-${selectedResult.session}`,
+                    strategyName: `#${selectedResult.predator}v#${selectedResult.prey} · ${selectedResult.slPips}p SL · ${selectedResult.session}`,
+                    engineSource: 'sandbox',
+                    predator: selectedResult.predator, prey: selectedResult.prey, gates: selectedResult.gates,
+                    slPips: selectedResult.slPips, tpRatio: selectedResult.tpRatio, session: selectedResult.session,
+                    winRate: selectedResult.winRate, profitFactor: selectedResult.profitFactor,
+                    institutionalPF: selectedResult.institutionalPF, maxDrawdown: selectedResult.maxDrawdown,
+                    trades: selectedResult.trades, totalPips: selectedResult.totalPips, expectancy: selectedResult.expectancy,
+                  }} />
                 )}
 
                 {/* Profile Details */}
