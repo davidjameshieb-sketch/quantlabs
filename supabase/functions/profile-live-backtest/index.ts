@@ -278,6 +278,8 @@ function simulateCombo(
   signals: CompactSignal[],
 ): LiveProfileResult | null {
   const exit = EXIT_MODES[exitIdx];
+  // Flat position sizing: 2,000 units = $0.20/pip for realistic P&L
+  const FLAT_UNITS = 2000;
   let equity = 1000, peak = 1000, maxDD = 0;
   let wins = 0, losses = 0, totalPips = 0, grossProfit = 0, grossLoss = 0;
 
@@ -292,9 +294,8 @@ function simulateCombo(
 
     const tradePips = sig.exitPips[exitIdx];
     const pipVal = sig.isJPY ? 0.01 : 0.0001;
-    const riskAmt = equity * 0.05;
-    const dynUnits = exit.slPips > 0 ? riskAmt / (exit.slPips * pipVal) : 2000;
-    equity += tradePips * (dynUnits * pipVal);
+    const pnl = tradePips * FLAT_UNITS * pipVal;
+    equity += pnl;
     totalPips += tradePips;
 
     if (tradePips > 0) { wins++; grossProfit += tradePips; }
@@ -328,7 +329,7 @@ function simulateCombo(
 function buildEquityCurve(r: LiveProfileResult, signals: CompactSignal[], exitIdx: number): Array<{ time: string; equity: number }> {
   const gate = GATE_COMBOS.find(g => g.label === r.gates)!;
   const sessionIdx = SESSIONS.findIndex(s => s.id === r.session);
-  const exit = EXIT_MODES[exitIdx];
+  const FLAT_UNITS = 2000;
   const curve: Array<{ time: string; equity: number }> = [];
   let equity = 1000;
 
@@ -338,8 +339,8 @@ function buildEquityCurve(r: LiveProfileResult, signals: CompactSignal[], exitId
 
     const pipVal = sig.isJPY ? 0.01 : 0.0001;
     const tradePips = sig.exitPips[exitIdx];
-    const dynUnits = exit.slPips > 0 ? (equity * 0.05) / (exit.slPips * pipVal) : 2000;
-    equity += tradePips * (dynUnits * pipVal);
+    const pnl = tradePips * FLAT_UNITS * pipVal;
+    equity += pnl;
     curve.push({ time: sig.time, equity: Math.round(equity * 100) / 100 });
   }
 
