@@ -1,11 +1,5 @@
-// Decorrelated Portfolio Blend — Precision Executor v2
-// Mirrors the exact 5-component blend from Experimental Strategies Lab:
-//
-// #3v#8 · G1+G2+G3 · Swing low (5-bar) · Z-OFI > 2.0 · All Sessions · 44% weight
-// #1v#6 · G1+G2+G3 · Atlas Wall -10  · Order block    · All Sessions · 22% weight
-// #1v#7 · G1+G2+G3 · 2.0x ATR        · Order block    · All Sessions · 15% weight
-// #3v#7 · G1+G2    · 30 pip fixed     · Order block    · All Sessions · 11% weight
-// #3v#6 · G1+G2    · 2.0x ATR         · Order block    · All Sessions ·  9% weight
+// Decorrelated Portfolio Blend — Precision Executor v3
+// Supports dynamic portfolio from agent_configs OR hardcoded 5-component blend fallback.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
@@ -22,8 +16,7 @@ const OANDA_HOSTS: Record<string, string> = {
 
 const ENVIRONMENT = 'practice' as const;
 const TOTAL_RISK_UNITS = 5000;
-const MAX_POSITIONS = 5;
-const TP_RATIO = 2.0; // 2:1 R:R on all components
+const TP_RATIO = 2.0;
 
 const OANDA_AVAILABLE = new Set([
   'EUR_USD', 'EUR_GBP', 'EUR_AUD', 'EUR_NZD', 'EUR_CAD', 'EUR_CHF', 'EUR_JPY',
@@ -35,20 +28,23 @@ const OANDA_AVAILABLE = new Set([
   'CHF_JPY',
 ]);
 
-// ── Component Definitions (exact mirror of backtest) ──
+// ── Component Definitions ──
 
 interface BlendComponent {
   id: string;
   predatorRank: number;
   preyRank: number;
   requireG3: boolean;
-  slType: 'swing_low_5' | 'atlas_wall_10' | 'atr_2x' | 'fixed_30';
+  slType: 'swing_low_5' | 'atlas_wall_10' | 'atr_2x' | 'fixed_30' | 'fixed_custom';
   entryType: 'z_ofi_2' | 'order_block';
   weight: number;
   label: string;
+  fixedPips?: number;
+  tpRatio?: number;
 }
 
-const COMPONENTS: BlendComponent[] = [
+// Hardcoded fallback (original 5-component blend)
+const DEFAULT_COMPONENTS: BlendComponent[] = [
   { id: '3v8', predatorRank: 3, preyRank: 8, requireG3: true,  slType: 'swing_low_5',   entryType: 'z_ofi_2',     weight: 0.44, label: '#3v#8 · G1+G2+G3 · Swing low (5-bar) · Z-OFI > 2.0' },
   { id: '1v6', predatorRank: 1, preyRank: 6, requireG3: true,  slType: 'atlas_wall_10', entryType: 'order_block', weight: 0.22, label: '#1v#6 · G1+G2+G3 · Atlas Wall -10 · Order block' },
   { id: '1v7', predatorRank: 1, preyRank: 7, requireG3: true,  slType: 'atr_2x',        entryType: 'order_block', weight: 0.15, label: '#1v#7 · G1+G2+G3 · 2.0x ATR · Order block' },
@@ -109,21 +105,18 @@ function findInstrument(cur1: string, cur2: string): { instrument: string; inver
 
 // ── Technical Indicators ──
 
-// ATR (14 period)
 function computeATR(candles: Candle[], period = 14): number {
   if (candles.length < period) return 0;
   const recent = candles.slice(-period);
   return recent.reduce((sum, c) => sum + (c.high - c.low), 0) / period;
 }
 
-// Swing low (5-bar) for longs, swing high for shorts
 function computeSwingStop(candles: Candle[], bars: number, direction: 'long' | 'short'): number {
   const recent = candles.slice(-bars);
   if (direction === 'long') return Math.min(...recent.map(c => c.low));
   return Math.max(...recent.map(c => c.high));
 }
 
-// Atlas Block: highest volume-efficiency candle in last 20
 function findAtlasBlock(candles: Candle[], period = 20): { blockHigh: number; blockLow: number } | null {
   if (candles.length < period) return null;
   const recent = candles.slice(-period);
@@ -139,7 +132,6 @@ function findAtlasBlock(candles: Candle[], period = 20): { blockHigh: number; bl
   return null;
 }
 
-// Z-OFI: Z-score of Order Flow Imbalance
 function computeZOFI(candles: Candle[], period = 20): number {
   if (candles.length < period + 1) return 0;
   const slice = candles.slice(-(period + 1));
@@ -155,7 +147,6 @@ function computeZOFI(candles: Candle[], period = 20): number {
   return (current - mean) / std;
 }
 
-// Gate 2: Atlas Snap — 20-period breakout excluding current candle
 function computeAtlasSnap(candles: Candle[], period = 20): { highest: number; lowest: number } {
   const lookback = candles.slice(0, -1);
   const slice = lookback.length >= period ? lookback.slice(-period) : lookback;
@@ -165,7 +156,6 @@ function computeAtlasSnap(candles: Candle[], period = 20): { highest: number; lo
   };
 }
 
-// Gate 3: David Vector — Linear Regression slope
 function lrSlope(values: number[]): number {
   const n = values.length;
   if (n < 2) return 0;
@@ -190,7 +180,7 @@ function computeSLDistance(
     case 'swing_low_5': {
       const swingLevel = computeSwingStop(candles, 5, direction);
       const dist = Math.abs(currentPrice - swingLevel);
-      return dist < 3 * pv ? 10 * pv : dist; // min 3 pips fallback to 10
+      return dist < 3 * pv ? 10 * pv : dist;
     }
     case 'atlas_wall_10': {
       const block = findAtlasBlock(candles, 20);
@@ -198,7 +188,7 @@ function computeSLDistance(
         const wallLevel = direction === 'long' ? block.blockLow : block.blockHigh;
         return Math.abs(currentPrice - wallLevel) + 10 * pv;
       }
-      return 15 * pv; // fallback
+      return 15 * pv;
     }
     case 'atr_2x': {
       const atr = computeATR(candles, 14);
@@ -206,7 +196,9 @@ function computeSLDistance(
       return dist < 5 * pv ? 10 * pv : dist;
     }
     case 'fixed_30':
-      return 30 * pv;
+      return (comp.fixedPips || 30) * pv;
+    case 'fixed_custom':
+      return (comp.fixedPips || 30) * pv;
   }
 }
 
@@ -222,7 +214,6 @@ function checkEntryTrigger(
     const pass = direction === 'long' ? zofi > 2.0 : zofi < -2.0;
     return { pass, detail: `Z-OFI=${zofi.toFixed(2)}` };
   }
-  // order_block: require atlas block existence
   const block = findAtlasBlock(candles, 20);
   if (!block) return { pass: false, detail: 'No order block found' };
   return { pass: true, detail: `OB=[${block.blockLow.toFixed(5)}-${block.blockHigh.toFixed(5)}]` };
@@ -242,6 +233,29 @@ Deno.serve(async (req) => {
       Deno.env.get('SUPABASE_URL')!,
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
     );
+
+    const body = await req.json().catch(() => ({}));
+
+    // ── Resolve active components (dynamic portfolio or hardcoded fallback) ──
+    let activeComponents: BlendComponent[] = DEFAULT_COMPONENTS;
+    let maxPositions = 5;
+
+    if (body.components && Array.isArray(body.components) && body.components.length > 0) {
+      activeComponents = body.components.map((c: any) => ({
+        id: c.id || `${c.predatorRank}v${c.preyRank}`,
+        predatorRank: c.predatorRank,
+        preyRank: c.preyRank,
+        requireG3: c.requireG3 ?? false,
+        slType: c.slType || 'fixed_custom',
+        entryType: c.entryType || 'order_block',
+        weight: c.weight,
+        label: c.label || `#${c.predatorRank}v${c.preyRank}`,
+        fixedPips: c.fixedPips,
+        tpRatio: c.tpRatio,
+      }));
+      maxPositions = activeComponents.length;
+      console.log(`[BLEND] Using ${activeComponents.length} dynamic components from portfolio`);
+    }
 
     // ── Step 1: Circuit breaker check ──
     const { data: activeBreakers } = await sb
@@ -270,8 +284,8 @@ Deno.serve(async (req) => {
 
     const openPairs = new Set((openPositions || []).map(p => p.currency_pair));
 
-    if (openPairs.size >= MAX_POSITIONS) {
-      console.log(`[BLEND] Max positions (${MAX_POSITIONS}) reached`);
+    if (openPairs.size >= maxPositions) {
+      console.log(`[BLEND] Max positions (${maxPositions}) reached`);
       return new Response(
         JSON.stringify({ success: true, reason: 'max_positions_reached', openCount: openPairs.size }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
@@ -306,7 +320,7 @@ Deno.serve(async (req) => {
 
     console.log(`[BLEND] Ranks: ${sortedCurrencies.map((c, i) => `#${i + 1}=${c}`).join(' ')}`);
 
-    // ── Step 4: Spread guard check (one query for all) ──
+    // ── Step 4: Spread guard check ──
     const { data: spreadGuards } = await sb
       .from('gate_bypasses')
       .select('pair')
@@ -322,7 +336,7 @@ Deno.serve(async (req) => {
     const oandaHost = OANDA_HOSTS[ENVIRONMENT];
     const userId = '00000000-0000-0000-0000-000000000000';
 
-    const slotsAvailable = MAX_POSITIONS - openPairs.size;
+    const slotsAvailable = maxPositions - openPairs.size;
     let slotsUsed = 0;
 
     const executionResults: Array<{
@@ -343,13 +357,12 @@ Deno.serve(async (req) => {
       skipReason?: string;
     }> = [];
 
-    for (const comp of COMPONENTS) {
+    for (const comp of activeComponents) {
       if (slotsUsed >= slotsAvailable) {
         executionResults.push({ component: comp.id, label: comp.label, pair: '-', direction: '-', status: 'skipped', skipReason: 'No slots available' });
         continue;
       }
 
-      // Find currencies at the required ranks
       const predCurrency = sortedCurrencies[comp.predatorRank - 1];
       const preyCurrency = sortedCurrencies[comp.preyRank - 1];
 
@@ -358,7 +371,6 @@ Deno.serve(async (req) => {
         continue;
       }
 
-      // Find OANDA instrument
       const instrInfo = findInstrument(predCurrency, preyCurrency);
       if (!instrInfo) {
         executionResults.push({ component: comp.id, label: comp.label, pair: `${predCurrency}/${preyCurrency}`, direction: '-', status: 'skipped', skipReason: 'No OANDA instrument' });
@@ -366,22 +378,18 @@ Deno.serve(async (req) => {
       }
 
       const { instrument, inverted } = instrInfo;
-      // If predator is base → LONG; if inverted (prey is base) → SHORT
       const direction: 'long' | 'short' = inverted ? 'short' : 'long';
 
-      // Duplicate check
       if (openPairs.has(instrument)) {
         executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction, status: 'skipped', skipReason: 'Already open' });
         continue;
       }
 
-      // Spread guard
       if (blockedPairs.has(instrument) || blockedPairs.has(instrument.replace('_', '/'))) {
         executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction, status: 'skipped', skipReason: 'Spread guard active' });
         continue;
       }
 
-      // Fetch candles for this pair
       const candles = await fetchCandles(instrument, 30, apiToken);
       if (!candles || candles.length < 21) {
         executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction, status: 'skipped', skipReason: `Insufficient candles (${candles?.length ?? 0})` });
@@ -392,7 +400,7 @@ Deno.serve(async (req) => {
       const pv = pipValue(instrument);
       const prec = pricePrecision(instrument);
 
-      // ── Gate 2: Atlas Snap (20-period breakout) ──
+      // Gate 2: Atlas Snap
       const snap = computeAtlasSnap(candles, 20);
       const gate2 = direction === 'long' ? currentPrice > snap.highest : currentPrice < snap.lowest;
 
@@ -401,7 +409,7 @@ Deno.serve(async (req) => {
         continue;
       }
 
-      // ── Gate 3: David Vector (if required) ──
+      // Gate 3: David Vector (if required)
       if (comp.requireG3) {
         const closes = candles.slice(-20).map(c => c.close);
         const slope = lrSlope(closes);
@@ -412,19 +420,20 @@ Deno.serve(async (req) => {
         }
       }
 
-      // ── Entry Trigger ──
+      // Entry Trigger
       const trigger = checkEntryTrigger(comp, candles, direction);
       if (!trigger.pass) {
         executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction, status: 'skipped', skipReason: `Entry trigger fail: ${trigger.detail}` });
         continue;
       }
 
-      // ── Compute SL/TP ──
+      // Compute SL/TP
       const slDistance = computeSLDistance(comp, candles, direction, currentPrice, pv);
+      const compTpRatio = comp.tpRatio || TP_RATIO;
       const slPrice = direction === 'long' ? currentPrice - slDistance : currentPrice + slDistance;
-      const tpPrice = direction === 'long' ? currentPrice + slDistance * TP_RATIO : currentPrice - slDistance * TP_RATIO;
+      const tpPrice = direction === 'long' ? currentPrice + slDistance * compTpRatio : currentPrice - slDistance * compTpRatio;
 
-      // ── Weighted position sizing ──
+      // Weighted position sizing
       const units = Math.max(1, Math.round(TOTAL_RISK_UNITS * comp.weight));
       const signedUnits = direction === 'short' ? -units : units;
 
@@ -435,7 +444,6 @@ Deno.serve(async (req) => {
       console.log(`[BLEND] 🎯 ${comp.id} → ${instrument} ${direction.toUpperCase()} ${units}u | ${gateLabel} | SL=${comp.slType}(${slPips}p) | Entry=${trigger.detail}`);
 
       try {
-        // Insert pending order
         const { data: dbOrder, error: dbErr } = await sb
           .from('oanda_orders')
           .insert({
@@ -493,7 +501,6 @@ Deno.serve(async (req) => {
           continue;
         }
 
-        // Extract fill
         const oandaOrderId = oandaData.orderCreateTransaction?.id || oandaData.orderFillTransaction?.orderID || null;
         const oandaTradeId = oandaData.orderFillTransaction?.tradeOpened?.tradeID || oandaData.orderFillTransaction?.id || null;
         const filledPrice = oandaData.orderFillTransaction?.price ? parseFloat(oandaData.orderFillTransaction.price) : null;
@@ -539,7 +546,6 @@ Deno.serve(async (req) => {
         slotsUsed++;
         openPairs.add(instrument);
 
-        // Rate-limit cooldown between orders
         await new Promise(r => setTimeout(r, 300));
 
       } catch (execErr) {
@@ -558,12 +564,12 @@ Deno.serve(async (req) => {
       JSON.stringify({
         success: true,
         cycle: {
-          componentsEvaluated: COMPONENTS.length,
+          componentsEvaluated: activeComponents.length,
           executed: filled,
           skipped,
           errors,
           existingPositions: openPairs.size,
-          maxPositions: MAX_POSITIONS,
+          maxPositions,
         },
         currencyRanks,
         sortedCurrencies,

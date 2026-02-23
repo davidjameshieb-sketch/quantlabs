@@ -1,6 +1,6 @@
-// Blend Live Backtest — 100% Forward Test of Decorrelated Portfolio Blend
-// Tests exact 5-component portfolio against real OANDA M30 candles.
-// Mirrors executor mechanics: gates, entry triggers, bespoke SL/TP, weighted sizing.
+// Blend Live Backtest — 100% Forward Test of Portfolio Blend
+// Supports dynamic component portfolio from request body OR hardcoded 5-component fallback.
+// Tests portfolio against real OANDA M30 candles with gates, entry triggers, bespoke SL/TP.
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -29,20 +29,22 @@ for (let i = 0; i < ALL_CURRENCIES.length; i++) {
 
 interface Candle { time: string; open: number; high: number; low: number; close: number; volume: number; }
 
-// ── Blend Component Definitions (exact mirror of executor) ──
+// ── Blend Component Definitions ──
 
 interface BlendComponent {
   id: string;
   predatorRank: number;
   preyRank: number;
   requireG3: boolean;
-  slType: 'swing_low_5' | 'atlas_wall_10' | 'atr_2x' | 'fixed_30';
+  slType: 'swing_low_5' | 'atlas_wall_10' | 'atr_2x' | 'fixed_30' | 'fixed_custom';
   entryType: 'z_ofi_2' | 'order_block';
   weight: number;
   label: string;
+  fixedPips?: number;
+  tpRatio?: number;
 }
 
-const COMPONENTS: BlendComponent[] = [
+const DEFAULT_COMPONENTS: BlendComponent[] = [
   { id: '3v8', predatorRank: 3, preyRank: 8, requireG3: true,  slType: 'swing_low_5',   entryType: 'z_ofi_2',     weight: 0.44, label: '#3v#8 · G1+G2+G3 · Swing low (5-bar) · Z-OFI > 2.0' },
   { id: '1v6', predatorRank: 1, preyRank: 6, requireG3: true,  slType: 'atlas_wall_10', entryType: 'order_block', weight: 0.22, label: '#1v#6 · G1+G2+G3 · Atlas Wall -10 · Order block' },
   { id: '1v7', predatorRank: 1, preyRank: 7, requireG3: true,  slType: 'atr_2x',        entryType: 'order_block', weight: 0.15, label: '#1v#7 · G1+G2+G3 · 2.0x ATR · Order block' },
@@ -51,11 +53,10 @@ const COMPONENTS: BlendComponent[] = [
 ];
 
 const FRICTION_PIPS = 1.5;
-const TP_RATIO = 2.0;
 const BASE_EQUITY = 1000;
 const TOTAL_RISK_UNITS = 5000;
 
-// ── Candle Fetching (same pagination as profile-live-backtest) ──
+// ── Candle Fetching ──
 
 async function fetchCandlePage(instrument: string, count: number, env: "practice" | "live", token: string, to?: string): Promise<Candle[]> {
   const host = env === "live" ? OANDA_HOST : OANDA_PRACTICE_HOST;
@@ -94,7 +95,7 @@ async function fetchCandles(instrument: string, count: number, env: "practice" |
   return all.filter(c => { if (seen.has(c.time)) return false; seen.add(c.time); return true; });
 }
 
-// ── Technical Indicators (exact mirror of executor) ──
+// ── Technical Indicators ──
 
 function pipValue(instrument: string): number {
   return instrument.includes('JPY') ? 0.01 : 0.0001;
@@ -163,7 +164,6 @@ function lrSlope(candles: Candle[], endIdx: number, period = 20): number {
   return denom === 0 ? 0 : (period * sumXY - sumX * sumY) / denom;
 }
 
-// Gate 2: Atlas Snap (20-period breakout excluding current candle)
 function checkG2(candles: Candle[], idx: number, direction: 'long' | 'short'): boolean {
   if (idx < 21) return false;
   const currentClose = candles[idx].close;
@@ -178,7 +178,6 @@ function checkG2(candles: Candle[], idx: number, direction: 'long' | 'short'): b
   }
 }
 
-// Gate 3: David Vector (LinReg slope)
 function checkG3(candles: Candle[], idx: number, direction: 'long' | 'short'): boolean {
   if (idx < 20) return false;
   const slope = lrSlope(candles, idx, 20);
@@ -207,7 +206,9 @@ function computeSLDistance(comp: BlendComponent, candles: Candle[], idx: number,
       return dist < 5 * pv ? 10 * pv : dist;
     }
     case 'fixed_30':
-      return 30 * pv;
+      return (comp.fixedPips || 30) * pv;
+    case 'fixed_custom':
+      return (comp.fixedPips || 30) * pv;
   }
 }
 
@@ -217,11 +218,9 @@ function checkEntryTrigger(comp: BlendComponent, candles: Candle[], idx: number,
     const zofi = computeZOFI(candles, idx, 20);
     return direction === 'long' ? zofi > 2.0 : zofi < -2.0;
   }
-  // order_block: require atlas block existence
   return findAtlasBlock(candles, idx, 20) !== null;
 }
 
-// ── Find instrument for a currency pair ──
 function findInstrument(cur1: string, cur2: string): { instrument: string; inverted: boolean } | null {
   const direct = `${cur1}_${cur2}`;
   if (OANDA_AVAILABLE.has(direct)) return { instrument: direct, inverted: false };
@@ -230,7 +229,6 @@ function findInstrument(cur1: string, cur2: string): { instrument: string; inver
   return null;
 }
 
-// ── Trade result from forward simulation ──
 interface TradeResult {
   componentId: string;
   instrument: string;
@@ -247,7 +245,6 @@ interface TradeResult {
   entryType: string;
 }
 
-// ── Simulate a single trade forward through candles ──
 function simulateTradeForward(
   candles: Candle[], entryIdx: number, entryPrice: number,
   slPrice: number, tpPrice: number, direction: 'long' | 'short', isJPY: boolean,
@@ -262,7 +259,6 @@ function simulateTradeForward(
       if (bar.low <= tpPrice) return { exitPrice: tpPrice, exitIdx: ci };
     }
   }
-  // Still open at end — close at last bar's close
   return { exitPrice: candles[candles.length - 1].close, exitIdx: candles.length - 1 };
 }
 
@@ -271,7 +267,6 @@ function computePips(entry: number, exit: number, dir: 'long' | 'short', isJPY: 
   return isJPY ? raw * 100 : raw * 10000;
 }
 
-// ── Rank Snapshot ──
 interface RankSnap { time: string; ranks: Record<string, number>; }
 
 // ════════════════════════════════════════════
@@ -285,6 +280,27 @@ Deno.serve(async (req) => {
     const environment: "practice" | "live" = body.environment || "live";
     const candleCount: number = Math.min(body.candles || 15000, 42000);
 
+    // ── Resolve active components ──
+    let activeComponents: BlendComponent[] = DEFAULT_COMPONENTS;
+
+    if (body.components && Array.isArray(body.components) && body.components.length > 0) {
+      activeComponents = body.components.map((c: any) => ({
+        id: c.id || `${c.predatorRank}v${c.preyRank}`,
+        predatorRank: c.predatorRank,
+        preyRank: c.preyRank,
+        requireG3: c.requireG3 ?? false,
+        slType: c.slType || 'fixed_custom',
+        entryType: c.entryType || 'order_block',
+        weight: c.weight,
+        label: c.label || `#${c.predatorRank}v${c.preyRank}`,
+        fixedPips: c.fixedPips,
+        tpRatio: c.tpRatio,
+      }));
+      console.log(`[BLEND-BT] Using ${activeComponents.length} dynamic components from portfolio`);
+    }
+
+    const maxWeight = Math.max(...activeComponents.map(c => c.weight));
+
     const apiToken = environment === "live"
       ? (Deno.env.get("OANDA_LIVE_API_TOKEN") || Deno.env.get("OANDA_API_TOKEN"))
       : Deno.env.get("OANDA_API_TOKEN");
@@ -297,7 +313,7 @@ Deno.serve(async (req) => {
     const availableCrosses = ALL_28_CROSSES.filter(c => OANDA_AVAILABLE.has(c.instrument));
 
     // ── Step 1: Fetch candles in batches of 7 ──
-    console.log(`[BLEND-BT] Starting blend backtest — ${candleCount} candles (${environment})`);
+    console.log(`[BLEND-BT] Starting blend backtest — ${candleCount} candles (${environment}), ${activeComponents.length} components`);
     const pairCandles: Record<string, Candle[]> = {};
     for (let i = 0; i < availableCrosses.length; i += 7) {
       const batch = availableCrosses.slice(i, i + 7);
@@ -329,7 +345,6 @@ Deno.serve(async (req) => {
     }
     const sortedTimes = [...allTimestamps].sort();
 
-    // Compute currency flow returns (20-bar lookback)
     const LOOKBACK = 20;
     const pairReturns: Record<string, Record<string, number>> = {};
     for (const [inst, candles] of Object.entries(pairCandles)) {
@@ -344,7 +359,6 @@ Deno.serve(async (req) => {
       pairReturns[inst] = ret;
     }
 
-    // Build rank snapshots
     const rankSnaps: RankSnap[] = [];
     for (const time of sortedTimes) {
       const flows: Record<string, number[]> = {};
@@ -370,32 +384,27 @@ Deno.serve(async (req) => {
     }
     console.log(`[BLEND-BT] ${rankSnaps.length} rank snapshots`);
 
-    // ── Step 3: Walk through each rank snapshot, evaluate all 5 components ──
+    // ── Step 3: Walk through each rank snapshot, evaluate all components ──
     const allTrades: TradeResult[] = [];
     const componentStats: Record<string, { trades: number; wins: number; losses: number; totalPips: number; grossWin: number; grossLoss: number }> = {};
-    for (const comp of COMPONENTS) {
+    for (const comp of activeComponents) {
       componentStats[comp.id] = { trades: 0, wins: 0, losses: 0, totalPips: 0, grossWin: 0, grossLoss: 0 };
     }
 
-    // Track active trades per component to avoid overlapping
-    const activeTradeEnd: Record<string, number> = {}; // componentId -> exitIdx timestamp index
+    const activeTradeEnd: Record<string, number> = {};
 
-    // Sample every Nth snapshot to stay within time budget
     const SAMPLE_STEP = rankSnaps.length > 10000 ? Math.floor(rankSnaps.length / 8000) : 1;
 
     for (let si = 0; si < rankSnaps.length; si += SAMPLE_STEP) {
       const snap = rankSnaps[si];
 
-      for (const comp of COMPONENTS) {
-        // Skip if this component still has an active trade
+      for (const comp of activeComponents) {
         if (activeTradeEnd[comp.id] !== undefined && si <= activeTradeEnd[comp.id]) continue;
 
-        // G1: Check rank match
         const predCurrency = ALL_CURRENCIES.find(c => snap.ranks[c] === comp.predatorRank);
         const preyCurrency = ALL_CURRENCIES.find(c => snap.ranks[c] === comp.preyRank);
         if (!predCurrency || !preyCurrency) continue;
 
-        // Find instrument
         const instrInfo = findInstrument(predCurrency, preyCurrency);
         if (!instrInfo) continue;
 
@@ -407,27 +416,20 @@ Deno.serve(async (req) => {
         const candleIdx = pairTimeIndex[instrument]?.[snap.time];
         if (candleIdx === undefined || candleIdx < 21) continue;
 
-        // G2: Atlas Snap
         if (!checkG2(candles, candleIdx, direction)) continue;
-
-        // G3: David Vector (if required)
         if (comp.requireG3 && !checkG3(candles, candleIdx, direction)) continue;
-
-        // Entry trigger
         if (!checkEntryTrigger(comp, candles, candleIdx, direction)) continue;
 
-        // All gates passed — compute SL/TP and simulate
         const currentPrice = candles[candleIdx].close;
         const pv = pipValue(instrument);
         const isJPY = instrument.includes('JPY');
         const slDist = computeSLDistance(comp, candles, candleIdx, direction, currentPrice, pv);
+        const compTpRatio = comp.tpRatio || 2.0;
         const slPrice = direction === 'long' ? currentPrice - slDist : currentPrice + slDist;
-        const tpPrice = direction === 'long' ? currentPrice + slDist * TP_RATIO : currentPrice - slDist * TP_RATIO;
+        const tpPrice = direction === 'long' ? currentPrice + slDist * compTpRatio : currentPrice - slDist * compTpRatio;
 
         const result = simulateTradeForward(candles, candleIdx, currentPrice, slPrice, tpPrice, direction, isJPY);
         let tradePips = computePips(currentPrice, result.exitPrice, direction, isJPY);
-
-        // Apply friction tax
         tradePips = tradePips > 0 ? tradePips - FRICTION_PIPS : tradePips - FRICTION_PIPS;
 
         const trade: TradeResult = {
@@ -448,14 +450,12 @@ Deno.serve(async (req) => {
 
         allTrades.push(trade);
 
-        // Update component stats
         const cs = componentStats[comp.id];
         cs.trades++;
         cs.totalPips += tradePips;
         if (tradePips > 0) { cs.wins++; cs.grossWin += tradePips; }
         else { cs.losses++; cs.grossLoss += Math.abs(tradePips); }
 
-        // Mark active until exit
         const exitSnapIdx = rankSnaps.findIndex((s, idx) => idx > si && s.time >= candles[result.exitIdx].time);
         activeTradeEnd[comp.id] = exitSnapIdx >= 0 ? exitSnapIdx : rankSnaps.length;
       }
@@ -464,7 +464,6 @@ Deno.serve(async (req) => {
     console.log(`[BLEND-BT] Total trades: ${allTrades.length}`);
 
     // ── Step 4: Build portfolio equity curve with weighted sizing ──
-    // Sort trades by entry time
     allTrades.sort((a, b) => a.entryTime.localeCompare(b.entryTime));
 
     let portfolioEquity = BASE_EQUITY;
@@ -472,7 +471,6 @@ Deno.serve(async (req) => {
     let maxDD = 0;
     const equityCurve: Array<{ time: string; equity: number }> = [{ time: sortedTimes[0] || '', equity: BASE_EQUITY }];
 
-    // Aggressive model
     let aggEquity = BASE_EQUITY;
     let aggPeak = BASE_EQUITY;
     let aggMaxDD = 0;
@@ -481,8 +479,8 @@ Deno.serve(async (req) => {
     for (const trade of allTrades) {
       const pv = pipValue(trade.instrument);
 
-      // Institutional: 1% risk per trade, weighted by component
-      const instRisk = portfolioEquity * 0.01 * trade.weight / 0.44; // normalize so 44% weight = 1% risk
+      // Institutional: 1% risk per trade, normalized by max weight
+      const instRisk = portfolioEquity * 0.01 * trade.weight / maxWeight;
       const slPips = Math.abs(trade.entryPrice - trade.slPrice) / pv;
       const instUnits = slPips > 0 ? Math.min(instRisk / (slPips * pv), 5_000_000) : 0;
       const instPnl = trade.pips * instUnits * pv;
@@ -490,29 +488,25 @@ Deno.serve(async (req) => {
       if (portfolioEquity > peak) peak = portfolioEquity;
       const dd = (peak - portfolioEquity) / peak;
       if (dd > maxDD) maxDD = dd;
-
       equityCurve.push({ time: trade.exitTime, equity: Math.round(portfolioEquity * 100) / 100 });
 
-      // Aggressive: 5% risk per trade, weighted
-      const aggRisk = aggEquity * 0.05 * trade.weight / 0.44;
+      // Aggressive: 5% risk per trade
+      const aggRisk = aggEquity * 0.05 * trade.weight / maxWeight;
       const aggUnits = slPips > 0 ? Math.min(aggRisk / (slPips * pv), 5_000_000) : 0;
       const aggPnl = trade.pips * aggUnits * pv;
       aggEquity += aggPnl;
       if (aggEquity > aggPeak) aggPeak = aggEquity;
       const aggDd = (aggPeak - aggEquity) / aggPeak;
       if (aggDd > aggMaxDD) aggMaxDD = aggDd;
-
       aggCurve.push({ time: trade.exitTime, equity: Math.round(aggEquity * 100) / 100 });
     }
 
-    // Downsample curves
     const downsample = (curve: Array<{ time: string; equity: number }>, maxPts = 300) => {
       if (curve.length <= maxPts) return curve;
       const step = Math.max(1, Math.floor(curve.length / maxPts));
       return curve.filter((_, i) => i % step === 0 || i === curve.length - 1);
     };
 
-    // ── Compute aggregate portfolio stats ──
     const totalTrades = allTrades.length;
     const wins = allTrades.filter(t => t.pips > 0).length;
     const losses = totalTrades - wins;
@@ -521,8 +515,7 @@ Deno.serve(async (req) => {
     const grossLoss = allTrades.filter(t => t.pips <= 0).reduce((s, t) => s + Math.abs(t.pips), 0);
     const profitFactor = grossLoss > 0 ? Math.round((grossWin / grossLoss) * 100) / 100 : grossWin > 0 ? 999 : 0;
 
-    // Per-component summaries
-    const componentSummaries = COMPONENTS.map(comp => {
+    const componentSummaries = activeComponents.map(comp => {
       const cs = componentStats[comp.id];
       return {
         id: comp.id,
@@ -539,7 +532,6 @@ Deno.serve(async (req) => {
       };
     });
 
-    // Period expectations (like the screenshot)
     const actualDays = avgCandles / 44;
     const periods = [
       { label: '3D', days: 3 },
@@ -568,12 +560,13 @@ Deno.serve(async (req) => {
 
     const result = {
       success: true,
-      version: "blend-bt-1.0",
+      version: "blend-bt-2.0",
       timestamp: new Date().toISOString(),
       environment,
       candlesPerPair: avgCandles,
       pairsLoaded,
       totalSnapshots: rankSnaps.length,
+      componentsUsed: activeComponents.length,
       dateRange: { start: sortedTimes[0], end: sortedTimes[sortedTimes.length - 1] },
       portfolio: {
         totalTrades,
