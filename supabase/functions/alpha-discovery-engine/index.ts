@@ -1396,6 +1396,9 @@ function computeFitness(sim: SimResult, baseDailyReturns: number[], maxCorrelati
   // ── R:R Constraint — kill strategies with TP < SL (micro-pip exploits) ──
   if (dna && dna.tpMultiplier < dna.slMultiplier) return 0;
 
+  // ── Pips per trade — THE critical metric ──
+  const pipsPerTrade = sim.trades > 0 ? sim.totalPips / sim.trades : 0;
+
   // ── UNCONSTRAINED MODE ──
   if (unconstrained) {
     if (sim.trades < 20) return 0;
@@ -1417,6 +1420,14 @@ function computeFitness(sim: SimResult, baseDailyReturns: number[], maxCorrelati
     if (sim.trades > 500) fitness *= 1.2;
 
     if (sim.totalReturn > 20) fitness *= 1.1;
+
+    // ── PIPS/TRADE GATE — crush micro-pip strategies ──
+    if (pipsPerTrade < 3) fitness *= 0.05;       // near-zero edge: kill it
+    else if (pipsPerTrade < 5) fitness *= 0.3;    // too thin after real-world friction
+    else if (pipsPerTrade < 8) fitness *= 0.7;    // acceptable but not elite
+    else if (pipsPerTrade >= 8) fitness *= 1.5;   // target zone: big reward
+    if (pipsPerTrade >= 12) fitness *= 1.3;       // exceptional: extra bonus
+    if (pipsPerTrade >= 20) fitness *= 1.2;       // rare ultra-edge
 
     if (dna) {
       const activeCount = countActiveIndicators(dna);
@@ -1450,6 +1461,14 @@ function computeFitness(sim: SimResult, baseDailyReturns: number[], maxCorrelati
   if (sim.trades > 800) fitness *= 1.15;
 
   if (sim.totalReturn > 20) fitness *= 1.1;
+
+  // ── PIPS/TRADE GATE — crush micro-pip strategies ──
+  if (pipsPerTrade < 3) fitness *= 0.05;
+  else if (pipsPerTrade < 5) fitness *= 0.3;
+  else if (pipsPerTrade < 8) fitness *= 0.7;
+  else if (pipsPerTrade >= 8) fitness *= 1.5;
+  if (pipsPerTrade >= 12) fitness *= 1.3;
+  if (pipsPerTrade >= 20) fitness *= 1.2;
 
   const corr = Math.abs(pearsonCorrelation(baseDailyReturns, sim.dailyReturns));
   if (corr > maxCorrelation) fitness *= Math.max(0.01, 1 - (corr - maxCorrelation) * 5);
