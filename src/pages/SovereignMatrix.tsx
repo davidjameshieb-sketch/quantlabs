@@ -19,18 +19,8 @@ import { OrderFlowBattlefield } from '@/components/matrix/OrderFlowBattlefield';
 import { PredatoryRadar } from '@/components/matrix/PredatoryRadar';
 import { NeuralSynthesisMap } from '@/components/matrix/NeuralSynthesisMap';
 import { VacuumForecaster } from '@/components/matrix/VacuumForecaster';
-import { RankHeatmap } from '@/components/matrix/RankHeatmap';
-import { EquityDrawdownChart } from '@/components/matrix/EquityDrawdownChart';
-import { BacktestTearSheet } from '@/components/matrix/BacktestTearSheet';
-import { DynamicMatrixSandbox } from '@/components/matrix/DynamicMatrixSandbox';
-import { ProfileDiscoveryEngine } from '@/components/matrix/ProfileDiscoveryEngine';
-import { ExperimentalStrategies } from '@/components/matrix/ExperimentalStrategies';
-import { AlphaDiscoveryEngine } from '@/components/matrix/AlphaDiscoveryEngine';
-import { EnsemblePortfolio } from '@/components/matrix/EnsemblePortfolio';
-import { LiveProfileBacktest } from '@/components/matrix/LiveProfileBacktest';
 import { BlendExecutorPanel } from '@/components/matrix/BlendExecutorPanel';
-import { LiveStrategiesPortfolio } from '@/components/matrix/LiveStrategiesPortfolio';
-import { useRankExpectancy } from '@/hooks/useRankExpectancy';
+import { MultiTimeframeDiscovery } from '@/components/matrix/MultiTimeframeDiscovery';
 
 type Env = 'practice' | 'live';
 
@@ -777,9 +767,8 @@ const LiveTradesPanel = ({ environment }: { environment: Env }) => {
 // ─── MAIN DASHBOARD ─────────────────────────────────────────────────────────
 const SovereignMatrix = () => {
   const [environment, setEnvironment] = useState<Env>('live');
-  const [discoveredStrategies, setDiscoveredStrategies] = useState<any[]>([]);
   const { loading, matrixResult, error, scanMatrix, fireT1, fireT2, fireT3 } = useSovereignMatrix();
-  const { loading: backtestLoading, result: backtestResult, runBacktest } = useRankExpectancy();
+  // Rank backtest removed — replaced by MultiTimeframeDiscovery
 
   const handleScan = () => scanMatrix(environment);
 
@@ -863,18 +852,6 @@ const SovereignMatrix = () => {
               {loading ? 'Scanning 28 Crosses…' : 'Run True Matrix Scan'}
             </button>
 
-            <button
-              onClick={() => runBacktest(environment === 'live' ? 'practice' : environment)}
-              disabled={backtestLoading}
-              className={cn(
-                'flex items-center gap-2 text-[10px] font-mono px-4 py-2 rounded-lg font-bold uppercase tracking-wider transition-all',
-                'border border-purple-500/50 text-purple-300 hover:bg-purple-500/10',
-                backtestLoading && 'opacity-60 cursor-not-allowed'
-              )}
-            >
-              <BarChart3 className={cn('w-3.5 h-3.5', backtestLoading && 'animate-spin')} />
-              {backtestLoading ? 'Running 5000 Candles…' : 'Run Rank Backtest'}
-            </button>
           </div>
         </div>
       </header>
@@ -888,56 +865,10 @@ const SovereignMatrix = () => {
           </motion.div>
         )}
 
-        {/* ── BACKTEST ENGINES — Always visible at top ── */}
-        {backtestResult && (
-          <div className="space-y-5">
-            <div className="flex items-center gap-2">
-              <motion.div
-                animate={{ opacity: [0.6, 1, 0.6] }}
-                transition={{ repeat: Infinity, duration: 2 }}
-              >
-                <BarChart3 className="w-4 h-4 text-yellow-400" />
-              </motion.div>
-              <p className="text-[10px] text-slate-400 uppercase tracking-widest font-display">
-                Cross-Sectional Statistical Arbitrage Engine v2.0 — {backtestResult.candlesPerPair} candles · {backtestResult.pairsLoaded} pairs · {backtestResult.totalSnapshots} snapshots
-              </p>
-            </div>
-
-            {/* Three Pillars Tear Sheet */}
-            <BacktestTearSheet result={backtestResult} />
-
-            {/* Dynamic Matrix Sandbox */}
-            <DynamicMatrixSandbox result={backtestResult} />
-
-            {/* Profile Discovery Engine — Automated Grid Search */}
-            <ProfileDiscoveryEngine result={backtestResult} />
-
-            {/* Live Profile Backtest — True bar-by-bar validation */}
-            <LiveProfileBacktest />
-
-            {/* Alpha Discovery Engine — ML Rule Miner */}
-            <AlphaDiscoveryEngine result={backtestResult} onStrategiesDiscovered={setDiscoveredStrategies} />
-
-            {/* Ensemble Meta-Portfolio Engine */}
-            <EnsemblePortfolio strategies={discoveredStrategies} />
-
-            {/* Experimental Strategies Lab */}
-            <ExperimentalStrategies result={backtestResult} />
-
-            {/* Live Strategies Portfolio — All activated strategies + portfolio analytics */}
-            <LiveStrategiesPortfolio />
-
-            <RankHeatmap
-              comboResults={backtestResult.comboResults}
-              bestCombo={backtestResult.bestCombo}
-            />
-            <EquityDrawdownChart
-              equityCurves={backtestResult.equityCurves}
-              drawdownCurve={backtestResult.drawdownCurve}
-              dateRange={backtestResult.dateRange}
-            />
-          </div>
-        )}
+        {/* ── Multi-Timeframe Alpha Discovery — Always visible ── */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+          <MultiTimeframeDiscovery />
+        </div>
 
         {/* Idle State */}
         {!matrixResult && !loading && !error && (
