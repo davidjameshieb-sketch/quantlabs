@@ -75,7 +75,7 @@ function StatusDot({ status }: { status: string }) {
 }
 
 /** Convert an activated strategy to a BlendComponent for the edge function */
-function strategyToBlendComponent(config: ActiveStrategy['config'], weight: number): BlendComponent & { fixedPair?: string; atrSlMultiplier?: number; atrTpMultiplier?: number; session?: string; gates?: string } {
+function strategyToBlendComponent(config: ActiveStrategy['config'], weight: number): BlendComponent & { fixedPair?: string; atrSlMultiplier?: number; atrTpMultiplier?: number; session?: string; gates?: string; dna?: Record<string, unknown> } {
   const isRankBased = !!(config.predator && config.prey);
   const gates = config.gates || 'G1+G2';
 
@@ -96,7 +96,7 @@ function strategyToBlendComponent(config: ActiveStrategy['config'], weight: numb
     };
   }
 
-  // Alpha-discovery / pair-specific strategy
+  // Alpha-discovery / pair-specific strategy — pass FULL DNA for true parity
   const slPips = config.dna?.slMultiplier ? Math.round(config.dna.slMultiplier * 14) : (config.slPips || 30);
   const tpRatio = config.dna?.tpMultiplier && config.dna?.slMultiplier
     ? Math.round((config.dna.tpMultiplier / config.dna.slMultiplier) * 100) / 100
@@ -118,6 +118,7 @@ function strategyToBlendComponent(config: ActiveStrategy['config'], weight: numb
     atrTpMultiplier: config.dna?.tpMultiplier,
     gates: 'G1+G2+G3',
     session: config.session,
+    dna: config.dna, // Pass full DNA genome for alpha-discovery parity
   };
 }
 
