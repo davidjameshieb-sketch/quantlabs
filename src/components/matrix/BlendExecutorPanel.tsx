@@ -75,9 +75,9 @@ function StatusDot({ status }: { status: string }) {
 }
 
 /** Convert an activated strategy to a BlendComponent for the edge function */
-function strategyToBlendComponent(config: ActiveStrategy['config'], weight: number): BlendComponent & { fixedPair?: string; atrSlMultiplier?: number; atrTpMultiplier?: number } {
+function strategyToBlendComponent(config: ActiveStrategy['config'], weight: number): BlendComponent & { fixedPair?: string; atrSlMultiplier?: number; atrTpMultiplier?: number; session?: string; gates?: string } {
   const isRankBased = !!(config.predator && config.prey);
-  const gates = config.gates || '';
+  const gates = config.gates || 'G1+G2';
 
   if (isRankBased) {
     return {
@@ -91,10 +91,17 @@ function strategyToBlendComponent(config: ActiveStrategy['config'], weight: numb
       label: config.strategyName || `R${config.predator}vR${config.prey}`,
       fixedPips: config.slPips || 30,
       tpRatio: typeof config.tpRatio === 'number' ? config.tpRatio : 2.0,
+      gates,
+      session: config.session,
     };
   }
 
   // Alpha-discovery / pair-specific strategy
+  const slPips = config.dna?.slMultiplier ? Math.round(config.dna.slMultiplier * 14) : (config.slPips || 30);
+  const tpRatio = config.dna?.tpMultiplier && config.dna?.slMultiplier
+    ? Math.round((config.dna.tpMultiplier / config.dna.slMultiplier) * 100) / 100
+    : (typeof config.tpRatio === 'number' ? config.tpRatio : 2.0);
+
   return {
     id: config.pair?.replace('_', '') || 'UNK',
     predatorRank: 0,
@@ -105,12 +112,12 @@ function strategyToBlendComponent(config: ActiveStrategy['config'], weight: numb
     weight,
     label: config.strategyName || config.pair || 'Unknown',
     fixedPair: config.pair,
-    fixedPips: config.dna?.slMultiplier ? Math.round(config.dna.slMultiplier * 14) : 30,
-    tpRatio: config.dna?.tpMultiplier && config.dna?.slMultiplier
-      ? Math.round((config.dna.tpMultiplier / config.dna.slMultiplier) * 100) / 100
-      : 2.0,
+    fixedPips: slPips,
+    tpRatio,
     atrSlMultiplier: config.dna?.slMultiplier,
     atrTpMultiplier: config.dna?.tpMultiplier,
+    gates: 'G1+G2+G3',
+    session: config.session,
   };
 }
 
