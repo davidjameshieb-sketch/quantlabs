@@ -12,6 +12,7 @@ import {
 import type { BacktestResult, RankComboResult } from '@/hooks/useRankExpectancy';
 import { TimePeriodBreakdown } from './TimePeriodBreakdown';
 import { computeOOSValidation, OOSValidationPanel, type OOSValidationResult } from './OOSValidationPanel';
+import { runValidationPipeline, ValidationPipelinePanel, type ValidationResult } from './ValidationPipeline';
 
 // ── Trading Sessions ──
 const SESSIONS = [
@@ -90,6 +91,7 @@ interface ProfileResult {
   equityCurve: Array<{ time: string; equity: number }>;
   tradeResults: number[];
   oosValidation: OOSValidationResult | null;
+  validation: ValidationResult | null;
 }
 
 // ── Seeded PRNG ──
@@ -204,6 +206,7 @@ function simulateProfile(
   const pf = grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? 999 : 0;
 
   const oosValidation = computeOOSValidation(tradeResults, 1000, 0.7, 50);
+  const validation = tradeResults.length >= 20 ? runValidationPipeline(tradeResults, sl.pips) : null;
 
   return {
     g1, g2, g3,
@@ -217,6 +220,7 @@ function simulateProfile(
     equityCurve: curve,
     tradeResults,
     oosValidation,
+    validation,
   };
 }
 
@@ -1162,8 +1166,11 @@ export const ProfileDiscoveryEngine = ({ result }: Props) => {
                        {/* Time Period Breakdown */}
                        <TimePeriodBreakdown curve={p.equityCurve} />
 
-                       {/* OOS Validation — The Lie Detector */}
-                       {p.oosValidation && <OOSValidationPanel validation={p.oosValidation} />}
+                       {/* 3-Phase Validation Pipeline */}
+                       {p.validation && <ValidationPipelinePanel validation={p.validation} />}
+
+                       {/* OOS Validation — The Lie Detector (legacy) */}
+                       {p.oosValidation && !p.validation && <OOSValidationPanel validation={p.oosValidation} />}
 
                        {/* Strategy Intelligence */}
                        <StrategyIntelligencePanel profile={p} allTop={topProfiles} idx={idx} />
