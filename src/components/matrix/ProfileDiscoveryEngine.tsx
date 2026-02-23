@@ -462,38 +462,41 @@ export const ProfileDiscoveryEngine = ({ result }: Props) => {
     setSelectedProfile(null);
 
     try {
-      const res = await fetch(
-        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/profile-live-backtest`,
-        {
+      const fnUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/profile-live-backtest`;
+      const anonKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+
+      // Split by predator rank to avoid CPU limits
+      const chunks = [1, 2, 3].map(rank =>
+        fetch(fnUrl, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
-          },
-          body: JSON.stringify({
-            environment,
-            candles: candleCount,
-            topN: 25,
-            predatorRanks: [1, 2, 3],
-          }),
-        }
+          headers: { 'Content-Type': 'application/json', apikey: anonKey, Authorization: `Bearer ${anonKey}` },
+          body: JSON.stringify({ environment, candles: candleCount, topN: 25, predatorRanks: [rank] }),
+        }).then(r => r.json())
       );
 
-      const data = await res.json();
-      if (!data.success) throw new Error(data.error || 'Backtest failed');
+      const results = await Promise.all(chunks);
+      const failed = results.find(r => !r.success);
+      if (failed) throw new Error(failed.error || 'Backtest failed');
 
-      const profiles: ProfileResult[] = (data.topResults || []).map((r: any, i: number) => mapLiveResult(r, i + 1));
+      // Merge and re-sort by institutional PF
+      const allTopResults = results.flatMap(r => r.topResults || []);
+      allTopResults.sort((a: any, b: any) => {
+        if (a.institutionalPF !== b.institutionalPF) return b.institutionalPF - a.institutionalPF;
+        return b.institutionalProfit - a.institutionalProfit;
+      });
+      const top25 = allTopResults.slice(0, 25);
 
-      setTotalCombos(data.totalCombos || profiles.length);
-      setRejectedCombos(data.rejectedCombos || 0);
+      const profiles: ProfileResult[] = top25.map((r: any, i: number) => mapLiveResult(r, i + 1));
+
+      setTotalCombos(results.reduce((s, r) => s + (r.totalCombos || 0), 0));
+      setRejectedCombos(results.reduce((s, r) => s + (r.rejectedCombos || 0), 0));
       setAllResults(profiles);
       setTopProfiles(profiles.slice(0, 10));
       setSelectedProfile(profiles[0] || null);
-      setDateRange(data.dateRange || null);
+      setDateRange(results[0]?.dateRange || null);
       setHasRun(true);
     } catch (err) {
       console.error('[ProfileDiscovery] Error:', err);
-      // Show error in UI
     } finally {
       setIsRunning(false);
     }
