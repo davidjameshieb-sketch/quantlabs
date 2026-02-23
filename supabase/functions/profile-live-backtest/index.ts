@@ -1,6 +1,7 @@
-// Profile Live Backtest Engine v5.0 — MapReduce Architecture
-// Frontend fires N parallel calls, each processing a subset of predator ranks.
-// Optimizations: bitwise gate encoding, pre-computed exits, minimal JSON output.
+// Profile Live Backtest Engine v6.0 — Sovereign-Alpha Mandate
+// MapReduce architecture with institutional-grade risk constraints.
+// Core rules: 20% Fatal-Failure filter, Triple-Lock G1+G2+G3 only,
+// 50-lot max position cap, dual-metric (5% aggressive + 1% institutional).
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -37,13 +38,9 @@ const GATE_G1 = 0b001;
 const GATE_G2 = 0b010;
 const GATE_G3 = 0b100;
 
+// v6.0: Triple-Lock ONLY — G1+G2+G3 is the sole entry requirement
 const GATE_COMBOS = [
   { mask: GATE_G1 | GATE_G2 | GATE_G3, label: "G1+G2+G3" },
-  { mask: GATE_G1 | GATE_G2, label: "G1+G2" },
-  { mask: GATE_G1 | GATE_G3, label: "G1+G3" },
-  { mask: GATE_G2 | GATE_G3, label: "G2+G3" },
-  { mask: GATE_G1, label: "G1 only" },
-  { mask: 0b000, label: "No Gates" },
 ];
 
 const SL_PIPS = [10, 15, 20, 30, 42];
@@ -65,6 +62,13 @@ for (const sl of SL_PIPS) {
   EXIT_MODES.push({ slPips: sl, tpRatio: "flip" });
 }
 const NUM_EXITS = EXIT_MODES.length;
+
+// ── Sovereign-Alpha Constants ──
+const FRICTION_PIPS = 1.5;           // Execution friction per trade
+const MAX_ALLOWED_DD = 0.20;         // 20% Fatal-Failure drawdown cap
+const MAX_UNITS = 5_000_000;         // 50 standard lots cap
+const AGGRESSIVE_RISK = 0.05;        // 5% geometric compounding
+const INSTITUTIONAL_RISK = 0.01;     // 1% fixed risk benchmark
 
 // ── Candle Fetching ──
 async function fetchCandlePage(instrument: string, count: number, env: "practice" | "live", token: string, to?: string): Promise<Candle[]> {
@@ -159,9 +163,9 @@ interface CompactSignal {
   entryPrice: number;
   isJPY: boolean;
   candleIdx: number;
-  gateBits: number;       // bitwise G1|G2|G3
-  sessionIdx: number;     // 0=ALL not used here, 1=ASIA..4=NY_CLOSE
-  exitPips: Float64Array; // pre-computed for each EXIT_MODE index
+  gateBits: number;
+  sessionIdx: number;
+  exitPips: Float64Array;
 }
 
 interface RankSnap { time: string; ranks: Record<string, number>; }
@@ -206,7 +210,6 @@ function generateSignals(
   predRank: number, preyRank: number, rankSnaps: RankSnap[],
   pairCandles: Record<string, Candle[]>, pairTimeIndex: Record<string, Record<string, number>>
 ): CompactSignal[] {
-  // Step 1: collect raw signals (no exit computation yet)
   const raw: Array<Omit<CompactSignal, 'exitPips'>> = [];
   let prevInst: string | null = null;
   let prevDir: "long" | "short" | null = null;
@@ -242,7 +245,6 @@ function generateSignals(
     }
   }
 
-  // Step 2: pre-compute exits
   const signals: CompactSignal[] = new Array(raw.length);
   for (let i = 0; i < raw.length; i++) {
     const sig = raw[i];
@@ -258,24 +260,32 @@ function generateSignals(
   return signals.filter(Boolean);
 }
 
-// ── Suck Rules Constants ──
-const FRICTION_PIPS = 1.5;       // Execution friction: subtract from wins, add to losses
-const MAX_ALLOWED_DD = 0.15;     // 15% equity-relative drawdown cap
-
-// ── Result interface ──
+// ── Result interface — v6.0 dual-metric ──
 interface LiveProfileResult {
   predator: number; prey: number; gates: string;
   slPips: number; tpRatio: number | "flip"; session: string;
   trades: number; wins: number; losses: number;
   winRate: number; profitFactor: number; totalPips: number;
-  netProfit: number; maxDrawdown: number; expectancy: number;
+  // Dual-metric P&L
+  aggressiveProfit: number;    // 5% geometric compounding result
+  institutionalProfit: number; // 1% fixed risk result
+  aggressivePF: number;       // Profit factor under 5% model
+  institutionalPF: number;    // Profit factor under 1% model
+  maxDrawdown: number;         // Worst equity-relative DD (institutional model)
+  aggressiveMaxDD: number;     // Worst DD under aggressive model
+  expectancy: number;
   avgWin: number; avgLoss: number;
-  stability: "STABLE" | "UNSTABLE";  // Suck Rule #1: DD flag
-  equityCurve: Array<{ time: string; equity: number }> | null;
+  equityCurve: Array<{ time: string; equity: number; aggressiveEquity: number }> | null;
 }
 
-// ── Simulate one combo — bitwise gate check, O(1) per trade ──
-// Suck Rules applied: #1 (15% DD cap), #3 (1.5-pip friction)
+// ── Compute position units with risk model + 50-lot cap ──
+function computeUnits(equity: number, riskPct: number, slPips: number, pipVal: number): number {
+  const riskAmount = equity * riskPct;
+  const rawUnits = riskAmount / (slPips * pipVal);
+  return Math.min(rawUnits, MAX_UNITS); // 50 standard lot cap
+}
+
+// ── Simulate one combo — dual-metric, single pass ──
 function simulateCombo(
   predRank: number, preyRank: number,
   gateMask: number, gateLabel: string,
@@ -284,89 +294,132 @@ function simulateCombo(
   signals: CompactSignal[],
 ): LiveProfileResult | null {
   const exit = EXIT_MODES[exitIdx];
-  const FLAT_UNITS = 2000;
-  let equity = 1000, peak = 1000, maxDD = 0;
-  let wins = 0, losses = 0, totalPips = 0, grossProfit = 0, grossLoss = 0;
-  let stability: "STABLE" | "UNSTABLE" = "STABLE";
+
+  // Institutional model (1% risk)
+  let instEquity = 1000, instPeak = 1000, instMaxDD = 0;
+  let instGrossProfit = 0, instGrossLoss = 0;
+
+  // Aggressive model (5% risk)
+  let aggEquity = 1000, aggPeak = 1000, aggMaxDD = 0;
+  let aggGrossProfit = 0, aggGrossLoss = 0;
+
+  let wins = 0, losses = 0, totalPips = 0;
 
   for (let i = 0; i < signals.length; i++) {
     const sig = signals[i];
 
-    // Bitwise gate check
-    if (gateMask !== 0 && (sig.gateBits & gateMask) !== gateMask) continue;
+    // Triple-Lock gate check (v6.0: G1+G2+G3 required)
+    if ((sig.gateBits & gateMask) !== gateMask) continue;
 
     // Session filter
     if (sessionIdx !== 0 && sig.sessionIdx !== sessionIdx) continue;
 
-    // Suck Rule #3: Apply 1.5-pip execution friction
+    // Apply 1.5-pip execution friction
     let tradePips = sig.exitPips[exitIdx];
     if (tradePips > 0) {
-      tradePips -= FRICTION_PIPS; // Subtract from wins
+      tradePips -= FRICTION_PIPS;
     } else {
-      tradePips -= FRICTION_PIPS; // Add to losses (make them worse)
+      tradePips -= FRICTION_PIPS;
     }
 
     const pipVal = sig.isJPY ? 0.01 : 0.0001;
-    const pnl = tradePips * FLAT_UNITS * pipVal;
-    equity += pnl;
     totalPips += tradePips;
 
-    if (tradePips > 0) { wins++; grossProfit += tradePips; }
-    else { losses++; grossLoss += Math.abs(tradePips); }
+    if (tradePips > 0) { wins++; } else { losses++; }
 
-    if (equity > peak) peak = equity;
-    const dd = (peak - equity) / peak; // 0..1 scale
+    // ── Institutional model (1% risk, 50-lot cap) ──
+    const instUnits = computeUnits(instEquity, INSTITUTIONAL_RISK, exit.slPips, pipVal);
+    const instPnl = tradePips * instUnits * pipVal;
+    instEquity += instPnl;
+    if (tradePips > 0) instGrossProfit += tradePips * instUnits * pipVal;
+    else instGrossLoss += Math.abs(tradePips * instUnits * pipVal);
+    if (instEquity > instPeak) instPeak = instEquity;
+    const instDD = (instPeak - instEquity) / instPeak;
+    if (instDD > instMaxDD) instMaxDD = instDD;
 
-    // Suck Rule #1: 15% DD cap — flag as UNSTABLE
-    if (dd > MAX_ALLOWED_DD) {
-      stability = "UNSTABLE";
-    }
+    // Fatal-Failure: 20% DD on institutional model = REJECTED
+    if (instDD > MAX_ALLOWED_DD) return null;
 
-    const ddPct = -dd * 100;
-    if (ddPct < maxDD) maxDD = ddPct;
+    // ── Aggressive model (5% risk, 50-lot cap) ──
+    const aggUnits = computeUnits(aggEquity, AGGRESSIVE_RISK, exit.slPips, pipVal);
+    const aggPnl = tradePips * aggUnits * pipVal;
+    aggEquity += aggPnl;
+    if (tradePips > 0) aggGrossProfit += tradePips * aggUnits * pipVal;
+    else aggGrossLoss += Math.abs(tradePips * aggUnits * pipVal);
+    if (aggEquity > aggPeak) aggPeak = aggEquity;
+    const aggDD = (aggPeak - aggEquity) / aggPeak;
+    if (aggDD > aggMaxDD) aggMaxDD = aggDD;
   }
 
   const trades = wins + losses;
   if (trades < 3) return null;
+
+  // Pip-based stats (friction-adjusted)
+  const grossWinPips = totalPips > 0 ? totalPips : 0;
+  const grossLossPips = totalPips < 0 ? Math.abs(totalPips) : 0;
+  // Recompute pip-based averages from individual trades
+  let winPipsSum = 0, lossPipsSum = 0;
+  let winCount2 = 0, lossCount2 = 0;
+  for (const sig of signals) {
+    if ((sig.gateBits & gateMask) !== gateMask) continue;
+    if (sessionIdx !== 0 && sig.sessionIdx !== sessionIdx) continue;
+    let tp = sig.exitPips[exitIdx];
+    if (tp > 0) tp -= FRICTION_PIPS; else tp -= FRICTION_PIPS;
+    if (tp > 0) { winPipsSum += tp; winCount2++; }
+    else { lossPipsSum += Math.abs(tp); lossCount2++; }
+  }
 
   return {
     predator: predRank, prey: preyRank, gates: gateLabel,
     slPips: exit.slPips, tpRatio: exit.tpRatio, session: sessionId,
     trades, wins, losses,
     winRate: Math.round((wins / trades) * 1000) / 10,
-    profitFactor: grossLoss > 0 ? Math.round((grossProfit / grossLoss) * 100) / 100 : grossProfit > 0 ? 999 : 0,
+    profitFactor: lossPipsSum > 0 ? Math.round((winPipsSum / lossPipsSum) * 100) / 100 : winPipsSum > 0 ? 999 : 0,
     totalPips: Math.round(totalPips * 10) / 10,
-    netProfit: Math.round((equity - 1000) * 100) / 100,
-    maxDrawdown: Math.round(maxDD * 10) / 10,
+    aggressiveProfit: Math.round((aggEquity - 1000) * 100) / 100,
+    institutionalProfit: Math.round((instEquity - 1000) * 100) / 100,
+    aggressivePF: aggGrossLoss > 0 ? Math.round((aggGrossProfit / aggGrossLoss) * 100) / 100 : aggGrossProfit > 0 ? 999 : 0,
+    institutionalPF: instGrossLoss > 0 ? Math.round((instGrossProfit / instGrossLoss) * 100) / 100 : instGrossProfit > 0 ? 999 : 0,
+    maxDrawdown: Math.round(-instMaxDD * 1000) / 10,
+    aggressiveMaxDD: Math.round(-aggMaxDD * 1000) / 10,
     expectancy: Math.round((totalPips / trades) * 100) / 100,
-    avgWin: wins > 0 ? Math.round((grossProfit / wins) * 10) / 10 : 0,
-    avgLoss: losses > 0 ? Math.round((grossLoss / losses) * 10) / 10 : 0,
-    stability,
+    avgWin: winCount2 > 0 ? Math.round((winPipsSum / winCount2) * 10) / 10 : 0,
+    avgLoss: lossCount2 > 0 ? Math.round((lossPipsSum / lossCount2) * 10) / 10 : 0,
     equityCurve: null,
   };
 }
 
-// ── Build equity curve for a top result (with friction applied) ──
-function buildEquityCurve(r: LiveProfileResult, signals: CompactSignal[], exitIdx: number): Array<{ time: string; equity: number }> {
+// ── Build dual equity curve for a top result ──
+function buildEquityCurve(r: LiveProfileResult, signals: CompactSignal[], exitIdx: number): Array<{ time: string; equity: number; aggressiveEquity: number }> {
   const gate = GATE_COMBOS.find(g => g.label === r.gates)!;
   const sessionIdx = SESSIONS.findIndex(s => s.id === r.session);
-  const FLAT_UNITS = 2000;
-  const curve: Array<{ time: string; equity: number }> = [];
-  let equity = 1000;
+  const exit = EXIT_MODES[exitIdx];
+  const curve: Array<{ time: string; equity: number; aggressiveEquity: number }> = [];
+  let instEquity = 1000;
+  let aggEquity = 1000;
 
   for (const sig of signals) {
-    if (gate.mask !== 0 && (sig.gateBits & gate.mask) !== gate.mask) continue;
+    if ((sig.gateBits & gate.mask) !== gate.mask) continue;
     if (sessionIdx > 0 && sig.sessionIdx !== sessionIdx) continue;
 
     const pipVal = sig.isJPY ? 0.01 : 0.0001;
     let tradePips = sig.exitPips[exitIdx];
-    // Apply same friction as simulation
     if (tradePips > 0) tradePips -= FRICTION_PIPS;
     else tradePips -= FRICTION_PIPS;
 
-    const pnl = tradePips * FLAT_UNITS * pipVal;
-    equity += pnl;
-    curve.push({ time: sig.time, equity: Math.round(equity * 100) / 100 });
+    // Institutional (1% risk, 50-lot cap)
+    const instUnits = computeUnits(instEquity, INSTITUTIONAL_RISK, exit.slPips, pipVal);
+    instEquity += tradePips * instUnits * pipVal;
+
+    // Aggressive (5% risk, 50-lot cap)
+    const aggUnits = computeUnits(aggEquity, AGGRESSIVE_RISK, exit.slPips, pipVal);
+    aggEquity += tradePips * aggUnits * pipVal;
+
+    curve.push({
+      time: sig.time,
+      equity: Math.round(instEquity * 100) / 100,
+      aggressiveEquity: Math.round(aggEquity * 100) / 100,
+    });
   }
 
   const step = Math.max(1, Math.floor(curve.length / 300));
@@ -374,7 +427,7 @@ function buildEquityCurve(r: LiveProfileResult, signals: CompactSignal[], exitId
 }
 
 // ════════════════════════════════════════════
-// MAIN HANDLER — accepts `predatorRanks` for MapReduce chunking
+// MAIN HANDLER — v6.0 Sovereign-Alpha Mandate
 // ════════════════════════════════════════════
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
@@ -386,7 +439,6 @@ Deno.serve(async (req) => {
     const environment: "practice" | "live" = body.environment || "practice";
     const candleCount: number = Math.min(body.candles || 5000, 42000);
     const topN: number = body.topN || 25;
-    // MapReduce: which predator ranks this worker processes
     const predatorRanks: number[] = body.predatorRanks || [1, 2, 3];
 
     const apiToken = environment === "live"
@@ -401,7 +453,7 @@ Deno.serve(async (req) => {
     const availableCrosses = ALL_28_CROSSES.filter(c => OANDA_AVAILABLE.has(c.instrument));
 
     // ── Step 1: Fetch candles in batches of 7 ──
-    console.log(`[LIVE-BT v5] Worker for predators [${predatorRanks}] — ${candleCount} candles (${environment})`);
+    console.log(`[LIVE-BT v6] Sovereign-Alpha — predators [${predatorRanks}] — ${candleCount} candles (${environment})`);
     const pairCandles: Record<string, Candle[]> = {};
     for (let i = 0; i < availableCrosses.length; i += 7) {
       const batch = availableCrosses.slice(i, i + 7);
@@ -415,7 +467,7 @@ Deno.serve(async (req) => {
         }
       }
     }
-    console.log(`[LIVE-BT v5] Loaded ${Object.keys(pairCandles).length} pairs`);
+    console.log(`[LIVE-BT v6] Loaded ${Object.keys(pairCandles).length} pairs`);
 
     // ── Step 2: Build time index + rank snapshots ──
     const pairTimeIndex: Record<string, Record<string, number>> = {};
@@ -475,23 +527,24 @@ Deno.serve(async (req) => {
       sorted.forEach((cur, idx) => { ranks[cur] = idx + 1; });
       rankSnaps.push({ time, ranks });
     }
-    console.log(`[LIVE-BT v5] ${rankSnaps.length} rank snapshots`);
+    console.log(`[LIVE-BT v6] ${rankSnaps.length} rank snapshots`);
 
-    // ── Step 3: Generate signals only for assigned predator ranks ──
+    // ── Step 3: Generate signals for assigned predator ranks ──
     const signalCache: Record<string, CompactSignal[]> = {};
     for (const pr of predatorRanks) {
       for (const py of PREY_RANKS) {
         signalCache[`${pr}_${py}`] = generateSignals(pr, py, rankSnaps, pairCandles, pairTimeIndex);
       }
     }
-    console.log(`[LIVE-BT v5] Signals pre-computed for ${Object.keys(signalCache).length} rank combos`);
+    console.log(`[LIVE-BT v6] Signals pre-computed for ${Object.keys(signalCache).length} rank combos`);
 
-    // ── Step 4: Simulate combos (bitwise gate, integer session, O(1) exit lookup) ──
+    // ── Step 4: Simulate combos — Triple-Lock only, dual-metric, 20% fatal filter ──
     const combosPerPredator = PREY_RANKS.length * GATE_COMBOS.length * SESSIONS.length * NUM_EXITS;
     const totalCombos = predatorRanks.length * combosPerPredator;
-    console.log(`[LIVE-BT v5] Simulating ${totalCombos} combos`);
+    console.log(`[LIVE-BT v6] Simulating ${totalCombos} combos (Triple-Lock only)`);
 
     const allResults: LiveProfileResult[] = [];
+    let rejected = 0;
     for (const pr of predatorRanks) {
       for (const py of PREY_RANKS) {
         const signals = signalCache[`${pr}_${py}`];
@@ -506,27 +559,23 @@ Deno.serve(async (req) => {
                 ei, signals
               );
               if (result) allResults.push(result);
+              else rejected++;
             }
           }
         }
       }
     }
 
-    // Suck Rule #2: Sort STABLE before UNSTABLE, then by netProfit
-    // Triple-lock (G1+G2+G3) profiles get priority within stability tier
+    // v6.0: Sort by Institutional Profit Factor (1% risk model)
     allResults.sort((a, b) => {
-      // Stability first: STABLE > UNSTABLE
-      if (a.stability !== b.stability) return a.stability === "STABLE" ? -1 : 1;
-      // Triple-lock gate priority within same stability
-      const aTriple = a.gates === "G1+G2+G3" ? 1 : 0;
-      const bTriple = b.gates === "G1+G2+G3" ? 1 : 0;
-      if (aTriple !== bTriple) return bTriple - aTriple;
-      // Then by net profit
-      return b.netProfit - a.netProfit;
+      // Primary: institutional PF descending
+      if (a.institutionalPF !== b.institutionalPF) return b.institutionalPF - a.institutionalPF;
+      // Tiebreak: institutional profit descending
+      return b.institutionalProfit - a.institutionalProfit;
     });
     const topResults = allResults.slice(0, topN);
 
-    // Build equity curves for top 10
+    // Build dual equity curves for top 10
     for (let i = 0; i < Math.min(10, topResults.length); i++) {
       const r = topResults[i];
       const signals = signalCache[`${r.predator}_${r.prey}`];
@@ -536,23 +585,24 @@ Deno.serve(async (req) => {
       }
     }
 
-    const profitable = allResults.filter(r => r.netProfit > 0).length;
-    console.log(`[LIVE-BT v5] Done. ${profitable} profitable. Top: $${topResults[0]?.netProfit ?? 0}`);
+    const profitable = allResults.filter(r => r.institutionalProfit > 0).length;
+    console.log(`[LIVE-BT v6] Done. ${allResults.length} survived, ${rejected} REJECTED (20% DD). ${profitable} profitable. Top inst PF: ${topResults[0]?.institutionalPF ?? 0}`);
 
     return new Response(JSON.stringify({
-      success: true, version: "5.0",
+      success: true, version: "6.0-sovereign-alpha",
       timestamp: new Date().toISOString(), environment,
       candlesPerPair: Object.values(pairCandles)[0]?.length ?? 0,
       pairsLoaded: Object.keys(pairCandles).length,
       totalSnapshots: rankSnaps.length,
       totalCombos, profitableCombos: profitable,
+      rejectedCombos: rejected,
       topResults,
       predatorRanks,
       dateRange: { start: sortedTimes[0], end: sortedTimes[sortedTimes.length - 1] },
     }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
   } catch (err) {
-    console.error("[LIVE-BT v5] Error:", err);
+    console.error("[LIVE-BT v6] Error:", err);
     return new Response(JSON.stringify({ error: (err as Error).message }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
   }
