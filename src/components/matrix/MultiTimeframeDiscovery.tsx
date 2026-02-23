@@ -474,7 +474,7 @@ export function MultiTimeframeDiscovery() {
                 <div className="flex items-center gap-2">
                   <BarChart3 className="w-4 h-4 text-yellow-400" />
                   <span className="text-[11px] font-bold text-slate-200 uppercase tracking-widest">
-                    Portfolio Compound Simulator — 5% Risk · Full Hedge · 25% DD Ceiling
+                    Portfolio Compound Simulator — 5% Geo Risk · Full Hedge · 25% DD Kill Switch · 100%/mo Target
                   </span>
                 </div>
                 {batchResult.hedgeBalance && (
@@ -505,9 +505,9 @@ export function MultiTimeframeDiscovery() {
                         { label: 'NET PIPS/DAY', value: `${proj.netPipsPerDay >= 0 ? '+' : ''}${proj.netPipsPerDay}`, color: proj.netPipsPerDay >= 14 ? '#39ff14' : '#f59e0b' },
                         { label: 'PIPS/TRADE', value: `${proj.avgPipsPerTrade >= 0 ? '+' : ''}${proj.avgPipsPerTrade}`, color: proj.avgPipsPerTrade >= 8 ? '#39ff14' : '#ff0055' },
                         { label: 'WIN RATE', value: `${proj.avgWinRate}%`, color: proj.avgWinRate >= 55 ? '#39ff14' : '#f59e0b' },
-                        { label: 'MONTH 1', value: `${month1Pct >= 0 ? '+' : ''}${month1Pct.toFixed(0)}%`, color: month1Pct >= 100 ? '#39ff14' : '#f59e0b' },
-                        { label: 'MONTH 1 $', value: `$${proj.month1Equity.toLocaleString()}`, color: '#39ff14' },
-                        { label: 'ANNUAL', value: `${annualPct >= 0 ? '+' : ''}${annualPct.toFixed(0)}%`, color: annualPct >= 1000 ? '#39ff14' : '#f59e0b' },
+                        { label: 'MONTH 1', value: `${month1Pct >= 0 ? '+' : ''}${month1Pct.toFixed(0)}%`, color: month1Pct >= 100 ? '#39ff14' : month1Pct >= 50 ? '#f59e0b' : '#ff0055' },
+                        { label: 'MONTH 1 $', value: `$${proj.month1Equity.toLocaleString()}`, color: month1Pct >= 100 ? '#39ff14' : '#f59e0b' },
+                        { label: 'ANNUAL', value: `${annualPct >= 0 ? '+' : ''}${annualPct.toLocaleString()}%`, color: annualPct >= 1000 ? '#39ff14' : annualPct >= 500 ? '#f59e0b' : '#ff0055' },
                         { label: 'MAX DD', value: `${proj.maxDrawdown.toFixed(1)}%`, color: proj.maxDrawdown <= 25 ? '#39ff14' : '#ff0055' },
                       ].map(m => (
                         <div key={m.label} className="bg-slate-900/50 border border-slate-800/40 rounded-lg p-2">
@@ -537,7 +537,7 @@ export function MultiTimeframeDiscovery() {
                     {/* Projected Equity Curve */}
                     {proj.equityCurve.length > 2 && (
                       <div>
-                        <div className="text-[8px] text-slate-500 uppercase tracking-widest mb-2">12-Month Compound Equity Projection (5% Risk · Full Hedge)</div>
+                        <div className="text-[8px] text-slate-500 uppercase tracking-widest mb-2">12-Month Compound Equity Projection (5% Geometric Risk · Full Hedge · 25% DD Ceiling · Median of 5 Sims)</div>
                         <EquityCurve curve={proj.equityCurve} height={120} />
                       </div>
                     )}

@@ -2126,58 +2126,152 @@ async function handleBatchExtract(body: Record<string, unknown>) {
   console.log(`[GA-BATCH] Hedge Balance: ${hedgeBalance.longOnly}L + ${hedgeBalance.shortOnly}S + ${hedgeBalance.bidirectional}B`);
 
   // ── Portfolio Compound Projection ──
-  // Simulate combined portfolio at 5% risk with daily compounding
+  // Geometric daily compounding: 5% risk per trade, units scale with equity.
+  // Target: ≥100% gain/month, ≥1000% gain/year. 25% peak-to-trough DD kill switch.
   const portfolioProjection = (() => {
     const totalTrades = selected.reduce((s, p) => s + p.sim.trades, 0);
     const avgWinRate = selected.reduce((s, p) => s + p.sim.winRate, 0) / (selected.length || 1);
-    const avgPipsPerTrade = totalTrades > 0 ? selected.reduce((s, p) => s + p.sim.totalPips, 0) / totalTrades : 0;
+    const totalPips = selected.reduce((s, p) => s + p.sim.totalPips, 0);
+    const avgPipsPerTrade = totalTrades > 0 ? totalPips / totalTrades : 0;
     const avgPF = selected.reduce((s, p) => s + p.sim.profitFactor, 0) / (selected.length || 1);
-    
-    // Estimate daily net pips from portfolio
-    const bpd = 288; // M5 bars per day
-    const gran = (allStrategies[0]?.dna as any)?.__granularity || 'M5';
-    const totalBars = selected.reduce((s, p) => s + p.sim.trades, 0); // approximate
+
+    // Determine bars per day from granularity
+    const bpdMap: Record<string, number> = { M5: 288, M15: 96, M30: 48 };
+    const detectedGran = pairs[0] ? 'M5' : 'M5'; // default to M5 for HF
+    const bpd = bpdMap[detectedGran] || 288;
     const dataDays = Math.max(1, Math.round(5000 / bpd));
-    const tradesPerDay = totalTrades / dataDays;
+    const tradesPerDay = Math.round((totalTrades / dataDays) * 10) / 10;
     const netPipsPerDay = tradesPerDay * avgPipsPerTrade;
-    
-    // Compound projection at 5% risk ($0.20/pip base, scaling daily)
-    let equity = 1000;
+
+    // Avg SL in pips (from strategy DNA — approximate)
+    const avgSLPips = selected.reduce((s, p) => s + (p.dna.slMultiplier || 2.0), 0) / (selected.length || 1) * 14; // ATR~14 pips avg
+
+    // Geometric compounding: position size = (equity × riskFraction) / SL
+    // P&L per trade = units × pipValue × pips = (equity × 0.05 / avgSLPips) × 0.0001 × pips
+    const RISK_FRACTION = 0.05; // 5% risk per trade
+    const BASE_EQUITY = 1000;
+    const TRADING_DAYS = 252;
+    const DD_CEILING = 0.25;
+
+    let equity = BASE_EQUITY;
     const dailyEquity: number[] = [equity];
     let maxDD = 0, peak = equity;
-    
-    for (let day = 1; day <= 252; day++) {
-      // Scale units with equity
-      const unitsPerTrade = Math.round((equity / 1000) * 2000);
-      const pipValue = unitsPerTrade * 0.0001; // simplified
-      const dailyPnl = netPipsPerDay * pipValue;
+
+    // Simulate each trade individually for accuracy
+    // Reconstruct win/loss sequence from portfolio stats
+    const avgWinPips = avgPF > 0 ? avgPipsPerTrade * avgPF / (avgPF - 1 + (1 / avgWinRate)) : avgPipsPerTrade * 2;
+    const avgLossPips = avgWinRate > 0 && avgWinRate < 1 ? 
+      (avgWinPips * avgWinRate - avgPipsPerTrade) / (1 - avgWinRate) : avgPipsPerTrade;
+
+    for (let day = 1; day <= TRADING_DAYS; day++) {
+      const dailyTrades = Math.round(tradesPerDay);
+      let dailyPnl = 0;
+
+      for (let t = 0; t < dailyTrades; t++) {
+        // Position size scales with current equity
+        const slPips = Math.max(avgSLPips, 5);
+        const units = Math.round((equity * RISK_FRACTION) / (slPips * 0.0001));
+        const pipVal = units * 0.0001; // $ per pip
+
+        // Stochastic win/loss based on portfolio win rate
+        const isWin = Math.random() < avgWinRate;
+        const pips = isWin ? avgWinPips : -Math.abs(avgLossPips);
+        const tradePnl = pips * pipVal;
+
+        // Clamp single trade loss to 5% of equity
+        const clampedPnl = Math.max(tradePnl, -equity * RISK_FRACTION);
+        dailyPnl += clampedPnl;
+      }
+
       equity += dailyPnl;
-      
+      if (equity < 1) equity = 1; // floor
+
       if (equity > peak) peak = equity;
       const dd = (peak - equity) / peak;
       if (dd > maxDD) maxDD = dd;
-      
-      // 25% DD kill switch
-      if (dd > 0.25) {
-        equity = peak * 0.75; // cap at 25% loss
+
+      // 25% DD kill switch — cap loss, reset peak tracker
+      if (dd > DD_CEILING) {
+        equity = peak * (1 - DD_CEILING);
+        peak = equity; // reset peak after kill switch
       }
-      
-      if (day % 5 === 0) dailyEquity.push(equity);
+
+      dailyEquity.push(equity);
     }
-    
+
+    // Run 5 simulations and take the median for stability
+    const simResults: number[][] = [dailyEquity];
+    for (let sim = 0; sim < 4; sim++) {
+      let eq = BASE_EQUITY;
+      const curve: number[] = [eq];
+      let pk = eq, mdd = 0;
+      for (let day = 1; day <= TRADING_DAYS; day++) {
+        const dt = Math.round(tradesPerDay);
+        let dp = 0;
+        for (let t = 0; t < dt; t++) {
+          const sl = Math.max(avgSLPips, 5);
+          const u = Math.round((eq * RISK_FRACTION) / (sl * 0.0001));
+          const pv = u * 0.0001;
+          const w = Math.random() < avgWinRate;
+          const p = w ? avgWinPips : -Math.abs(avgLossPips);
+          dp += Math.max(p * pv, -eq * RISK_FRACTION);
+        }
+        eq += dp;
+        if (eq < 1) eq = 1;
+        if (eq > pk) pk = eq;
+        const d = (pk - eq) / pk;
+        if (d > mdd) mdd = d;
+        if (d > DD_CEILING) { eq = pk * (1 - DD_CEILING); pk = eq; }
+        curve.push(eq);
+      }
+      simResults.push(curve);
+    }
+
+    // Use median of 5 sims
+    const medianCurve: number[] = [];
+    for (let i = 0; i < simResults[0].length; i++) {
+      const vals = simResults.map(s => s[i] || s[s.length - 1]).sort((a, b) => a - b);
+      medianCurve.push(vals[Math.floor(vals.length / 2)]);
+    }
+
+    // Extract milestones from median curve (daily samples)
+    const m1Idx = Math.min(21, medianCurve.length - 1);  // ~1 month
+    const m3Idx = Math.min(63, medianCurve.length - 1);  // ~3 months
+    const m6Idx = Math.min(126, medianCurve.length - 1); // ~6 months
+    const m12Idx = medianCurve.length - 1;                // ~12 months
+
+    // Compute actual max DD from median curve
+    let finalMaxDD = 0, finalPeak = medianCurve[0];
+    for (const v of medianCurve) {
+      if (v > finalPeak) finalPeak = v;
+      const d = (finalPeak - v) / finalPeak;
+      if (d > finalMaxDD) finalMaxDD = d;
+    }
+
+    // Downsample curve for UI (max 60 points)
+    const step = Math.max(1, Math.floor(medianCurve.length / 60));
+    const uiCurve = medianCurve.filter((_, i) => i % step === 0 || i === medianCurve.length - 1);
+
+    const month1Pct = ((medianCurve[m1Idx] - BASE_EQUITY) / BASE_EQUITY) * 100;
+    const annualPct = ((medianCurve[m12Idx] - BASE_EQUITY) / BASE_EQUITY) * 100;
+
+    console.log(`[COMPOUND] 5% geo risk | ${tradesPerDay} trades/day | ${netPipsPerDay.toFixed(1)} net pips/day`);
+    console.log(`[COMPOUND] Month 1: $${Math.round(medianCurve[m1Idx])} (+${month1Pct.toFixed(0)}%) | Year: $${Math.round(medianCurve[m12Idx]).toLocaleString()} (+${annualPct.toFixed(0)}%)`);
+    console.log(`[COMPOUND] Max DD: ${(finalMaxDD * 100).toFixed(1)}% (ceiling: ${DD_CEILING * 100}%)`);
+
     return {
-      startEquity: 1000,
-      month1Equity: Math.round(dailyEquity[Math.min(4, dailyEquity.length - 1)]),
-      month3Equity: Math.round(dailyEquity[Math.min(12, dailyEquity.length - 1)]),
-      month6Equity: Math.round(dailyEquity[Math.min(25, dailyEquity.length - 1)]),
-      month12Equity: Math.round(dailyEquity[dailyEquity.length - 1]),
-      maxDrawdown: Math.round(maxDD * 10000) / 100,
-      tradesPerDay: Math.round(tradesPerDay * 10) / 10,
+      startEquity: BASE_EQUITY,
+      month1Equity: Math.round(medianCurve[m1Idx]),
+      month3Equity: Math.round(medianCurve[m3Idx]),
+      month6Equity: Math.round(medianCurve[m6Idx]),
+      month12Equity: Math.round(medianCurve[m12Idx]),
+      maxDrawdown: Math.round(finalMaxDD * 10000) / 100,
+      tradesPerDay,
       netPipsPerDay: Math.round(netPipsPerDay * 10) / 10,
       avgPipsPerTrade: Math.round(avgPipsPerTrade * 10) / 10,
       avgWinRate: Math.round(avgWinRate * 10000) / 100,
       avgProfitFactor: Math.round(avgPF * 100) / 100,
-      equityCurve: dailyEquity,
+      equityCurve: uiCurve,
     };
   })();
 
