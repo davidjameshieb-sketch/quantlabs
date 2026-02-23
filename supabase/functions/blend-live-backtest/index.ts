@@ -1,6 +1,6 @@
-// Blend Live Backtest — 100% Forward Test of Portfolio Blend
-// Supports dynamic component portfolio from request body OR hardcoded 5-component fallback.
-// Tests portfolio against real OANDA M30 candles with gates, entry triggers, bespoke SL/TP.
+// Blend Live Backtest v3.0 — Portfolio Forward Test using REAL engine parity
+// Uses the EXACT same signal generation, pre-computed exits, and simulation logic
+// as profile-live-backtest (the "truth" engine), then aggregates per-strategy results.
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -29,38 +29,19 @@ for (let i = 0; i < ALL_CURRENCIES.length; i++) {
 
 interface Candle { time: string; open: number; high: number; low: number; close: number; volume: number; }
 
-// ── Blend Component Definitions ──
-
-interface BlendComponent {
-  id: string;
-  predatorRank: number;
-  preyRank: number;
-  requireG3: boolean;
-  slType: 'swing_low_5' | 'atlas_wall_10' | 'atr_2x' | 'fixed_30' | 'fixed_custom';
-  entryType: 'z_ofi_2' | 'order_block';
-  weight: number;
-  label: string;
-  fixedPips?: number;
-  tpRatio?: number;
-  fixedPair?: string;         // If set, trade this specific pair instead of rank-based lookup
-  atrSlMultiplier?: number;   // ATR multiplier for SL (alpha-discovery strategies)
-  atrTpMultiplier?: number;   // ATR multiplier for TP (alpha-discovery strategies)
-}
-
-const DEFAULT_COMPONENTS: BlendComponent[] = [
-  { id: '3v8', predatorRank: 3, preyRank: 8, requireG3: true,  slType: 'swing_low_5',   entryType: 'z_ofi_2',     weight: 0.44, label: '#3v#8 · G1+G2+G3 · Swing low (5-bar) · Z-OFI > 2.0' },
-  { id: '1v6', predatorRank: 1, preyRank: 6, requireG3: true,  slType: 'atlas_wall_10', entryType: 'order_block', weight: 0.22, label: '#1v#6 · G1+G2+G3 · Atlas Wall -10 · Order block' },
-  { id: '1v7', predatorRank: 1, preyRank: 7, requireG3: true,  slType: 'atr_2x',        entryType: 'order_block', weight: 0.15, label: '#1v#7 · G1+G2+G3 · 2.0x ATR · Order block' },
-  { id: '3v7', predatorRank: 3, preyRank: 7, requireG3: false, slType: 'fixed_30',      entryType: 'order_block', weight: 0.11, label: '#3v#7 · G1+G2 · 30 pip fixed · Order block' },
-  { id: '3v6', predatorRank: 3, preyRank: 6, requireG3: false, slType: 'atr_2x',        entryType: 'order_block', weight: 0.09, label: '#3v#6 · G1+G2 · 2.0x ATR · Order block' },
-];
-
+// ── Sovereign-Alpha Constants (identical to profile-live-backtest) ──
 const FRICTION_PIPS = 1.5;
+const MAX_UNITS = 5_000_000;
+const AGGRESSIVE_RISK = 0.05;
+const INSTITUTIONAL_RISK = 0.01;
 const BASE_EQUITY = 1000;
-const TOTAL_RISK_UNITS = 5000;
 
-// ── Candle Fetching ──
+// ── Bitwise gate masks (identical to profile-live-backtest) ──
+const GATE_G1 = 0b001;
+const GATE_G2 = 0b010;
+const GATE_G3 = 0b100;
 
+// ── Candle Fetching (identical to profile-live-backtest) ──
 async function fetchCandlePage(instrument: string, count: number, env: "practice" | "live", token: string, to?: string): Promise<Candle[]> {
   const host = env === "live" ? OANDA_HOST : OANDA_PRACTICE_HOST;
   let url = `${host}/v3/instruments/${instrument}/candles?count=${count}&granularity=M30&price=M`;
@@ -98,182 +79,333 @@ async function fetchCandles(instrument: string, count: number, env: "practice" |
   return all.filter(c => { if (seen.has(c.time)) return false; seen.add(c.time); return true; });
 }
 
-// ── Technical Indicators ──
-
-function pipValue(instrument: string): number {
-  return instrument.includes('JPY') ? 0.01 : 0.0001;
-}
-
-function computeATR(candles: Candle[], endIdx: number, period = 14): number {
-  if (endIdx < period) return 0;
-  let sum = 0;
-  for (let i = endIdx - period + 1; i <= endIdx; i++) sum += candles[i].high - candles[i].low;
-  return sum / period;
-}
-
-function computeSwingStop(candles: Candle[], endIdx: number, bars: number, direction: 'long' | 'short'): number {
-  const start = Math.max(0, endIdx - bars + 1);
-  if (direction === 'long') {
-    let min = Infinity;
-    for (let i = start; i <= endIdx; i++) if (candles[i].low < min) min = candles[i].low;
-    return min;
-  }
-  let max = -Infinity;
-  for (let i = start; i <= endIdx; i++) if (candles[i].high > max) max = candles[i].high;
-  return max;
-}
-
-function findAtlasBlock(candles: Candle[], endIdx: number, period = 20): { blockHigh: number; blockLow: number } | null {
-  const start = Math.max(0, endIdx - period + 1);
-  const veffs: number[] = [];
-  for (let i = start; i <= endIdx; i++) {
-    const range = Math.abs(candles[i].high - candles[i].low);
-    veffs.push(range === 0 ? 0 : candles[i].volume / range);
-  }
-  const avg = veffs.reduce((a, b) => a + b, 0) / veffs.length;
-  const threshold = avg * 1.5;
-  for (let i = veffs.length - 1; i >= 0; i--) {
-    if (veffs[i] > threshold) {
-      const ci = start + i;
-      return { blockHigh: candles[ci].high, blockLow: candles[ci].low };
-    }
-  }
-  return null;
-}
-
-function computeZOFI(candles: Candle[], endIdx: number, period = 20): number {
-  if (endIdx < period) return 0;
-  const ofiValues: number[] = [];
-  for (let i = endIdx - period; i <= endIdx; i++) {
-    const range = candles[i].high - candles[i].low || 0.0001;
-    ofiValues.push(candles[i].volume * (candles[i].close - candles[i].open) / range);
-  }
-  const current = ofiValues[ofiValues.length - 1];
-  const lookback = ofiValues.slice(0, -1);
-  const mean = lookback.reduce((a, b) => a + b, 0) / lookback.length;
-  const variance = lookback.reduce((a, b) => a + (b - mean) ** 2, 0) / lookback.length;
-  const std = Math.sqrt(variance) || 1;
-  return (current - mean) / std;
-}
-
-function lrSlope(candles: Candle[], endIdx: number, period = 20): number {
-  if (endIdx < period) return 0;
-  let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
-  for (let i = 0; i < period; i++) {
-    const ci = endIdx - period + 1 + i;
-    sumX += i; sumY += candles[ci].close; sumXY += i * candles[ci].close; sumX2 += i * i;
-  }
-  const denom = period * sumX2 - sumX * sumX;
-  return denom === 0 ? 0 : (period * sumXY - sumX * sumY) / denom;
-}
-
-function checkG2(candles: Candle[], idx: number, direction: 'long' | 'short'): boolean {
-  if (idx < 21) return false;
-  const currentClose = candles[idx].close;
-  if (direction === 'long') {
-    let highest = -Infinity;
-    for (let k = idx - 20; k < idx; k++) if (candles[k].high > highest) highest = candles[k].high;
-    return currentClose > highest;
-  } else {
-    let lowest = Infinity;
-    for (let k = idx - 20; k < idx; k++) if (candles[k].low < lowest) lowest = candles[k].low;
-    return currentClose < lowest;
-  }
-}
-
-function checkG3(candles: Candle[], idx: number, direction: 'long' | 'short'): boolean {
-  if (idx < 20) return false;
-  const slope = lrSlope(candles, idx, 20);
-  return direction === 'long' ? slope > 0 : slope < 0;
-}
-
-// ── SL computation per component ──
-function computeSLDistance(comp: BlendComponent, candles: Candle[], idx: number, direction: 'long' | 'short', currentPrice: number, pv: number): number {
-  switch (comp.slType) {
-    case 'swing_low_5': {
-      const swingLevel = computeSwingStop(candles, idx, 5, direction);
-      const dist = Math.abs(currentPrice - swingLevel);
-      return dist < 3 * pv ? 10 * pv : dist;
-    }
-    case 'atlas_wall_10': {
-      const block = findAtlasBlock(candles, idx, 20);
-      if (block) {
-        const wallLevel = direction === 'long' ? block.blockLow : block.blockHigh;
-        return Math.abs(currentPrice - wallLevel) + 10 * pv;
-      }
-      return 15 * pv;
-    }
-    case 'atr_2x': {
-      const atr = computeATR(candles, idx, 14);
-      const dist = atr * 2.0;
-      return dist < 5 * pv ? 10 * pv : dist;
-    }
-    case 'fixed_30':
-      return (comp.fixedPips || 30) * pv;
-    case 'fixed_custom':
-      return (comp.fixedPips || 30) * pv;
-  }
-}
-
-// ── Entry trigger check ──
-function checkEntryTrigger(comp: BlendComponent, candles: Candle[], idx: number, direction: 'long' | 'short'): boolean {
-  if (comp.entryType === 'z_ofi_2') {
-    const zofi = computeZOFI(candles, idx, 20);
-    return direction === 'long' ? zofi > 2.0 : zofi < -2.0;
-  }
-  return findAtlasBlock(candles, idx, 20) !== null;
-}
-
-function findInstrument(cur1: string, cur2: string): { instrument: string; inverted: boolean } | null {
-  const direct = `${cur1}_${cur2}`;
-  if (OANDA_AVAILABLE.has(direct)) return { instrument: direct, inverted: false };
-  const inverse = `${cur2}_${cur1}`;
-  if (OANDA_AVAILABLE.has(inverse)) return { instrument: inverse, inverted: true };
-  return null;
-}
-
-interface TradeResult {
-  componentId: string;
-  instrument: string;
-  direction: 'long' | 'short';
-  entryPrice: number;
-  exitPrice: number;
-  slPrice: number;
-  tpPrice: number;
-  pips: number;
-  weight: number;
-  entryTime: string;
-  exitTime: string;
-  slType: string;
-  entryType: string;
-}
-
-function simulateTradeForward(
-  candles: Candle[], entryIdx: number, entryPrice: number,
-  slPrice: number, tpPrice: number, direction: 'long' | 'short', isJPY: boolean,
-): { exitPrice: number; exitIdx: number } {
-  for (let ci = entryIdx + 1; ci < candles.length; ci++) {
-    const bar = candles[ci];
-    if (direction === 'long') {
-      if (bar.low <= slPrice) return { exitPrice: slPrice, exitIdx: ci };
-      if (bar.high >= tpPrice) return { exitPrice: tpPrice, exitIdx: ci };
+// ── Gate helpers (IDENTICAL to profile-live-backtest) ──
+function computeGateBits(candles: Candle[], idx: number, direction: "long" | "short"): number {
+  let bits = GATE_G1;
+  if (idx >= 21) {
+    const currentClose = candles[idx].close;
+    if (direction === "long") {
+      let highest = -Infinity;
+      for (let k = idx - 20; k < idx; k++) if (candles[k].high > highest) highest = candles[k].high;
+      if (currentClose > highest) bits |= GATE_G2;
     } else {
-      if (bar.high >= slPrice) return { exitPrice: slPrice, exitIdx: ci };
-      if (bar.low <= tpPrice) return { exitPrice: tpPrice, exitIdx: ci };
+      let lowest = Infinity;
+      for (let k = idx - 20; k < idx; k++) if (candles[k].low < lowest) lowest = candles[k].low;
+      if (currentClose < lowest) bits |= GATE_G2;
     }
   }
-  return { exitPrice: candles[candles.length - 1].close, exitIdx: candles.length - 1 };
+  if (idx >= 20) {
+    const n = 20;
+    let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
+    for (let i = 0; i < n; i++) {
+      const ci = idx - n + i;
+      sumX += i; sumY += candles[ci].close; sumXY += i * candles[ci].close; sumX2 += i * i;
+    }
+    const denom = n * sumX2 - sumX * sumX;
+    if (denom !== 0) {
+      const slope = (n * sumXY - sumX * sumY) / denom;
+      if ((direction === "long" && slope > 0) || (direction === "short" && slope < 0)) bits |= GATE_G3;
+    }
+  }
+  return bits;
 }
 
-function computePips(entry: number, exit: number, dir: 'long' | 'short', isJPY: boolean): number {
-  const raw = dir === 'long' ? exit - entry : entry - exit;
+function getSessionIdx(hour: number): number {
+  if (hour >= 0 && hour < 7) return 1;
+  if (hour >= 7 && hour < 12) return 2;
+  if (hour >= 12 && hour < 17) return 3;
+  if (hour >= 17 && hour < 21) return 4;
+  return 1;
+}
+
+function computePips(entry: number, exit: number, dir: "long" | "short", isJPY: boolean): number {
+  const raw = dir === "long" ? exit - entry : entry - exit;
   return isJPY ? raw * 100 : raw * 10000;
+}
+
+// ── Compact signal (IDENTICAL to profile-live-backtest) ──
+interface CompactSignal {
+  time: string;
+  instrument: string;
+  direction: "long" | "short";
+  entryPrice: number;
+  isJPY: boolean;
+  candleIdx: number;
+  gateBits: number;
+  sessionIdx: number;
+  exitPips: Float64Array;
 }
 
 interface RankSnap { time: string; ranks: Record<string, number>; }
 
+// ── Pre-compute exits for a signal (IDENTICAL to profile-live-backtest) ──
+// exitModes is passed in so each strategy can use its own SL/TP
+function precomputeExits(
+  entryPrice: number, isJPY: boolean, candleIdx: number, direction: "long" | "short",
+  candles: Candle[], nextSignalTime: string | null,
+  exitModes: Array<{ slPips: number; tpRatio: number | "flip" }>,
+): Float64Array {
+  const results = new Float64Array(exitModes.length);
+  const pipMul = isJPY ? 100 : 10000;
+
+  for (let ei = 0; ei < exitModes.length; ei++) {
+    const exit = exitModes[ei];
+    const slDist = exit.slPips / pipMul;
+    const tpDist = exit.tpRatio === "flip" ? Infinity : (exit.slPips * (exit.tpRatio as number)) / pipMul;
+    const isFlip = exit.tpRatio === "flip";
+    let exitPrice = entryPrice;
+
+    for (let ci = candleIdx + 1; ci < candles.length; ci++) {
+      const bar = candles[ci];
+      if (isFlip && nextSignalTime && bar.time >= nextSignalTime) { exitPrice = bar.open; break; }
+      if (direction === "long") {
+        if (bar.low <= entryPrice - slDist) { exitPrice = entryPrice - slDist; break; }
+        if (!isFlip && bar.high >= entryPrice + tpDist) { exitPrice = entryPrice + tpDist; break; }
+      } else {
+        if (bar.high >= entryPrice + slDist) { exitPrice = entryPrice + slDist; break; }
+        if (!isFlip && bar.low <= entryPrice - tpDist) { exitPrice = entryPrice - tpDist; break; }
+      }
+      if (isFlip && !nextSignalTime && ci === candles.length - 1) { exitPrice = bar.close; break; }
+    }
+    results[ei] = computePips(entryPrice, exitPrice, direction, isJPY);
+  }
+  return results;
+}
+
+// ── Generate signals for rank-based strategy (IDENTICAL to profile-live-backtest) ──
+function generateRankSignals(
+  predRank: number, preyRank: number, rankSnaps: RankSnap[],
+  pairCandles: Record<string, Candle[]>, pairTimeIndex: Record<string, Record<string, number>>,
+  exitModes: Array<{ slPips: number; tpRatio: number | "flip" }>,
+): CompactSignal[] {
+  const raw: Array<Omit<CompactSignal, 'exitPips'>> = [];
+  let prevInst: string | null = null;
+  let prevDir: "long" | "short" | null = null;
+
+  for (const snap of rankSnaps) {
+    const strongCur = ALL_CURRENCIES.find(c => snap.ranks[c] === predRank);
+    const weakCur = ALL_CURRENCIES.find(c => snap.ranks[c] === preyRank);
+    if (!strongCur || !weakCur) continue;
+
+    const directInst = `${strongCur}_${weakCur}`;
+    const inverseInst = `${weakCur}_${strongCur}`;
+    let instrument: string | null = null;
+    let direction: "long" | "short" = "long";
+
+    if (pairTimeIndex[directInst]?.[snap.time] !== undefined) { instrument = directInst; direction = "long"; }
+    else if (pairTimeIndex[inverseInst]?.[snap.time] !== undefined) { instrument = inverseInst; direction = "short"; }
+    if (!instrument) continue;
+
+    if (instrument !== prevInst || direction !== prevDir) {
+      const candleIdx = pairTimeIndex[instrument][snap.time];
+      const candles = pairCandles[instrument];
+      const gateBits = computeGateBits(candles, candleIdx, direction);
+      const hour = new Date(snap.time).getUTCHours();
+
+      raw.push({
+        time: snap.time, instrument, direction,
+        entryPrice: candles[candleIdx].close,
+        isJPY: instrument.includes("JPY"),
+        candleIdx, gateBits, sessionIdx: getSessionIdx(hour),
+      });
+      prevInst = instrument;
+      prevDir = direction;
+    }
+  }
+
+  const signals: CompactSignal[] = new Array(raw.length);
+  for (let i = 0; i < raw.length; i++) {
+    const sig = raw[i];
+    const candles = pairCandles[sig.instrument];
+    if (!candles) continue;
+    const nextTime = i + 1 < raw.length ? raw[i + 1].time : null;
+    signals[i] = {
+      ...sig,
+      exitPips: precomputeExits(sig.entryPrice, sig.isJPY, sig.candleIdx, sig.direction, candles, nextTime, exitModes),
+    };
+  }
+  return signals.filter(Boolean);
+}
+
+// ── Generate signals for fixed-pair strategy ──
+function generatePairSignals(
+  pair: string, direction: "long" | "short" | null,
+  pairCandles: Record<string, Candle[]>, pairTimeIndex: Record<string, Record<string, number>>,
+  exitModes: Array<{ slPips: number; tpRatio: number | "flip" }>,
+  rankSnaps: RankSnap[],
+): CompactSignal[] {
+  const candles = pairCandles[pair];
+  if (!candles || candles.length < 30) return [];
+
+  // For fixed-pair strategies, generate a signal at each rank snapshot where candle data exists
+  // Direction comes from LinReg slope (same as G3 logic) if not specified
+  const raw: Array<Omit<CompactSignal, 'exitPips'>> = [];
+  let prevDir: "long" | "short" | null = null;
+  const timeIdx = pairTimeIndex[pair];
+
+  for (const snap of rankSnaps) {
+    const candleIdx = timeIdx?.[snap.time];
+    if (candleIdx === undefined || candleIdx < 21) continue;
+
+    // Determine direction from LinReg slope if not fixed
+    let dir: "long" | "short";
+    if (direction) {
+      dir = direction;
+    } else {
+      const n = 20;
+      let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
+      for (let i = 0; i < n; i++) {
+        const ci = candleIdx - n + i;
+        sumX += i; sumY += candles[ci].close; sumXY += i * candles[ci].close; sumX2 += i * i;
+      }
+      const denom = n * sumX2 - sumX * sumX;
+      const slope = denom !== 0 ? (n * sumXY - sumX * sumY) / denom : 0;
+      dir = slope >= 0 ? "long" : "short";
+    }
+
+    // Only generate signal on direction change (same logic as rank-based)
+    if (dir === prevDir) continue;
+    prevDir = dir;
+
+    const gateBits = computeGateBits(candles, candleIdx, dir);
+    const hour = new Date(snap.time).getUTCHours();
+
+    raw.push({
+      time: snap.time, instrument: pair, direction: dir,
+      entryPrice: candles[candleIdx].close,
+      isJPY: pair.includes("JPY"),
+      candleIdx, gateBits, sessionIdx: getSessionIdx(hour),
+    });
+  }
+
+  const signals: CompactSignal[] = new Array(raw.length);
+  for (let i = 0; i < raw.length; i++) {
+    const sig = raw[i];
+    const nextTime = i + 1 < raw.length ? raw[i + 1].time : null;
+    signals[i] = {
+      ...sig,
+      exitPips: precomputeExits(sig.entryPrice, sig.isJPY, sig.candleIdx, sig.direction, candles, nextTime, exitModes),
+    };
+  }
+  return signals.filter(Boolean);
+}
+
+// ── Position sizing (IDENTICAL to profile-live-backtest) ──
+function computeUnits(equity: number, riskPct: number, slPips: number, pipVal: number): number {
+  const riskAmount = equity * riskPct;
+  const rawUnits = riskAmount / (slPips * pipVal);
+  return Math.min(rawUnits, MAX_UNITS);
+}
+
+// ── Blend Component from request ──
+interface BlendComponent {
+  id: string;
+  predatorRank?: number;
+  preyRank?: number;
+  requireG3?: boolean;
+  slPips: number;
+  tpRatio: number;
+  weight: number;
+  label: string;
+  fixedPair?: string;
+  session?: string;
+  gates?: string;
+  atrSlMultiplier?: number;
+  atrTpMultiplier?: number;
+}
+
+// ── Per-strategy result ──
+interface StrategyResult {
+  id: string;
+  label: string;
+  weight: number;
+  trades: number;
+  wins: number;
+  losses: number;
+  winRate: number;
+  totalPips: number;
+  profitFactor: number;
+  avgWin: number;
+  avgLoss: number;
+  institutionalProfit: number;
+  aggressiveProfit: number;
+  maxDrawdown: number;
+  equityCurve: Array<{ time: string; pips: number }>;
+}
+
+// ── Simulate one strategy using its exact parameters ──
+function simulateStrategy(
+  comp: BlendComponent,
+  signals: CompactSignal[],
+  exitIdx: number,
+  slPips: number,
+): StrategyResult {
+  // Resolve gate mask
+  let gateMask = GATE_G1;
+  const gates = comp.gates || '';
+  if (gates.includes('G2')) gateMask |= GATE_G2;
+  if (gates.includes('G3')) gateMask |= GATE_G3;
+  if (comp.requireG3) gateMask |= GATE_G2 | GATE_G3;
+
+  // Resolve session filter
+  const SESSIONS = ["ALL", "ASIA", "LONDON", "NEW_YORK", "NY_CLOSE"];
+  const sessionIdx = comp.session ? SESSIONS.indexOf(comp.session.toUpperCase()) : 0;
+
+  let instEquity = 1000, instPeak = 1000, instMaxDD = 0;
+  let aggEquity = 1000, aggPeak = 1000;
+  let wins = 0, losses = 0, totalPips = 0;
+  let grossWinPips = 0, grossLossPips = 0;
+  const curve: Array<{ time: string; pips: number }> = [];
+
+  for (const sig of signals) {
+    if ((sig.gateBits & gateMask) !== gateMask) continue;
+    if (sessionIdx > 0 && sig.sessionIdx !== sessionIdx) continue;
+
+    let tradePips = sig.exitPips[exitIdx];
+    tradePips = tradePips > 0 ? tradePips - FRICTION_PIPS : tradePips - FRICTION_PIPS;
+
+    const pipVal = sig.isJPY ? 0.01 : 0.0001;
+    totalPips += tradePips;
+
+    if (tradePips > 0) { wins++; grossWinPips += tradePips; }
+    else { losses++; grossLossPips += Math.abs(tradePips); }
+
+    // Institutional model (1% risk)
+    const instUnits = computeUnits(instEquity, INSTITUTIONAL_RISK, slPips, pipVal);
+    instEquity += tradePips * instUnits * pipVal;
+    if (instEquity > instPeak) instPeak = instEquity;
+    const instDD = (instPeak - instEquity) / instPeak;
+    if (instDD > instMaxDD) instMaxDD = instDD;
+
+    // Aggressive model (5% risk)
+    const aggUnits = computeUnits(aggEquity, AGGRESSIVE_RISK, slPips, pipVal);
+    aggEquity += tradePips * aggUnits * pipVal;
+
+    curve.push({ time: sig.time, pips: tradePips });
+  }
+
+  const trades = wins + losses;
+  return {
+    id: comp.id,
+    label: comp.label,
+    weight: comp.weight,
+    trades,
+    wins,
+    losses,
+    winRate: trades > 0 ? Math.round((wins / trades) * 1000) / 10 : 0,
+    totalPips: Math.round(totalPips * 10) / 10,
+    profitFactor: grossLossPips > 0 ? Math.round((grossWinPips / grossLossPips) * 100) / 100 : grossWinPips > 0 ? 999 : 0,
+    avgWin: wins > 0 ? Math.round((grossWinPips / wins) * 10) / 10 : 0,
+    avgLoss: losses > 0 ? Math.round((grossLossPips / losses) * 10) / 10 : 0,
+    institutionalProfit: Math.round((instEquity - 1000) * 100) / 100,
+    aggressiveProfit: Math.round((aggEquity - 1000) * 100) / 100,
+    maxDrawdown: Math.round(-instMaxDD * 1000) / 10,
+    equityCurve: curve,
+  };
+}
+
 // ════════════════════════════════════════════
-// MAIN HANDLER
+// MAIN HANDLER — v3.0 True Parity
 // ════════════════════════════════════════════
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -282,30 +414,28 @@ Deno.serve(async (req) => {
     const body = await req.json().catch(() => ({}));
     const environment: "practice" | "live" = body.environment || "live";
     const candleCount: number = Math.min(body.candles || 15000, 42000);
+    const components: BlendComponent[] = (body.components || []).map((c: any) => ({
+      id: c.id || 'unknown',
+      predatorRank: c.predatorRank || 0,
+      preyRank: c.preyRank || 0,
+      requireG3: c.requireG3 ?? false,
+      slPips: c.fixedPips || c.slPips || 30,
+      tpRatio: typeof c.tpRatio === 'number' ? c.tpRatio : 2.0,
+      weight: c.weight || 0,
+      label: c.label || c.id || 'Unknown',
+      fixedPair: c.fixedPair || undefined,
+      session: c.session || undefined,
+      gates: c.gates || (c.requireG3 ? 'G1+G2+G3' : 'G1+G2'),
+      atrSlMultiplier: c.atrSlMultiplier || undefined,
+      atrTpMultiplier: c.atrTpMultiplier || undefined,
+    }));
 
-    // ── Resolve active components ──
-    let activeComponents: BlendComponent[] = DEFAULT_COMPONENTS;
-
-    if (body.components && Array.isArray(body.components) && body.components.length > 0) {
-      activeComponents = body.components.map((c: any) => ({
-        id: c.id || `${c.predatorRank}v${c.preyRank}`,
-        predatorRank: c.predatorRank,
-        preyRank: c.preyRank,
-        requireG3: c.requireG3 ?? false,
-        slType: c.slType || 'fixed_custom',
-        entryType: c.entryType || 'order_block',
-        weight: c.weight,
-        label: c.label || `#${c.predatorRank}v${c.preyRank}`,
-        fixedPips: c.fixedPips,
-        tpRatio: c.tpRatio,
-        fixedPair: c.fixedPair || undefined,
-        atrSlMultiplier: c.atrSlMultiplier || undefined,
-        atrTpMultiplier: c.atrTpMultiplier || undefined,
-      }));
-      console.log(`[BLEND-BT] Using ${activeComponents.length} dynamic components (${activeComponents.filter(c => c.fixedPair).length} fixed-pair, ${activeComponents.filter(c => !c.fixedPair).length} rank-based)`);
+    if (components.length === 0) {
+      return new Response(JSON.stringify({ success: false, error: "No components provided" }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
-    const maxWeight = Math.max(...activeComponents.map(c => c.weight));
+    console.log(`[BLEND-BT v3] Starting — ${components.length} strategies, ${candleCount} candles (${environment})`);
 
     const apiToken = environment === "live"
       ? (Deno.env.get("OANDA_LIVE_API_TOKEN") || Deno.env.get("OANDA_API_TOKEN"))
@@ -318,8 +448,7 @@ Deno.serve(async (req) => {
 
     const availableCrosses = ALL_28_CROSSES.filter(c => OANDA_AVAILABLE.has(c.instrument));
 
-    // ── Step 1: Fetch candles in batches of 7 ──
-    console.log(`[BLEND-BT] Starting blend backtest — ${candleCount} candles (${environment}), ${activeComponents.length} components`);
+    // ── Step 1: Fetch candles (identical to profile-live-backtest) ──
     const pairCandles: Record<string, Candle[]> = {};
     for (let i = 0; i < availableCrosses.length; i += 7) {
       const batch = availableCrosses.slice(i, i + 7);
@@ -335,9 +464,9 @@ Deno.serve(async (req) => {
     }
     const pairsLoaded = Object.keys(pairCandles).length;
     const avgCandles = Math.round(Object.values(pairCandles).reduce((s, c) => s + c.length, 0) / pairsLoaded);
-    console.log(`[BLEND-BT] Loaded ${pairsLoaded} pairs, avg ${avgCandles} candles`);
+    console.log(`[BLEND-BT v3] Loaded ${pairsLoaded} pairs, avg ${avgCandles} candles`);
 
-    // ── Step 2: Build time index + rank snapshots ──
+    // ── Step 2: Build time index + rank snapshots (identical to profile-live-backtest) ──
     const pairTimeIndex: Record<string, Record<string, number>> = {};
     for (const [inst, candles] of Object.entries(pairCandles)) {
       const idx: Record<string, number> = {};
@@ -388,181 +517,114 @@ Deno.serve(async (req) => {
       sorted.forEach((cur, idx) => { ranks[cur] = idx + 1; });
       rankSnaps.push({ time, ranks });
     }
-    console.log(`[BLEND-BT] ${rankSnaps.length} rank snapshots`);
+    console.log(`[BLEND-BT v3] ${rankSnaps.length} rank snapshots`);
 
-    // ── Step 3: Walk through each rank snapshot, evaluate all components ──
-    const allTrades: TradeResult[] = [];
-    const componentStats: Record<string, { trades: number; wins: number; losses: number; totalPips: number; grossWin: number; grossLoss: number }> = {};
-    for (const comp of activeComponents) {
-      componentStats[comp.id] = { trades: 0, wins: 0, losses: 0, totalPips: 0, grossWin: 0, grossLoss: 0 };
+    // ── Step 3: Simulate each strategy independently using the REAL engine logic ──
+    const strategyResults: StrategyResult[] = [];
+    const signalCache: Record<string, CompactSignal[]> = {};
+
+    for (const comp of components) {
+      // Build exit modes for this specific strategy (just its SL/TP combo)
+      const exitModes = [{ slPips: comp.slPips, tpRatio: comp.tpRatio }];
+      const exitIdx = 0; // Single exit mode per strategy
+
+      let signals: CompactSignal[];
+
+      if (comp.fixedPair) {
+        // Fixed-pair strategy: generate signals on specific pair
+        const cacheKey = `pair:${comp.fixedPair}:${comp.id}`;
+        if (!signalCache[cacheKey]) {
+          // Determine fixed direction from DNA if available
+          let fixedDir: "long" | "short" | null = null;
+          // No fixed direction — use LinReg slope (same as rank flip logic)
+          signalCache[cacheKey] = generatePairSignals(
+            comp.fixedPair, fixedDir,
+            pairCandles, pairTimeIndex, exitModes, rankSnaps
+          );
+        }
+        signals = signalCache[cacheKey];
+      } else if (comp.predatorRank && comp.preyRank) {
+        // Rank-based strategy: use exact same signal generation as profile-live-backtest
+        const cacheKey = `rank:${comp.predatorRank}_${comp.preyRank}:sl${comp.slPips}:tp${comp.tpRatio}`;
+        if (!signalCache[cacheKey]) {
+          signalCache[cacheKey] = generateRankSignals(
+            comp.predatorRank, comp.preyRank, rankSnaps,
+            pairCandles, pairTimeIndex, exitModes
+          );
+        }
+        signals = signalCache[cacheKey];
+      } else {
+        console.log(`[BLEND-BT v3] Skipping ${comp.id}: no rank or pair defined`);
+        continue;
+      }
+
+      console.log(`[BLEND-BT v3] ${comp.id}: ${signals.length} signals generated`);
+      const result = simulateStrategy(comp, signals, exitIdx, comp.slPips);
+      strategyResults.push(result);
+      console.log(`[BLEND-BT v3] ${comp.id}: ${result.trades} trades, PF=${result.profitFactor}, Net=${result.totalPips}p, Inst=$${result.institutionalProfit}`);
     }
 
-    const activeTradeEnd: Record<string, number> = {};
+    // ── Step 4: Build portfolio equity curve by time-merging all strategy trades ──
+    // Collect all trades with timestamps and strategy weights
+    interface PortfolioTrade { time: string; pips: number; weight: number; slPips: number; isJPY: boolean; strategyId: string; }
+    const allPortfolioTrades: PortfolioTrade[] = [];
 
-    const SAMPLE_STEP = rankSnaps.length > 10000 ? Math.floor(rankSnaps.length / 8000) : 1;
-
-    for (let si = 0; si < rankSnaps.length; si += SAMPLE_STEP) {
-      const snap = rankSnaps[si];
-
-      for (const comp of activeComponents) {
-        if (activeTradeEnd[comp.id] !== undefined && si <= activeTradeEnd[comp.id]) continue;
-
-        let instrument: string;
-        let direction: 'long' | 'short';
-
-        if (comp.fixedPair) {
-          // Fixed-pair strategy (alpha-discovery): trade specific pair
-          instrument = comp.fixedPair;
-          if (!pairCandles[instrument]) continue;
-
-          const candles = pairCandles[instrument];
-          const candleIdx = pairTimeIndex[instrument]?.[snap.time];
-          if (candleIdx === undefined || candleIdx < 21) continue;
-
-          // Use order block as entry trigger for fixed-pair strategies
-          if (!checkEntryTrigger(comp, candles, candleIdx, 'long')) continue;
-
-          // Determine direction from price action (close vs open of current bar)
-          const bar = candles[candleIdx];
-          direction = bar.close > bar.open ? 'long' : 'short';
-
-          const currentPrice = bar.close;
-          const pv = pipValue(instrument);
-          const isJPY = instrument.includes('JPY');
-
-          // Use ATR-based SL/TP if available, otherwise fixed pips
-          let slDist: number;
-          let tpDist: number;
-          if (comp.atrSlMultiplier) {
-            const atr = computeATR(candles, candleIdx, 14);
-            slDist = atr * comp.atrSlMultiplier;
-            tpDist = atr * (comp.atrTpMultiplier || comp.atrSlMultiplier * 2);
-            if (slDist < 3 * pv) slDist = 10 * pv;
-          } else {
-            slDist = (comp.fixedPips || 30) * pv;
-            const compTpRatio = comp.tpRatio || 2.0;
-            tpDist = slDist * compTpRatio;
-          }
-
-          const slPrice = direction === 'long' ? currentPrice - slDist : currentPrice + slDist;
-          const tpPrice = direction === 'long' ? currentPrice + tpDist : currentPrice - tpDist;
-
-          const result = simulateTradeForward(candles, candleIdx, currentPrice, slPrice, tpPrice, direction, isJPY);
-          let tradePips = computePips(currentPrice, result.exitPrice, direction, isJPY);
-          tradePips = tradePips > 0 ? tradePips - FRICTION_PIPS : tradePips - FRICTION_PIPS;
-
-          allTrades.push({
-            componentId: comp.id, instrument, direction, entryPrice: currentPrice,
-            exitPrice: result.exitPrice, slPrice, tpPrice,
-            pips: Math.round(tradePips * 10) / 10, weight: comp.weight,
-            entryTime: snap.time, exitTime: candles[result.exitIdx].time,
-            slType: comp.atrSlMultiplier ? `atr_${comp.atrSlMultiplier}x` : comp.slType,
-            entryType: comp.entryType,
-          });
-
-          const cs = componentStats[comp.id];
-          cs.trades++;
-          cs.totalPips += tradePips;
-          if (tradePips > 0) { cs.wins++; cs.grossWin += tradePips; }
-          else { cs.losses++; cs.grossLoss += Math.abs(tradePips); }
-
-          const exitSnapIdx = rankSnaps.findIndex((s, idx) => idx > si && s.time >= candles[result.exitIdx].time);
-          activeTradeEnd[comp.id] = exitSnapIdx >= 0 ? exitSnapIdx : rankSnaps.length;
-          continue;
-        }
-
-        // Rank-based strategy (original logic)
-        const predCurrency = ALL_CURRENCIES.find(c => snap.ranks[c] === comp.predatorRank);
-        const preyCurrency = ALL_CURRENCIES.find(c => snap.ranks[c] === comp.preyRank);
-        if (!predCurrency || !preyCurrency) continue;
-
-        const instrInfo = findInstrument(predCurrency, preyCurrency);
-        if (!instrInfo) continue;
-
-        instrument = instrInfo.instrument;
-        direction = instrInfo.inverted ? 'short' : 'long';
-        const candles = pairCandles[instrument];
-        if (!candles) continue;
-
-        const candleIdx = pairTimeIndex[instrument]?.[snap.time];
-        if (candleIdx === undefined || candleIdx < 21) continue;
-
-        if (!checkG2(candles, candleIdx, direction)) continue;
-        if (comp.requireG3 && !checkG3(candles, candleIdx, direction)) continue;
-        if (!checkEntryTrigger(comp, candles, candleIdx, direction)) continue;
-
-        const currentPrice = candles[candleIdx].close;
-        const pv = pipValue(instrument);
-        const isJPY = instrument.includes('JPY');
-        const slDist = computeSLDistance(comp, candles, candleIdx, direction, currentPrice, pv);
-        const compTpRatio = comp.tpRatio || 2.0;
-        const slPrice = direction === 'long' ? currentPrice - slDist : currentPrice + slDist;
-        const tpPrice = direction === 'long' ? currentPrice + slDist * compTpRatio : currentPrice - slDist * compTpRatio;
-
-        const result = simulateTradeForward(candles, candleIdx, currentPrice, slPrice, tpPrice, direction, isJPY);
-        let tradePips = computePips(currentPrice, result.exitPrice, direction, isJPY);
-        tradePips = tradePips > 0 ? tradePips - FRICTION_PIPS : tradePips - FRICTION_PIPS;
-
-        const trade: TradeResult = {
-          componentId: comp.id, instrument, direction, entryPrice: currentPrice,
-          exitPrice: result.exitPrice, slPrice, tpPrice,
-          pips: Math.round(tradePips * 10) / 10, weight: comp.weight,
-          entryTime: snap.time, exitTime: candles[result.exitIdx].time,
-          slType: comp.slType, entryType: comp.entryType,
-        };
-
-        allTrades.push(trade);
-
-        const cs = componentStats[comp.id];
-        cs.trades++;
-        cs.totalPips += tradePips;
-        if (tradePips > 0) { cs.wins++; cs.grossWin += tradePips; }
-        else { cs.losses++; cs.grossLoss += Math.abs(tradePips); }
-
-        const exitSnapIdx = rankSnaps.findIndex((s, idx) => idx > si && s.time >= candles[result.exitIdx].time);
-        activeTradeEnd[comp.id] = exitSnapIdx >= 0 ? exitSnapIdx : rankSnaps.length;
+    for (const sr of strategyResults) {
+      const comp = components.find(c => c.id === sr.id)!;
+      const isJPY = comp.fixedPair?.includes('JPY') || false;
+      for (const pt of sr.equityCurve) {
+        allPortfolioTrades.push({
+          time: pt.time, pips: pt.pips, weight: sr.weight,
+          slPips: comp.slPips, isJPY, strategyId: sr.id,
+        });
       }
     }
 
-    console.log(`[BLEND-BT] Total trades: ${allTrades.length}`);
-
-    // ── Step 4: Build portfolio equity curve with weighted sizing ──
-    allTrades.sort((a, b) => a.entryTime.localeCompare(b.entryTime));
+    // Sort by time for chronological aggregation
+    allPortfolioTrades.sort((a, b) => a.time.localeCompare(b.time));
 
     let portfolioEquity = BASE_EQUITY;
     let peak = BASE_EQUITY;
     let maxDD = 0;
-    const equityCurve: Array<{ time: string; equity: number }> = [{ time: sortedTimes[0] || '', equity: BASE_EQUITY }];
-
     let aggEquity = BASE_EQUITY;
     let aggPeak = BASE_EQUITY;
     let aggMaxDD = 0;
+    let totalWins = 0, totalLosses = 0, totalPips = 0;
+    let grossWinPips = 0, grossLossPips = 0;
+
+    const equityCurve: Array<{ time: string; equity: number }> = [{ time: sortedTimes[0] || '', equity: BASE_EQUITY }];
     const aggCurve: Array<{ time: string; equity: number }> = [{ time: sortedTimes[0] || '', equity: BASE_EQUITY }];
 
-    for (const trade of allTrades) {
-      const pv = pipValue(trade.instrument);
+    const maxWeight = Math.max(...components.map(c => c.weight), 0.01);
 
-      // Institutional: 1% risk per trade, normalized by max weight
-      const instRisk = portfolioEquity * 0.01 * trade.weight / maxWeight;
-      const slPips = Math.abs(trade.entryPrice - trade.slPrice) / pv;
-      const instUnits = slPips > 0 ? Math.min(instRisk / (slPips * pv), 5_000_000) : 0;
-      const instPnl = trade.pips * instUnits * pv;
-      portfolioEquity += instPnl;
+    for (const trade of allPortfolioTrades) {
+      const pipVal = trade.isJPY ? 0.01 : 0.0001;
+      totalPips += trade.pips;
+
+      if (trade.pips > 0) { totalWins++; grossWinPips += trade.pips; }
+      else { totalLosses++; grossLossPips += Math.abs(trade.pips); }
+
+      // Institutional: 1% risk, weighted by strategy allocation
+      const instRisk = portfolioEquity * INSTITUTIONAL_RISK * trade.weight / maxWeight;
+      const instUnits = trade.slPips > 0 ? Math.min(instRisk / (trade.slPips * pipVal), MAX_UNITS) : 0;
+      portfolioEquity += trade.pips * instUnits * pipVal;
       if (portfolioEquity > peak) peak = portfolioEquity;
       const dd = (peak - portfolioEquity) / peak;
       if (dd > maxDD) maxDD = dd;
-      equityCurve.push({ time: trade.exitTime, equity: Math.round(portfolioEquity * 100) / 100 });
+      equityCurve.push({ time: trade.time, equity: Math.round(portfolioEquity * 100) / 100 });
 
-      // Aggressive: 5% risk per trade
-      const aggRisk = aggEquity * 0.05 * trade.weight / maxWeight;
-      const aggUnits = slPips > 0 ? Math.min(aggRisk / (slPips * pv), 5_000_000) : 0;
-      const aggPnl = trade.pips * aggUnits * pv;
-      aggEquity += aggPnl;
+      // Aggressive: 5% risk
+      const aggRisk = aggEquity * AGGRESSIVE_RISK * trade.weight / maxWeight;
+      const aggUnits = trade.slPips > 0 ? Math.min(aggRisk / (trade.slPips * pipVal), MAX_UNITS) : 0;
+      aggEquity += trade.pips * aggUnits * pipVal;
       if (aggEquity > aggPeak) aggPeak = aggEquity;
       const aggDd = (aggPeak - aggEquity) / aggPeak;
       if (aggDd > aggMaxDD) aggMaxDD = aggDd;
-      aggCurve.push({ time: trade.exitTime, equity: Math.round(aggEquity * 100) / 100 });
+      aggCurve.push({ time: trade.time, equity: Math.round(aggEquity * 100) / 100 });
     }
+
+    const totalTrades = totalWins + totalLosses;
+    const profitFactor = grossLossPips > 0 ? Math.round((grossWinPips / grossLossPips) * 100) / 100 : grossWinPips > 0 ? 999 : 0;
 
     const downsample = (curve: Array<{ time: string; equity: number }>, maxPts = 300) => {
       if (curve.length <= maxPts) return curve;
@@ -570,38 +632,11 @@ Deno.serve(async (req) => {
       return curve.filter((_, i) => i % step === 0 || i === curve.length - 1);
     };
 
-    const totalTrades = allTrades.length;
-    const wins = allTrades.filter(t => t.pips > 0).length;
-    const losses = totalTrades - wins;
-    const totalPips = allTrades.reduce((s, t) => s + t.pips, 0);
-    const grossWin = allTrades.filter(t => t.pips > 0).reduce((s, t) => s + t.pips, 0);
-    const grossLoss = allTrades.filter(t => t.pips <= 0).reduce((s, t) => s + Math.abs(t.pips), 0);
-    const profitFactor = grossLoss > 0 ? Math.round((grossWin / grossLoss) * 100) / 100 : grossWin > 0 ? 999 : 0;
-
-    const componentSummaries = activeComponents.map(comp => {
-      const cs = componentStats[comp.id];
-      return {
-        id: comp.id,
-        label: comp.label,
-        weight: comp.weight,
-        trades: cs.trades,
-        wins: cs.wins,
-        losses: cs.losses,
-        winRate: cs.trades > 0 ? Math.round((cs.wins / cs.trades) * 1000) / 10 : 0,
-        totalPips: Math.round(cs.totalPips * 10) / 10,
-        profitFactor: cs.grossLoss > 0 ? Math.round((cs.grossWin / cs.grossLoss) * 100) / 100 : cs.grossWin > 0 ? 999 : 0,
-        avgWin: cs.wins > 0 ? Math.round((cs.grossWin / cs.wins) * 10) / 10 : 0,
-        avgLoss: cs.losses > 0 ? Math.round((cs.grossLoss / cs.losses) * 10) / 10 : 0,
-      };
-    });
-
+    // Period stats
     const actualDays = avgCandles / 44;
     const periods = [
-      { label: '3D', days: 3 },
-      { label: '7D', days: 7 },
-      { label: '14D', days: 14 },
-      { label: '30D', days: 30 },
-      { label: '60D', days: 60 },
+      { label: '3D', days: 3 }, { label: '7D', days: 7 },
+      { label: '14D', days: 14 }, { label: '30D', days: 30 }, { label: '60D', days: 60 },
     ];
     const flatUnits = 2000;
     const periodStats = periods.map(p => {
@@ -613,7 +648,7 @@ Deno.serve(async (req) => {
       return {
         period: p.label,
         returnPct: Math.round(periodReturnPct * 100) / 100,
-        winRate: wins > 0 ? Math.round((wins / totalTrades) * 1000) / 10 : 0,
+        winRate: totalTrades > 0 ? Math.round((totalWins / totalTrades) * 1000) / 10 : 0,
         profitFactor,
         maxDD: Math.round(-maxDD * 1000) / 10,
         netPips: Math.round(periodPips * 10) / 10,
@@ -621,21 +656,36 @@ Deno.serve(async (req) => {
       };
     });
 
+    // Component summaries
+    const componentSummaries = strategyResults.map(sr => ({
+      id: sr.id,
+      label: sr.label,
+      weight: sr.weight,
+      trades: sr.trades,
+      wins: sr.wins,
+      losses: sr.losses,
+      winRate: sr.winRate,
+      totalPips: sr.totalPips,
+      profitFactor: sr.profitFactor,
+      avgWin: sr.avgWin,
+      avgLoss: sr.avgLoss,
+    }));
+
     const result = {
       success: true,
-      version: "blend-bt-2.0",
+      version: "blend-bt-3.0-parity",
       timestamp: new Date().toISOString(),
       environment,
       candlesPerPair: avgCandles,
       pairsLoaded,
       totalSnapshots: rankSnaps.length,
-      componentsUsed: activeComponents.length,
+      componentsUsed: components.length,
       dateRange: { start: sortedTimes[0], end: sortedTimes[sortedTimes.length - 1] },
       portfolio: {
         totalTrades,
-        wins,
-        losses,
-        winRate: totalTrades > 0 ? Math.round((wins / totalTrades) * 1000) / 10 : 0,
+        wins: totalWins,
+        losses: totalLosses,
+        winRate: totalTrades > 0 ? Math.round((totalWins / totalTrades) * 1000) / 10 : 0,
         profitFactor,
         totalPips: Math.round(totalPips * 10) / 10,
         maxDrawdown: Math.round(-maxDD * 1000) / 10,
@@ -645,8 +695,8 @@ Deno.serve(async (req) => {
         finalEquity: Math.round(portfolioEquity * 100) / 100,
         aggressiveFinalEquity: Math.round(aggEquity * 100) / 100,
         expectancy: totalTrades > 0 ? Math.round((totalPips / totalTrades) * 100) / 100 : 0,
-        avgWin: wins > 0 ? Math.round((grossWin / wins) * 10) / 10 : 0,
-        avgLoss: losses > 0 ? Math.round((grossLoss / losses) * 10) / 10 : 0,
+        avgWin: totalWins > 0 ? Math.round((grossWinPips / totalWins) * 10) / 10 : 0,
+        avgLoss: totalLosses > 0 ? Math.round((grossLossPips / totalLosses) * 10) / 10 : 0,
       },
       components: componentSummaries,
       periodStats,
@@ -654,13 +704,13 @@ Deno.serve(async (req) => {
       aggressiveEquityCurve: downsample(aggCurve),
     };
 
-    console.log(`[BLEND-BT] Done. ${totalTrades} trades, PF=${profitFactor}, Net=${Math.round(totalPips)}p, Inst=$${Math.round(portfolioEquity - BASE_EQUITY)}, Agg=$${Math.round(aggEquity - BASE_EQUITY)}`);
+    console.log(`[BLEND-BT v3] Done. ${totalTrades} trades, PF=${profitFactor}, Net=${Math.round(totalPips)}p, Inst=$${Math.round(portfolioEquity - BASE_EQUITY)}, Agg=$${Math.round(aggEquity - BASE_EQUITY)}`);
 
     return new Response(JSON.stringify(result),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
   } catch (err) {
-    console.error("[BLEND-BT] Error:", err);
+    console.error("[BLEND-BT v3] Error:", err);
     return new Response(JSON.stringify({ success: false, error: (err as Error).message }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
   }
