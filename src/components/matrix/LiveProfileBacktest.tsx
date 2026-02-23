@@ -1,13 +1,13 @@
-// Live Profile Backtest Panel v5.0 — MapReduce Parallel Orchestration
+// Live Profile Backtest Panel v6.0 — Sovereign-Alpha Mandate
 // Fires 3 parallel edge function calls (one per predator rank), merges results.
+// Displays dual-metric P&L: Aggressive (5% geometric) + Institutional (1% fixed risk).
 
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Cpu, Trophy, AlertTriangle,
-  Play, Loader2, ChevronDown, ChevronUp,
+  Play, Loader2, ChevronDown, ChevronUp, ShieldCheck, Flame,
 } from 'lucide-react';
-// Raw fetch used for parallel calls to avoid auth lock contention
 
 interface LiveProfileResult {
   predator: number;
@@ -22,12 +22,16 @@ interface LiveProfileResult {
   winRate: number;
   profitFactor: number;
   totalPips: number;
-  netProfit: number;
+  aggressiveProfit: number;
+  institutionalProfit: number;
+  aggressivePF: number;
+  institutionalPF: number;
   maxDrawdown: number;
+  aggressiveMaxDD: number;
   expectancy: number;
   avgWin: number;
   avgLoss: number;
-  equityCurve: Array<{ time: string; equity: number }> | null;
+  equityCurve: Array<{ time: string; equity: number; aggressiveEquity: number }> | null;
 }
 
 interface ChunkResponse {
@@ -40,6 +44,7 @@ interface ChunkResponse {
   totalSnapshots: number;
   totalCombos: number;
   profitableCombos: number;
+  rejectedCombos: number;
   topResults: LiveProfileResult[];
   predatorRanks: number[];
   dateRange: { start: string; end: string };
@@ -55,39 +60,50 @@ interface MergedResult {
   totalSnapshots: number;
   totalCombos: number;
   profitableCombos: number;
+  rejectedCombos: number;
   topResults: LiveProfileResult[];
   dateRange: { start: string; end: string };
 }
 
-function MiniCurve({ curve, height = 70 }: { curve: Array<{ time: string; equity: number }>; height?: number }) {
+function DualCurve({ curve, height = 80 }: { curve: Array<{ time: string; equity: number; aggressiveEquity: number }>; height?: number }) {
   if (!curve || curve.length < 2) return null;
   const w = 280;
   const h = height;
   const pad = 4;
-  const min = Math.min(...curve.map(c => c.equity));
-  const max = Math.max(...curve.map(c => c.equity));
+
+  const allVals = curve.flatMap(c => [c.equity, c.aggressiveEquity]);
+  const min = Math.min(...allVals);
+  const max = Math.max(...allVals);
   const range = max - min || 1;
-  const points = curve.map((pt, i) => {
-    const x = pad + (i / (curve.length - 1)) * (w - 2 * pad);
-    const y = h - pad - ((pt.equity - min) / range) * (h - 2 * pad);
-    return `${x},${y}`;
-  });
-  const isPositive = curve[curve.length - 1].equity >= 1000;
-  const color = isPositive ? '#39ff14' : '#ff0055';
+
+  const mapPoints = (key: 'equity' | 'aggressiveEquity') =>
+    curve.map((pt, i) => {
+      const x = pad + (i / (curve.length - 1)) * (w - 2 * pad);
+      const y = h - pad - ((pt[key] - min) / range) * (h - 2 * pad);
+      return `${x},${y}`;
+    });
+
+  const instPoints = mapPoints('equity');
+  const aggPoints = mapPoints('aggressiveEquity');
+  const instPositive = curve[curve.length - 1].equity >= 1000;
+  const aggPositive = curve[curve.length - 1].aggressiveEquity >= 1000;
 
   return (
     <svg viewBox={`0 0 ${w} ${h}`} className="w-full" style={{ height }} preserveAspectRatio="none">
+      {/* Aggressive curve (behind) */}
+      <polyline points={aggPoints.join(' ')} fill="none" stroke={aggPositive ? '#ff6600' : '#ff0055'} strokeWidth="1" strokeOpacity="0.5" strokeDasharray="3,2" />
+      {/* Institutional curve (front) */}
       <defs>
-        <linearGradient id={`lbt-grad-${color}`} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor={color} stopOpacity="0.15" />
-          <stop offset="100%" stopColor={color} stopOpacity="0" />
+        <linearGradient id="inst-grad" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={instPositive ? '#39ff14' : '#ff0055'} stopOpacity="0.15" />
+          <stop offset="100%" stopColor={instPositive ? '#39ff14' : '#ff0055'} stopOpacity="0" />
         </linearGradient>
       </defs>
       <polygon
-        points={`${pad},${h - pad} ${points.join(' ')} ${w - pad},${h - pad}`}
-        fill={`url(#lbt-grad-${color})`}
+        points={`${pad},${h - pad} ${instPoints.join(' ')} ${w - pad},${h - pad}`}
+        fill="url(#inst-grad)"
       />
-      <polyline points={points.join(' ')} fill="none" stroke={color} strokeWidth="1.5" />
+      <polyline points={instPoints.join(' ')} fill="none" stroke={instPositive ? '#39ff14' : '#ff0055'} strokeWidth="1.5" />
     </svg>
   );
 }
@@ -108,14 +124,12 @@ export function LiveProfileBacktest() {
     setProgress({ completed: 0, total: 3, chunks: [] });
 
     try {
-      // MapReduce: fire 3 parallel calls, one per predator rank
       const chunks: Array<{ predatorRanks: number[]; label: string }> = [
         { predatorRanks: [1], label: "Predator R1" },
         { predatorRanks: [2], label: "Predator R2" },
         { predatorRanks: [3], label: "Predator R3" },
       ];
 
-      // Use raw fetch to avoid Supabase auth lock contention on parallel calls
       const fnUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/profile-live-backtest`;
       const anonKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
 
@@ -151,13 +165,16 @@ export function LiveProfileBacktest() {
 
       const results = await Promise.all(promises);
 
-      // Merge results from all chunks
+      // Merge results — sort by institutional PF (1% risk model)
       const allTopResults = results.flatMap(r => r.topResults);
-      allTopResults.sort((a, b) => b.netProfit - a.netProfit);
+      allTopResults.sort((a, b) => {
+        if (a.institutionalPF !== b.institutionalPF) return b.institutionalPF - a.institutionalPF;
+        return b.institutionalProfit - a.institutionalProfit;
+      });
 
       const merged: MergedResult = {
         success: true,
-        version: "5.0-mapreduce",
+        version: "6.0-sovereign-alpha",
         timestamp: new Date().toISOString(),
         environment,
         candlesPerPair: results[0]?.candlesPerPair ?? 0,
@@ -165,6 +182,7 @@ export function LiveProfileBacktest() {
         totalSnapshots: results[0]?.totalSnapshots ?? 0,
         totalCombos: results.reduce((sum, r) => sum + r.totalCombos, 0),
         profitableCombos: results.reduce((sum, r) => sum + r.profitableCombos, 0),
+        rejectedCombos: results.reduce((sum, r) => sum + (r.rejectedCombos || 0), 0),
         topResults: allTopResults.slice(0, 25),
         dateRange: results[0]?.dateRange ?? { start: '', end: '' },
       };
@@ -184,14 +202,22 @@ export function LiveProfileBacktest() {
       {/* Header */}
       <div className="flex items-center justify-between border-b border-slate-700/40 pb-4 mb-4">
         <div className="flex items-center gap-2">
-          <Cpu className="w-4 h-4 text-[#ff6600]" />
+          <ShieldCheck className="w-4 h-4 text-[#ff6600]" />
           <h2 className="text-[11px] font-bold tracking-widest text-slate-200 uppercase">
-            Live Profile Backtest · MapReduce v5.0
+            Sovereign-Alpha Mandate · v6.0
           </h2>
         </div>
-        <span className="text-[8px] font-mono text-slate-500 border border-slate-700 px-1.5 py-0.5 rounded">
-          3-WORKER PARALLEL
-        </span>
+        <div className="flex items-center gap-2">
+          <span className="text-[8px] font-mono text-emerald-400 border border-emerald-500/30 px-1.5 py-0.5 rounded bg-emerald-500/10">
+            TRIPLE-LOCK G1+G2+G3
+          </span>
+          <span className="text-[8px] font-mono text-[#ff6600] border border-[#ff6600]/30 px-1.5 py-0.5 rounded bg-[#ff6600]/10">
+            20% DD REJECT
+          </span>
+          <span className="text-[8px] font-mono text-slate-400 border border-slate-700 px-1.5 py-0.5 rounded">
+            50-LOT CAP
+          </span>
+        </div>
       </div>
 
       {/* Controls */}
@@ -229,20 +255,19 @@ export function LiveProfileBacktest() {
           }}
         >
           {loading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}
-          {loading ? 'Running…' : 'Run Live Backtest'}
+          {loading ? 'Running…' : 'Run Sovereign-Alpha'}
         </button>
       </div>
 
       {/* Description */}
       {!result && !loading && !error && (
-        <div className="text-[10px] text-slate-500 font-mono leading-relaxed max-w-2xl">
-          Fires 3 parallel workers (one per Predator Rank), each independently fetching candles, computing ranks,
-          and simulating ~1,800 combos. Results are merged client-side. Bitwise gate checks + pre-computed exits
-          for maximum CPU efficiency.
+        <div className="text-[10px] text-slate-500 font-mono leading-relaxed max-w-2xl space-y-1">
+          <p>Institutional-grade backtest: Triple-Lock entries (G1+G2+G3), 1.5-pip friction tax, 20% max DD fatal filter, 50-lot position cap.</p>
+          <p>Dual-metric benchmarking: <span className="text-[#ff6600]">Aggressive (5% risk)</span> vs <span className="text-emerald-400">Institutional (1% risk)</span>. Sorted by 1% Risk Profit Factor.</p>
         </div>
       )}
 
-      {/* Loading with chunk progress */}
+      {/* Loading */}
       {loading && (
         <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="py-6 space-y-3">
           <div className="flex items-center gap-3">
@@ -251,7 +276,7 @@ export function LiveProfileBacktest() {
             </motion.div>
             <div className="flex-1">
               <span className="text-[10px] text-slate-300 font-mono uppercase tracking-widest">
-                MapReduce: {progress.completed}/{progress.total} workers complete
+                Sovereign-Alpha: {progress.completed}/{progress.total} workers complete
               </span>
               <div className="w-full h-2 bg-slate-800 rounded-full overflow-hidden mt-2">
                 <motion.div
@@ -298,13 +323,16 @@ export function LiveProfileBacktest() {
             {/* Summary badges */}
             <div className="flex items-center gap-2 flex-wrap mb-4">
               <span className="text-[9px] font-mono px-2.5 py-1 rounded-lg border border-[#ff6600]/30 text-[#ff6600] bg-[#ff6600]/10">
-                {result.totalCombos.toLocaleString()} COMBOS TESTED
+                {result.totalCombos.toLocaleString()} TESTED
+              </span>
+              <span className="text-[9px] font-mono px-2.5 py-1 rounded-lg border border-red-500/30 text-red-400 bg-red-500/10">
+                {result.rejectedCombos.toLocaleString()} REJECTED (20% DD)
               </span>
               <span className="text-[9px] font-mono px-2.5 py-1 rounded-lg border border-emerald-500/30 text-emerald-400 bg-emerald-500/10">
-                {result.profitableCombos.toLocaleString()} PROFITABLE ({Math.round(result.profitableCombos / result.totalCombos * 100)}%)
+                {result.profitableCombos.toLocaleString()} PROFITABLE
               </span>
               <span className="text-[9px] font-mono px-2.5 py-1 rounded-lg border border-slate-700 text-slate-400 bg-slate-900/50">
-                {result.candlesPerPair.toLocaleString()} candles/pair · {result.pairsLoaded} pairs
+                {result.candlesPerPair.toLocaleString()} candles · {result.pairsLoaded} pairs
               </span>
               <span className="text-[9px] font-mono px-2.5 py-1 rounded-lg border border-slate-700 text-slate-400 bg-slate-900/50">
                 {result.dateRange.start.slice(0, 10)} → {result.dateRange.end.slice(0, 10)}
@@ -316,13 +344,12 @@ export function LiveProfileBacktest() {
               <div className="flex items-center gap-2 mb-2">
                 <Trophy className="w-4 h-4 text-yellow-400" />
                 <span className="text-[10px] font-bold text-slate-300 uppercase tracking-widest">
-                  Top {result.topResults.length} Live-Validated Profiles
+                  Top {result.topResults.length} Sovereign-Alpha Profiles (sorted by 1% Risk PF)
                 </span>
               </div>
 
               {result.topResults.map((profile, idx) => {
                 const isExpanded = expandedIdx === idx;
-                const isProfit = profile.netProfit > 0;
                 const medalColor = idx === 0 ? '#ffd700' : idx === 1 ? '#c0c0c0' : idx === 2 ? '#cd7f32' : undefined;
 
                 return (
@@ -353,7 +380,7 @@ export function LiveProfileBacktest() {
                           <span className="text-[10px] font-bold text-white">
                             R{profile.predator}v{profile.prey}
                           </span>
-                          <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-slate-700/50 text-slate-400">
+                          <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/20">
                             {profile.gates}
                           </span>
                           <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-slate-700/50 text-slate-400">
@@ -368,23 +395,35 @@ export function LiveProfileBacktest() {
                         </div>
                       </div>
 
-                      <div className="flex items-center gap-4 flex-shrink-0">
+                      <div className="flex items-center gap-3 flex-shrink-0">
+                        {/* Institutional P&L (primary) */}
                         <div className="text-right">
-                          <div className="text-[9px] text-slate-500">Net P&L</div>
-                          <div className={`text-[11px] font-bold font-mono ${isProfit ? 'text-emerald-400' : 'text-red-400'}`}>
-                            ${profile.netProfit.toLocaleString()}
+                          <div className="text-[8px] text-emerald-500 flex items-center gap-0.5 justify-end">
+                            <ShieldCheck className="w-2.5 h-2.5" /> 1% Risk
+                          </div>
+                          <div className={`text-[11px] font-bold font-mono ${profile.institutionalProfit > 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                            ${profile.institutionalProfit.toLocaleString()}
+                          </div>
+                        </div>
+                        {/* Aggressive P&L */}
+                        <div className="text-right">
+                          <div className="text-[8px] text-[#ff6600] flex items-center gap-0.5 justify-end">
+                            <Flame className="w-2.5 h-2.5" /> 5% Risk
+                          </div>
+                          <div className={`text-[11px] font-bold font-mono ${profile.aggressiveProfit > 0 ? 'text-[#ff6600]' : 'text-red-400'}`}>
+                            ${profile.aggressiveProfit.toLocaleString()}
+                          </div>
+                        </div>
+                        <div className="text-right">
+                          <div className="text-[9px] text-slate-500">PF</div>
+                          <div className={`text-[11px] font-bold font-mono ${profile.institutionalPF >= 1.3 ? 'text-emerald-400' : profile.institutionalPF >= 1.0 ? 'text-yellow-400' : 'text-red-400'}`}>
+                            {profile.institutionalPF}
                           </div>
                         </div>
                         <div className="text-right">
                           <div className="text-[9px] text-slate-500">WR</div>
                           <div className={`text-[11px] font-bold font-mono ${profile.winRate >= 50 ? 'text-emerald-400' : 'text-red-400'}`}>
                             {profile.winRate}%
-                          </div>
-                        </div>
-                        <div className="text-right">
-                          <div className="text-[9px] text-slate-500">PF</div>
-                          <div className={`text-[11px] font-bold font-mono ${profile.profitFactor >= 1.2 ? 'text-emerald-400' : 'text-yellow-400'}`}>
-                            {profile.profitFactor}
                           </div>
                         </div>
                         <div className="text-right">
@@ -404,25 +443,49 @@ export function LiveProfileBacktest() {
                           className="border-t border-slate-700/30"
                         >
                           <div className="p-4 grid grid-cols-2 lg:grid-cols-4 gap-4">
+                            {/* Institutional Stats */}
                             <div className="space-y-2">
+                              <div className="text-[9px] font-bold text-emerald-400 uppercase tracking-widest flex items-center gap-1 mb-1">
+                                <ShieldCheck className="w-3 h-3" /> Institutional (1% Risk)
+                              </div>
+                              <StatRow label="Net P&L" value={`$${profile.institutionalProfit.toLocaleString()}`} positive={profile.institutionalProfit > 0} />
+                              <StatRow label="Profit Factor" value={`${profile.institutionalPF}`} positive={profile.institutionalPF >= 1.3} />
+                              <StatRow label="Max Drawdown" value={`${profile.maxDrawdown}%`} positive={profile.maxDrawdown > -15} />
+                            </div>
+                            {/* Aggressive Stats */}
+                            <div className="space-y-2">
+                              <div className="text-[9px] font-bold text-[#ff6600] uppercase tracking-widest flex items-center gap-1 mb-1">
+                                <Flame className="w-3 h-3" /> Aggressive (5% Risk)
+                              </div>
+                              <StatRow label="Net P&L" value={`$${profile.aggressiveProfit.toLocaleString()}`} positive={profile.aggressiveProfit > 0} />
+                              <StatRow label="Profit Factor" value={`${profile.aggressivePF}`} positive={profile.aggressivePF >= 1.3} />
+                              <StatRow label="Max Drawdown" value={`${profile.aggressiveMaxDD}%`} positive={profile.aggressiveMaxDD > -15} />
+                            </div>
+                            {/* Pip Stats */}
+                            <div className="space-y-2">
+                              <div className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1">
+                                Pip Performance (after 1.5p tax)
+                              </div>
                               <StatRow label="Total Pips" value={`${profile.totalPips > 0 ? '+' : ''}${profile.totalPips}`} positive={profile.totalPips > 0} />
                               <StatRow label="Avg Win" value={`+${profile.avgWin} pips`} positive />
                               <StatRow label="Avg Loss" value={`-${profile.avgLoss} pips`} positive={false} />
                               <StatRow label="Expectancy" value={`${profile.expectancy > 0 ? '+' : ''}${profile.expectancy} pips/trade`} positive={profile.expectancy > 0} />
-                            </div>
-                            <div className="space-y-2">
-                              <StatRow label="Max Drawdown" value={`${profile.maxDrawdown}%`} positive={profile.maxDrawdown > -20} />
                               <StatRow label="Win/Loss" value={`${profile.wins}/${profile.losses}`} positive={profile.wins > profile.losses} />
                               <StatRow label="R:R Ratio" value={profile.avgLoss > 0 ? (profile.avgWin / profile.avgLoss).toFixed(2) : '∞'} positive />
                             </div>
 
+                            {/* Dual Equity Curve */}
                             {profile.equityCurve && (
-                              <div className="col-span-2">
-                                <div className="text-[9px] text-slate-500 mb-1 font-mono">EQUITY CURVE (REAL DATA)</div>
-                                <MiniCurve curve={profile.equityCurve} height={80} />
+                              <div>
+                                <div className="text-[9px] text-slate-500 mb-1 font-mono">DUAL EQUITY CURVE</div>
+                                <div className="flex items-center gap-3 mb-1">
+                                  <span className="text-[8px] font-mono text-emerald-400">━ 1% Risk</span>
+                                  <span className="text-[8px] font-mono text-[#ff6600]">╌ 5% Risk</span>
+                                </div>
+                                <DualCurve curve={profile.equityCurve} height={80} />
                                 <div className="flex justify-between text-[8px] text-slate-600 font-mono mt-1">
                                   <span>{profile.equityCurve[0]?.time.slice(0, 10)}</span>
-                                  <span className={isProfit ? 'text-emerald-500' : 'text-red-500'}>
+                                  <span className="text-emerald-500">
                                     ${profile.equityCurve[profile.equityCurve.length - 1]?.equity.toLocaleString()}
                                   </span>
                                   <span>{profile.equityCurve[profile.equityCurve.length - 1]?.time.slice(0, 10)}</span>
