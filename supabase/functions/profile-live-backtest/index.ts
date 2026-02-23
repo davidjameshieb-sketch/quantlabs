@@ -258,6 +258,10 @@ function generateSignals(
   return signals.filter(Boolean);
 }
 
+// ── Suck Rules Constants ──
+const FRICTION_PIPS = 1.5;       // Execution friction: subtract from wins, add to losses
+const MAX_ALLOWED_DD = 0.15;     // 15% equity-relative drawdown cap
+
 // ── Result interface ──
 interface LiveProfileResult {
   predator: number; prey: number; gates: string;
@@ -266,10 +270,12 @@ interface LiveProfileResult {
   winRate: number; profitFactor: number; totalPips: number;
   netProfit: number; maxDrawdown: number; expectancy: number;
   avgWin: number; avgLoss: number;
+  stability: "STABLE" | "UNSTABLE";  // Suck Rule #1: DD flag
   equityCurve: Array<{ time: string; equity: number }> | null;
 }
 
 // ── Simulate one combo — bitwise gate check, O(1) per trade ──
+// Suck Rules applied: #1 (15% DD cap), #3 (1.5-pip friction)
 function simulateCombo(
   predRank: number, preyRank: number,
   gateMask: number, gateLabel: string,
@@ -278,21 +284,28 @@ function simulateCombo(
   signals: CompactSignal[],
 ): LiveProfileResult | null {
   const exit = EXIT_MODES[exitIdx];
-  // Flat position sizing: 2,000 units = $0.20/pip for realistic P&L
   const FLAT_UNITS = 2000;
   let equity = 1000, peak = 1000, maxDD = 0;
   let wins = 0, losses = 0, totalPips = 0, grossProfit = 0, grossLoss = 0;
+  let stability: "STABLE" | "UNSTABLE" = "STABLE";
 
   for (let i = 0; i < signals.length; i++) {
     const sig = signals[i];
 
-    // Bitwise gate check — single integer comparison
+    // Bitwise gate check
     if (gateMask !== 0 && (sig.gateBits & gateMask) !== gateMask) continue;
 
-    // Session filter — integer comparison
+    // Session filter
     if (sessionIdx !== 0 && sig.sessionIdx !== sessionIdx) continue;
 
-    const tradePips = sig.exitPips[exitIdx];
+    // Suck Rule #3: Apply 1.5-pip execution friction
+    let tradePips = sig.exitPips[exitIdx];
+    if (tradePips > 0) {
+      tradePips -= FRICTION_PIPS; // Subtract from wins
+    } else {
+      tradePips -= FRICTION_PIPS; // Add to losses (make them worse)
+    }
+
     const pipVal = sig.isJPY ? 0.01 : 0.0001;
     const pnl = tradePips * FLAT_UNITS * pipVal;
     equity += pnl;
@@ -302,8 +315,15 @@ function simulateCombo(
     else { losses++; grossLoss += Math.abs(tradePips); }
 
     if (equity > peak) peak = equity;
-    const dd = ((equity - peak) / peak) * 100;
-    if (dd < maxDD) maxDD = dd;
+    const dd = (peak - equity) / peak; // 0..1 scale
+
+    // Suck Rule #1: 15% DD cap — flag as UNSTABLE
+    if (dd > MAX_ALLOWED_DD) {
+      stability = "UNSTABLE";
+    }
+
+    const ddPct = -dd * 100;
+    if (ddPct < maxDD) maxDD = ddPct;
   }
 
   const trades = wins + losses;
@@ -321,11 +341,12 @@ function simulateCombo(
     expectancy: Math.round((totalPips / trades) * 100) / 100,
     avgWin: wins > 0 ? Math.round((grossProfit / wins) * 10) / 10 : 0,
     avgLoss: losses > 0 ? Math.round((grossLoss / losses) * 10) / 10 : 0,
+    stability,
     equityCurve: null,
   };
 }
 
-// ── Build equity curve for a top result ──
+// ── Build equity curve for a top result (with friction applied) ──
 function buildEquityCurve(r: LiveProfileResult, signals: CompactSignal[], exitIdx: number): Array<{ time: string; equity: number }> {
   const gate = GATE_COMBOS.find(g => g.label === r.gates)!;
   const sessionIdx = SESSIONS.findIndex(s => s.id === r.session);
@@ -338,7 +359,11 @@ function buildEquityCurve(r: LiveProfileResult, signals: CompactSignal[], exitId
     if (sessionIdx > 0 && sig.sessionIdx !== sessionIdx) continue;
 
     const pipVal = sig.isJPY ? 0.01 : 0.0001;
-    const tradePips = sig.exitPips[exitIdx];
+    let tradePips = sig.exitPips[exitIdx];
+    // Apply same friction as simulation
+    if (tradePips > 0) tradePips -= FRICTION_PIPS;
+    else tradePips -= FRICTION_PIPS;
+
     const pnl = tradePips * FLAT_UNITS * pipVal;
     equity += pnl;
     curve.push({ time: sig.time, equity: Math.round(equity * 100) / 100 });
@@ -487,8 +512,18 @@ Deno.serve(async (req) => {
       }
     }
 
-    // Sort and keep top N
-    allResults.sort((a, b) => b.netProfit - a.netProfit);
+    // Suck Rule #2: Sort STABLE before UNSTABLE, then by netProfit
+    // Triple-lock (G1+G2+G3) profiles get priority within stability tier
+    allResults.sort((a, b) => {
+      // Stability first: STABLE > UNSTABLE
+      if (a.stability !== b.stability) return a.stability === "STABLE" ? -1 : 1;
+      // Triple-lock gate priority within same stability
+      const aTriple = a.gates === "G1+G2+G3" ? 1 : 0;
+      const bTriple = b.gates === "G1+G2+G3" ? 1 : 0;
+      if (aTriple !== bTriple) return bTriple - aTriple;
+      // Then by net profit
+      return b.netProfit - a.netProfit;
+    });
     const topResults = allResults.slice(0, topN);
 
     // Build equity curves for top 10
