@@ -347,7 +347,8 @@ async function fetchCandlePage(
   instrument: string, count: number, env: "practice" | "live", token: string, to?: string
 ): Promise<Candle[]> {
   const host = env === "live" ? OANDA_HOST : OANDA_PRACTICE_HOST;
-  let url = `${host}/v3/instruments/${instrument}/candles?count=${count}&granularity=M30&price=M`;
+  const gran = (globalThis as any).__granularity || "M30";
+  let url = `${host}/v3/instruments/${instrument}/candles?count=${count}&granularity=${gran}&price=M`;
   if (to) url += `&to=${to}`;
   const res = await fetch(url, {
     headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
@@ -819,7 +820,8 @@ function simulateStrategy(bars: BarArrays, dna: StrategyDNA, startIdx = 0, endId
 
   for (let i = Math.max(1, startIdx); i < end; i++) {
     dayCounter++;
-    if (dayCounter >= 48) { dailyReturns.push((equity - dayStart) / (dayStart || 1)); dayStart = equity; dayCounter = 0; }
+    const barsPerDay = ((globalThis as any).__granularity === 'M5') ? 288 : ((globalThis as any).__granularity === 'M15') ? 96 : 48;
+    if (dayCounter >= barsPerDay) { dailyReturns.push((equity - dayStart) / (dayStart || 1)); dayStart = equity; dayCounter = 0; }
 
     if (cooldown > 0) { cooldown--; continue; }
 
@@ -1479,13 +1481,17 @@ async function handlePhase1(body: Record<string, unknown>) {
   const gensPerCall = Math.min(Number(body.gensPerCall) || 5, 10);
   const unconstrained = Boolean(body.unconstrained);
   const targetRegime = Number(body.targetRegime ?? -1);
+  const granularity = (body.granularity as string) || "M30";
+
+  // Set global granularity for candle fetching
+  (globalThis as any).__granularity = granularity;
 
   const apiToken = environment === "live"
     ? (Deno.env.get("OANDA_LIVE_API_TOKEN") || Deno.env.get("OANDA_API_TOKEN"))
     : Deno.env.get("OANDA_API_TOKEN");
   if (!apiToken) throw new Error("OANDA API token not configured");
 
-  console.log(`[GA-P1] Fetching ${candleCount} M30 candles for ${pair} (${environment})`);
+  console.log(`[GA-P1] Fetching ${candleCount} ${granularity} candles for ${pair} (${environment})`);
   const candles = await fetchCandles(pair, candleCount, environment, apiToken);
   if (candles.length < 250) throw new Error(`Insufficient candle data: ${candles.length}`);
 
@@ -1542,7 +1548,7 @@ async function handlePhase1(body: Record<string, unknown>) {
   const jobState = {
     status: "evolving", pair, environment, currentGen: 0,
     totalGenerations, populationSize, maxCorrelation, mutationRate, gensPerCall, unconstrained,
-    targetRegime,
+    targetRegime, granularity,
     population: population.map(p => ({ dna: p.dna, fitness: Math.round(p.fitness * 1000) / 1000 })),
     baseDailyReturns, isSplit: IS_SPLIT,
     evolutionLog: [{ gen: 0, bestFitness: Math.round(population[0].fitness * 1000) / 1000, avgFitness: Math.round(population.reduce((s, p) => s + p.fitness, 0) / population.length * 1000) / 1000, bestTrades: 0 }],
@@ -1601,7 +1607,8 @@ async function handlePhase2(body: Record<string, unknown>) {
   let totalSimulations = job.totalSimulations as number;
   const unconstrained = Boolean(job.unconstrained);
   const targetRegime = Number(job.targetRegime ?? -1);
-
+  const granularity = (job.granularity as string) || "M30";
+  (globalThis as any).__granularity = granularity;
   const { data: barsRow } = await sb.from("sovereign_memory").select("payload").eq("memory_key", `${DATA_KEY_PREFIX}${pair}`).eq("memory_type", "ga_dataset").maybeSingle();
   if (!barsRow) throw new Error("Feature data not found. Run Phase 1 first.");
   const bars = barsRow.payload as BarArrays;
