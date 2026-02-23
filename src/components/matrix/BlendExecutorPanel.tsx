@@ -2,11 +2,12 @@
 // Uses strategies from agent_configs (your activated live portfolio)
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { motion } from 'framer-motion';
-import { Layers, Play, Square, RefreshCw, Zap, Shield, AlertTriangle, Target, TrendingUp, TrendingDown, Cpu, Loader2, ShieldCheck, Flame, BarChart3, Rocket } from 'lucide-react';
+import { Layers, Play, Square, RefreshCw, Zap, Shield, AlertTriangle, Target, TrendingUp, TrendingDown, Cpu, Loader2, ShieldCheck, Flame, BarChart3, Rocket, BookOpen } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useBlendExecutor, type BlendExecution, type BlendComponent } from '@/hooks/useBlendExecutor';
 import { supabase } from '@/integrations/supabase/client';
 import type { Json } from '@/integrations/supabase/types';
+import { StrategyLibrary } from './StrategyLibrary';
 
 interface ActiveStrategy {
   agent_id: string;
@@ -132,6 +133,7 @@ export const BlendExecutorPanel = () => {
   const [btError, setBtError] = useState<string | null>(null);
   const [btEnv, setBtEnv] = useState<'practice' | 'live'>('live');
   const [btCandles, setBtCandles] = useState(15000);
+  const [btTab, setBtTab] = useState<'backtest' | 'library'>('backtest');
 
   // Fetch activated strategies from agent_configs
   const fetchStrategies = useCallback(async () => {
@@ -424,15 +426,49 @@ export const BlendExecutorPanel = () => {
       <div className="border-t border-slate-700/40 pt-4 mt-4">
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-center gap-2">
-            <BarChart3 className="w-4 h-4 text-[#ff6600]" />
+            {btTab === 'backtest' ? (
+              <BarChart3 className="w-4 h-4 text-[#ff6600]" />
+            ) : (
+              <BookOpen className="w-4 h-4 text-[#7c3aed]" />
+            )}
             <h3 className="text-[11px] font-bold tracking-widest text-slate-200 uppercase">
-              Live Strategy Backtest — 100% Forward Test
+              {btTab === 'backtest' ? 'Live Strategy Backtest — 100% Forward Test' : 'Strategy Library'}
             </h3>
-            <span className="text-[8px] font-mono text-[#ff6600] border border-[#ff6600]/30 px-1.5 py-0.5 rounded bg-[#ff6600]/10">
-              {hasStrategies ? `${strategies.length} STRATEGIES` : 'NO PORTFOLIO'}
-            </span>
+            {btTab === 'backtest' && (
+              <span className="text-[8px] font-mono text-[#ff6600] border border-[#ff6600]/30 px-1.5 py-0.5 rounded bg-[#ff6600]/10">
+                {hasStrategies ? `${strategies.length} STRATEGIES` : 'NO PORTFOLIO'}
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-1">
+            <button onClick={() => setBtTab('backtest')}
+              className="text-[9px] font-mono px-3 py-1.5 rounded-lg uppercase tracking-widest transition-all"
+              style={{
+                background: btTab === 'backtest' ? '#ff660015' : 'transparent',
+                border: `1px solid ${btTab === 'backtest' ? '#ff660044' : 'transparent'}`,
+                color: btTab === 'backtest' ? '#ff6600' : '#64748b',
+              }}>
+              Backtest
+            </button>
+            <button onClick={() => setBtTab('library')}
+              className="text-[9px] font-mono px-3 py-1.5 rounded-lg uppercase tracking-widest transition-all"
+              style={{
+                background: btTab === 'library' ? '#7c3aed15' : 'transparent',
+                border: `1px solid ${btTab === 'library' ? '#7c3aed44' : 'transparent'}`,
+                color: btTab === 'library' ? '#7c3aed' : '#64748b',
+              }}>
+              📚 Library
+            </button>
           </div>
         </div>
+
+        {btTab === 'library' ? (
+          <StrategyLibrary
+            activeAgentIds={strategies.map(s => s.agent_id)}
+            onPortfolioChanged={fetchStrategies}
+          />
+        ) : (
+        <>
 
         <div className="flex items-center gap-3 flex-wrap mb-4">
           <select value={btCandles} onChange={e => setBtCandles(Number(e.target.value))}
@@ -610,6 +646,8 @@ export const BlendExecutorPanel = () => {
               </span>
             </div>
           </div>
+        )}
+        </>
         )}
       </div>
     </div>
