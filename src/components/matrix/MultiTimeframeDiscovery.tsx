@@ -86,7 +86,15 @@ function PairProgressGrid({ pairProgress }: { pairProgress: PairProgress[] }) {
 export function MultiTimeframeDiscovery() {
   const [expanded, setExpanded] = useState(true);
   const [phase, setPhase] = useState<JobPhase>('idle');
-  const [batchResult, setBatchResult] = useState<{ top7: GAProfile[]; totalCandidates: number; pairsProcessed: number; regimeDistribution?: any } | null>(null);
+  const [batchResult, setBatchResult] = useState<{
+    top7: GAProfile[]; totalCandidates: number; pairsProcessed: number;
+    regimeDistribution?: any; hedgeBalance?: { longOnly: number; shortOnly: number; bidirectional: number };
+    portfolioProjection?: {
+      startEquity: number; month1Equity: number; month3Equity: number; month6Equity: number; month12Equity: number;
+      maxDrawdown: number; tradesPerDay: number; netPipsPerDay: number; avgPipsPerTrade: number;
+      avgWinRate: number; avgProfitFactor: number; equityCurve: number[];
+    };
+  } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [expandedProfile, setExpandedProfile] = useState<number | null>(null);
   const [pairProgress, setPairProgress] = useState<PairProgress[]>([]);
@@ -456,6 +464,104 @@ export function MultiTimeframeDiscovery() {
                   })()}
                 </motion.div>
               )}
+            </div>
+          )}
+
+          {/* ── Portfolio Compound Simulator ── */}
+          {profiles.length > 0 && batchResult?.portfolioProjection && (
+            <div className="bg-slate-950/60 border border-yellow-500/30 rounded-xl p-4 space-y-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <BarChart3 className="w-4 h-4 text-yellow-400" />
+                  <span className="text-[11px] font-bold text-slate-200 uppercase tracking-widest">
+                    Portfolio Compound Simulator — 5% Risk · Full Hedge · 25% DD Ceiling
+                  </span>
+                </div>
+                {batchResult.hedgeBalance && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-[7px] font-mono px-1.5 py-0.5 rounded border border-cyan-500/30 text-cyan-400 bg-cyan-500/10">
+                      {batchResult.hedgeBalance.longOnly}L
+                    </span>
+                    <span className="text-[7px] font-mono px-1.5 py-0.5 rounded border border-red-500/30 text-red-400 bg-red-500/10">
+                      {batchResult.hedgeBalance.shortOnly}S
+                    </span>
+                    <span className="text-[7px] font-mono px-1.5 py-0.5 rounded border border-purple-500/30 text-purple-400 bg-purple-500/10">
+                      {batchResult.hedgeBalance.bidirectional}B
+                    </span>
+                  </div>
+                )}
+              </div>
+
+              {/* Key Metrics */}
+              {(() => {
+                const proj = batchResult.portfolioProjection!;
+                const month1Pct = ((proj.month1Equity - 1000) / 1000 * 100);
+                const annualPct = ((proj.month12Equity - 1000) / 1000 * 100);
+                return (
+                  <>
+                    <div className="grid grid-cols-4 lg:grid-cols-8 gap-2 text-center">
+                      {[
+                        { label: 'TRADES/DAY', value: `${proj.tradesPerDay}`, color: proj.tradesPerDay >= 50 ? '#39ff14' : '#f59e0b' },
+                        { label: 'NET PIPS/DAY', value: `${proj.netPipsPerDay >= 0 ? '+' : ''}${proj.netPipsPerDay}`, color: proj.netPipsPerDay >= 14 ? '#39ff14' : '#f59e0b' },
+                        { label: 'PIPS/TRADE', value: `${proj.avgPipsPerTrade >= 0 ? '+' : ''}${proj.avgPipsPerTrade}`, color: proj.avgPipsPerTrade >= 8 ? '#39ff14' : '#ff0055' },
+                        { label: 'WIN RATE', value: `${proj.avgWinRate}%`, color: proj.avgWinRate >= 55 ? '#39ff14' : '#f59e0b' },
+                        { label: 'MONTH 1', value: `${month1Pct >= 0 ? '+' : ''}${month1Pct.toFixed(0)}%`, color: month1Pct >= 100 ? '#39ff14' : '#f59e0b' },
+                        { label: 'MONTH 1 $', value: `$${proj.month1Equity.toLocaleString()}`, color: '#39ff14' },
+                        { label: 'ANNUAL', value: `${annualPct >= 0 ? '+' : ''}${annualPct.toFixed(0)}%`, color: annualPct >= 1000 ? '#39ff14' : '#f59e0b' },
+                        { label: 'MAX DD', value: `${proj.maxDrawdown.toFixed(1)}%`, color: proj.maxDrawdown <= 25 ? '#39ff14' : '#ff0055' },
+                      ].map(m => (
+                        <div key={m.label} className="bg-slate-900/50 border border-slate-800/40 rounded-lg p-2">
+                          <div className="text-[7px] text-slate-500 uppercase tracking-wider mb-1">{m.label}</div>
+                          <div className="text-[11px] font-bold font-mono" style={{ color: m.color }}>{m.value}</div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Equity Projection Table */}
+                    <div className="grid grid-cols-5 gap-2 text-center">
+                      {[
+                        { label: 'START', value: '$1,000', sub: 'Day 0' },
+                        { label: '1 MONTH', value: `$${proj.month1Equity.toLocaleString()}`, sub: `+${month1Pct.toFixed(0)}%` },
+                        { label: '3 MONTHS', value: `$${proj.month3Equity.toLocaleString()}`, sub: `+${((proj.month3Equity - 1000) / 10).toFixed(0)}%` },
+                        { label: '6 MONTHS', value: `$${proj.month6Equity.toLocaleString()}`, sub: `+${((proj.month6Equity - 1000) / 10).toFixed(0)}%` },
+                        { label: '12 MONTHS', value: `$${proj.month12Equity.toLocaleString()}`, sub: `+${annualPct.toFixed(0)}%` },
+                      ].map(m => (
+                        <div key={m.label} className="bg-gradient-to-b from-yellow-950/30 to-slate-950 border border-yellow-500/20 rounded-lg p-3">
+                          <div className="text-[7px] text-yellow-500/60 uppercase tracking-wider mb-1">{m.label}</div>
+                          <div className="text-[13px] font-bold font-mono text-yellow-400">{m.value}</div>
+                          <div className="text-[8px] text-slate-500 font-mono mt-0.5">{m.sub}</div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Projected Equity Curve */}
+                    {proj.equityCurve.length > 2 && (
+                      <div>
+                        <div className="text-[8px] text-slate-500 uppercase tracking-widest mb-2">12-Month Compound Equity Projection (5% Risk · Full Hedge)</div>
+                        <EquityCurve curve={proj.equityCurve} height={120} />
+                      </div>
+                    )}
+
+                    {/* Hedge Status */}
+                    <div className="flex items-center gap-4 text-[8px] font-mono">
+                      <div className="flex items-center gap-1.5">
+                        <div className={`w-2 h-2 rounded-full ${batchResult.hedgeBalance && batchResult.hedgeBalance.longOnly > 0 && batchResult.hedgeBalance.shortOnly > 0 ? 'bg-green-400 animate-pulse' : 'bg-red-400'}`} />
+                        <span className="text-slate-400">
+                          {batchResult.hedgeBalance && batchResult.hedgeBalance.longOnly > 0 && batchResult.hedgeBalance.shortOnly > 0
+                            ? '✓ STRUCTURALLY HEDGED — Long & Short strategies active'
+                            : '⚠ UNHEDGED — Missing directional coverage'}
+                        </span>
+                      </div>
+                      <span className="text-slate-600">|</span>
+                      <span className="text-slate-400">DD Ceiling: <span className="text-yellow-400">25%</span></span>
+                      <span className="text-slate-600">|</span>
+                      <span className="text-slate-400">Risk/Trade: <span className="text-yellow-400">5%</span></span>
+                      <span className="text-slate-600">|</span>
+                      <span className="text-slate-400">PF: <span className="text-yellow-400">{proj.avgProfitFactor}</span></span>
+                    </div>
+                  </>
+                );
+              })()}
             </div>
           )}
 

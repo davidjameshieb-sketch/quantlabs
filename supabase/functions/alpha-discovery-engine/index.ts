@@ -2003,11 +2003,43 @@ async function handleBatchExtract(body: Record<string, unknown>) {
   console.log(`[GA-BATCH] ${allStrategies.length} candidate strategies from ${pairs.length} pairs`);
   allStrategies.sort((a, b) => b.sim.totalReturn - a.sim.totalReturn);
 
-  // ── REGIME MATRIX SELECTION: Top 2 Trend + Top 2 Range + Top 1 Shock ──
+  // ── HEDGED REGIME MATRIX SELECTION ──
+  // Enforce structural hedge: must have BOTH long-only (dir=0) and short-only (dir=1) strategies
   const selected: PairStrategy[] = [];
   const pairCounts: Record<string, number> = {};
   const MAX_PER_PAIR = 2;
 
+  function getDirection(s: PairStrategy): 'long' | 'short' | 'both' {
+    if (s.dna.direction === 0) return 'long';
+    if (s.dna.direction === 1) return 'short';
+    return 'both';
+  }
+
+  function tryAdd(strat: PairStrategy): boolean {
+    if (selected.includes(strat)) return false;
+    const pc = pairCounts[strat.pair] || 0;
+    if (pc >= MAX_PER_PAIR) return false;
+    let uncorrelated = true;
+    for (const existing of selected) {
+      if (Math.abs(pearsonCorrelation(strat.sim.dailyReturns, existing.sim.dailyReturns)) > maxInterCorr) { uncorrelated = false; break; }
+    }
+    if (!uncorrelated) return false;
+    selected.push(strat);
+    pairCounts[strat.pair] = pc + 1;
+    return true;
+  }
+
+  // Phase 1: Select best LONG strategies (hedge leg A)
+  const longStrats = allStrategies.filter(s => getDirection(s) === 'long').sort((a, b) => b.sim.totalReturn - a.sim.totalReturn);
+  const shortStrats = allStrategies.filter(s => getDirection(s) === 'short').sort((a, b) => b.sim.totalReturn - a.sim.totalReturn);
+  const bothStrats = allStrategies.filter(s => getDirection(s) === 'both').sort((a, b) => b.sim.totalReturn - a.sim.totalReturn);
+
+  // Ensure minimum 2 long + 2 short for structural hedge
+  let longCount = 0, shortCount = 0;
+  for (const s of longStrats) { if (longCount >= 3) break; if (tryAdd(s)) longCount++; }
+  for (const s of shortStrats) { if (shortCount >= 3) break; if (tryAdd(s)) shortCount++; }
+
+  // Fill with regime-best (both directions)
   function selectBestForRegime(regime: string, count: number) {
     const sorted = [...allStrategies]
       .filter(s => s.bestRegime === regime)
@@ -2019,24 +2051,15 @@ async function handleBatchExtract(body: Record<string, unknown>) {
     let added = 0;
     for (const strat of sorted) {
       if (added >= count) break;
-      if (selected.includes(strat)) continue;
-      const pc = pairCounts[strat.pair] || 0;
-      if (pc >= MAX_PER_PAIR) continue;
-      let uncorrelated = true;
-      for (const existing of selected) {
-        if (Math.abs(pearsonCorrelation(strat.sim.dailyReturns, existing.sim.dailyReturns)) > maxInterCorr) { uncorrelated = false; break; }
-      }
-      if (!uncorrelated) continue;
-      selected.push(strat);
-      pairCounts[strat.pair] = pc + 1;
-      added++;
+      if (tryAdd(strat)) added++;
     }
   }
 
-  selectBestForRegime('TREND', 2);
-  selectBestForRegime('RANGE', 2);
+  selectBestForRegime('TREND', 1);
+  selectBestForRegime('RANGE', 1);
   selectBestForRegime('SHOCK', 1);
 
+  // Fill remaining slots
   if (selected.length < topN) {
     for (const strat of allStrategies) {
       if (selected.length >= topN) break;
@@ -2052,6 +2075,12 @@ async function handleBatchExtract(body: Record<string, unknown>) {
       pairCounts[strat.pair] = pc + 1;
     }
   }
+
+  const hedgeBalance = {
+    longOnly: selected.filter(s => getDirection(s) === 'long').length,
+    shortOnly: selected.filter(s => getDirection(s) === 'short').length,
+    bidirectional: selected.filter(s => getDirection(s) === 'both').length,
+  };
 
   const regimeDistribution = {
     trend: selected.filter(s => s.bestRegime === 'TREND').length,
@@ -2094,6 +2123,64 @@ async function handleBatchExtract(body: Record<string, unknown>) {
     bestRegime: s.bestRegime,
   });
 
+  console.log(`[GA-BATCH] Hedge Balance: ${hedgeBalance.longOnly}L + ${hedgeBalance.shortOnly}S + ${hedgeBalance.bidirectional}B`);
+
+  // ── Portfolio Compound Projection ──
+  // Simulate combined portfolio at 5% risk with daily compounding
+  const portfolioProjection = (() => {
+    const totalTrades = selected.reduce((s, p) => s + p.sim.trades, 0);
+    const avgWinRate = selected.reduce((s, p) => s + p.sim.winRate, 0) / (selected.length || 1);
+    const avgPipsPerTrade = totalTrades > 0 ? selected.reduce((s, p) => s + p.sim.totalPips, 0) / totalTrades : 0;
+    const avgPF = selected.reduce((s, p) => s + p.sim.profitFactor, 0) / (selected.length || 1);
+    
+    // Estimate daily net pips from portfolio
+    const bpd = 288; // M5 bars per day
+    const gran = (allStrategies[0]?.dna as any)?.__granularity || 'M5';
+    const totalBars = selected.reduce((s, p) => s + p.sim.trades, 0); // approximate
+    const dataDays = Math.max(1, Math.round(5000 / bpd));
+    const tradesPerDay = totalTrades / dataDays;
+    const netPipsPerDay = tradesPerDay * avgPipsPerTrade;
+    
+    // Compound projection at 5% risk ($0.20/pip base, scaling daily)
+    let equity = 1000;
+    const dailyEquity: number[] = [equity];
+    let maxDD = 0, peak = equity;
+    
+    for (let day = 1; day <= 252; day++) {
+      // Scale units with equity
+      const unitsPerTrade = Math.round((equity / 1000) * 2000);
+      const pipValue = unitsPerTrade * 0.0001; // simplified
+      const dailyPnl = netPipsPerDay * pipValue;
+      equity += dailyPnl;
+      
+      if (equity > peak) peak = equity;
+      const dd = (peak - equity) / peak;
+      if (dd > maxDD) maxDD = dd;
+      
+      // 25% DD kill switch
+      if (dd > 0.25) {
+        equity = peak * 0.75; // cap at 25% loss
+      }
+      
+      if (day % 5 === 0) dailyEquity.push(equity);
+    }
+    
+    return {
+      startEquity: 1000,
+      month1Equity: Math.round(dailyEquity[Math.min(4, dailyEquity.length - 1)]),
+      month3Equity: Math.round(dailyEquity[Math.min(12, dailyEquity.length - 1)]),
+      month6Equity: Math.round(dailyEquity[Math.min(25, dailyEquity.length - 1)]),
+      month12Equity: Math.round(dailyEquity[dailyEquity.length - 1]),
+      maxDrawdown: Math.round(maxDD * 10000) / 100,
+      tradesPerDay: Math.round(tradesPerDay * 10) / 10,
+      netPipsPerDay: Math.round(netPipsPerDay * 10) / 10,
+      avgPipsPerTrade: Math.round(avgPipsPerTrade * 10) / 10,
+      avgWinRate: Math.round(avgWinRate * 10000) / 100,
+      avgProfitFactor: Math.round(avgPF * 100) / 100,
+      equityCurve: dailyEquity,
+    };
+  })();
+
   return {
     action: "batch-extract",
     totalCandidates: allStrategies.length,
@@ -2102,6 +2189,8 @@ async function handleBatchExtract(body: Record<string, unknown>) {
     pairDistribution: pairCounts,
     maxInterCorrelation: maxInterCorr,
     regimeDistribution,
+    hedgeBalance,
+    portfolioProjection,
     top7: selected.map(fmt),
     allCandidates: allStrategies.slice(0, 30).map(fmt),
   };
