@@ -1,9 +1,26 @@
-// Decorrelated Portfolio Blend — Auto-Executor Control Panel + Live Backtest
-import { useState } from 'react';
+// Dynamic Portfolio Blend — Auto-Executor + Live Backtest
+// Uses strategies from agent_configs (your activated live portfolio)
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { motion } from 'framer-motion';
-import { Layers, Play, Square, RefreshCw, Zap, Shield, AlertTriangle, Target, TrendingUp, TrendingDown, Cpu, Loader2, ShieldCheck, Flame, BarChart3 } from 'lucide-react';
+import { Layers, Play, Square, RefreshCw, Zap, Shield, AlertTriangle, Target, TrendingUp, TrendingDown, Cpu, Loader2, ShieldCheck, Flame, BarChart3, Rocket } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { useBlendExecutor, type BlendExecution } from '@/hooks/useBlendExecutor';
+import { useBlendExecutor, type BlendExecution, type BlendComponent } from '@/hooks/useBlendExecutor';
+import { supabase } from '@/integrations/supabase/client';
+import type { Json } from '@/integrations/supabase/types';
+
+interface ActiveStrategy {
+  agent_id: string;
+  config: {
+    strategyName?: string;
+    engineSource?: string;
+    predator?: number;
+    prey?: number;
+    gates?: string;
+    slPips?: number;
+    tpRatio?: number | string;
+    session?: string;
+  };
+}
 
 interface BlendComponentSummary {
   id: string; label: string; weight: number; trades: number; wins: number; losses: number;
@@ -17,6 +34,7 @@ interface BlendBacktestResult {
   candlesPerPair?: number;
   pairsLoaded?: number;
   totalSnapshots?: number;
+  componentsUsed?: number;
   dateRange?: { start: string; end: string };
   portfolio?: {
     totalTrades: number; wins: number; losses: number; winRate: number; profitFactor: number;
@@ -31,32 +49,97 @@ interface BlendBacktestResult {
   aggressiveEquityCurve?: Array<{ time: string; equity: number }>;
 }
 
-const COMPONENT_SPECS = [
-  { id: '3v8', weight: '44%', gates: 'G1+G2+G3', sl: 'Swing low (5-bar)', entry: 'Z-OFI > 2.0' },
-  { id: '1v6', weight: '22%', gates: 'G1+G2+G3', sl: 'Atlas Wall -10', entry: 'Order block' },
-  { id: '1v7', weight: '15%', gates: 'G1+G2+G3', sl: '2.0x ATR', entry: 'Order block' },
-  { id: '3v7', weight: '11%', gates: 'G1+G2', sl: '30 pip fixed', entry: 'Order block' },
-  { id: '3v6', weight: '9%', gates: 'G1+G2', sl: '2.0x ATR', entry: 'Order block' },
-];
+function parseConfig(raw: Json): ActiveStrategy['config'] {
+  if (typeof raw === 'object' && raw !== null && !Array.isArray(raw)) return raw as any;
+  return {};
+}
 
 function StatusDot({ status }: { status: string }) {
   const color = status === 'filled' ? 'bg-[#39ff14]' : status === 'skipped' ? 'bg-slate-500' : 'bg-[#ff0055]';
   return <span className={cn('w-1.5 h-1.5 rounded-full inline-block', color)} />;
 }
 
+/** Convert an activated strategy to a BlendComponent for the edge function */
+function strategyToBlendComponent(config: ActiveStrategy['config'], weight: number): BlendComponent {
+  const gates = config.gates || '';
+  return {
+    id: `${config.predator || '?'}v${config.prey || '?'}`,
+    predatorRank: config.predator || 1,
+    preyRank: config.prey || 8,
+    requireG3: gates.includes('G3'),
+    slType: 'fixed_custom',
+    entryType: 'order_block',
+    weight,
+    label: config.strategyName || `R${config.predator}vR${config.prey}`,
+    fixedPips: config.slPips || 30,
+    tpRatio: typeof config.tpRatio === 'number' ? config.tpRatio : 2.0,
+  };
+}
+
 export const BlendExecutorPanel = () => {
-  const { running, autoMode, lastResult, cycleCount, runCycle, startAuto, stopAuto } = useBlendExecutor();
+  const { running, autoMode, lastResult, cycleCount, runCycle, startAuto, stopAuto, setComponents } = useBlendExecutor();
+  const [strategies, setStrategies] = useState<ActiveStrategy[]>([]);
+  const [loadingStrategies, setLoadingStrategies] = useState(true);
+
   const [btLoading, setBtLoading] = useState(false);
   const [btResult, setBtResult] = useState<BlendBacktestResult | null>(null);
   const [btError, setBtError] = useState<string | null>(null);
   const [btEnv, setBtEnv] = useState<'practice' | 'live'>('live');
   const [btCandles, setBtCandles] = useState(15000);
 
+  // Fetch activated strategies from agent_configs
+  const fetchStrategies = useCallback(async () => {
+    setLoadingStrategies(true);
+    const { data } = await supabase
+      .from('agent_configs')
+      .select('agent_id, config, is_active')
+      .eq('is_active', true)
+      .order('agent_id');
+
+    if (data) {
+      const parsed = data
+        .map(d => ({ agent_id: d.agent_id, config: parseConfig(d.config) }))
+        .filter(s => s.config.predator && s.config.prey); // Only rank-based strategies
+      setStrategies(parsed);
+    }
+    setLoadingStrategies(false);
+  }, []);
+
+  useEffect(() => { fetchStrategies(); }, [fetchStrategies]);
+
+  // Build BlendComponents from active strategies with equal weighting
+  const blendComponents = useMemo<BlendComponent[]>(() => {
+    if (strategies.length === 0) return [];
+    const weight = 1 / strategies.length;
+    return strategies.map(s => strategyToBlendComponent(s.config, weight));
+  }, [strategies]);
+
+  // Keep the hook's components ref in sync
+  useEffect(() => {
+    setComponents(blendComponents.length > 0 ? blendComponents : null);
+  }, [blendComponents, setComponents]);
+
+  // Build display specs from strategies
+  const componentSpecs = useMemo(() => {
+    return strategies.map(s => ({
+      id: `${s.config.predator}v${s.config.prey}`,
+      weight: `${Math.round(100 / strategies.length)}%`,
+      gates: s.config.gates || 'G1+G2',
+      sl: `${s.config.slPips || 30} pip fixed`,
+      entry: 'Order block',
+      tp: typeof s.config.tpRatio === 'number' ? `${s.config.tpRatio}:1 R:R` : s.config.tpRatio === 'flip' ? 'Signal Flip' : '2:1 R:R',
+      session: s.config.session || 'all',
+      name: s.config.strategyName || `R${s.config.predator}vR${s.config.prey}`,
+    }));
+  }, [strategies]);
+
   const filled = lastResult?.cycle?.executed ?? 0;
   const existing = lastResult?.cycle?.existingPositions ?? 0;
-  const maxPos = lastResult?.cycle?.maxPositions ?? 5;
+  const maxPos = lastResult?.cycle?.maxPositions ?? strategies.length;
   const skipped = lastResult?.cycle?.skipped ?? 0;
   const errors = lastResult?.cycle?.errors ?? 0;
+
+  const hasStrategies = strategies.length > 0;
 
   return (
     <div className="lg:col-span-12 bg-slate-900/80 backdrop-blur-md border border-[#00ffea]/20 rounded-2xl p-5 shadow-2xl">
@@ -65,13 +148,24 @@ export const BlendExecutorPanel = () => {
         <div className="flex items-center gap-2">
           <Layers className="w-4 h-4 text-[#00ffea]" />
           <h2 className="text-[11px] font-bold tracking-widest text-slate-200 uppercase">
-            Decorrelated Portfolio Blend — Precision Executor v2
+            Dynamic Portfolio Blend — Precision Executor v3
           </h2>
           <span className="text-[8px] font-mono text-slate-500 border border-slate-700 px-1.5 py-0.5 rounded">
             PRACTICE ONLY
           </span>
+          <span className="text-[8px] font-mono px-1.5 py-0.5 rounded border"
+            style={{
+              borderColor: hasStrategies ? '#39ff1444' : '#ff005544',
+              color: hasStrategies ? '#39ff14' : '#ff0055',
+              background: hasStrategies ? '#39ff1410' : '#ff005510',
+            }}>
+            {strategies.length} STRATEGIES
+          </span>
         </div>
         <div className="flex items-center gap-2">
+          <button onClick={fetchStrategies} className="text-[8px] font-mono text-slate-500 hover:text-slate-300 transition-colors flex items-center gap-1">
+            <RefreshCw className="w-2.5 h-2.5" /> Sync
+          </button>
           {autoMode && (
             <motion.span
               animate={{ opacity: [1, 0.4, 1] }}
@@ -88,175 +182,193 @@ export const BlendExecutorPanel = () => {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
-        {/* Component Table */}
-        <div className="col-span-1 md:col-span-2">
-          <div className="text-[8px] text-slate-500 uppercase tracking-wider mb-2">5-Component Blend</div>
-          <div className="space-y-1">
-            {COMPONENT_SPECS.map(spec => {
-              const exec = lastResult?.executions?.find(e => e.component === spec.id);
-              return (
-                <div key={spec.id} className="flex items-center gap-2 text-[9px] font-mono">
-                  {exec ? <StatusDot status={exec.status} /> : <span className="w-1.5 h-1.5 rounded-full bg-slate-700 inline-block" />}
-                  <span className="text-[#00ffea] font-bold w-8">#{spec.id}</span>
-                  <span className="text-yellow-400 w-8">{spec.weight}</span>
-                  <span className="text-slate-400 w-20">{spec.gates}</span>
-                  <span className="text-slate-500 w-28 truncate">{spec.sl}</span>
-                  <span className="text-slate-500 w-24 truncate">{spec.entry}</span>
-                  {exec && (
-                    <span className={cn(
-                      'text-[8px]',
-                      exec.status === 'filled' ? 'text-[#39ff14]' : exec.status === 'skipped' ? 'text-slate-500' : 'text-[#ff0055]'
-                    )}>
-                      {exec.status === 'filled'
-                        ? `${exec.pair?.replace('_', '/')} ${exec.direction?.toUpperCase()} ${exec.units}u @ ${exec.entryPrice}`
-                        : exec.status === 'skipped'
-                          ? exec.skipReason
-                          : exec.error || exec.status
-                      }
+      {!hasStrategies && !loadingStrategies ? (
+        <div className="py-8 text-center">
+          <Rocket className="w-8 h-8 mx-auto text-slate-700 mb-2" />
+          <p className="text-[10px] text-slate-500 font-mono">No strategies activated for live trading.</p>
+          <p className="text-[8px] text-slate-600 font-mono mt-1">Use "Bring to Live Trading" on any backtested strategy to populate this portfolio.</p>
+        </div>
+      ) : loadingStrategies ? (
+        <div className="py-6 flex items-center justify-center gap-2">
+          <Loader2 className="w-4 h-4 animate-spin text-[#00ffea]" />
+          <span className="text-[9px] font-mono text-slate-400">Loading active portfolio…</span>
+        </div>
+      ) : (
+        <>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
+            {/* Component Table */}
+            <div className="col-span-1 md:col-span-2">
+              <div className="text-[8px] text-slate-500 uppercase tracking-wider mb-2">{strategies.length}-Component Portfolio</div>
+              <div className="space-y-1 max-h-[200px] overflow-y-auto">
+                {componentSpecs.map(spec => {
+                  const exec = lastResult?.executions?.find(e => e.component === spec.id);
+                  return (
+                    <div key={spec.id} className="flex items-center gap-2 text-[9px] font-mono">
+                      {exec ? <StatusDot status={exec.status} /> : <span className="w-1.5 h-1.5 rounded-full bg-slate-700 inline-block" />}
+                      <span className="text-[#00ffea] font-bold w-8">#{spec.id}</span>
+                      <span className="text-yellow-400 w-8">{spec.weight}</span>
+                      <span className="text-slate-400 w-20">{spec.gates}</span>
+                      <span className="text-slate-500 w-20 truncate">{spec.sl}</span>
+                      <span className="text-slate-500 w-16 truncate">{spec.tp}</span>
+                      <span className="text-slate-600 w-14 truncate">{spec.session}</span>
+                      {exec && (
+                        <span className={cn(
+                          'text-[8px] truncate flex-1',
+                          exec.status === 'filled' ? 'text-[#39ff14]' : exec.status === 'skipped' ? 'text-slate-500' : 'text-[#ff0055]'
+                        )}>
+                          {exec.status === 'filled'
+                            ? `${exec.pair?.replace('_', '/')} ${exec.direction?.toUpperCase()} ${exec.units}u @ ${exec.entryPrice}`
+                            : exec.status === 'skipped'
+                              ? exec.skipReason
+                              : exec.error || exec.status
+                          }
+                        </span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="flex items-center gap-2 flex-wrap mt-3">
+                <span className="text-[8px] font-mono px-2 py-0.5 rounded border border-slate-700 text-slate-400">
+                  <Shield className="inline w-2.5 h-2.5 mr-1" />Circuit Breaker
+                </span>
+                <span className="text-[8px] font-mono px-2 py-0.5 rounded border border-slate-700 text-slate-400">
+                  <Zap className="inline w-2.5 h-2.5 mr-1" />G16 Spread Guard
+                </span>
+                <span className="text-[8px] font-mono px-2 py-0.5 rounded border border-slate-700 text-slate-400">
+                  <Target className="inline w-2.5 h-2.5 mr-1" />R:R per strategy
+                </span>
+                <span className="text-[8px] font-mono px-2 py-0.5 rounded border border-slate-700 text-slate-400">
+                  5,000u total · equal weighted
+                </span>
+              </div>
+            </div>
+
+            {/* Controls */}
+            <div className="flex flex-col gap-2 justify-center">
+              <button
+                onClick={() => autoMode ? stopAuto() : startAuto()}
+                disabled={!hasStrategies}
+                className={cn(
+                  'flex items-center justify-center gap-2 text-[10px] font-mono px-4 py-2.5 rounded-lg font-bold uppercase tracking-wider transition-all disabled:opacity-30',
+                  autoMode
+                    ? 'bg-[#ff0055] text-white hover:bg-[#ff0055]/80'
+                    : 'bg-[#00ffea] text-slate-950 hover:bg-[#00ffea]/80'
+                )}
+                style={!autoMode && hasStrategies ? { boxShadow: '0 0 15px rgba(0,255,234,0.3)' } : {}}
+              >
+                {autoMode ? (
+                  <><Square className="w-3.5 h-3.5" /> STOP AUTO</>
+                ) : (
+                  <><Play className="w-3.5 h-3.5" /> START AUTO</>
+                )}
+              </button>
+              <button
+                onClick={runCycle}
+                disabled={running || !hasStrategies}
+                className={cn(
+                  'flex items-center justify-center gap-2 text-[10px] font-mono px-4 py-2 rounded-lg font-bold uppercase tracking-wider transition-all',
+                  'border border-slate-600 text-slate-300 hover:bg-slate-800',
+                  (running || !hasStrategies) && 'opacity-50 cursor-not-allowed'
+                )}
+              >
+                <RefreshCw className={cn('w-3 h-3', running && 'animate-spin')} />
+                {running ? 'RUNNING…' : 'RUN SINGLE CYCLE'}
+              </button>
+            </div>
+
+            {/* Last Result */}
+            <div className="space-y-1.5">
+              <div className="text-[8px] text-slate-500 uppercase tracking-wider mb-1">Last Cycle</div>
+              {lastResult ? (
+                <>
+                  <div className="flex items-center justify-between text-[9px]">
+                    <span className="text-slate-500">Components</span>
+                    <span className="font-mono text-white">{lastResult.cycle?.componentsEvaluated ?? strategies.length}</span>
+                  </div>
+                  <div className="flex items-center justify-between text-[9px]">
+                    <span className="text-slate-500">Filled</span>
+                    <span className={cn('font-mono font-bold', filled > 0 ? 'text-[#39ff14]' : 'text-slate-400')}>
+                      {filled}
                     </span>
+                  </div>
+                  <div className="flex items-center justify-between text-[9px]">
+                    <span className="text-slate-500">Skipped</span>
+                    <span className="font-mono text-yellow-400">{skipped}</span>
+                  </div>
+                  {errors > 0 && (
+                    <div className="flex items-center justify-between text-[9px]">
+                      <span className="text-slate-500">Errors</span>
+                      <span className="font-mono text-[#ff0055]">{errors}</span>
+                    </div>
                   )}
-                </div>
-              );
-            })}
+                  <div className="flex items-center justify-between text-[9px]">
+                    <span className="text-slate-500">Open</span>
+                    <span className="font-mono text-[#00ffea]">{existing}/{maxPos}</span>
+                  </div>
+                  {lastResult.reason === 'circuit_breaker_active' && (
+                    <div className="flex items-center gap-1 text-[8px] text-[#ff0055] mt-1">
+                      <AlertTriangle className="w-3 h-3" /> Circuit breaker active
+                    </div>
+                  )}
+                  {lastResult.error && (
+                    <div className="text-[8px] text-[#ff0055] mt-1 truncate" title={lastResult.error}>
+                      ⚠️ {lastResult.error}
+                    </div>
+                  )}
+                </>
+              ) : (
+                <p className="text-[9px] text-slate-600 italic">No cycles run yet</p>
+              )}
+            </div>
           </div>
-          <div className="flex items-center gap-2 flex-wrap mt-3">
-            <span className="text-[8px] font-mono px-2 py-0.5 rounded border border-slate-700 text-slate-400">
-              <Shield className="inline w-2.5 h-2.5 mr-1" />Circuit Breaker
-            </span>
-            <span className="text-[8px] font-mono px-2 py-0.5 rounded border border-slate-700 text-slate-400">
-              <Zap className="inline w-2.5 h-2.5 mr-1" />G16 Spread Guard
-            </span>
-            <span className="text-[8px] font-mono px-2 py-0.5 rounded border border-slate-700 text-slate-400">
-              <Target className="inline w-2.5 h-2.5 mr-1" />2:1 R:R
-            </span>
-            <span className="text-[8px] font-mono px-2 py-0.5 rounded border border-slate-700 text-slate-400">
-              5,000u total · weighted
-            </span>
-          </div>
-        </div>
 
-        {/* Controls */}
-        <div className="flex flex-col gap-2 justify-center">
-          <button
-            onClick={() => autoMode ? stopAuto() : startAuto()}
-            className={cn(
-              'flex items-center justify-center gap-2 text-[10px] font-mono px-4 py-2.5 rounded-lg font-bold uppercase tracking-wider transition-all',
-              autoMode
-                ? 'bg-[#ff0055] text-white hover:bg-[#ff0055]/80'
-                : 'bg-[#00ffea] text-slate-950 hover:bg-[#00ffea]/80'
-            )}
-            style={!autoMode ? { boxShadow: '0 0 15px rgba(0,255,234,0.3)' } : {}}
-          >
-            {autoMode ? (
-              <><Square className="w-3.5 h-3.5" /> STOP AUTO</>
-            ) : (
-              <><Play className="w-3.5 h-3.5" /> START AUTO</>
-            )}
-          </button>
-          <button
-            onClick={runCycle}
-            disabled={running}
-            className={cn(
-              'flex items-center justify-center gap-2 text-[10px] font-mono px-4 py-2 rounded-lg font-bold uppercase tracking-wider transition-all',
-              'border border-slate-600 text-slate-300 hover:bg-slate-800',
-              running && 'opacity-50 cursor-not-allowed'
-            )}
-          >
-            <RefreshCw className={cn('w-3 h-3', running && 'animate-spin')} />
-            {running ? 'RUNNING…' : 'RUN SINGLE CYCLE'}
-          </button>
-        </div>
-
-        {/* Last Result */}
-        <div className="space-y-1.5">
-          <div className="text-[8px] text-slate-500 uppercase tracking-wider mb-1">Last Cycle</div>
-          {lastResult ? (
-            <>
-              <div className="flex items-center justify-between text-[9px]">
-                <span className="text-slate-500">Components</span>
-                <span className="font-mono text-white">{lastResult.cycle?.componentsEvaluated ?? 5}</span>
+          {/* Currency Ranks */}
+          {lastResult?.sortedCurrencies && (
+            <div className="border-t border-slate-800/50 pt-3 mb-3">
+              <div className="text-[8px] text-slate-500 uppercase tracking-wider mb-1.5">Live Currency Ranks</div>
+              <div className="flex items-center gap-2 flex-wrap">
+                {lastResult.sortedCurrencies.map((cur, i) => (
+                  <span key={cur} className={cn(
+                    'text-[9px] font-mono px-2 py-0.5 rounded border',
+                    i < 3 ? 'border-[#39ff14]/30 text-[#39ff14]' :
+                    i >= 5 ? 'border-[#ff0055]/30 text-[#ff0055]' :
+                    'border-slate-700 text-slate-400'
+                  )}>
+                    #{i + 1} {cur}
+                  </span>
+                ))}
               </div>
-              <div className="flex items-center justify-between text-[9px]">
-                <span className="text-slate-500">Filled</span>
-                <span className={cn('font-mono font-bold', filled > 0 ? 'text-[#39ff14]' : 'text-slate-400')}>
-                  {filled}
-                </span>
-              </div>
-              <div className="flex items-center justify-between text-[9px]">
-                <span className="text-slate-500">Skipped</span>
-                <span className="font-mono text-yellow-400">{skipped}</span>
-              </div>
-              {errors > 0 && (
-                <div className="flex items-center justify-between text-[9px]">
-                  <span className="text-slate-500">Errors</span>
-                  <span className="font-mono text-[#ff0055]">{errors}</span>
-                </div>
-              )}
-              <div className="flex items-center justify-between text-[9px]">
-                <span className="text-slate-500">Open</span>
-                <span className="font-mono text-[#00ffea]">{existing}/{maxPos}</span>
-              </div>
-              {lastResult.reason === 'circuit_breaker_active' && (
-                <div className="flex items-center gap-1 text-[8px] text-[#ff0055] mt-1">
-                  <AlertTriangle className="w-3 h-3" /> Circuit breaker active
-                </div>
-              )}
-              {lastResult.error && (
-                <div className="text-[8px] text-[#ff0055] mt-1 truncate" title={lastResult.error}>
-                  ⚠️ {lastResult.error}
-                </div>
-              )}
-            </>
-          ) : (
-            <p className="text-[9px] text-slate-600 italic">No cycles run yet</p>
+            </div>
           )}
-        </div>
-      </div>
 
-      {/* Currency Ranks */}
-      {lastResult?.sortedCurrencies && (
-        <div className="border-t border-slate-800/50 pt-3 mb-3">
-          <div className="text-[8px] text-slate-500 uppercase tracking-wider mb-1.5">Live Currency Ranks</div>
-          <div className="flex items-center gap-2 flex-wrap">
-            {lastResult.sortedCurrencies.map((cur, i) => (
-              <span key={cur} className={cn(
-                'text-[9px] font-mono px-2 py-0.5 rounded border',
-                i < 3 ? 'border-[#39ff14]/30 text-[#39ff14]' :
-                i >= 5 ? 'border-[#ff0055]/30 text-[#ff0055]' :
-                'border-slate-700 text-slate-400'
-              )}>
-                #{i + 1} {cur}
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Detailed Execution Log (filled trades only) */}
-      {lastResult?.executions?.some(e => e.status === 'filled') && (
-        <div className="border-t border-slate-800/50 pt-3">
-          <div className="text-[8px] text-slate-500 uppercase tracking-wider mb-2">Filled Trades</div>
-          <div className="space-y-1">
-            {lastResult.executions.filter(e => e.status === 'filled').map((exec, i) => (
-              <div key={i} className="flex items-center gap-3 text-[9px] font-mono">
-                <StatusDot status="filled" />
-                <span className="text-[#00ffea] font-bold w-8">#{exec.component}</span>
-                <span className="text-white font-bold w-16">{exec.pair?.replace('_', '/')}</span>
-                <span className={exec.direction === 'long' ? 'text-[#00ffea]' : 'text-[#ff0055]'}>
-                  {exec.direction === 'long' ? <TrendingUp className="inline w-3 h-3" /> : <TrendingDown className="inline w-3 h-3" />}
-                  {' '}{exec.direction?.toUpperCase()}
-                </span>
-                <span className="text-yellow-400">{exec.units}u ({((exec.weight ?? 0) * 100).toFixed(0)}%)</span>
-                <span className="text-slate-400">@ {exec.entryPrice}</span>
-                <span className="text-slate-500">SL={exec.slPrice} TP={exec.tpPrice}</span>
-                <span className="text-slate-600">{exec.slType}</span>
+          {/* Filled Trades */}
+          {lastResult?.executions?.some(e => e.status === 'filled') && (
+            <div className="border-t border-slate-800/50 pt-3">
+              <div className="text-[8px] text-slate-500 uppercase tracking-wider mb-2">Filled Trades</div>
+              <div className="space-y-1">
+                {lastResult.executions.filter(e => e.status === 'filled').map((exec, i) => (
+                  <div key={i} className="flex items-center gap-3 text-[9px] font-mono">
+                    <StatusDot status="filled" />
+                    <span className="text-[#00ffea] font-bold w-8">#{exec.component}</span>
+                    <span className="text-white font-bold w-16">{exec.pair?.replace('_', '/')}</span>
+                    <span className={exec.direction === 'long' ? 'text-[#00ffea]' : 'text-[#ff0055]'}>
+                      {exec.direction === 'long' ? <TrendingUp className="inline w-3 h-3" /> : <TrendingDown className="inline w-3 h-3" />}
+                      {' '}{exec.direction?.toUpperCase()}
+                    </span>
+                    <span className="text-yellow-400">{exec.units}u ({((exec.weight ?? 0) * 100).toFixed(0)}%)</span>
+                    <span className="text-slate-400">@ {exec.entryPrice}</span>
+                    <span className="text-slate-500">SL={exec.slPrice} TP={exec.tpPrice}</span>
+                    <span className="text-slate-600">{exec.slType}</span>
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
-        </div>
+            </div>
+          )}
+        </>
       )}
-      {/* ═══ BLEND LIVE BACKTEST ═══ */}
+
+      {/* ═══ PORTFOLIO LIVE BACKTEST ═══ */}
       <div className="border-t border-slate-700/40 pt-4 mt-4">
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-center gap-2">
@@ -265,7 +377,7 @@ export const BlendExecutorPanel = () => {
               Live Strategy Backtest — 100% Forward Test
             </h3>
             <span className="text-[8px] font-mono text-[#ff6600] border border-[#ff6600]/30 px-1.5 py-0.5 rounded bg-[#ff6600]/10">
-              BLEND PORTFOLIO
+              {hasStrategies ? `${strategies.length} STRATEGIES` : 'NO PORTFOLIO'}
             </span>
           </div>
         </div>
@@ -285,11 +397,11 @@ export const BlendExecutorPanel = () => {
             <option value="practice">Practice</option>
             <option value="live">Live</option>
           </select>
-          <button onClick={runBlendBacktest} disabled={btLoading}
+          <button onClick={runBlendBacktest} disabled={btLoading || !hasStrategies}
             className="inline-flex items-center gap-2 px-5 py-2 rounded-xl font-bold text-[10px] uppercase tracking-widest transition-all disabled:opacity-50"
             style={{ background: '#ff6600', color: '#0f172a', boxShadow: '0 0 20px rgba(255,102,0,0.3)' }}>
             {btLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}
-            {btLoading ? 'Running…' : 'Run Blend Backtest'}
+            {btLoading ? 'Running…' : 'Run Portfolio Backtest'}
           </button>
         </div>
 
@@ -304,7 +416,7 @@ export const BlendExecutorPanel = () => {
             <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 2, ease: 'linear' }}>
               <Cpu className="w-5 h-5 text-[#ff6600]" />
             </motion.div>
-            <span className="text-[10px] text-slate-400 font-mono">Fetching candles & simulating 5-component blend portfolio…</span>
+            <span className="text-[10px] text-slate-400 font-mono">Fetching candles & simulating {strategies.length}-component portfolio blend…</span>
           </motion.div>
         )}
 
@@ -442,7 +554,7 @@ export const BlendExecutorPanel = () => {
                 {btResult.dateRange?.start?.slice(0, 10)} → {btResult.dateRange?.end?.slice(0, 10)}
               </span>
               <span className="text-[8px] font-mono px-2 py-0.5 rounded border border-[#ff6600]/30 text-[#ff6600]">
-                100% FORWARD TEST · NO IS/OOS SPLIT
+                100% FORWARD TEST · {btResult.componentsUsed || strategies.length} COMPONENTS
               </span>
             </div>
           </div>
@@ -456,6 +568,11 @@ export const BlendExecutorPanel = () => {
     setBtError(null);
     setBtResult(null);
     try {
+      const body: Record<string, unknown> = { environment: btEnv, candles: btCandles };
+      if (blendComponents.length > 0) {
+        body.components = blendComponents;
+      }
+
       const res = await fetch(
         `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/blend-live-backtest`,
         {
@@ -465,7 +582,7 @@ export const BlendExecutorPanel = () => {
             apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
             Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
           },
-          body: JSON.stringify({ environment: btEnv, candles: btCandles }),
+          body: JSON.stringify(body),
         }
       );
       const data = await res.json();

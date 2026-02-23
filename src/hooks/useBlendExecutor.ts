@@ -2,6 +2,19 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { toast } from 'sonner';
 
+export interface BlendComponent {
+  id: string;
+  predatorRank: number;
+  preyRank: number;
+  requireG3: boolean;
+  slType: string;
+  entryType: string;
+  weight: number;
+  label: string;
+  fixedPips?: number;
+  tpRatio?: number;
+}
+
 export interface BlendExecution {
   component: string;
   label: string;
@@ -44,11 +57,21 @@ export function useBlendExecutor() {
   const [autoMode, setAutoMode] = useState(false);
   const [lastResult, setLastResult] = useState<BlendCycleResult | null>(null);
   const [cycleCount, setCycleCount] = useState(0);
+  const componentsRef = useRef<BlendComponent[] | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const setComponents = useCallback((components: BlendComponent[] | null) => {
+    componentsRef.current = components;
+  }, []);
 
   const runCycle = useCallback(async (): Promise<BlendCycleResult | null> => {
     setRunning(true);
     try {
+      const body: Record<string, unknown> = {};
+      if (componentsRef.current && componentsRef.current.length > 0) {
+        body.components = componentsRef.current;
+      }
+
       const res = await fetch(
         `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/decorrelated-blend-executor`,
         {
@@ -57,7 +80,7 @@ export function useBlendExecutor() {
             'Content-Type': 'application/json',
             apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
           },
-          body: JSON.stringify({}),
+          body: JSON.stringify(body),
         }
       );
 
@@ -85,7 +108,7 @@ export function useBlendExecutor() {
     setAutoMode(true);
     runCycle();
     intervalRef.current = setInterval(runCycle, 10 * 60 * 1000);
-    toast.success('Decorrelated Blend auto-executor STARTED (10min cycles)');
+    toast.success('Portfolio Blend auto-executor STARTED (10min cycles)');
   }, [runCycle]);
 
   const stopAuto = useCallback(() => {
@@ -94,7 +117,7 @@ export function useBlendExecutor() {
       intervalRef.current = null;
     }
     setAutoMode(false);
-    toast.info('Decorrelated Blend auto-executor STOPPED');
+    toast.info('Portfolio Blend auto-executor STOPPED');
   }, []);
 
   useEffect(() => {
@@ -111,5 +134,6 @@ export function useBlendExecutor() {
     runCycle,
     startAuto,
     stopAuto,
+    setComponents,
   };
 }
