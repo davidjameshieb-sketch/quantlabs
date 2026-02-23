@@ -39,6 +39,7 @@ const BASE_EQUITY = 1000;
 const GATE_G1 = 0b001;
 const GATE_G2 = 0b010;
 const GATE_G3 = 0b100;
+const RANK_SNAP_STEP = 4; // Sample every 4th rank snapshot to cut CPU ~75%
 
 // ══════════════════════════════════════════════════════════════
 // SECTION 1: Shared Utilities (candle fetching, gates)
@@ -460,7 +461,7 @@ function buildFeatureArrays(pair: string, candles: Candle[]): BarArrays {
   const p66 = sortedVols[Math.floor(sortedVols.length * 0.66)] || 0;
 
   const START = 100;
-  const MFE_MAE_HORIZON = 16;
+  const MFE_MAE_HORIZON = 10;
   const bars: BarArrays = {
     close: [], high: [], low: [], open: [], atr: [],
     efficiencyRatio8: [], efficiencyRatio13: [], efficiencyRatio21: [],
@@ -805,7 +806,7 @@ Deno.serve(async (req) => {
   try {
     const body = await req.json().catch(() => ({}));
     const environment: "practice" | "live" = body.environment || "live";
-    const candleCount: number = Math.min(body.candles || 15000, 42000);
+    const candleCount: number = Math.min(body.candles || 5000, 15000);
     const components: BlendComponent[] = (body.components || []).map((c: any) => ({
       id: c.id || 'unknown',
       predatorRank: c.predatorRank || 0,
@@ -895,7 +896,8 @@ Deno.serve(async (req) => {
         }
         pairReturns[inst] = ret;
       }
-      for (const time of sortedTimes) {
+      for (let ti = 0; ti < sortedTimes.length; ti += RANK_SNAP_STEP) {
+        const time = sortedTimes[ti];
         const flows: Record<string, number[]> = {};
         for (const c of ALL_CURRENCIES) flows[c] = [];
         for (const cross of availableCrosses) {
