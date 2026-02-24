@@ -1,105 +1,73 @@
 /**
  * AtlasNeuralNet — Bilateral neural web showing 20 strategy nodes
  * connected to a central Sovereign Matrix core via health-mapped SVG veins.
+ * Pulls LIVE data from oanda_orders via get_agent_simulator_stats.
  */
 
-import { useRef, useLayoutEffect, useState } from 'react';
+import { useRef, useLayoutEffect, useState, useEffect, useCallback } from 'react';
 import { motion } from 'framer-motion';
-import { Activity, Zap, Shield } from 'lucide-react';
+import { Activity, Zap, Shield, Loader2 } from 'lucide-react';
 import { HoverCard, HoverCardTrigger, HoverCardContent } from '@/components/ui/hover-card';
 import { Badge } from '@/components/ui/badge';
+import { supabase } from '@/integrations/supabase/client';
 
 // ── Data Schema ──
 
 interface StrategyNode {
   id: string;
+  agentId: string;
   type: 'MOM' | 'CTR';
   ranks: string;
   health: 'OPTIMAL' | 'DEGRADED' | 'CRITICAL';
-  stats: { trades: number; profitFactor: number; netPips: number };
+  stats: { trades: number; profitFactor: number; netPips: number; winRate: number };
   diagnostic: string;
 }
 
-// ── Mock Engine ──
+// ── The 20 Atlas Hedge Agents ──
 
-const MOM_DIAGNOSTICS: Record<string, string> = {
-  OPTIMAL: '↳ DIAGNOSTIC: Regime aligned. Volatility expansion perfectly capturing rank divergence.',
-  DEGRADED: '↳ DIAGNOSTIC: Partial regime alignment. Trend signal present but noisy, reduced sizing recommended.',
-  CRITICAL: '↳ DIAGNOSTIC: Regime collapse. Momentum edge neutralized by range-bound compression.',
-};
+const ATLAS_AGENTS = [
+  // 10 Momentum
+  { id: 'M1', agentId: 'atlas-hedge-mom-1v8', type: 'MOM' as const, ranks: '#1v#8' },
+  { id: 'M2', agentId: 'atlas-hedge-mom-2v7', type: 'MOM' as const, ranks: '#2v#7' },
+  { id: 'M3', agentId: 'atlas-hedge-mom-1v6', type: 'MOM' as const, ranks: '#1v#6' },
+  { id: 'M4', agentId: 'atlas-hedge-mom-3v8', type: 'MOM' as const, ranks: '#3v#8' },
+  { id: 'M5', agentId: 'atlas-hedge-mom-2v5', type: 'MOM' as const, ranks: '#2v#5' },
+  { id: 'M6', agentId: 'atlas-hedge-mom-1v7', type: 'MOM' as const, ranks: '#1v#7' },
+  { id: 'M7', agentId: 'atlas-hedge-mom-3v6', type: 'MOM' as const, ranks: '#3v#6' },
+  { id: 'M8', agentId: 'atlas-hedge-mom-4v8', type: 'MOM' as const, ranks: '#4v#8' },
+  { id: 'M9', agentId: 'atlas-hedge-mom-2v6', type: 'MOM' as const, ranks: '#2v#6' },
+  { id: 'M10', agentId: 'atlas-hedge-mom-1v5', type: 'MOM' as const, ranks: '#1v#5' },
+  // 10 Counter-Leg
+  { id: 'C1', agentId: 'atlas-hedge-ctr-1v8', type: 'CTR' as const, ranks: '#1v#8' },
+  { id: 'C2', agentId: 'atlas-hedge-ctr-2v7', type: 'CTR' as const, ranks: '#2v#7' },
+  { id: 'C3', agentId: 'atlas-hedge-ctr-1v6', type: 'CTR' as const, ranks: '#1v#6' },
+  { id: 'C4', agentId: 'atlas-hedge-ctr-3v8', type: 'CTR' as const, ranks: '#3v#8' },
+  { id: 'C5', agentId: 'atlas-hedge-ctr-2v5', type: 'CTR' as const, ranks: '#2v#5' },
+  { id: 'C6', agentId: 'atlas-hedge-ctr-1v7', type: 'CTR' as const, ranks: '#1v#7' },
+  { id: 'C7', agentId: 'atlas-hedge-ctr-3v6', type: 'CTR' as const, ranks: '#3v#6' },
+  { id: 'C8', agentId: 'atlas-hedge-ctr-4v8', type: 'CTR' as const, ranks: '#4v#8' },
+  { id: 'C9', agentId: 'atlas-hedge-ctr-2v6', type: 'CTR' as const, ranks: '#2v#6' },
+  { id: 'C10', agentId: 'atlas-hedge-ctr-1v5', type: 'CTR' as const, ranks: '#1v#5' },
+];
 
-const CTR_DIAGNOSTICS: Record<string, string> = {
-  OPTIMAL: '↳ DIAGNOSTIC: Mean-reversion edge confirmed. Overextension captured with tight R multiples.',
-  DEGRADED: '↳ DIAGNOSTIC: Reversion signal weakening. Spread compression limiting entry quality.',
-  CRITICAL: '↳ DIAGNOSTIC: Regime mismatch. Mean-reversion edge neutralized by sustained directional flow.',
-};
+// ── Diagnostics ──
+
+function getDiagnostic(type: 'MOM' | 'CTR', health: 'OPTIMAL' | 'DEGRADED' | 'CRITICAL', pf: number, wr: number): string {
+  if (type === 'MOM') {
+    if (health === 'OPTIMAL') return `↳ DIAGNOSTIC: Regime aligned. PF ${pf.toFixed(2)} with ${wr.toFixed(0)}% WR — momentum edge confirmed.`;
+    if (health === 'DEGRADED') return `↳ DIAGNOSTIC: Partial alignment. PF ${pf.toFixed(2)} signals noisy trend — reduced sizing recommended.`;
+    return `↳ DIAGNOSTIC: Regime collapse. PF ${pf.toFixed(2)}, WR ${wr.toFixed(0)}% — momentum edge destroyed by compression.`;
+  }
+  if (health === 'OPTIMAL') return `↳ DIAGNOSTIC: Mean-reversion edge confirmed. PF ${pf.toFixed(2)} capturing overextension efficiently.`;
+  if (health === 'DEGRADED') return `↳ DIAGNOSTIC: Reversion signal weakening. PF ${pf.toFixed(2)} — spread compression limiting entries.`;
+  return `↳ DIAGNOSTIC: Regime mismatch. PF ${pf.toFixed(2)}, WR ${wr.toFixed(0)}% — reversion neutralized by directional flow.`;
+}
 
 function deriveHealth(pf: number): 'OPTIMAL' | 'DEGRADED' | 'CRITICAL' {
   if (pf > 1.2) return 'OPTIMAL';
   if (pf >= 0.8) return 'DEGRADED';
   return 'CRITICAL';
 }
-
-function generateMockNodes(): StrategyNode[] {
-  const nodes: StrategyNode[] = [];
-  const rankPairs = [
-    '#1v#8', '#2v#7', '#1v#6', '#3v#8', '#2v#5',
-    '#1v#7', '#3v#6', '#4v#8', '#2v#6', '#1v#5',
-  ];
-  // MOM stats: higher PF more likely
-  const momStats: { trades: number; pf: number; pips: number }[] = [
-    { trades: 142, pf: 1.78, pips: 312 },
-    { trades: 98, pf: 1.45, pips: 187 },
-    { trades: 67, pf: 1.31, pips: 94 },
-    { trades: 134, pf: 1.62, pips: 268 },
-    { trades: 55, pf: 0.94, pips: -18 },
-    { trades: 112, pf: 1.55, pips: 224 },
-    { trades: 89, pf: 1.08, pips: 22 },
-    { trades: 44, pf: 0.72, pips: -67 },
-    { trades: 156, pf: 1.89, pips: 401 },
-    { trades: 78, pf: 1.15, pips: 41 },
-  ];
-  const ctrStats: { trades: number; pf: number; pips: number }[] = [
-    { trades: 131, pf: 1.67, pips: 278 },
-    { trades: 46, pf: 0.65, pips: -89 },
-    { trades: 102, pf: 1.42, pips: 168 },
-    { trades: 88, pf: 1.19, pips: 52 },
-    { trades: 71, pf: 0.88, pips: -31 },
-    { trades: 119, pf: 1.53, pips: 213 },
-    { trades: 95, pf: 1.28, pips: 104 },
-    { trades: 38, pf: 0.59, pips: -112 },
-    { trades: 147, pf: 1.74, pips: 356 },
-    { trades: 63, pf: 1.02, pips: 5 },
-  ];
-
-  for (let i = 0; i < 10; i++) {
-    const m = momStats[i];
-    const health = deriveHealth(m.pf);
-    nodes.push({
-      id: `M${i + 1}`,
-      type: 'MOM',
-      ranks: rankPairs[i],
-      health,
-      stats: { trades: m.trades, profitFactor: m.pf, netPips: m.pips },
-      diagnostic: MOM_DIAGNOSTICS[health],
-    });
-  }
-  for (let i = 0; i < 10; i++) {
-    const c = ctrStats[i];
-    const health = deriveHealth(c.pf);
-    nodes.push({
-      id: `C${i + 1}`,
-      type: 'CTR',
-      ranks: rankPairs[i],
-      health,
-      stats: { trades: c.trades, profitFactor: c.pf, netPips: c.pips },
-      diagnostic: CTR_DIAGNOSTICS[health],
-    });
-  }
-  return nodes;
-}
-
-const STRATEGY_NODES = generateMockNodes();
 
 // ── Health Color Map ──
 
@@ -144,10 +112,16 @@ function StrategyNodeCircle({ node, onRef }: { node: StrategyNode; onRef: (id: s
           </Badge>
         </div>
         {/* Stats */}
-        <div className="grid grid-cols-3 gap-px bg-slate-800/40 mx-3 my-2 rounded overflow-hidden">
+        <div className="grid grid-cols-4 gap-px bg-slate-800/40 mx-3 my-2 rounded overflow-hidden">
           <div className="bg-slate-900/80 p-2 text-center">
             <div className="text-[8px] text-muted-foreground font-mono uppercase">Trades</div>
             <div className="text-[11px] font-mono font-bold text-foreground">{node.stats.trades}</div>
+          </div>
+          <div className="bg-slate-900/80 p-2 text-center">
+            <div className="text-[8px] text-muted-foreground font-mono uppercase">WR%</div>
+            <div className={`text-[11px] font-mono font-bold ${node.stats.winRate >= 50 ? 'text-emerald-400' : 'text-red-400'}`}>
+              {node.stats.winRate.toFixed(1)}
+            </div>
           </div>
           <div className="bg-slate-900/80 p-2 text-center">
             <div className="text-[8px] text-muted-foreground font-mono uppercase">PF</div>
@@ -158,7 +132,7 @@ function StrategyNodeCircle({ node, onRef }: { node: StrategyNode; onRef: (id: s
           <div className="bg-slate-900/80 p-2 text-center">
             <div className="text-[8px] text-muted-foreground font-mono uppercase">Pips</div>
             <div className={`text-[11px] font-mono font-bold ${node.stats.netPips >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-              {node.stats.netPips >= 0 ? '+' : ''}{node.stats.netPips}
+              {node.stats.netPips >= 0 ? '+' : ''}{node.stats.netPips.toFixed(1)}
             </div>
           </div>
         </div>
@@ -180,12 +154,75 @@ export default function AtlasNeuralNet() {
   const coreRef = useRef<HTMLDivElement>(null);
   const nodeRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const [lines, setLines] = useState<{ x1: number; y1: number; x2: number; y2: number; health: 'OPTIMAL' | 'DEGRADED' | 'CRITICAL' }[]>([]);
+  const [strategyNodes, setStrategyNodes] = useState<StrategyNode[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  const momNodes = STRATEGY_NODES.filter(n => n.type === 'MOM');
-  const ctrNodes = STRATEGY_NODES.filter(n => n.type === 'CTR');
+  // ── Fetch live stats from DB ──
+  const fetchLiveStats = useCallback(async () => {
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+
+      const { data: stats } = await supabase.rpc('get_agent_simulator_stats', { p_user_id: user.id });
+
+      const statsMap = new Map<string, { trades: number; wins: number; netPips: number; grossProfit: number; grossLoss: number }>();
+      if (stats) {
+        for (const row of stats) {
+          statsMap.set(row.agent_id, {
+            trades: Number(row.total_trades),
+            wins: Number(row.win_count),
+            netPips: Number(row.net_pips),
+            grossProfit: Number(row.gross_profit),
+            grossLoss: Number(row.gross_loss),
+          });
+        }
+      }
+
+      const nodes: StrategyNode[] = ATLAS_AGENTS.map(agent => {
+        const s = statsMap.get(agent.agentId);
+        const trades = s?.trades ?? 0;
+        const wins = s?.wins ?? 0;
+        const netPips = s?.netPips ?? 0;
+        const grossProfit = s?.grossProfit ?? 0;
+        const grossLoss = s?.grossLoss ?? 0;
+        const winRate = trades > 0 ? (wins / trades) * 100 : 0;
+        const profitFactor = grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? 9.99 : 0;
+        const health = trades === 0 ? 'DEGRADED' : deriveHealth(profitFactor);
+        const diagnostic = trades === 0
+          ? `↳ DIAGNOSTIC: No closed trades in 90d window. Strategy awaiting signal generation.`
+          : getDiagnostic(agent.type, health, profitFactor, winRate);
+
+        return {
+          id: agent.id,
+          agentId: agent.agentId,
+          type: agent.type,
+          ranks: agent.ranks,
+          health,
+          stats: { trades, profitFactor: Math.min(profitFactor, 9.99), netPips, winRate },
+          diagnostic,
+        };
+      });
+
+      setStrategyNodes(nodes);
+    } catch (e) {
+      console.error('AtlasNeuralNet fetch error:', e);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchLiveStats();
+    const interval = setInterval(fetchLiveStats, 60_000);
+    return () => clearInterval(interval);
+  }, [fetchLiveStats]);
+
+  const momNodes = strategyNodes.filter(n => n.type === 'MOM');
+  const ctrNodes = strategyNodes.filter(n => n.type === 'CTR');
 
   // Calculate SVG vein positions after layout
   useLayoutEffect(() => {
+    if (strategyNodes.length === 0) return;
     const compute = () => {
       const container = containerRef.current;
       const core = coreRef.current;
@@ -196,7 +233,7 @@ export default function AtlasNeuralNet() {
       const cx = kRect.left - cRect.left + kRect.width / 2;
       const cy = kRect.top - cRect.top + kRect.height / 2;
 
-      const newLines = STRATEGY_NODES.map(node => {
+      const newLines = strategyNodes.map(node => {
         const el = nodeRefs.current[node.id];
         if (!el) return null;
         const nRect = el.getBoundingClientRect();
@@ -212,15 +249,17 @@ export default function AtlasNeuralNet() {
       setLines(newLines);
     };
 
-    // Wait for layout
     const raf = requestAnimationFrame(compute);
-    // Recompute on resize
     window.addEventListener('resize', compute);
     return () => {
       cancelAnimationFrame(raf);
       window.removeEventListener('resize', compute);
     };
-  }, []);
+  }, [strategyNodes]);
+
+  // Portfolio totals for header
+  const totalPips = strategyNodes.reduce((s, n) => s + n.stats.netPips, 0);
+  const totalTrades = strategyNodes.reduce((s, n) => s + n.stats.trades, 0);
 
   return (
     <div className="bg-slate-900/80 backdrop-blur-md border border-slate-700/40 rounded-2xl p-6 shadow-2xl">
@@ -230,94 +269,106 @@ export default function AtlasNeuralNet() {
         <h2 className="text-[11px] font-bold tracking-widest text-cyan-400 uppercase font-display">
           Neural Strategy Web
         </h2>
-        <span className="text-[8px] font-mono text-muted-foreground ml-auto">
-          {STRATEGY_NODES.filter(n => n.health === 'OPTIMAL').length} OPTIMAL · {STRATEGY_NODES.filter(n => n.health === 'DEGRADED').length} DEGRADED · {STRATEGY_NODES.filter(n => n.health === 'CRITICAL').length} CRITICAL
-        </span>
+        {!loading && (
+          <span className="text-[8px] font-mono text-muted-foreground ml-auto">
+            {strategyNodes.filter(n => n.health === 'OPTIMAL').length} OPTIMAL · {strategyNodes.filter(n => n.health === 'DEGRADED').length} DEGRADED · {strategyNodes.filter(n => n.health === 'CRITICAL').length} CRITICAL
+            <span className="mx-2">|</span>
+            <span className={totalPips >= 0 ? 'text-emerald-400' : 'text-red-400'}>{totalPips >= 0 ? '+' : ''}{totalPips.toFixed(1)}p</span>
+            <span className="text-muted-foreground ml-1">/ {totalTrades} trades</span>
+          </span>
+        )}
       </div>
 
-      {/* Neural Web Container */}
-      <div ref={containerRef} className="relative min-h-[420px]">
-        {/* SVG Veins Layer */}
-        <svg className="absolute inset-0 w-full h-full pointer-events-none" style={{ zIndex: 0 }}>
-          <defs>
-            <filter id="glow-green" x="-50%" y="-50%" width="200%" height="200%">
-              <feGaussianBlur stdDeviation="3" result="blur" />
-              <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
-            </filter>
-            <filter id="glow-amber" x="-50%" y="-50%" width="200%" height="200%">
-              <feGaussianBlur stdDeviation="2" result="blur" />
-              <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
-            </filter>
-          </defs>
-          {lines.map((line, i) => {
-            const hc = HEALTH_COLORS[line.health];
-            return (
-              <motion.line
-                key={i}
-                x1={line.x1} y1={line.y1}
-                x2={line.x2} y2={line.y2}
-                stroke={hc.stroke}
-                strokeWidth={hc.width}
-                strokeOpacity={hc.opacity}
-                filter={line.health === 'OPTIMAL' ? 'url(#glow-green)' : line.health === 'DEGRADED' ? 'url(#glow-amber)' : undefined}
-                animate={line.health === 'OPTIMAL' ? { strokeOpacity: [hc.opacity, hc.opacity * 0.5, hc.opacity] } : {}}
-                transition={line.health === 'OPTIMAL' ? { duration: 3, repeat: Infinity, ease: 'easeInOut' } : {}}
-              />
-            );
-          })}
-        </svg>
+      {loading ? (
+        <div className="flex items-center justify-center min-h-[420px]">
+          <Loader2 className="w-6 h-6 text-cyan-400 animate-spin" />
+          <span className="text-[10px] font-mono text-muted-foreground ml-2">Loading live strategy data…</span>
+        </div>
+      ) : (
+        /* Neural Web Container */
+        <div ref={containerRef} className="relative min-h-[420px]">
+          {/* SVG Veins Layer */}
+          <svg className="absolute inset-0 w-full h-full pointer-events-none" style={{ zIndex: 0 }}>
+            <defs>
+              <filter id="glow-green" x="-50%" y="-50%" width="200%" height="200%">
+                <feGaussianBlur stdDeviation="3" result="blur" />
+                <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
+              </filter>
+              <filter id="glow-amber" x="-50%" y="-50%" width="200%" height="200%">
+                <feGaussianBlur stdDeviation="2" result="blur" />
+                <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
+              </filter>
+            </defs>
+            {lines.map((line, i) => {
+              const hc = HEALTH_COLORS[line.health];
+              return (
+                <motion.line
+                  key={i}
+                  x1={line.x1} y1={line.y1}
+                  x2={line.x2} y2={line.y2}
+                  stroke={hc.stroke}
+                  strokeWidth={hc.width}
+                  strokeOpacity={hc.opacity}
+                  filter={line.health === 'OPTIMAL' ? 'url(#glow-green)' : line.health === 'DEGRADED' ? 'url(#glow-amber)' : undefined}
+                  animate={line.health === 'OPTIMAL' ? { strokeOpacity: [hc.opacity, hc.opacity * 0.5, hc.opacity] } : {}}
+                  transition={line.health === 'OPTIMAL' ? { duration: 3, repeat: Infinity, ease: 'easeInOut' } : {}}
+                />
+              );
+            })}
+          </svg>
 
-        {/* Grid Layout: Left Hemisphere | Core | Right Hemisphere */}
-        <div className="relative grid grid-cols-[1fr_auto_1fr] items-center gap-4" style={{ zIndex: 1 }}>
+          {/* Grid Layout: Left Hemisphere | Core | Right Hemisphere */}
+          <div className="relative grid grid-cols-[1fr_auto_1fr] items-center gap-4" style={{ zIndex: 1 }}>
 
-          {/* Left Hemisphere — Momentum */}
-          <div className="flex flex-col items-end gap-3 pr-2">
-            <div className="text-[8px] font-mono font-bold text-cyan-400/70 tracking-widest uppercase mb-1">
-              Momentum
+            {/* Left Hemisphere — Momentum */}
+            <div className="flex flex-col items-end gap-3 pr-2">
+              <div className="text-[8px] font-mono font-bold text-cyan-400/70 tracking-widest uppercase mb-1">
+                Momentum
+              </div>
+              {momNodes.map(node => (
+                <StrategyNodeCircle
+                  key={node.id}
+                  node={node}
+                  onRef={(id, el) => { nodeRefs.current[id] = el; }}
+                />
+              ))}
             </div>
-             {momNodes.map(node => (
-              <StrategyNodeCircle
-                key={node.id}
-                node={node}
-                onRef={(id, el) => { nodeRefs.current[id] = el; }}
-              />
-            ))}
-          </div>
 
-          {/* Core Node */}
-          <div className="flex flex-col items-center justify-center">
-            <motion.div
-              ref={coreRef}
-              className="w-20 h-20 rounded-full bg-gradient-to-br from-cyan-500/20 to-violet-500/20 border-2 border-cyan-500/50 flex flex-col items-center justify-center backdrop-blur-xl ring-4 ring-cyan-500/10 cursor-default"
-              animate={{
-                boxShadow: [
-                  '0 0 20px rgba(0,255,234,0.15)',
-                  '0 0 40px rgba(0,255,234,0.3)',
-                  '0 0 20px rgba(0,255,234,0.15)',
-                ],
-              }}
-              transition={{ duration: 3, repeat: Infinity, ease: 'easeInOut' }}
-            >
-              <span className="text-[7px] font-mono font-bold text-cyan-400 tracking-wider uppercase">Sovereign</span>
-              <span className="text-[7px] font-mono font-bold text-cyan-400 tracking-wider uppercase">Matrix</span>
-            </motion.div>
-          </div>
-
-          {/* Right Hemisphere — Counter-Leg */}
-          <div className="flex flex-col items-start gap-3 pl-2">
-            <div className="text-[8px] font-mono font-bold text-violet-400/70 tracking-widest uppercase mb-1">
-              Counter-Leg
+            {/* Core Node */}
+            <div className="flex flex-col items-center justify-center">
+              <motion.div
+                ref={coreRef}
+                className="w-20 h-20 rounded-full bg-gradient-to-br from-cyan-500/20 to-violet-500/20 border-2 border-cyan-500/50 flex flex-col items-center justify-center backdrop-blur-xl ring-4 ring-cyan-500/10 cursor-default"
+                animate={{
+                  boxShadow: [
+                    '0 0 20px rgba(0,255,234,0.15)',
+                    '0 0 40px rgba(0,255,234,0.3)',
+                    '0 0 20px rgba(0,255,234,0.15)',
+                  ],
+                }}
+                transition={{ duration: 3, repeat: Infinity, ease: 'easeInOut' }}
+              >
+                <span className="text-[7px] font-mono font-bold text-cyan-400 tracking-wider uppercase">Sovereign</span>
+                <span className="text-[7px] font-mono font-bold text-cyan-400 tracking-wider uppercase">Matrix</span>
+              </motion.div>
             </div>
-             {ctrNodes.map(node => (
-              <StrategyNodeCircle
-                key={node.id}
-                node={node}
-                onRef={(id, el) => { nodeRefs.current[id] = el; }}
-              />
-            ))}
+
+            {/* Right Hemisphere — Counter-Leg */}
+            <div className="flex flex-col items-start gap-3 pl-2">
+              <div className="text-[8px] font-mono font-bold text-violet-400/70 tracking-widest uppercase mb-1">
+                Counter-Leg
+              </div>
+              {ctrNodes.map(node => (
+                <StrategyNodeCircle
+                  key={node.id}
+                  node={node}
+                  onRef={(id, el) => { nodeRefs.current[id] = el; }}
+                />
+              ))}
+            </div>
           </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }
