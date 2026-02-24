@@ -1898,6 +1898,8 @@ async function handleBatchExtract(body: Record<string, unknown>) {
 
   const topN = Number(body.topN) || 7;
   const maxInterCorr = Number(body.maxInterCorrelation) || 0.4;
+  const rawGranularity = typeof body.granularity === "string" ? body.granularity.toUpperCase() : "M5";
+  const granularity = rawGranularity === "M5" || rawGranularity === "M15" || rawGranularity === "M30" ? rawGranularity : "M5";
 
   console.log(`[GA-BATCH] Cross-pair extraction across ${pairs.length} pairs, selecting Top ${topN}`);
 
@@ -2135,19 +2137,29 @@ async function handleBatchExtract(body: Record<string, unknown>) {
     const avgPipsPerTrade = totalTrades > 0 ? totalPips / totalTrades : 0;
     const avgPF = selected.reduce((s, p) => s + p.sim.profitFactor, 0) / (selected.length || 1);
 
-    // Determine bars per day from granularity
+    // Determine bars per day from selected granularity
     const bpdMap: Record<string, number> = { M5: 288, M15: 96, M30: 48 };
-    const detectedGran = pairs[0] ? 'M5' : 'M5'; // default to M5 for HF
-    const bpd = bpdMap[detectedGran] || 288;
+    const bpd = bpdMap[granularity] || 288;
     const dataDays = Math.max(1, Math.round(5000 / bpd));
     const tradesPerDay = Math.round((totalTrades / dataDays) * 10) / 10;
     const netPipsPerDay = tradesPerDay * avgPipsPerTrade;
 
     // Avg SL in pips (from strategy DNA — approximate)
-    const avgSLPips = selected.reduce((s, p) => s + (p.dna.slMultiplier || 2.0), 0) / (selected.length || 1) * 14; // ATR~14 pips avg
+    const avgSLPips = selected.reduce((s, p) => s + (p.dna.slMultiplier || 2.0), 0) / (selected.length || 1) * 14;
 
-    // Geometric compounding: position size = (equity × riskFraction) / SL
-    // P&L per trade = units × pipValue × pips = (equity × 0.05 / avgSLPips) × 0.0001 × pips
+    // Use realized wins/losses from selected strategies (avoids expectancy inversion bugs)
+    const totalWins = selected.reduce((sum, s) => sum + (s.sim.wins || Math.round(s.sim.trades * s.sim.winRate)), 0);
+    const totalLosses = selected.reduce((sum, s) => sum + Math.max(0, s.sim.trades - (s.sim.wins || Math.round(s.sim.trades * s.sim.winRate))), 0);
+    const grossProfitPips = selected.reduce((sum, s) => sum + Math.max(0, s.sim.grossProfit), 0);
+    const grossLossPips = selected.reduce((sum, s) => sum + Math.max(0, s.sim.grossLoss), 0);
+
+    const avgWinPips = totalWins > 0 ? grossProfitPips / totalWins : Math.max(avgPipsPerTrade, 1);
+    const avgLossPips = totalLosses > 0 ? grossLossPips / totalLosses : Math.max(avgWinPips * 0.75, 1);
+    const avgPipValuePerUnit = selected.length > 0
+      ? selected.reduce((sum, s) => sum + (s.pair.includes('JPY') ? 0.01 : 0.0001), 0) / selected.length
+      : 0.0001;
+
+    // Geometric compounding: position size = (equity × riskFraction) / (SL × pipValuePerUnit)
     const RISK_FRACTION = 0.05; // 5% risk per trade
     const BASE_EQUITY = 1000;
     const TRADING_DAYS = 252;
@@ -2155,13 +2167,8 @@ async function handleBatchExtract(body: Record<string, unknown>) {
 
     let equity = BASE_EQUITY;
     const dailyEquity: number[] = [equity];
-    let maxDD = 0, peak = equity;
-
-    // Simulate each trade individually for accuracy
-    // Reconstruct win/loss sequence from portfolio stats
-    const avgWinPips = avgPF > 0 ? avgPipsPerTrade * avgPF / (avgPF - 1 + (1 / avgWinRate)) : avgPipsPerTrade * 2;
-    const avgLossPips = avgWinRate > 0 && avgWinRate < 1 ? 
-      (avgWinPips * avgWinRate - avgPipsPerTrade) / (1 - avgWinRate) : avgPipsPerTrade;
+    let maxDD = 0;
+    let peak = equity;
 
     for (let day = 1; day <= TRADING_DAYS; day++) {
       const dailyTrades = Math.round(tradesPerDay);
@@ -2170,8 +2177,8 @@ async function handleBatchExtract(body: Record<string, unknown>) {
       for (let t = 0; t < dailyTrades; t++) {
         // Position size scales with current equity
         const slPips = Math.max(avgSLPips, 5);
-        const units = Math.round((equity * RISK_FRACTION) / (slPips * 0.0001));
-        const pipVal = units * 0.0001; // $ per pip
+        const units = Math.round((equity * RISK_FRACTION) / (slPips * avgPipValuePerUnit));
+        const pipVal = units * avgPipValuePerUnit; // $ per pip
 
         // Stochastic win/loss based on portfolio win rate
         const isWin = Math.random() < avgWinRate;
@@ -2210,8 +2217,8 @@ async function handleBatchExtract(body: Record<string, unknown>) {
         let dp = 0;
         for (let t = 0; t < dt; t++) {
           const sl = Math.max(avgSLPips, 5);
-          const u = Math.round((eq * RISK_FRACTION) / (sl * 0.0001));
-          const pv = u * 0.0001;
+          const u = Math.round((eq * RISK_FRACTION) / (sl * avgPipValuePerUnit));
+          const pv = u * avgPipValuePerUnit;
           const w = Math.random() < avgWinRate;
           const p = w ? avgWinPips : -Math.abs(avgLossPips);
           dp += Math.max(p * pv, -eq * RISK_FRACTION);

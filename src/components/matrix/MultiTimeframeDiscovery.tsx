@@ -170,7 +170,7 @@ export function MultiTimeframeDiscovery() {
 
       setPhase('batch-extracting');
       const batchRes = await callEngine({
-        action: 'batch-extract', pairs: BATCH_PAIRS, topN: 10, maxInterCorrelation: 0.4,
+        action: 'batch-extract', pairs: BATCH_PAIRS, topN: 10, maxInterCorrelation: 0.4, granularity,
       });
       setBatchResult(batchRes);
       setPhase('batch-complete');
