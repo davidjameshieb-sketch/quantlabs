@@ -13,6 +13,7 @@ import {
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
 import HedgeDiscoveryPanel from '@/components/matrix/HedgeDiscoveryPanel';
+import AtlasHedgeLiveFeed from '@/components/matrix/AtlasHedgeLiveFeed';
 
 const FLAGS: Record<string, string> = {
   USD: '🇺🇸', EUR: '🇪🇺', GBP: '🇬🇧', JPY: '🇯🇵',
@@ -736,7 +737,10 @@ const HedgeControlCenter = () => {
           })()}
         </div>
 
-        {/* ── Row 6: Circuit Breakers ── */}
+        {/* ── Row 6: Atlas Hedge Live Feed ── */}
+        <AtlasHedgeLiveFeed />
+
+        {/* ── Row 7: Circuit Breakers ── */}
         {circuitBreakers.length > 0 && (
           <div className="bg-slate-900/80 backdrop-blur-md border border-[#ff0055]/30 rounded-2xl p-6 shadow-2xl">
             <div className="flex items-center gap-2 mb-4 border-b border-[#ff0055]/20 pb-3">
