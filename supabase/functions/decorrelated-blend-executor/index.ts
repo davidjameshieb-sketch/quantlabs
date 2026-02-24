@@ -15,7 +15,7 @@ const OANDA_HOSTS: Record<string, string> = {
 };
 
 const ENVIRONMENT = 'practice' as const;
-const TOTAL_RISK_UNITS = 5000;
+const RISK_FRACTION = 0.05; // 5% equity risk per trade
 const TP_RATIO = 2.0;
 
 const OANDA_AVAILABLE = new Set([
@@ -336,6 +336,22 @@ Deno.serve(async (req) => {
     const oandaHost = OANDA_HOSTS[ENVIRONMENT];
     const userId = '00000000-0000-0000-0000-000000000000';
 
+    // ── Fetch live account equity for dynamic position sizing ──
+    let accountEquity = 1000; // fallback
+    try {
+      const acctRes = await fetch(`${oandaHost}/v3/accounts/${accountId}/summary`, {
+        headers: { Authorization: `Bearer ${apiToken}`, Accept: 'application/json' },
+      });
+      if (acctRes.ok) {
+        const acctData = await acctRes.json();
+        const nav = parseFloat(acctData.account?.NAV || acctData.account?.balance || '1000');
+        if (nav > 0) accountEquity = nav;
+        console.log(`[BLEND] Account equity: $${accountEquity.toFixed(2)}`);
+      }
+    } catch (e) {
+      console.warn('[BLEND] Could not fetch account equity, using fallback $1000:', (e as Error).message);
+    }
+
     const slotsAvailable = maxPositions - openPairs.size;
     let slotsUsed = 0;
 
@@ -433,8 +449,11 @@ Deno.serve(async (req) => {
       const slPrice = direction === 'long' ? currentPrice - slDistance : currentPrice + slDistance;
       const tpPrice = direction === 'long' ? currentPrice + slDistance * compTpRatio : currentPrice - slDistance * compTpRatio;
 
-      // Weighted position sizing
-      const units = Math.max(1, Math.round(TOTAL_RISK_UNITS * comp.weight));
+      // Dynamic 5% equity risk position sizing
+      // Risk amount = equity * 5% * component weight
+      // Units = riskAmount / (SL_distance_in_price)
+      const riskAmount = accountEquity * RISK_FRACTION * comp.weight;
+      const units = Math.max(1, Math.round(riskAmount / slDistance));
       const signedUnits = direction === 'short' ? -units : units;
 
       const gateLabel = comp.requireG3 ? 'G1+G2+G3' : 'G1+G2';
