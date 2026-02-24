@@ -160,21 +160,42 @@ export default function AtlasNeuralNet() {
   // ── Fetch live stats from DB ──
   const fetchLiveStats = useCallback(async () => {
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      const userId = user?.id ?? '00000000-0000-0000-0000-000000000000';
+      // Only track trades closed from the start of today (UTC)
+      const todayStart = new Date();
+      todayStart.setUTCHours(0, 0, 0, 0);
 
-      const { data: stats } = await supabase.rpc('get_agent_simulator_stats', { p_user_id: userId });
+      const agentIds = ATLAS_AGENTS.map(a => a.agentId);
+
+      const { data: orders } = await supabase
+        .from('oanda_orders')
+        .select('agent_id, direction, entry_price, exit_price, currency_pair')
+        .in('agent_id', agentIds)
+        .in('status', ['closed', 'filled'])
+        .not('exit_price', 'is', null)
+        .not('entry_price', 'is', null)
+        .gte('closed_at', todayStart.toISOString());
 
       const statsMap = new Map<string, { trades: number; wins: number; netPips: number; grossProfit: number; grossLoss: number }>();
-      if (stats) {
-        for (const row of stats) {
-          statsMap.set(row.agent_id, {
-            trades: Number(row.total_trades),
-            wins: Number(row.win_count),
-            netPips: Number(row.net_pips),
-            grossProfit: Number(row.gross_profit),
-            grossLoss: Number(row.gross_loss),
-          });
+
+      if (orders) {
+        for (const o of orders) {
+          const isJpy = (o.currency_pair as string).includes('JPY');
+          const multiplier = isJpy ? 100 : 10000;
+          const pips = o.direction === 'long'
+            ? ((o.exit_price as number) - (o.entry_price as number)) * multiplier
+            : ((o.entry_price as number) - (o.exit_price as number)) * multiplier;
+          const rounded = Math.round(pips * 10) / 10;
+
+          const existing = statsMap.get(o.agent_id!) ?? { trades: 0, wins: 0, netPips: 0, grossProfit: 0, grossLoss: 0 };
+          existing.trades += 1;
+          existing.netPips += rounded;
+          if (rounded > 0) {
+            existing.wins += 1;
+            existing.grossProfit += rounded;
+          } else {
+            existing.grossLoss += Math.abs(rounded);
+          }
+          statsMap.set(o.agent_id!, existing);
         }
       }
 
@@ -189,7 +210,7 @@ export default function AtlasNeuralNet() {
         const profitFactor = grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? 9.99 : 0;
         const health = trades === 0 ? 'DEGRADED' : deriveHealth(profitFactor);
         const diagnostic = trades === 0
-          ? `↳ DIAGNOSTIC: No closed trades in 90d window. Strategy awaiting signal generation.`
+          ? `↳ DIAGNOSTIC: Awaiting first closed trade. Live positions pending exit.`
           : getDiagnostic(agent.type, health, profitFactor, winRate);
 
         return {
