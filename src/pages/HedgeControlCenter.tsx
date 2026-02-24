@@ -134,7 +134,10 @@ const HedgeControlCenter = () => {
           .from('oanda_orders')
           .select('*')
           .in('agent_id', agentIds)
-          .in('status', ['filled', 'open', 'pending'])
+          .in('status', ['filled', 'open'])
+          .not('entry_price', 'is', null)
+          .is('exit_price', null)
+          .is('closed_at', null)
           .order('created_at', { ascending: false })
           .limit(50);
         setActiveTrades(openTrades ?? []);
