@@ -227,7 +227,8 @@ function precomputeExits(
 // ── Generate signals for one predator/prey rank combo ──
 function generateSignals(
   predRank: number, preyRank: number, rankSnaps: RankSnap[],
-  pairCandles: Record<string, Candle[]>, pairTimeIndex: Record<string, Record<string, number>>
+  pairCandles: Record<string, Candle[]>, pairTimeIndex: Record<string, Record<string, number>>,
+  invertDirection: boolean = false,
 ): CompactSignal[] {
   const raw: Array<Omit<CompactSignal, 'exitPips'>> = [];
   let prevInst: string | null = null;
@@ -246,6 +247,11 @@ function generateSignals(
     if (pairTimeIndex[directInst]?.[snap.time] !== undefined) { instrument = directInst; direction = "long"; }
     else if (pairTimeIndex[inverseInst]?.[snap.time] !== undefined) { instrument = inverseInst; direction = "short"; }
     if (!instrument) continue;
+
+    // Counter-leg: flip direction (mean-reversion — short the strong, long the weak)
+    if (invertDirection) {
+      direction = direction === "long" ? "short" : "long";
+    }
 
     if (instrument !== prevInst || direction !== prevDir) {
       const candleIdx = pairTimeIndex[instrument][snap.time];
@@ -459,7 +465,7 @@ Deno.serve(async (req) => {
     const candleCount: number = Math.min(body.candles || 5000, 42000);
     const topN: number = body.topN || 25;
     const predatorRanks: number[] = body.predatorRanks || [1, 2, 3];
-
+    const invertDirection: boolean = body.invertDirection === true;
     const apiToken = environment === "live"
       ? (Deno.env.get("OANDA_LIVE_API_TOKEN") || Deno.env.get("OANDA_API_TOKEN"))
       : Deno.env.get("OANDA_API_TOKEN");
@@ -472,7 +478,7 @@ Deno.serve(async (req) => {
     const availableCrosses = ALL_28_CROSSES.filter(c => OANDA_AVAILABLE.has(c.instrument));
 
     // ── Step 1: Fetch candles in batches of 7 (memory-safe) ──
-    console.log(`[LIVE-BT v6] Sovereign-Alpha — predators [${predatorRanks}] — ${candleCount} candles (${environment})`);
+    console.log(`[LIVE-BT v6] Sovereign-Alpha — predators [${predatorRanks}] — ${candleCount} candles (${environment})${invertDirection ? ' [INVERTED/COUNTER-LEG]' : ''}`);
     const pairCandles: Record<string, Candle[]> = {};
     for (let i = 0; i < availableCrosses.length; i += 7) {
       const batch = availableCrosses.slice(i, i + 7);
@@ -552,7 +558,7 @@ Deno.serve(async (req) => {
     const signalCache: Record<string, CompactSignal[]> = {};
     for (const pr of predatorRanks) {
       for (const py of PREY_RANKS) {
-        signalCache[`${pr}_${py}`] = generateSignals(pr, py, rankSnaps, pairCandles, pairTimeIndex);
+        signalCache[`${pr}_${py}`] = generateSignals(pr, py, rankSnaps, pairCandles, pairTimeIndex, invertDirection);
       }
     }
     console.log(`[LIVE-BT v6] Signals pre-computed for ${Object.keys(signalCache).length} rank combos`);
