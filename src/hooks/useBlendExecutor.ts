@@ -13,6 +13,8 @@ export interface BlendComponent {
   label: string;
   fixedPips?: number;
   tpRatio?: number;
+  invertDirection?: boolean;
+  agentId?: string;
 }
 
 export interface BlendExecution {

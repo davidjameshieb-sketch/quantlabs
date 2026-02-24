@@ -41,6 +41,8 @@ interface BlendComponent {
   label: string;
   fixedPips?: number;
   tpRatio?: number;
+  invertDirection?: boolean;
+  agentId?: string;
 }
 
 // Hardcoded fallback (original 5-component blend)
@@ -239,6 +241,7 @@ Deno.serve(async (req) => {
     // ── Resolve active components (dynamic portfolio or hardcoded fallback) ──
     let activeComponents: BlendComponent[] = DEFAULT_COMPONENTS;
     let maxPositions = 5;
+    let portfolioAgentIds: string[] = ['decorrelated-blend'];
 
     if (body.components && Array.isArray(body.components) && body.components.length > 0) {
       activeComponents = body.components.map((c: any) => ({
@@ -252,9 +255,42 @@ Deno.serve(async (req) => {
         label: c.label || `#${c.predatorRank}v${c.preyRank}`,
         fixedPips: c.fixedPips,
         tpRatio: c.tpRatio,
+        invertDirection: c.invertDirection ?? false,
+        agentId: c.agentId,
       }));
       maxPositions = activeComponents.length;
+      portfolioAgentIds = [...new Set(activeComponents.map(c => c.agentId || 'decorrelated-blend'))];
       console.log(`[BLEND] Using ${activeComponents.length} dynamic components from portfolio`);
+    } else {
+      // Auto-load Atlas Hedge portfolio from agent_configs if no components passed
+      const { data: atlasConfigs } = await sb
+        .from('agent_configs')
+        .select('agent_id, config, is_active')
+        .like('agent_id', 'atlas-hedge-%')
+        .eq('is_active', true);
+
+      if (atlasConfigs && atlasConfigs.length > 0) {
+        activeComponents = atlasConfigs.map((ac: any) => {
+          const cfg = ac.config || {};
+          return {
+            id: ac.agent_id,
+            predatorRank: cfg.predatorRank || 1,
+            preyRank: cfg.preyRank || 8,
+            requireG3: true,
+            slType: 'fixed_custom' as const,
+            entryType: 'order_block' as const,
+            weight: cfg.weight || 1 / atlasConfigs.length,
+            label: cfg.label || ac.agent_id,
+            fixedPips: cfg.slPips || 25,
+            tpRatio: cfg.tpRatio || 2.0,
+            invertDirection: cfg.invertDirection ?? false,
+            agentId: ac.agent_id,
+          };
+        });
+        maxPositions = Math.max(activeComponents.length, 20);
+        portfolioAgentIds = atlasConfigs.map((ac: any) => ac.agent_id);
+        console.log(`[BLEND] Auto-loaded ${activeComponents.length} Atlas Hedge strategies from agent_configs`);
+      }
     }
 
     // ── Step 1: Circuit breaker check ──
@@ -277,10 +313,10 @@ Deno.serve(async (req) => {
     // ── Step 2: Check open positions ──
     const { data: openPositions } = await sb
       .from('oanda_orders')
-      .select('currency_pair')
+      .select('currency_pair, agent_id')
       .in('status', ['filled', 'open', 'submitted'])
       .eq('environment', ENVIRONMENT)
-      .eq('agent_id', 'decorrelated-blend');
+      .in('agent_id', portfolioAgentIds);
 
     const openPairs = new Set((openPositions || []).map(p => p.currency_pair));
 
@@ -394,7 +430,11 @@ Deno.serve(async (req) => {
       }
 
       const { instrument, inverted } = instrInfo;
-      const direction: 'long' | 'short' = inverted ? 'short' : 'long';
+      // Normal: long the strong currency. invertDirection flips for counter-leg mean-reversion.
+      let direction: 'long' | 'short' = inverted ? 'short' : 'long';
+      if (comp.invertDirection) {
+        direction = direction === 'long' ? 'short' : 'long';
+      }
 
       if (openPairs.has(instrument)) {
         executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction, status: 'skipped', skipReason: 'Already open' });
@@ -471,7 +511,7 @@ Deno.serve(async (req) => {
             currency_pair: instrument,
             direction,
             units,
-            agent_id: 'decorrelated-blend',
+            agent_id: comp.agentId || 'decorrelated-blend',
             environment: ENVIRONMENT,
             status: 'submitted',
             confidence_score: comp.weight,
