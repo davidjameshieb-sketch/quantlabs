@@ -278,7 +278,7 @@ Deno.serve(async (req) => {
             id: ac.agent_id,
             predatorRank: cfg.predatorRank || 1,
             preyRank: cfg.preyRank || 8,
-            requireG3: true,
+            requireG3: cfg.requireG3 ?? true,
             slType: 'fixed_custom' as const,
             entryType: 'order_block' as const,
             weight: cfg.weight || 1 / atlasConfigs.length,
@@ -483,6 +483,15 @@ Deno.serve(async (req) => {
           const gate2 = gateDir === 'long' ? currentPrice > snap.highest : currentPrice < snap.lowest;
 
           if (!gate2) {
+            // Record counterfactual for gate-skipped trades
+            await sb.from('oanda_orders').insert({
+              user_id: userId, signal_id: `cf-${comp.id}-${instrument}-${Date.now()}`,
+              currency_pair: instrument, direction, units: comp.fixedUnits || 500,
+              agent_id: comp.agentId || 'decorrelated-blend', environment: ENVIRONMENT,
+              status: 'skipped', error_message: `G2 Atlas Snap fail`,
+              counterfactual_entry_price: currentPrice,
+              gate_result: 'G2_FAIL', gate_reasons: [`G2 fail: close=${currentPrice.toFixed(prec)} hi=${snap.highest.toFixed(prec)} lo=${snap.lowest.toFixed(prec)}`],
+            }).select('id').single();
             executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction, status: 'skipped', skipReason: `G2 Atlas Snap fail (close=${currentPrice.toFixed(prec)} hi=${snap.highest.toFixed(prec)} lo=${snap.lowest.toFixed(prec)})` });
             continue;
           }
@@ -493,6 +502,14 @@ Deno.serve(async (req) => {
             const slope = lrSlope(closes);
             const gate3 = gateDir === 'long' ? slope > 0 : slope < 0;
             if (!gate3) {
+              await sb.from('oanda_orders').insert({
+                user_id: userId, signal_id: `cf-${comp.id}-${instrument}-${Date.now()}`,
+                currency_pair: instrument, direction, units: comp.fixedUnits || 500,
+                agent_id: comp.agentId || 'decorrelated-blend', environment: ENVIRONMENT,
+                status: 'skipped', error_message: `G3 David Vector fail (slope=${slope.toExponential(3)})`,
+                counterfactual_entry_price: currentPrice,
+                gate_result: 'G3_FAIL', gate_reasons: [`G3 fail: slope=${slope.toExponential(3)}`],
+              }).select('id').single();
               executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction, status: 'skipped', skipReason: `G3 David Vector fail (slope=${slope.toExponential(3)})` });
               continue;
             }
@@ -502,7 +519,9 @@ Deno.serve(async (req) => {
         }
 
         // Entry Trigger (checked for both momentum and counter-leg)
-        trigger = checkEntryTrigger(comp, candles, direction);
+        // Counter-leg evaluates trigger in MOMENTUM direction (fading the breakout structure)
+        const triggerDir = isCounterLeg ? gateDir : direction;
+        trigger = checkEntryTrigger(comp, candles, triggerDir);
         if (!trigger.pass) {
           executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction, status: 'skipped', skipReason: `Entry trigger fail: ${trigger.detail}` });
           continue;
@@ -584,7 +603,7 @@ Deno.serve(async (req) => {
         if (!oandaRes.ok) {
           const errMsg = oandaData.errorMessage || oandaData.rejectReason || `OANDA ${oandaRes.status}`;
           console.error(`[BLEND] OANDA rejected ${instrument}: ${errMsg}`);
-          await sb.from('oanda_orders').update({ status: 'rejected', error_message: errMsg }).eq('id', dbOrder.id);
+          await sb.from('oanda_orders').update({ status: 'rejected', error_message: errMsg, counterfactual_entry_price: currentPrice }).eq('id', dbOrder.id);
           executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction, status: 'rejected', error: errMsg });
           continue;
         }
