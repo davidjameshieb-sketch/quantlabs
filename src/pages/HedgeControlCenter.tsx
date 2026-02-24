@@ -318,30 +318,82 @@ const HedgeControlCenter = () => {
   const runProfileDiscovery = useCallback(async () => {
     setDiscovering(true);
     try {
-      const res = await fetch(
-        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/profile-live-backtest`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
-            Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
-          },
-          body: JSON.stringify({
-            candles: 15000,
-            environment: 'live',
-            predatorRanks: [1, 2, 3],
-            topN: 15,
-          }),
-        }
+      // Parallelize: split by predator rank (R1, R2, R3) to avoid CPU limits
+      const ranks = [1, 2, 3];
+      const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/profile-live-backtest`;
+      const headers = {
+        'Content-Type': 'application/json',
+        apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
+        Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+      };
+
+      toast.info(`Launching 3 parallel discovery workers (R1, R2, R3)...`);
+
+      const results = await Promise.allSettled(
+        ranks.map(rank =>
+          fetch(url, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({
+              candles: 15000,
+              environment: 'live',
+              predatorRanks: [rank],
+              topN: 10,
+            }),
+          }).then(r => r.json())
+        )
       );
-      const data = await res.json();
-      if (data.success) {
-        setDiscoveryResults(data);
-        const top = data.topResults?.[0];
-        toast.success(`Profile Discovery: ${data.totalCombos} combos tested, ${data.profitableCombos} profitable. Top: #${top?.predator}v#${top?.prey} PF=${top?.institutionalPF}`);
+
+      // Merge results from all 3 workers
+      let totalCombos = 0, profitableCombos = 0, rejectedCombos = 0;
+      let allTopResults: any[] = [];
+      let pairsLoaded = 0, totalSnapshots = 0, candlesPerPair = 0;
+      let dateRange: any = null;
+      let version = '';
+      let errors: string[] = [];
+
+      results.forEach((r, i) => {
+        if (r.status === 'fulfilled' && r.value.success) {
+          const d = r.value;
+          totalCombos += d.totalCombos || 0;
+          profitableCombos += d.profitableCombos || 0;
+          rejectedCombos += d.rejectedCombos || 0;
+          pairsLoaded = Math.max(pairsLoaded, d.pairsLoaded || 0);
+          totalSnapshots = Math.max(totalSnapshots, d.totalSnapshots || 0);
+          candlesPerPair = Math.max(candlesPerPair, d.candlesPerPair || 0);
+          if (d.dateRange) dateRange = d.dateRange;
+          if (d.version) version = d.version;
+          if (d.topResults) allTopResults.push(...d.topResults);
+        } else {
+          const errMsg = r.status === 'rejected' ? r.reason?.message : r.value?.error;
+          errors.push(`R${ranks[i]}: ${errMsg || 'Unknown error'}`);
+        }
+      });
+
+      // Sort merged results by institutional PF descending
+      allTopResults.sort((a, b) => (b.institutionalPF || 0) - (a.institutionalPF || 0));
+
+      if (allTopResults.length > 0) {
+        const merged = {
+          success: true,
+          totalCombos,
+          profitableCombos,
+          rejectedCombos,
+          pairsLoaded,
+          totalSnapshots,
+          candlesPerPair,
+          dateRange,
+          version,
+          topResults: allTopResults.slice(0, 15),
+        };
+        setDiscoveryResults(merged);
+        const top = allTopResults[0];
+        toast.success(`Profile Discovery: ${totalCombos} combos tested, ${profitableCombos} profitable. Top: #${top?.predator}v#${top?.prey} PF=${top?.institutionalPF}`);
+        if (errors.length > 0) {
+          toast.warning(`${errors.length} worker(s) failed: ${errors.join('; ')}`);
+        }
       } else {
-        toast.error(`Discovery failed: ${data.error}`);
+        toast.error(`All discovery workers failed: ${errors.join('; ')}`);
       }
     } catch (err) {
       toast.error(`Discovery error: ${(err as Error).message}`);
