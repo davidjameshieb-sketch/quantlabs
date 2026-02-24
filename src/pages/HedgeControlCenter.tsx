@@ -631,44 +631,106 @@ const HedgeControlCenter = () => {
                 {isActive ? 'Waiting for blend executor cycle to place trades' : 'Activate the portfolio to start trading'}
               </p>
             </div>
-          ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-              {activeTrades.map(t => {
-                const isLong = t.direction === 'long';
-                const isJPY = t.currency_pair?.includes('JPY');
-                const dp = isJPY ? 3 : 5;
-                const age = Math.round((Date.now() - new Date(t.created_at).getTime()) / 60000);
-                const isMom = t.agent_id?.startsWith('atlas-hedge-m');
-                const color = isMom ? '#39ff14' : '#ff8800';
-                return (
-                  <div key={t.id} className="flex flex-col gap-2 p-3.5 rounded-xl border" style={{ borderColor: `${color}30`, background: `${color}08` }}>
-                    <div className="flex items-center justify-between">
-                      <span className="font-bold font-mono text-sm" style={{ color }}>
-                        {t.currency_pair?.replace('_', '/')} {t.direction?.toUpperCase()}
-                      </span>
-                      <span className="text-[7px] font-mono px-1.5 py-0.5 rounded" style={{ color, background: `${color}15`, border: `1px solid ${color}30` }}>
-                        {isMom ? 'MOM' : 'CTR'}
-                      </span>
+          ) : (() => {
+            const momTrades = activeTrades.filter(t => t.agent_id?.startsWith('atlas-hedge-m'));
+            const ctrTrades = activeTrades.filter(t => t.agent_id?.startsWith('atlas-hedge-c'));
+            // Identify pair collisions: pairs where both MOM and CTR want to trade
+            const momPairs = new Set(momTrades.map(t => t.currency_pair));
+            const ctrPairs = new Set(ctrTrades.map(t => t.currency_pair));
+
+            const renderTradeCard = (t: any) => {
+              const isMom = t.agent_id?.startsWith('atlas-hedge-m');
+              const isJPY = t.currency_pair?.includes('JPY');
+              const dp = isJPY ? 3 : 5;
+              const age = Math.round((Date.now() - new Date(t.created_at).getTime()) / 60000);
+              const color = isMom ? '#39ff14' : '#ff8800';
+              const base = t.currency_pair?.split('_')[0] || '';
+              const quote = t.currency_pair?.split('_')[1] || '';
+              return (
+                <div key={t.id} className="flex flex-col gap-2 p-3.5 rounded-xl border" style={{ borderColor: `${color}30`, background: `${color}08` }}>
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold font-mono text-sm" style={{ color }}>
+                      {FLAGS[base] || ''}{FLAGS[quote] || ''} {t.currency_pair?.replace('_', '/')} {t.direction?.toUpperCase()}
+                    </span>
+                    <span className="text-[7px] font-mono px-1.5 py-0.5 rounded" style={{ color, background: `${color}15`, border: `1px solid ${color}30` }}>
+                      {isMom ? '⚡ TREND' : '🔄 REVERSION'}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-4 gap-2 text-[9px]">
+                    <div>
+                      <div className="text-slate-500 mb-0.5 uppercase tracking-wider text-[7px]">Units</div>
+                      <div className="font-bold text-white font-mono">{Math.abs(t.units).toLocaleString()}u</div>
                     </div>
-                    <div className="grid grid-cols-3 gap-2 text-[9px]">
-                      <div>
-                        <div className="text-slate-500 mb-0.5 uppercase tracking-wider text-[7px]">Units</div>
-                        <div className="font-bold text-white font-mono">{Math.abs(t.units).toLocaleString()}u</div>
-                      </div>
-                      <div>
-                        <div className="text-yellow-500/70 mb-0.5 uppercase tracking-wider text-[7px]">Entry</div>
-                        <div className="font-bold text-yellow-400 font-mono">{t.entry_price ? t.entry_price.toFixed(dp) : '—'}</div>
-                      </div>
-                      <div>
-                        <div className="text-slate-500 mb-0.5 uppercase tracking-wider text-[7px]">Agent</div>
-                        <div className="font-bold text-slate-300 font-mono text-[8px]">{t.agent_id?.replace('atlas-hedge-', '')}</div>
-                      </div>
+                    <div>
+                      <div className="text-yellow-500/70 mb-0.5 uppercase tracking-wider text-[7px]">Entry</div>
+                      <div className="font-bold text-yellow-400 font-mono">{t.entry_price ? t.entry_price.toFixed(dp) : '—'}</div>
+                    </div>
+                    <div>
+                      <div className="text-slate-500 mb-0.5 uppercase tracking-wider text-[7px]">Age</div>
+                      <div className="font-bold text-slate-300 font-mono">{age < 60 ? `${age}m` : `${Math.round(age / 60)}h`}</div>
+                    </div>
+                    <div>
+                      <div className="text-slate-500 mb-0.5 uppercase tracking-wider text-[7px]">Agent</div>
+                      <div className="font-bold text-slate-300 font-mono text-[8px]">{t.agent_id?.replace('atlas-hedge-', '')}</div>
                     </div>
                   </div>
-                );
-              })}
-            </div>
-          )}
+                </div>
+              );
+            };
+
+            return (
+              <div className="space-y-5">
+                {/* Summary bar */}
+                <div className="flex items-center gap-3 text-[9px] font-mono">
+                  <span className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg" style={{ background: '#39ff1410', border: '1px solid #39ff1430', color: '#39ff14' }}>
+                    <TrendingUp className="w-3 h-3" /> {momTrades.length} Trending
+                  </span>
+                  <span className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg" style={{ background: '#ff880010', border: '1px solid #ff880030', color: '#ff8800' }}>
+                    <TrendingDown className="w-3 h-3" /> {ctrTrades.length} Mean Reversion
+                  </span>
+                  <span className="text-slate-500 ml-auto text-[8px]">
+                    Diversification guard prevents same-pair overlap
+                  </span>
+                </div>
+
+                {/* Momentum trades */}
+                {momTrades.length > 0 && (
+                  <div>
+                    <div className="flex items-center gap-2 mb-2">
+                      <TrendingUp className="w-3.5 h-3.5 text-[#39ff14]" />
+                      <span className="text-[9px] font-bold uppercase tracking-widest text-[#39ff14]">
+                        Trending / Momentum
+                      </span>
+                      <span className="text-[7px] text-slate-500 font-mono">
+                        Riding rank divergence — long strong, short weak
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                      {momTrades.map(renderTradeCard)}
+                    </div>
+                  </div>
+                )}
+
+                {/* Counter-leg trades */}
+                {ctrTrades.length > 0 && (
+                  <div>
+                    <div className="flex items-center gap-2 mb-2">
+                      <TrendingDown className="w-3.5 h-3.5 text-[#ff8800]" />
+                      <span className="text-[9px] font-bold uppercase tracking-widest text-[#ff8800]">
+                        Mean Reversion / Counter-Leg
+                      </span>
+                      <span className="text-[7px] text-slate-500 font-mono">
+                        Fading rank divergence — short strong, long weak
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                      {ctrTrades.map(renderTradeCard)}
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
         </div>
 
         {/* ── Row 6: Circuit Breakers ── */}
