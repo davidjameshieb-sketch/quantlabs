@@ -43,6 +43,8 @@ interface BlendComponent {
   tpRatio?: number;
   invertDirection?: boolean;
   agentId?: string;
+  fixedUnits?: number;
+  skipGates?: boolean;
 }
 
 // Hardcoded fallback (original 5-component blend)
@@ -285,6 +287,8 @@ Deno.serve(async (req) => {
             tpRatio: cfg.tpRatio || 2.0,
             invertDirection: cfg.invertDirection ?? false,
             agentId: ac.agent_id,
+            fixedUnits: cfg.fixedUnits || undefined,
+            skipGates: cfg.skipGates ?? false,
           };
         });
         maxPositions = Math.max(activeComponents.length, 20);
@@ -462,31 +466,34 @@ Deno.serve(async (req) => {
       // Counter-leg then fades the breakout by taking the opposite trade
       const gateDir = momentumDirection;
 
-      // Gate 2: Atlas Snap
-      const snap = computeAtlasSnap(candles, 20);
-      const gate2 = gateDir === 'long' ? currentPrice > snap.highest : currentPrice < snap.lowest;
+      // Skip gates entirely if config says skipGates: true
+      if (!comp.skipGates) {
+        // Gate 2: Atlas Snap
+        const snap = computeAtlasSnap(candles, 20);
+        const gate2 = gateDir === 'long' ? currentPrice > snap.highest : currentPrice < snap.lowest;
 
-      if (!gate2) {
-        executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction, status: 'skipped', skipReason: `G2 Atlas Snap fail (close=${currentPrice.toFixed(prec)} hi=${snap.highest.toFixed(prec)} lo=${snap.lowest.toFixed(prec)})` });
-        continue;
-      }
-
-      // Gate 3: David Vector (if required)
-      if (comp.requireG3) {
-        const closes = candles.slice(-20).map(c => c.close);
-        const slope = lrSlope(closes);
-        const gate3 = gateDir === 'long' ? slope > 0 : slope < 0;
-        if (!gate3) {
-          executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction, status: 'skipped', skipReason: `G3 David Vector fail (slope=${slope.toExponential(3)})` });
+        if (!gate2) {
+          executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction, status: 'skipped', skipReason: `G2 Atlas Snap fail (close=${currentPrice.toFixed(prec)} hi=${snap.highest.toFixed(prec)} lo=${snap.lowest.toFixed(prec)})` });
           continue;
         }
-      }
 
-      // Entry Trigger
-      const trigger = checkEntryTrigger(comp, candles, direction);
-      if (!trigger.pass) {
-        executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction, status: 'skipped', skipReason: `Entry trigger fail: ${trigger.detail}` });
-        continue;
+        // Gate 3: David Vector (if required)
+        if (comp.requireG3) {
+          const closes = candles.slice(-20).map(c => c.close);
+          const slope = lrSlope(closes);
+          const gate3 = gateDir === 'long' ? slope > 0 : slope < 0;
+          if (!gate3) {
+            executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction, status: 'skipped', skipReason: `G3 David Vector fail (slope=${slope.toExponential(3)})` });
+            continue;
+          }
+        }
+
+        // Entry Trigger
+        const trigger = checkEntryTrigger(comp, candles, direction);
+        if (!trigger.pass) {
+          executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction, status: 'skipped', skipReason: `Entry trigger fail: ${trigger.detail}` });
+          continue;
+        }
       }
 
       // Compute SL/TP
@@ -495,11 +502,14 @@ Deno.serve(async (req) => {
       const slPrice = direction === 'long' ? currentPrice - slDistance : currentPrice + slDistance;
       const tpPrice = direction === 'long' ? currentPrice + slDistance * compTpRatio : currentPrice - slDistance * compTpRatio;
 
-      // Dynamic 5% equity risk position sizing
-      // Risk amount = equity * 5% * component weight
-      // Units = riskAmount / (SL_distance_in_price)
-      const riskAmount = accountEquity * RISK_FRACTION * comp.weight;
-      const units = Math.max(1, Math.round(riskAmount / slDistance));
+      // Position sizing: use fixedUnits if configured, otherwise dynamic 5% equity risk
+      let units: number;
+      if (comp.fixedUnits && comp.fixedUnits > 0) {
+        units = comp.fixedUnits;
+      } else {
+        const riskAmount = accountEquity * RISK_FRACTION * comp.weight;
+        units = Math.max(1, Math.round(riskAmount / slDistance));
+      }
       const signedUnits = direction === 'short' ? -units : units;
 
       const gateLabel = comp.requireG3 ? 'G1+G2+G3' : 'G1+G2';

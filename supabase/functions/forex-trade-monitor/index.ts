@@ -245,9 +245,9 @@ async function updateTradeOrders(
 
 // ─── OANDA API Helper ───
 
-async function oandaRequest(path: string, method: string, body?: Record<string, unknown>, environment = "live"): Promise<Record<string, unknown>> {
-  const env = Deno.env.get("OANDA_ENV") || "live";
-  const effectiveEnv = environment === "practice" ? env : environment; // always route through OANDA_ENV
+async function oandaRequest(path: string, method: string, body?: Record<string, unknown>, environment = "practice"): Promise<Record<string, unknown>> {
+  // Use the environment parameter directly — "practice" should always route to practice API
+  const effectiveEnv = environment;
   const apiToken = effectiveEnv === "live"
     ? (Deno.env.get("OANDA_LIVE_API_TOKEN") || Deno.env.get("OANDA_API_TOKEN"))
     : Deno.env.get("OANDA_API_TOKEN");
@@ -256,7 +256,7 @@ async function oandaRequest(path: string, method: string, body?: Record<string, 
     : Deno.env.get("OANDA_ACCOUNT_ID");
   if (!apiToken || !accountId) throw new Error("OANDA credentials not configured");
 
-  const host = OANDA_HOSTS[effectiveEnv] || OANDA_HOSTS.live;
+  const host = OANDA_HOSTS[effectiveEnv] || OANDA_HOSTS.practice;
   const url = `${host}${path.replace("{accountId}", accountId)}`;
   
   const headers: Record<string, string> = {
@@ -719,7 +719,7 @@ Deno.serve(async (req) => {
       try {
         const instruments = [...instrumentsNeeded].join(",");
         const priceRes = await oandaRequest(
-          `/v3/accounts/{accountId}/pricing?instruments=${instruments}`, "GET", undefined, "live"
+          `/v3/accounts/{accountId}/pricing?instruments=${instruments}`, "GET", undefined, "practice"
         ) as { prices?: Array<{ instrument: string; asks?: Array<{ price: string }>; bids?: Array<{ price: string }> }> };
         for (const p of (priceRes.prices || [])) {
           const ask = parseFloat(p.asks?.[0]?.price || "0");
