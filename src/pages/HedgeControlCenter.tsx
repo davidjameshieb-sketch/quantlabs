@@ -14,6 +14,7 @@ import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
 import HedgeDiscoveryPanel from '@/components/matrix/HedgeDiscoveryPanel';
 import AtlasHedgeLiveFeed from '@/components/matrix/AtlasHedgeLiveFeed';
+import AtlasNeuralNet from '@/components/matrix/AtlasNeuralNet';
 
 const FLAGS: Record<string, string> = {
   USD: '🇺🇸', EUR: '🇪🇺', GBP: '🇬🇧', JPY: '🇯🇵',
@@ -759,7 +760,10 @@ const HedgeControlCenter = () => {
           })()}
         </div>
 
-        {/* ── Row 6: Atlas Hedge Live Feed ── */}
+        {/* ── Row 6: Neural Strategy Web ── */}
+        <AtlasNeuralNet />
+
+        {/* ── Row 7: Atlas Hedge Live Feed ── */}
         <AtlasHedgeLiveFeed />
 
         {/* ── Row 7: Circuit Breakers ── */}
