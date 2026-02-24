@@ -110,6 +110,8 @@ const HedgeControlCenter = () => {
   const [executing, setExecuting] = useState(false);
   const [backtestResult, setBacktestResult] = useState<any>(null);
   const [backtesting, setBacktesting] = useState(false);
+  const [discoveryResults, setDiscoveryResults] = useState<any>(null);
+  const [discovering, setDiscovering] = useState(false);
 
   const fetchAll = useCallback(async () => {
     setLoading(true);
@@ -310,6 +312,41 @@ const HedgeControlCenter = () => {
       toast.error(`Backtest error: ${(err as Error).message}`);
     } finally {
       setBacktesting(false);
+    }
+  }, []);
+
+  const runProfileDiscovery = useCallback(async () => {
+    setDiscovering(true);
+    try {
+      const res = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/profile-live-backtest`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
+            Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+          },
+          body: JSON.stringify({
+            candles: 5000,
+            environment: 'practice',
+            predatorRanks: [1, 2, 3],
+            topN: 15,
+          }),
+        }
+      );
+      const data = await res.json();
+      if (data.success) {
+        setDiscoveryResults(data);
+        const top = data.topResults?.[0];
+        toast.success(`Profile Discovery: ${data.totalCombos} combos tested, ${data.profitableCombos} profitable. Top: #${top?.predator}v#${top?.prey} PF=${top?.institutionalPF}`);
+      } else {
+        toast.error(`Discovery failed: ${data.error}`);
+      }
+    } catch (err) {
+      toast.error(`Discovery error: ${(err as Error).message}`);
+    } finally {
+      setDiscovering(false);
     }
   }, []);
 
@@ -755,55 +792,127 @@ const HedgeControlCenter = () => {
           </div>
         </div>
 
-        {/* ── Row 3.5: Backtest Validation ── */}
-        <div className="bg-slate-900/80 backdrop-blur-md border border-cyan-500/20 rounded-2xl p-6 shadow-2xl">
-          <div className="flex items-center justify-between border-b border-cyan-500/20 pb-3 mb-4">
+        {/* ── Row 3.5: Backtest Validation (Fixed 3-Leg — FAILED) ── */}
+        <div className="bg-slate-900/80 backdrop-blur-md border border-[#ff0055]/20 rounded-2xl p-6 shadow-2xl">
+          <div className="flex items-center justify-between border-b border-[#ff0055]/20 pb-3 mb-4">
             <div className="flex items-center gap-2">
-              <Brain className="w-4 h-4 text-[#00ffea]" />
-              <h2 className="text-[11px] font-bold tracking-widest text-[#00ffea]/80 uppercase">Backtest Validation</h2>
-              <span className="text-[8px] font-mono text-slate-500">· 70/30 OOS Split · 1.5 pip friction · Real OANDA candles</span>
+              <Skull className="w-4 h-4 text-[#ff0055]" />
+              <h2 className="text-[11px] font-bold tracking-widest text-[#ff0055]/80 uppercase">Fixed 3-Leg Backtest</h2>
+              <span className="text-[8px] font-mono text-[#ff0055]/50">· FAILED VALIDATION · F GRADE</span>
             </div>
             <button
               onClick={runBacktest}
               disabled={backtesting}
-              className="flex items-center gap-1.5 text-[9px] font-mono px-4 py-2 rounded-lg border border-[#00ffea]/40 text-[#00ffea] hover:bg-[#00ffea]/10 transition-all disabled:opacity-50"
+              className="flex items-center gap-1.5 text-[9px] font-mono px-4 py-2 rounded-lg border border-slate-700 text-slate-500 hover:bg-slate-800/50 transition-all disabled:opacity-50"
             >
               {backtesting ? <Loader2 className="w-3 h-3 animate-spin" /> : <BarChart3 className="w-3 h-3" />}
-              {backtesting ? 'RUNNING BACKTEST...' : 'RUN BACKTEST'}
+              {backtesting ? 'RUNNING...' : 'RE-RUN'}
             </button>
           </div>
 
           {backtesting && (
-            <div className="py-12 text-center space-y-3">
-              <Loader2 className="w-8 h-8 animate-spin mx-auto text-[#00ffea]" />
-              <p className="text-[10px] text-slate-400 font-mono">Fetching 28 pairs × 5,000 candles...</p>
-              <p className="text-[8px] text-slate-500 font-mono">Computing rolling currency rankings at every bar</p>
+            <div className="py-8 text-center space-y-2">
+              <Loader2 className="w-6 h-6 animate-spin mx-auto text-slate-500" />
+              <p className="text-[9px] text-slate-500 font-mono">Running fixed 3-leg backtest...</p>
             </div>
           )}
 
           {!backtesting && !backtestResult && (
-            <div className="py-8 text-center space-y-2">
-              <Brain className="w-10 h-10 mx-auto text-slate-600" />
-              <p className="text-[10px] text-slate-500 font-mono">Run the backtest to validate the hedge strategy</p>
-              <p className="text-[8px] text-slate-600 font-mono">
-                Simulates rank-divergence hedging across 5,000 M30 candles with G2+G3 gates and ATR-based stops
-              </p>
+            <div className="py-6 text-center space-y-2">
+              <Skull className="w-8 h-8 mx-auto text-slate-700" />
+              <p className="text-[9px] text-slate-500 font-mono">The fixed #1v#8 + #2v#7 + #3v#6 hedge was tested and <span className="text-[#ff0055] font-bold">failed OOS validation</span>.</p>
+              <p className="text-[8px] text-slate-600 font-mono">Use Profile Discovery below to find which rank combos actually have edge.</p>
             </div>
           )}
 
           {backtestResult && (
-            <div className="space-y-5">
-              {/* Core metrics row */}
-              <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3">
+            <div className="space-y-4">
+              {/* Verdict banner */}
+              <div className="bg-[#ff0055]/8 border border-[#ff0055]/20 rounded-xl p-4 flex items-center gap-3">
+                <XCircle className="w-6 h-6 text-[#ff0055] shrink-0" />
+                <div>
+                  <div className="text-[10px] font-bold font-mono text-[#ff0055]">GRADE F — STRATEGY REJECTED</div>
+                  <p className="text-[8px] text-slate-400 font-mono mt-0.5">
+                    PF {backtestResult.profitFactor} (need ≥1.5) · WR {backtestResult.winRate}% · Expectancy {backtestResult.expectancyR}R ·
+                    OOS {backtestResult.oos?.oosPF >= 1.2 ? 'Validated' : 'DEGRADED'} ·
+                    Aggressive DD {backtestResult.equity5pct?.maxDD}% {backtestResult.equity5pct?.maxDD > 20 ? '(FATAL)' : ''}
+                  </p>
+                </div>
+              </div>
+
+              {/* Compact metrics */}
+              <div className="grid grid-cols-4 md:grid-cols-8 gap-2">
                 {[
-                  { label: 'Trades', value: backtestResult.totalTrades, color: '#ffffff' },
-                  { label: 'Win Rate', value: `${backtestResult.winRate}%`, color: backtestResult.winRate >= 50 ? '#39ff14' : '#ff8800' },
+                  { label: 'Trades', value: backtestResult.totalTrades, color: '#888' },
+                  { label: 'Win Rate', value: `${backtestResult.winRate}%`, color: '#ff8800' },
                   { label: 'Net Pips', value: `${backtestResult.totalPips > 0 ? '+' : ''}${backtestResult.totalPips}`, color: backtestResult.totalPips > 0 ? '#39ff14' : '#ff0055' },
-                  { label: 'Profit Factor', value: backtestResult.profitFactor, color: backtestResult.profitFactor >= 1.5 ? '#39ff14' : backtestResult.profitFactor >= 1.0 ? '#ff8800' : '#ff0055' },
-                  { label: 'R:R Ratio', value: `${backtestResult.rRatio}R`, color: backtestResult.rRatio >= 1.5 ? '#39ff14' : '#ff8800' },
-                  { label: 'Expectancy', value: `${backtestResult.expectancyR}R`, color: backtestResult.expectancyR > 0 ? '#39ff14' : '#ff0055' },
-                  { label: 'Avg Pips', value: backtestResult.avgPipsPerTrade, color: backtestResult.avgPipsPerTrade > 0 ? '#39ff14' : '#ff0055' },
-                  { label: 'Gross P/L', value: `${backtestResult.grossProfit} / ${backtestResult.grossLoss}`, color: '#ffffff' },
+                  { label: 'PF', value: backtestResult.profitFactor, color: '#ff0055' },
+                  { label: '1% Return', value: `${backtestResult.equity1pct?.returnPct}%`, color: backtestResult.equity1pct?.returnPct >= 0 ? '#39ff14' : '#ff0055' },
+                  { label: '5% Return', value: `${backtestResult.equity5pct?.returnPct}%`, color: backtestResult.equity5pct?.returnPct >= 0 ? '#39ff14' : '#ff0055' },
+                  { label: '1% DD', value: `${backtestResult.equity1pct?.maxDD}%`, color: backtestResult.equity1pct?.maxDD <= 20 ? '#39ff14' : '#ff0055' },
+                  { label: 'OOS PF', value: backtestResult.oos?.oosPF, color: backtestResult.oos?.oosPF >= 1.2 ? '#39ff14' : '#ff0055' },
+                ].map((m, i) => (
+                  <div key={i} className="bg-slate-950/60 border border-slate-800/40 rounded-lg p-2 text-center">
+                    <div className="text-[6px] text-slate-600 uppercase tracking-wider">{m.label}</div>
+                    <div className="text-[10px] font-bold font-mono" style={{ color: m.color }}>{m.value}</div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="text-[7px] text-slate-600 font-mono text-center">
+                {backtestResult.dateRange?.start?.slice(0, 10)} → {backtestResult.dateRange?.end?.slice(0, 10)} · {backtestResult.pairsLoaded} pairs · {backtestResult.totalBars?.toLocaleString()} bars
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* ── Row 3.6: Profile Discovery — Find Optimal Parameters ── */}
+        <div className="bg-slate-900/80 backdrop-blur-md border border-[#39ff14]/20 rounded-2xl p-6 shadow-2xl">
+          <div className="flex items-center justify-between border-b border-[#39ff14]/20 pb-3 mb-4">
+            <div className="flex items-center gap-2">
+              <Crown className="w-4 h-4 text-[#39ff14]" />
+              <h2 className="text-[11px] font-bold tracking-widest text-[#39ff14]/80 uppercase">Profile Discovery</h2>
+              <span className="text-[8px] font-mono text-slate-500">· Sovereign-Alpha v6.0 · Triple-Lock · 20% DD Filter</span>
+            </div>
+            <button
+              onClick={runProfileDiscovery}
+              disabled={discovering}
+              className="flex items-center gap-1.5 text-[9px] font-mono px-4 py-2 rounded-lg border border-[#39ff14]/40 text-[#39ff14] hover:bg-[#39ff14]/10 transition-all disabled:opacity-50"
+            >
+              {discovering ? <Loader2 className="w-3 h-3 animate-spin" /> : <Brain className="w-3 h-3" />}
+              {discovering ? 'DISCOVERING...' : 'FIND OPTIMAL HEDGE'}
+            </button>
+          </div>
+
+          {discovering && (
+            <div className="py-12 text-center space-y-3">
+              <Loader2 className="w-8 h-8 animate-spin mx-auto text-[#39ff14]" />
+              <p className="text-[10px] text-slate-400 font-mono">Testing all rank combos × sessions × SL/TP × gate configs...</p>
+              <p className="text-[8px] text-slate-500 font-mono">Sovereign-Alpha v6.0: Triple-Lock G1+G2+G3 · 20% Fatal DD Filter · 1.5-pip friction</p>
+            </div>
+          )}
+
+          {!discovering && !discoveryResults && (
+            <div className="py-8 text-center space-y-2">
+              <Crown className="w-10 h-10 mx-auto text-slate-600" />
+              <p className="text-[10px] text-slate-500 font-mono">Let the Profile Discovery Engine find which rank combos actually have edge</p>
+              <p className="text-[8px] text-slate-600 font-mono">
+                Tests all #1v#6..#8, #2v#6..#8, #3v#6..#8 combinations across sessions, SL/TP ratios, and gate configurations.
+                <br />Only profiles surviving the 20% max DD filter with Triple-Lock gate alignment are shown.
+              </p>
+            </div>
+          )}
+
+          {discoveryResults && (
+            <div className="space-y-5">
+              {/* Discovery summary */}
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                {[
+                  { label: 'Combos Tested', value: discoveryResults.totalCombos?.toLocaleString(), color: '#ffffff' },
+                  { label: 'Profitable', value: discoveryResults.profitableCombos?.toLocaleString(), color: '#39ff14' },
+                  { label: 'Rejected (20% DD)', value: discoveryResults.rejectedCombos?.toLocaleString(), color: '#ff0055' },
+                  { label: 'Pairs Loaded', value: discoveryResults.pairsLoaded, color: '#00ffea' },
+                  { label: 'Rank Snapshots', value: discoveryResults.totalSnapshots?.toLocaleString(), color: '#ffffff' },
                 ].map((m, i) => (
                   <div key={i} className="bg-slate-950/60 border border-slate-800/40 rounded-lg p-3 text-center">
                     <div className="text-[7px] text-slate-500 uppercase tracking-wider mb-1">{m.label}</div>
@@ -812,109 +921,104 @@ const HedgeControlCenter = () => {
                 ))}
               </div>
 
-              {/* Equity models + OOS side by side */}
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-                {/* 1% Risk Model */}
-                <div className="bg-slate-950/60 border border-slate-800/40 rounded-xl p-4">
-                  <div className="text-[8px] text-slate-500 uppercase tracking-wider mb-2 flex items-center gap-1.5">
-                    <Lock className="w-3 h-3" /> Institutional (1% Risk)
-                  </div>
-                  <div className="text-2xl font-black font-mono" style={{ color: backtestResult.equity1pct.returnPct >= 0 ? '#39ff14' : '#ff0055' }}>
-                    {backtestResult.equity1pct.returnPct >= 0 ? '+' : ''}{backtestResult.equity1pct.returnPct}%
-                  </div>
-                  <div className="text-[9px] text-slate-400 font-mono">${backtestResult.equity1pct.final.toLocaleString()}</div>
-                  <div className="text-[8px] font-mono mt-1" style={{ color: backtestResult.equity1pct.maxDD <= 20 ? '#39ff14' : '#ff0055' }}>
-                    Max DD: {backtestResult.equity1pct.maxDD}% {backtestResult.equity1pct.maxDD <= 20 ? '✓' : '✗ FATAL'}
-                  </div>
-                  {backtestResult.equityCurve1pct?.length > 2 && (
-                    <div className="mt-2">
-                      <MiniCurve data={backtestResult.equityCurve1pct} height={60} color={backtestResult.equity1pct.returnPct >= 0 ? '#39ff14' : '#ff0055'} />
-                    </div>
-                  )}
-                </div>
-
-                {/* 5% Risk Model */}
-                <div className="bg-slate-950/60 border border-yellow-500/20 rounded-xl p-4">
-                  <div className="text-[8px] text-yellow-500/60 uppercase tracking-wider mb-2 flex items-center gap-1.5">
-                    <Zap className="w-3 h-3 text-yellow-400" /> Aggressive (5% Risk)
-                  </div>
-                  <div className="text-2xl font-black font-mono" style={{ color: backtestResult.equity5pct.returnPct >= 0 ? '#39ff14' : '#ff0055' }}>
-                    {backtestResult.equity5pct.returnPct >= 0 ? '+' : ''}{backtestResult.equity5pct.returnPct}%
-                  </div>
-                  <div className="text-[9px] text-slate-400 font-mono">${backtestResult.equity5pct.final.toLocaleString()}</div>
-                  <div className="text-[8px] font-mono mt-1" style={{ color: backtestResult.equity5pct.maxDD <= 30 ? '#ff8800' : '#ff0055' }}>
-                    Max DD: {backtestResult.equity5pct.maxDD}%
-                  </div>
-                  {backtestResult.equityCurve5pct?.length > 2 && (
-                    <div className="mt-2">
-                      <MiniCurve data={backtestResult.equityCurve5pct} height={60} color="#ff8800" />
-                    </div>
-                  )}
-                </div>
-
-                {/* OOS Validation */}
-                <div className="bg-slate-950/60 border border-cyan-500/20 rounded-xl p-4">
-                  <div className="text-[8px] text-[#00ffea]/60 uppercase tracking-wider mb-2 flex items-center gap-1.5">
-                    <ShieldCheck className="w-3 h-3 text-[#00ffea]" /> Out-of-Sample Validation
-                  </div>
-                  <div className="space-y-2">
-                    {[
-                      { label: 'IS Win Rate', is: `${backtestResult.oos.isWinRate}%`, oos: `${backtestResult.oos.oosWinRate}%`, oosVal: backtestResult.oos.oosWinRate },
-                      { label: 'IS Pips', is: `${backtestResult.oos.isPips}`, oos: `${backtestResult.oos.oosPips}`, oosVal: backtestResult.oos.oosPips },
-                      { label: 'IS PF', is: `${backtestResult.oos.isPF}`, oos: `${backtestResult.oos.oosPF}`, oosVal: backtestResult.oos.oosPF },
-                      { label: 'Trades', is: `${backtestResult.oos.isTrades}`, oos: `${backtestResult.oos.oosTrades}`, oosVal: backtestResult.oos.oosTrades },
-                    ].map((row, i) => (
-                      <div key={i} className="flex items-center justify-between text-[9px] font-mono">
-                        <span className="text-slate-500 w-20">{row.label}</span>
-                        <span className="text-slate-300">{row.is}</span>
-                        <ArrowRight className="w-3 h-3 text-slate-600" />
-                        <span style={{ color: row.oosVal > 0 ? '#39ff14' : '#ff0055' }}>{row.oos}</span>
-                      </div>
-                    ))}
-                  </div>
-                  {backtestResult.oos.oosPF >= 1.2 ? (
-                    <div className="mt-3 flex items-center gap-1.5 text-[8px] font-mono text-[#39ff14]">
-                      <CheckCircle2 className="w-3 h-3" /> OOS VALIDATED
-                    </div>
-                  ) : (
-                    <div className="mt-3 flex items-center gap-1.5 text-[8px] font-mono text-[#ff0055]">
-                      <XCircle className="w-3 h-3" /> OOS DEGRADED — Review before trading
-                    </div>
-                  )}
+              {/* Top profiles table */}
+              <div className="space-y-2">
+                <div className="text-[8px] font-bold text-slate-400 uppercase tracking-widest">Top Profiles — Ranked by Institutional PF</div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-[9px] font-mono">
+                    <thead>
+                      <tr className="border-b border-slate-800">
+                        {['#', 'Rank', 'Session', 'SL/TP', 'Trades', 'WR%', 'PF', 'Pips', 'Inst. P/L', 'Agg. P/L', 'Inst. PF', 'Max DD'].map(h => (
+                          <th key={h} className="text-left text-[7px] text-slate-500 uppercase tracking-wider px-2 py-2">{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {discoveryResults.topResults?.slice(0, 10).map((r: any, i: number) => {
+                        const isGrade = r.institutionalPF >= 1.5 && r.maxDrawdown > -20 && r.trades >= 10;
+                        return (
+                          <tr key={i} className="border-b border-slate-800/30 hover:bg-slate-800/20">
+                            <td className="px-2 py-2 text-slate-500">{i + 1}</td>
+                            <td className="px-2 py-2">
+                              <span className="text-[#00ffea] font-bold">#{r.predator}</span>
+                              <span className="text-slate-600"> vs </span>
+                              <span className="text-[#ff0055] font-bold">#{r.prey}</span>
+                            </td>
+                            <td className="px-2 py-2 text-slate-400">{r.session}</td>
+                            <td className="px-2 py-2 text-slate-400">{r.slPips}p / {r.tpRatio === 'flip' ? 'Flip' : `${r.tpRatio}R`}</td>
+                            <td className="px-2 py-2 text-white">{r.trades}</td>
+                            <td className="px-2 py-2" style={{ color: r.winRate >= 50 ? '#39ff14' : '#ff8800' }}>{r.winRate}%</td>
+                            <td className="px-2 py-2" style={{ color: r.profitFactor >= 1.5 ? '#39ff14' : r.profitFactor >= 1 ? '#ff8800' : '#ff0055' }}>{r.profitFactor}</td>
+                            <td className="px-2 py-2" style={{ color: r.totalPips >= 0 ? '#39ff14' : '#ff0055' }}>
+                              {r.totalPips >= 0 ? '+' : ''}{r.totalPips}
+                            </td>
+                            <td className="px-2 py-2" style={{ color: r.institutionalProfit >= 0 ? '#39ff14' : '#ff0055' }}>
+                              ${r.institutionalProfit?.toFixed(0)}
+                            </td>
+                            <td className="px-2 py-2" style={{ color: r.aggressiveProfit >= 0 ? '#39ff14' : '#ff0055' }}>
+                              ${r.aggressiveProfit?.toFixed(0)}
+                            </td>
+                            <td className="px-2 py-2 font-bold" style={{ color: r.institutionalPF >= 1.5 ? '#39ff14' : r.institutionalPF >= 1 ? '#ff8800' : '#ff0055' }}>
+                              {r.institutionalPF}
+                            </td>
+                            <td className="px-2 py-2" style={{ color: r.maxDrawdown > -20 ? '#39ff14' : '#ff0055' }}>
+                              {r.maxDrawdown}%
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
                 </div>
               </div>
 
-              {/* Per-leg breakdown */}
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                {backtestResult.legs?.map((leg: any) => {
-                  const legLabel = leg.id === 'leg1' ? '#1 vs #8 · 50%' : leg.id === 'leg2' ? '#2 vs #7 · 30%' : '#3 vs #6 · 20%';
-                  const legColor = leg.id === 'leg1' ? '#00ffea' : leg.id === 'leg2' ? '#39ff14' : '#7fff00';
-                  return (
-                    <div key={leg.id} className="bg-slate-950/60 border rounded-xl p-4" style={{ borderColor: `${legColor}30` }}>
-                      <div className="text-[9px] font-bold font-mono mb-2" style={{ color: legColor }}>{legLabel}</div>
-                      <div className="grid grid-cols-3 gap-2 text-center">
-                        <div>
-                          <div className="text-[7px] text-slate-500 uppercase">Trades</div>
-                          <div className="text-sm font-bold font-mono text-white">{leg.trades}</div>
-                        </div>
-                        <div>
-                          <div className="text-[7px] text-slate-500 uppercase">Win Rate</div>
-                          <div className="text-sm font-bold font-mono" style={{ color: leg.winRate >= 50 ? '#39ff14' : '#ff8800' }}>{leg.winRate}%</div>
-                        </div>
-                        <div>
-                          <div className="text-[7px] text-slate-500 uppercase">Net Pips</div>
-                          <div className="text-sm font-bold font-mono" style={{ color: leg.totalPips >= 0 ? '#39ff14' : '#ff0055' }}>
-                            {leg.totalPips >= 0 ? '+' : ''}{leg.totalPips}
-                          </div>
+              {/* Top 3 equity curves */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                {discoveryResults.topResults?.slice(0, 3).map((r: any, i: number) => (
+                  <div key={i} className="bg-slate-950/60 border border-slate-800/40 rounded-xl p-4">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-[10px] font-bold font-mono">
+                        <span className="text-[#00ffea]">#{r.predator}</span>
+                        <span className="text-slate-600"> vs </span>
+                        <span className="text-[#ff0055]">#{r.prey}</span>
+                        <span className="text-slate-500"> · {r.session}</span>
+                      </span>
+                      <span className="text-[8px] font-mono font-bold" style={{ color: r.institutionalPF >= 1.5 ? '#39ff14' : '#ff8800' }}>
+                        PF {r.institutionalPF}
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-3 gap-1 mb-2">
+                      <div className="text-center">
+                        <div className="text-[6px] text-slate-600 uppercase">Trades</div>
+                        <div className="text-[10px] font-bold font-mono text-white">{r.trades}</div>
+                      </div>
+                      <div className="text-center">
+                        <div className="text-[6px] text-slate-600 uppercase">WR</div>
+                        <div className="text-[10px] font-bold font-mono" style={{ color: r.winRate >= 50 ? '#39ff14' : '#ff8800' }}>{r.winRate}%</div>
+                      </div>
+                      <div className="text-center">
+                        <div className="text-[6px] text-slate-600 uppercase">Inst. Return</div>
+                        <div className="text-[10px] font-bold font-mono" style={{ color: r.institutionalProfit >= 0 ? '#39ff14' : '#ff0055' }}>
+                          ${r.institutionalProfit?.toFixed(0)}
                         </div>
                       </div>
                     </div>
-                  );
-                })}
+                    {r.equityCurve && r.equityCurve.length > 2 && (
+                      <MiniCurve
+                        data={r.equityCurve.map((pt: any) => pt.equity)}
+                        height={60}
+                        color={r.institutionalProfit >= 0 ? '#39ff14' : '#ff0055'}
+                      />
+                    )}
+                    {(!r.equityCurve || r.equityCurve.length < 2) && (
+                      <div className="h-[60px] flex items-center justify-center text-[8px] text-slate-600 font-mono">No curve data</div>
+                    )}
+                  </div>
+                ))}
               </div>
 
               <div className="text-[7px] text-slate-600 font-mono text-center">
-                {backtestResult.dateRange?.start?.slice(0, 10)} → {backtestResult.dateRange?.end?.slice(0, 10)} · {backtestResult.pairsLoaded} pairs · {backtestResult.totalBars?.toLocaleString()} bars · 1.5 pip friction
+                {discoveryResults.dateRange?.start?.slice(0, 10)} → {discoveryResults.dateRange?.end?.slice(0, 10)} · v{discoveryResults.version} · {discoveryResults.pairsLoaded} pairs · {discoveryResults.candlesPerPair?.toLocaleString()} candles/pair
               </div>
             </div>
           )}
