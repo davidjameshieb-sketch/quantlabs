@@ -103,8 +103,15 @@ function generateBatch(): BatchPulse {
     const strategy = Math.random() > 0.5 ? 'MOM' : 'CTR';
     const direction = Math.random() > 0.5 ? 'LONG' : 'SHORT';
     const pair = PAIRS[Math.floor(Math.random() * PAIRS.length)];
-    const spread = Math.floor(Math.random() * 12) + 3;
     const volRegime = VOL_REGIMES[Math.floor(Math.random() * 3)];
+
+    // Generate valid rank pair: predator must differ from prey, spread = |predator - prey|
+    const predatorRank = Math.floor(Math.random() * 8) + 1; // 1-8
+    let preyRank: number;
+    do {
+      preyRank = Math.floor(Math.random() * 8) + 1;
+    } while (preyRank === predatorRank);
+    const spread = Math.abs(predatorRank - preyRank); // max 7, mathematically correct
 
     const action: TradeAction = {
       type: isClose ? 'CLOSE' : 'OPEN',
@@ -112,8 +119,8 @@ function generateBatch(): BatchPulse {
       strategy,
       direction,
       auditSnapshot: {
-        predatorRank: Math.floor(Math.random() * 8) + 1,
-        preyRank: Math.floor(Math.random() * 8) + 1,
+        predatorRank,
+        preyRank,
         spread,
         volRegime,
         triggerSpeedMs: isClose ? undefined : Math.floor(Math.random() * 200) + 30,
