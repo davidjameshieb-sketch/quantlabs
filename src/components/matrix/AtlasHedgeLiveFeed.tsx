@@ -378,14 +378,14 @@ function BatchCard({ batch }: { batch: BatchPulse }) {
 export default function AtlasHedgeLiveFeed() {
   const [batches, setBatches] = useState<BatchPulse[]>(() => [generateBatch()]);
   const [cumulativePnl, setCumulativePnl] = useState(0);
-  const countdown = useCountdown(10);
+  const countdown = useCountdown(60);
 
   useEffect(() => {
     const id = setInterval(() => {
       const newBatch = generateBatch();
       setBatches(prev => [newBatch, ...prev].slice(0, 20));
       setCumulativePnl(prev => Math.round((prev + newBatch.netPnlPips) * 10) / 10);
-    }, 10000);
+    }, 60000);
 
     return () => clearInterval(id);
   }, []);
