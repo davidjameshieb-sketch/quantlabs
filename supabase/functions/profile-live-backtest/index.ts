@@ -248,6 +248,10 @@ function generateSignals(
     else if (pairTimeIndex[inverseInst]?.[snap.time] !== undefined) { instrument = inverseInst; direction = "short"; }
     if (!instrument) continue;
 
+    // For counter-leg mean-reversion: compute gates using the ORIGINAL momentum direction
+    // (because the breakout structure favors the momentum direction), then flip the trade direction.
+    const gateDirection = direction; // momentum-aligned direction for gate evaluation
+
     // Counter-leg: flip direction (mean-reversion — short the strong, long the weak)
     if (invertDirection) {
       direction = direction === "long" ? "short" : "long";
@@ -256,7 +260,9 @@ function generateSignals(
     if (instrument !== prevInst || direction !== prevDir) {
       const candleIdx = pairTimeIndex[instrument][snap.time];
       const candles = pairCandles[instrument];
-      const gateBits = computeGateBits(candles, candleIdx, direction);
+      // Gates are evaluated using the ORIGINAL momentum direction so they pass naturally,
+      // then the trade is taken in the opposite direction (mean-reversion fade).
+      const gateBits = computeGateBits(candles, candleIdx, gateDirection);
       const hour = new Date(snap.time).getUTCHours();
 
       raw.push({

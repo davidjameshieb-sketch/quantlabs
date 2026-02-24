@@ -430,8 +430,10 @@ Deno.serve(async (req) => {
       }
 
       const { instrument, inverted } = instrInfo;
-      // Normal: long the strong currency. invertDirection flips for counter-leg mean-reversion.
-      let direction: 'long' | 'short' = inverted ? 'short' : 'long';
+      // Momentum direction (used for gate evaluation)
+      const momentumDirection: 'long' | 'short' = inverted ? 'short' : 'long';
+      // Actual trade direction: flipped for counter-leg mean-reversion
+      let direction: 'long' | 'short' = momentumDirection;
       if (comp.invertDirection) {
         direction = direction === 'long' ? 'short' : 'long';
       }
@@ -456,9 +458,13 @@ Deno.serve(async (req) => {
       const pv = pipValue(instrument);
       const prec = pricePrecision(instrument);
 
+      // Gates evaluated using MOMENTUM direction (breakout structure must exist first)
+      // Counter-leg then fades the breakout by taking the opposite trade
+      const gateDir = momentumDirection;
+
       // Gate 2: Atlas Snap
       const snap = computeAtlasSnap(candles, 20);
-      const gate2 = direction === 'long' ? currentPrice > snap.highest : currentPrice < snap.lowest;
+      const gate2 = gateDir === 'long' ? currentPrice > snap.highest : currentPrice < snap.lowest;
 
       if (!gate2) {
         executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction, status: 'skipped', skipReason: `G2 Atlas Snap fail (close=${currentPrice.toFixed(prec)} hi=${snap.highest.toFixed(prec)} lo=${snap.lowest.toFixed(prec)})` });
@@ -469,7 +475,7 @@ Deno.serve(async (req) => {
       if (comp.requireG3) {
         const closes = candles.slice(-20).map(c => c.close);
         const slope = lrSlope(closes);
-        const gate3 = direction === 'long' ? slope > 0 : slope < 0;
+        const gate3 = gateDir === 'long' ? slope > 0 : slope < 0;
         if (!gate3) {
           executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction, status: 'skipped', skipReason: `G3 David Vector fail (slope=${slope.toExponential(3)})` });
           continue;
