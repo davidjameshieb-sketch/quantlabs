@@ -796,7 +796,7 @@ Deno.serve(async (req) => {
                 : Math.round(((order.entry_price - exitPrice) / pipDiv) * 10) / 10;
             }
             
-            await supabase
+            const { data: updateData, error: updateErr } = await supabase
               .from("oanda_orders")
               .update({
                 status: "closed",
@@ -804,7 +804,16 @@ Deno.serve(async (req) => {
                 closed_at: tradeDetails.trade.closeTime || new Date().toISOString(),
                 r_pips: realizedPips,
               })
-              .eq("id", order.id);
+              .eq("id", order.id)
+              .select("id, status");
+            
+            if (updateErr) {
+              console.error(`[TRADE-MONITOR] ❌ DB UPDATE ERROR for ${order.currency_pair} (${order.id}):`, updateErr.message, updateErr.details, updateErr.hint);
+            } else if (!updateData || updateData.length === 0) {
+              console.error(`[TRADE-MONITOR] ❌ DB UPDATE 0 ROWS for ${order.currency_pair} (${order.id}) — RLS or constraint blocking? user_id=${order.user_id}`);
+            } else {
+              console.log(`[TRADE-MONITOR] ✅ DB UPDATE OK for ${order.currency_pair} → status=${updateData[0].status}`);
+            }
 
             console.log(`[TRADE-MONITOR] ${order.currency_pair}: Already closed on OANDA at ${exitPrice}`);
             results.push({
@@ -853,7 +862,7 @@ Deno.serve(async (req) => {
               console.warn(`[TRADE-MONITOR] ${order.currency_pair}: Could not recover orphan exit price: ${(closedErr as Error).message}`);
             }
             
-            await supabase
+            const { error: orphanUpdateErr } = await supabase
               .from("oanda_orders")
               .update({
                 status: "closed",
@@ -861,10 +870,13 @@ Deno.serve(async (req) => {
                 r_pips: orphanRPips,
                 closed_at: orphanCloseTime || new Date().toISOString(),
                 error_message: orphanExitPrice
-                  ? null  // Clear error if we successfully recovered the price
+                  ? null
                   : `Orphan reconciliation: OANDA trade ${order.oanda_trade_id} — exit price unrecoverable`,
               })
               .eq("id", order.id);
+            if (orphanUpdateErr) {
+              console.error(`[TRADE-MONITOR] ❌ ORPHAN UPDATE FAILED for ${order.currency_pair} (${order.id}):`, orphanUpdateErr.message, orphanUpdateErr.details);
+            }
             closedCount++;
             continue;
           }
@@ -1261,7 +1273,7 @@ Deno.serve(async (req) => {
           ? Math.round(((exitPrice - entryPrice) / realizedPipDiv) * 10) / 10
           : Math.round(((entryPrice - exitPrice) / realizedPipDiv) * 10) / 10;
 
-        await supabase
+        const { error: exitUpdateErr } = await supabase
           .from("oanda_orders")
           .update({
             status: "closed",
@@ -1285,6 +1297,9 @@ Deno.serve(async (req) => {
             mae_price: updatedMaePrice,
           })
           .eq("id", order.id);
+        if (exitUpdateErr) {
+          console.error(`[TRADE-MONITOR] ❌ EXIT UPDATE FAILED for ${order.currency_pair} (${order.id}):`, exitUpdateErr.message, exitUpdateErr.details);
+        }
 
         closedCount++;
         results.push({
