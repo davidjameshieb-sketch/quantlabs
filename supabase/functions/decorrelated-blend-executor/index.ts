@@ -466,6 +466,9 @@ Deno.serve(async (req) => {
       // Counter-leg then fades the breakout by taking the opposite trade
       const gateDir = momentumDirection;
 
+      // Entry trigger result — declared outside gate block so it's always available
+      let trigger: { pass: boolean; detail: string } = { pass: true, detail: 'gates_skipped' };
+
       // Skip gates entirely if config says skipGates: true
       if (!comp.skipGates) {
         // Gate 2: Atlas Snap
@@ -489,7 +492,7 @@ Deno.serve(async (req) => {
         }
 
         // Entry Trigger
-        const trigger = checkEntryTrigger(comp, candles, direction);
+        trigger = checkEntryTrigger(comp, candles, direction);
         if (!trigger.pass) {
           executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction, status: 'skipped', skipReason: `Entry trigger fail: ${trigger.detail}` });
           continue;
