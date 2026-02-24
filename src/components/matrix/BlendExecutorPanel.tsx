@@ -21,6 +21,7 @@ interface ActiveStrategy {
     tpRatio?: number | string;
     session?: string;
     pair?: string;
+    invertDirection?: boolean;
     dna?: {
       slMultiplier?: number;
       tpMultiplier?: number;
@@ -76,7 +77,7 @@ function StatusDot({ status }: { status: string }) {
 }
 
 /** Convert an activated strategy to a BlendComponent for the edge function */
-function strategyToBlendComponent(config: ActiveStrategy['config'], weight: number): BlendComponent & { fixedPair?: string; atrSlMultiplier?: number; atrTpMultiplier?: number; session?: string; gates?: string; dna?: Record<string, unknown> } {
+function strategyToBlendComponent(config: ActiveStrategy['config'], weight: number, agentId?: string): BlendComponent & { fixedPair?: string; atrSlMultiplier?: number; atrTpMultiplier?: number; session?: string; gates?: string; dna?: Record<string, unknown> } {
   const isRankBased = !!(config.predator && config.prey);
   const gates = config.gates || 'G1+G2';
 
@@ -92,6 +93,8 @@ function strategyToBlendComponent(config: ActiveStrategy['config'], weight: numb
       label: config.strategyName || `R${config.predator}vR${config.prey}`,
       fixedPips: config.slPips || 30,
       tpRatio: typeof config.tpRatio === 'number' ? config.tpRatio : 2.0,
+      invertDirection: config.invertDirection ?? false,
+      agentId,
       gates,
       session: config.session,
     };
@@ -115,11 +118,13 @@ function strategyToBlendComponent(config: ActiveStrategy['config'], weight: numb
     fixedPair: config.pair,
     fixedPips: slPips,
     tpRatio,
+    invertDirection: config.invertDirection ?? false,
+    agentId,
     atrSlMultiplier: config.dna?.slMultiplier,
     atrTpMultiplier: config.dna?.tpMultiplier,
     gates: 'G1+G2+G3',
     session: config.session,
-    dna: config.dna, // Pass full DNA genome for alpha-discovery parity
+    dna: config.dna,
   };
 }
 
@@ -158,7 +163,7 @@ export const BlendExecutorPanel = () => {
   const blendComponents = useMemo<BlendComponent[]>(() => {
     if (strategies.length === 0) return [];
     const weight = 1 / strategies.length;
-    return strategies.map(s => strategyToBlendComponent(s.config, weight));
+    return strategies.map(s => strategyToBlendComponent(s.config, weight, s.agent_id));
   }, [strategies]);
 
   // Keep the hook's components ref in sync
