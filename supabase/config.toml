@@ -164,3 +164,6 @@ verify_jwt = false
 
 [functions.decorrelated-blend-executor]
 verify_jwt = false
+
+[functions.hedge-executor]
+verify_jwt = false
