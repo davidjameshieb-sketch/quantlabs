@@ -328,8 +328,8 @@ const HedgeControlCenter = () => {
             Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
           },
           body: JSON.stringify({
-            candles: 5000,
-            environment: 'practice',
+            candles: 15000,
+            environment: 'live',
             predatorRanks: [1, 2, 3],
             topN: 15,
           }),
@@ -872,7 +872,7 @@ const HedgeControlCenter = () => {
             <div className="flex items-center gap-2">
               <Crown className="w-4 h-4 text-[#39ff14]" />
               <h2 className="text-[11px] font-bold tracking-widest text-[#39ff14]/80 uppercase">Profile Discovery</h2>
-              <span className="text-[8px] font-mono text-slate-500">· Sovereign-Alpha v6.0 · Triple-Lock · 20% DD Filter</span>
+              <span className="text-[8px] font-mono text-slate-500">· Sovereign-Alpha v6.0 · Triple-Lock · 20% DD Filter · 15,000 Candles · Live</span>
             </div>
             <button
               onClick={runProfileDiscovery}
@@ -887,8 +887,8 @@ const HedgeControlCenter = () => {
           {discovering && (
             <div className="py-12 text-center space-y-3">
               <Loader2 className="w-8 h-8 animate-spin mx-auto text-[#39ff14]" />
-              <p className="text-[10px] text-slate-400 font-mono">Testing all rank combos × sessions × SL/TP × gate configs...</p>
-              <p className="text-[8px] text-slate-500 font-mono">Sovereign-Alpha v6.0: Triple-Lock G1+G2+G3 · 20% Fatal DD Filter · 1.5-pip friction</p>
+              <p className="text-[10px] text-slate-400 font-mono">Testing all rank combos × sessions × SL/TP × gate configs on 15,000 real M30 candles...</p>
+              <p className="text-[8px] text-slate-500 font-mono">Sovereign-Alpha v6.0: Triple-Lock G1+G2+G3 · 20% Fatal DD Filter · 1.5-pip friction · OANDA Live</p>
             </div>
           )}
 
@@ -972,6 +972,82 @@ const HedgeControlCenter = () => {
                 </div>
               </div>
 
+              {/* OOS Validation for Top 3 */}
+              <div className="space-y-2">
+                <div className="text-[8px] font-bold text-slate-400 uppercase tracking-widest">OOS Validation — 70/30 Lie Detector</div>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  {discoveryResults.topResults?.slice(0, 3).map((r: any, i: number) => {
+                    const hasOOS = r.oosValidation || (r.tradeResults && r.tradeResults.length >= 20);
+                    const oos = r.oosValidation;
+                    return (
+                      <div key={i} className="bg-slate-950/60 border rounded-xl p-4 space-y-3"
+                        style={{ borderColor: oos?.passed ? '#39ff1440' : hasOOS ? '#ff005540' : '#334155' }}>
+                        <div className="flex items-center justify-between">
+                          <span className="text-[10px] font-bold font-mono">
+                            <span className="text-[#00ffea]">#{r.predator}</span>
+                            <span className="text-slate-600"> vs </span>
+                            <span className="text-[#ff0055]">#{r.prey}</span>
+                            <span className="text-slate-500"> · {r.session}</span>
+                          </span>
+                          {oos && (
+                            <span className="text-[7px] font-mono font-bold px-2 py-0.5 rounded-full"
+                              style={{
+                                color: oos.passed ? '#39ff14' : '#ff0055',
+                                background: oos.passed ? '#39ff1415' : '#ff005515',
+                                border: `1px solid ${oos.passed ? '#39ff1440' : '#ff005540'}`,
+                              }}>
+                              {oos.passed ? '✅ OOS PASSED' : '❌ OVERFIT'}
+                            </span>
+                          )}
+                        </div>
+
+                        {oos ? (
+                          <div className="overflow-x-auto">
+                            <table className="w-full text-center border-collapse">
+                              <thead>
+                                <tr>
+                                  <th className="p-1 text-[7px] text-slate-500 font-mono text-left">Metric</th>
+                                  <th className="p-1 text-[7px] text-[#00ffea] font-mono">IS (70%)</th>
+                                  <th className="p-1 text-[7px] text-[#ff8800] font-mono">OOS (30%)</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {[
+                                  { label: 'Win Rate', is: `${oos.is?.winRate}%`, oos: `${oos.oos?.winRate}%`, alert: (oos.oos?.winRate || 0) < 40 },
+                                  { label: 'PF', is: oos.is?.profitFactor, oos: oos.oos?.profitFactor, alert: (oos.oos?.profitFactor || 0) < 1.2 },
+                                  { label: 'Max DD', is: `${oos.is?.maxDrawdown}%`, oos: `${oos.oos?.maxDrawdown}%`, alert: Math.abs(oos.oos?.maxDrawdown || 0) > Math.abs(oos.is?.maxDrawdown || 0) * 2 },
+                                  { label: 'Trades', is: oos.is?.trades, oos: oos.oos?.trades, alert: false },
+                                  { label: 'Net Pips', is: oos.is?.netPips, oos: oos.oos?.netPips, alert: (oos.oos?.netPips || 0) < 0 },
+                                ].map((row, ri) => (
+                                  <tr key={ri} className="border-t border-slate-800/30">
+                                    <td className="p-1 text-[8px] font-mono font-bold text-slate-300 text-left">{row.label}</td>
+                                    <td className="p-1 text-[8px] font-mono font-bold text-[#00ffea]">{row.is}</td>
+                                    <td className="p-1 text-[8px] font-mono font-bold" style={{ color: row.alert ? '#ff0055' : '#ff8800' }}>{row.oos}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                            {oos.failReasons?.length > 0 && (
+                              <div className="mt-2 space-y-0.5">
+                                {oos.failReasons.map((reason: string, ri: number) => (
+                                  <div key={ri} className="text-[7px] font-mono text-[#ff0055] flex items-center gap-1">
+                                    <AlertTriangle className="w-2.5 h-2.5 shrink-0" /> {reason}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <div className="text-[8px] text-slate-600 font-mono text-center py-4">
+                            OOS data not returned by engine — check if tradeResults are included in response
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
               {/* Top 3 equity curves */}
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 {discoveryResults.topResults?.slice(0, 3).map((r: any, i: number) => (
@@ -1018,7 +1094,7 @@ const HedgeControlCenter = () => {
               </div>
 
               <div className="text-[7px] text-slate-600 font-mono text-center">
-                {discoveryResults.dateRange?.start?.slice(0, 10)} → {discoveryResults.dateRange?.end?.slice(0, 10)} · v{discoveryResults.version} · {discoveryResults.pairsLoaded} pairs · {discoveryResults.candlesPerPair?.toLocaleString()} candles/pair
+                {discoveryResults.dateRange?.start?.slice(0, 10)} → {discoveryResults.dateRange?.end?.slice(0, 10)} · v{discoveryResults.version} · {discoveryResults.pairsLoaded} pairs · {discoveryResults.candlesPerPair?.toLocaleString()} candles/pair · OANDA Live · 15,000 candles
               </div>
             </div>
           )}
