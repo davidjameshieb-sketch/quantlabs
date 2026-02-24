@@ -161,9 +161,9 @@ export default function AtlasNeuralNet() {
   const fetchLiveStats = useCallback(async () => {
     try {
       const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return;
+      const userId = user?.id ?? '00000000-0000-0000-0000-000000000000';
 
-      const { data: stats } = await supabase.rpc('get_agent_simulator_stats', { p_user_id: user.id });
+      const { data: stats } = await supabase.rpc('get_agent_simulator_stats', { p_user_id: userId });
 
       const statsMap = new Map<string, { trades: number; wins: number; netPips: number; grossProfit: number; grossLoss: number }>();
       if (stats) {
