@@ -194,7 +194,24 @@ const HedgeControlCenter = () => {
     }
   }, []);
 
-  useEffect(() => { fetchAll(); }, [fetchAll]);
+  // Auto-refresh every 60s to match batch interval
+  const [refreshCountdown, setRefreshCountdown] = useState(60);
+  useEffect(() => {
+    const id = setInterval(() => {
+      setRefreshCountdown(prev => {
+        if (prev <= 1) {
+          fetchAll();
+          return 60;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    fetchAll();
+    return () => clearInterval(id);
+  }, [fetchAll]);
+  const countdownMin = Math.floor(refreshCountdown / 60);
+  const countdownSec = refreshCountdown % 60;
+  const countdownDisplay = `${String(countdownMin).padStart(2, '0')}:${String(countdownSec).padStart(2, '0')}`;
 
   // Realtime updates
   useEffect(() => {
@@ -434,6 +451,11 @@ const HedgeControlCenter = () => {
           <div className="lg:col-span-4 bg-slate-900/80 backdrop-blur-md border border-slate-700/50 rounded-2xl p-6 shadow-2xl">
             <div className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-4 flex items-center gap-1.5">
               <BarChart3 className="w-3.5 h-3.5 text-yellow-400" /> PERFORMANCE
+              <span className="ml-auto flex items-center gap-1 text-[9px] font-mono text-slate-500">
+                <Clock className="w-3 h-3" />
+                <span className="text-slate-600">Next refresh</span>
+                <span className="text-white font-bold">{countdownDisplay}</span>
+              </span>
             </div>
             <div className="grid grid-cols-2 gap-3">
               {[
