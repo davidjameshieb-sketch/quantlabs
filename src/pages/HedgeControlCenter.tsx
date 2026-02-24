@@ -106,6 +106,8 @@ const HedgeControlCenter = () => {
   const [closedTrades, setClosedTrades] = useState<any[]>([]);
   const [circuitBreakers, setCircuitBreakers] = useState<any[]>([]);
   const [oandaConnected, setOandaConnected] = useState(false);
+  const [lastCycleResult, setLastCycleResult] = useState<any>(null);
+  const [executing, setExecuting] = useState(false);
 
   const fetchAll = useCallback(async () => {
     setLoading(true);
@@ -187,6 +189,57 @@ const HedgeControlCenter = () => {
     return () => { supabase.removeChannel(channel); };
   }, [fetchAll]);
 
+  // Trigger hedge executor edge function
+  const runHedgeCycle = useCallback(async () => {
+    setExecuting(true);
+    try {
+      const res = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/hedge-executor`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
+            Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+          },
+          body: JSON.stringify({}),
+        }
+      );
+      const data = await res.json();
+      setLastCycleResult(data);
+      if (data.success) {
+        const filled = data.cycle?.filled || 0;
+        const skipped = data.cycle?.skipped || 0;
+        if (filled > 0) {
+          toast.success(`Hedge cycle: ${filled} trade(s) executed`);
+        } else if (data.reason === 'strategy_inactive') {
+          toast.info('Hedge strategy is inactive');
+        } else if (data.reason === 'all_legs_open') {
+          toast.info('All hedge legs already open');
+        } else {
+          toast.info(`Hedge cycle: ${skipped} leg(s) skipped (gates not met)`);
+        }
+      } else {
+        toast.error(`Hedge cycle failed: ${data.reason || data.error}`);
+      }
+      fetchAll();
+    } catch (err) {
+      toast.error(`Hedge cycle error: ${(err as Error).message}`);
+    } finally {
+      setExecuting(false);
+    }
+  }, [fetchAll]);
+
+  // Auto-poll every 10 minutes while active
+  useEffect(() => {
+    if (!isActive) return;
+    const interval = setInterval(() => {
+      console.log('[HedgeCC] Auto-polling hedge executor cycle');
+      runHedgeCycle();
+    }, 10 * 60 * 1000); // 10 minutes
+    return () => clearInterval(interval);
+  }, [isActive, runHedgeCycle]);
+
   const toggleHedge = async () => {
     setToggling(true);
     try {
@@ -198,7 +251,6 @@ const HedgeControlCenter = () => {
           .eq('agent_id', HEDGE_AGENT_ID);
         if (error) throw error;
       } else {
-        // Create config if it doesn't exist
         const { error } = await supabase
           .from('agent_configs')
           .upsert({
@@ -216,8 +268,13 @@ const HedgeControlCenter = () => {
         if (error) throw error;
       }
       setIsActive(newState);
-      toast.success(newState ? 'Hedge strategy ACTIVATED' : 'Hedge strategy DEACTIVATED');
+      toast.success(newState ? 'Hedge strategy ACTIVATED — running first cycle...' : 'Hedge strategy DEACTIVATED');
       fetchAll();
+
+      // Immediately trigger execution cycle on activation
+      if (newState) {
+        setTimeout(() => runHedgeCycle(), 500);
+      }
     } catch (err) {
       toast.error(`Toggle failed: ${(err as Error).message}`);
     } finally {
@@ -383,13 +440,43 @@ const HedgeControlCenter = () => {
               </div>
             </div>
             {isActive && (
-              <motion.div
-                animate={{ opacity: [0.5, 1, 0.5] }}
-                transition={{ repeat: Infinity, duration: 2 }}
-                className="flex items-center gap-1.5 text-[9px] font-mono text-[#39ff14]"
-              >
-                <div className="w-2 h-2 rounded-full bg-[#39ff14]" /> AUTO-EXECUTING · 10min cycles
-              </motion.div>
+              <>
+                <motion.div
+                  animate={{ opacity: [0.5, 1, 0.5] }}
+                  transition={{ repeat: Infinity, duration: 2 }}
+                  className="flex items-center gap-1.5 text-[9px] font-mono text-[#39ff14]"
+                >
+                  <div className="w-2 h-2 rounded-full bg-[#39ff14]" /> AUTO-EXECUTING · 10min cycles
+                </motion.div>
+                <button
+                  onClick={runHedgeCycle}
+                  disabled={executing}
+                  className="flex items-center gap-1.5 text-[9px] font-mono px-4 py-2 rounded-lg border border-[#00ffea]/40 text-[#00ffea] hover:bg-[#00ffea]/10 transition-all disabled:opacity-50"
+                >
+                  {executing ? <Loader2 className="w-3 h-3 animate-spin" /> : <Zap className="w-3 h-3" />}
+                  {executing ? 'EXECUTING...' : 'RUN CYCLE NOW'}
+                </button>
+              </>
+            )}
+            {lastCycleResult && (
+              <div className="w-full mt-2 p-2 rounded-lg border border-slate-700/50 bg-slate-800/50">
+                <div className="text-[8px] font-mono uppercase tracking-widest text-slate-500 mb-1">LAST CYCLE</div>
+                {lastCycleResult.cycle ? (
+                  <div className="text-[9px] font-mono text-slate-300 space-y-0.5">
+                    <div>Legs evaluated: {lastCycleResult.cycle.legsEvaluated}</div>
+                    <div style={{ color: lastCycleResult.cycle.filled > 0 ? '#39ff14' : '#ff8800' }}>
+                      Filled: {lastCycleResult.cycle.filled} | Skipped: {lastCycleResult.cycle.skipped}
+                    </div>
+                    {lastCycleResult.legs?.filter((l: any) => l.reason).map((l: any, i: number) => (
+                      <div key={i} className="text-[8px] text-slate-500 truncate" title={l.reason}>
+                        {l.leg}: {l.reason}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-[9px] font-mono text-slate-400">{lastCycleResult.reason || lastCycleResult.error}</div>
+                )}
+              </div>
             )}
           </div>
 
