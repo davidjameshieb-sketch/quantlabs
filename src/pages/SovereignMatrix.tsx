@@ -816,6 +816,11 @@ const SovereignMatrix = () => {
                 <Wifi className="w-3 h-3" /> OANDA
               </button>
             </Link>
+            <Link to="/hedge">
+              <button className="flex items-center gap-1.5 text-[10px] font-mono px-3 py-1.5 rounded border border-[#39ff14]/30 text-[#39ff14]/70 hover:text-[#39ff14] hover:border-[#39ff14]/60 transition-all">
+                <Shield className="w-3 h-3" /> HEDGE
+              </button>
+            </Link>
 
             {/* Env toggle */}
             <div className="flex items-center gap-0.5 p-0.5 rounded-lg border border-slate-700/50 bg-slate-900">

@@ -6,6 +6,7 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 
 import ForexOanda from "./pages/ForexOanda";
 import SovereignMatrix from "./pages/SovereignMatrix";
+import HedgeControlCenter from "./pages/HedgeControlCenter";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -20,6 +21,7 @@ const App = () => (
           <Route path="/" element={<Navigate to="/oanda" replace />} />
           <Route path="/oanda" element={<ForexOanda />} />
           <Route path="/matrix" element={<SovereignMatrix />} />
+          <Route path="/hedge" element={<HedgeControlCenter />} />
           <Route path="*" element={<NotFound />} />
         </Routes>
       </BrowserRouter>
