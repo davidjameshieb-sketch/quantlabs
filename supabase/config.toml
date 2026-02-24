@@ -167,3 +167,6 @@ verify_jwt = false
 
 [functions.hedge-executor]
 verify_jwt = false
+
+[functions.hedge-backtest]
+verify_jwt = false
