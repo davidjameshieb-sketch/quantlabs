@@ -4,11 +4,14 @@ import { motion } from 'framer-motion';
 import {
   Brain, Crown, Loader2, BarChart3, RefreshCw,
   TrendingUp, TrendingDown, Layers, Shield, Zap,
-  AlertTriangle, ArrowRight, Target, Skull,
+  AlertTriangle, ArrowRight, Target, Skull, CheckCircle, Power,
 } from 'lucide-react';
 import { toast } from 'sonner';
+import { supabase } from '@/integrations/supabase/client';
 
 type PillarTab = 'momentum' | 'counter' | 'regime' | 'blend';
+
+const OLD_HEDGE_AGENT_ID = 'experimental-lab-atlas-hedge-matrix';
 
 const TABS: { id: PillarTab; label: string; icon: any; color: string; desc: string }[] = [
   { id: 'momentum', label: 'MOMENTUM', icon: TrendingUp, color: '#39ff14', desc: 'Optimize rank combos, sessions & SL/TP' },
@@ -108,6 +111,79 @@ async function runParallelDiscovery(params: {
     dateRange, version, errors,
     topResults: allTopResults.slice(0, 15),
   };
+}
+
+// ── Strategy Summary Card ──
+function StrategySummaryCard({ strat, index, type }: { strat: any; index: number; type: 'momentum' | 'counter' }) {
+  const isMom = type === 'momentum';
+  const color = isMom ? '#39ff14' : '#ff8800';
+  const directionLabel = isMom
+    ? `Long #${strat.predator} (strongest) vs Short #${strat.prey} (weakest)`
+    : `Short #${strat.predator} (strongest) vs Long #${strat.prey} (weakest)`;
+  const thesis = isMom
+    ? 'Bets that the strong currency keeps getting stronger while the weak keeps falling. Profits when rank divergence expands.'
+    : 'Bets that the overextended divergence will snap back. Profits when the strong currency weakens or the weak bounces.';
+  const bestCondition = isMom
+    ? 'Strong trending markets with clear momentum'
+    : 'Overextended markets ready for mean-reversion';
+  const riskScenario = isMom
+    ? 'Ranks converge — strong currency weakens, weak rebounds'
+    : 'Trend accelerates — divergence keeps expanding';
+
+  return (
+    <div className="bg-slate-950/60 border rounded-xl p-4 space-y-3" style={{ borderColor: `${color}30` }}>
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <div className="w-6 h-6 rounded-lg flex items-center justify-center text-[10px] font-black font-mono" style={{ background: `${color}20`, color, border: `1px solid ${color}40` }}>
+            {index + 1}
+          </div>
+          <div>
+            <span className="text-[10px] font-bold font-mono" style={{ color }}>
+              {isMom ? 'M' : 'C'}{index + 1} · #{strat.predator} vs #{strat.prey}
+            </span>
+            <span className="text-[8px] text-slate-500 ml-2">{strat.session}</span>
+          </div>
+        </div>
+        <span className="text-[9px] font-mono font-bold" style={{ color: strat.institutionalPF >= 1.5 ? '#39ff14' : '#ff8800' }}>
+          PF {strat.institutionalPF}
+        </span>
+      </div>
+
+      <div className="space-y-1.5">
+        <div className="flex items-start gap-2">
+          <Target className="w-3 h-3 shrink-0 mt-0.5" style={{ color }} />
+          <p className="text-[8px] text-slate-300 leading-relaxed"><span className="font-bold" style={{ color }}>Direction:</span> {directionLabel}</p>
+        </div>
+        <div className="flex items-start gap-2">
+          <Brain className="w-3 h-3 shrink-0 mt-0.5 text-[#00ffea]" />
+          <p className="text-[8px] text-slate-400 leading-relaxed"><span className="font-bold text-[#00ffea]">Thesis:</span> {thesis}</p>
+        </div>
+        <div className="flex items-start gap-2">
+          <Zap className="w-3 h-3 shrink-0 mt-0.5 text-yellow-400" />
+          <p className="text-[8px] text-slate-400 leading-relaxed"><span className="font-bold text-yellow-400">Best in:</span> {bestCondition} · {strat.session} session</p>
+        </div>
+        <div className="flex items-start gap-2">
+          <AlertTriangle className="w-3 h-3 shrink-0 mt-0.5 text-[#ff0055]" />
+          <p className="text-[8px] text-slate-400 leading-relaxed"><span className="font-bold text-[#ff0055]">Risk:</span> {riskScenario}</p>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-5 gap-1 pt-1 border-t border-slate-800/50">
+        {[
+          { l: 'SL', v: `${strat.slPips}p` },
+          { l: 'TP', v: strat.tpRatio === 'flip' ? 'Flip' : `${strat.tpRatio}R` },
+          { l: 'WR', v: `${strat.winRate}%`, c: strat.winRate >= 50 ? '#39ff14' : '#ff8800' },
+          { l: 'Trades', v: strat.trades },
+          { l: 'Pips', v: `${strat.totalPips > 0 ? '+' : ''}${strat.totalPips}`, c: strat.totalPips >= 0 ? '#39ff14' : '#ff0055' },
+        ].map(m => (
+          <div key={m.l} className="text-center">
+            <div className="text-[6px] text-slate-600 uppercase">{m.l}</div>
+            <div className="text-[9px] font-bold font-mono" style={{ color: (m as any).c || '#ffffff' }}>{m.v}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 // ── Results Table ──
@@ -304,7 +380,6 @@ function ResultsTable({ results, labelPrefix = '' }: { results: any; labelPrefix
 
 // ── Regime Breakdown Table ──
 function RegimeBreakdown({ momentumResults, counterResults }: { momentumResults: any; counterResults: any }) {
-  // Group results by session to show where each approach works
   const sessions = ['LONDON', 'NY', 'ASIA', 'ALL'];
   const buildSessionMap = (results: any) => {
     const map: Record<string, { trades: number; winRate: number; pf: number; pips: number; count: number }> = {};
@@ -318,7 +393,6 @@ function RegimeBreakdown({ momentumResults, counterResults }: { momentumResults:
       map[key].pips += r.totalPips || 0;
       map[key].count += 1;
     });
-    // Average the rates
     Object.values(map).forEach(v => {
       if (v.count > 0) { v.winRate /= v.count; v.pf /= v.count; }
     });
@@ -327,7 +401,6 @@ function RegimeBreakdown({ momentumResults, counterResults }: { momentumResults:
 
   const momMap = buildSessionMap(momentumResults);
   const ctrMap = buildSessionMap(counterResults);
-
   const hasMomentum = momentumResults?.topResults?.length > 0;
   const hasCounter = counterResults?.topResults?.length > 0;
 
@@ -337,7 +410,6 @@ function RegimeBreakdown({ momentumResults, counterResults }: { momentumResults:
         <div className="py-12 text-center space-y-3">
           <Layers className="w-10 h-10 mx-auto text-slate-600" />
           <p className="text-[10px] text-slate-500 font-mono">Run <span className="text-[#39ff14]">Momentum</span> and/or <span className="text-[#ff8800]">Counter-Leg</span> discovery first</p>
-          <p className="text-[8px] text-slate-600 font-mono">The Regime Map aggregates results from both pillars to show which sessions and conditions favor each approach.</p>
         </div>
       ) : (
         <>
@@ -348,8 +420,8 @@ function RegimeBreakdown({ momentumResults, counterResults }: { momentumResults:
                 <thead>
                   <tr className="border-b border-slate-800">
                     <th className="text-left text-[7px] text-slate-500 uppercase px-2 py-2">Session</th>
-                    <th className="text-center text-[7px] text-[#39ff14] uppercase px-2 py-2" colSpan={3}>MOMENTUM (Long Strong / Short Weak)</th>
-                    <th className="text-center text-[7px] text-[#ff8800] uppercase px-2 py-2" colSpan={3}>COUNTER-LEG (Fade Convergence)</th>
+                    <th className="text-center text-[7px] text-[#39ff14] uppercase px-2 py-2" colSpan={3}>MOMENTUM</th>
+                    <th className="text-center text-[7px] text-[#ff8800] uppercase px-2 py-2" colSpan={3}>COUNTER-LEG</th>
                     <th className="text-center text-[7px] text-[#a855f7] uppercase px-2 py-2">VERDICT</th>
                   </tr>
                   <tr className="border-b border-slate-800/50">
@@ -389,7 +461,6 @@ function RegimeBreakdown({ momentumResults, counterResults }: { momentumResults:
             </div>
           </div>
 
-          {/* Insight cards */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div className="bg-slate-950/60 border border-[#39ff14]/20 rounded-xl p-4">
               <div className="text-[8px] font-bold text-[#39ff14] uppercase tracking-widest mb-2">Best Momentum Session</div>
@@ -426,9 +497,6 @@ function RegimeBreakdown({ momentumResults, counterResults }: { momentumResults:
                   <div className="text-center space-y-1">
                     <div className="text-lg font-black font-mono" style={{ color: qColor }}>{quality}</div>
                     <div className="text-[9px] text-slate-400">Mom PF {momAvgPF.toFixed(2)} · Ctr PF {ctrAvgPF.toFixed(2)}</div>
-                    <div className="text-[8px] text-slate-500">
-                      {quality === 'HIGH' ? 'Both pillars profitable — true hedge achievable' : quality === 'MODERATE' ? 'Partial offset — conditional filtering recommended' : 'Weak counter-leg — momentum-only may be safer'}
-                    </div>
                   </div>
                 );
               })() : <div className="text-[9px] text-slate-600 text-center">Need both pillars</div>}
@@ -440,8 +508,16 @@ function RegimeBreakdown({ momentumResults, counterResults }: { momentumResults:
   );
 }
 
-// ── Portfolio Blend ──
-function PortfolioBlend({ momentumResults, counterResults }: { momentumResults: any; counterResults: any }) {
+// ── Portfolio Blend (10+10) with Activate Button ──
+function PortfolioBlend({
+  momentumResults, counterResults, onActivated,
+}: {
+  momentumResults: any; counterResults: any;
+  onActivated?: () => void;
+}) {
+  const [activating, setActivating] = useState(false);
+  const [activated, setActivated] = useState(false);
+
   const hasMomentum = momentumResults?.topResults?.length > 0;
   const hasCounter = counterResults?.topResults?.length > 0;
 
@@ -450,62 +526,195 @@ function PortfolioBlend({ momentumResults, counterResults }: { momentumResults: 
       <div className="py-12 text-center space-y-3">
         <Shield className="w-10 h-10 mx-auto text-slate-600" />
         <p className="text-[10px] text-slate-500 font-mono">Run <span className="text-[#39ff14]">Momentum</span> and <span className="text-[#ff8800]">Counter-Leg</span> discovery first</p>
-        <p className="text-[8px] text-slate-600 font-mono">The Portfolio Blend merges the best strategies from both pillars into a structurally hedged ensemble.</p>
       </div>
     );
   }
 
-  // Take top 3 from each pillar
-  const momTop = (momentumResults?.topResults || []).slice(0, 3);
-  const ctrTop = (counterResults?.topResults || []).slice(0, 3);
+  const momTop = (momentumResults?.topResults || []).slice(0, 10);
+  const ctrTop = (counterResults?.topResults || []).slice(0, 10);
 
-  // Compute blend metrics
   const allStrats = [
-    ...momTop.map((s: any) => ({ ...s, type: 'MOMENTUM' as const })),
-    ...ctrTop.map((s: any) => ({ ...s, type: 'COUNTER' as const })),
+    ...momTop.map((s: any, i: number) => ({ ...s, type: 'MOMENTUM' as const, idx: i })),
+    ...ctrTop.map((s: any, i: number) => ({ ...s, type: 'COUNTER' as const, idx: i })),
   ];
 
   const totalTrades = allStrats.reduce((s, r) => s + (r.trades || 0), 0);
   const avgWR = allStrats.length > 0 ? allStrats.reduce((s, r) => s + (r.winRate || 0), 0) / allStrats.length : 0;
   const avgPF = allStrats.length > 0 ? allStrats.reduce((s, r) => s + (r.institutionalPF || 0), 0) / allStrats.length : 0;
   const totalPips = allStrats.reduce((s, r) => s + (r.totalPips || 0), 0);
-  const longCount = momTop.length;
-  const shortCount = ctrTop.length;
-  const dirBalance = Math.min(longCount, shortCount) / Math.max(1, Math.max(longCount, shortCount));
+  const dirBalance = Math.min(momTop.length, ctrTop.length) / Math.max(1, Math.max(momTop.length, ctrTop.length));
+
+  const activatePortfolio = async () => {
+    setActivating(true);
+    try {
+      // 1. Deactivate old Atlas Snap Hedge
+      await supabase
+        .from('agent_configs')
+        .update({ is_active: false })
+        .eq('agent_id', OLD_HEDGE_AGENT_ID);
+
+      // 2. Upsert all 20 strategies
+      const upserts = allStrats.map((s, i) => {
+        const prefix = s.type === 'MOMENTUM' ? 'atlas-hedge-m' : 'atlas-hedge-c';
+        const agentId = `${prefix}${s.idx + 1}`;
+        return {
+          agent_id: agentId,
+          is_active: true,
+          config: {
+            portfolio: 'Atlas Hedge',
+            type: s.type === 'MOMENTUM' ? 'momentum' : 'counter-leg',
+            label: `${s.type === 'MOMENTUM' ? 'Momentum' : 'Counter-Leg'} #${s.idx + 1}`,
+            predatorRank: s.predator,
+            preyRank: s.prey,
+            session: s.session,
+            slPips: s.slPips,
+            tpRatio: s.tpRatio,
+            invertDirection: s.type === 'COUNTER',
+            backtestPF: s.institutionalPF,
+            backtestWR: s.winRate,
+            backtestTrades: s.trades,
+            backtestPips: s.totalPips,
+            maxDrawdown: s.maxDrawdown,
+            weight: 1 / allStrats.length,
+            activatedAt: new Date().toISOString(),
+            engineSource: 'atlas-hedge-deep-search',
+          } as any,
+        };
+      });
+
+      for (const u of upserts) {
+        const { error } = await supabase
+          .from('agent_configs')
+          .upsert(u, { onConflict: 'agent_id' });
+        if (error) {
+          console.error(`Failed to upsert ${u.agent_id}:`, error.message);
+          throw error;
+        }
+      }
+
+      setActivated(true);
+      toast.success(`Atlas Hedge activated: ${momTop.length} momentum + ${ctrTop.length} counter-leg strategies live!`);
+      toast.info('Old Atlas Snap Hedge Matrix has been deactivated.');
+      onActivated?.();
+    } catch (err) {
+      toast.error(`Activation failed: ${(err as Error).message}`);
+    } finally {
+      setActivating(false);
+    }
+  };
 
   return (
-    <div className="space-y-5">
-      {/* Blend overview */}
-      <div className="bg-gradient-to-r from-[#a855f7]/10 to-[#39ff14]/10 border border-[#a855f7]/30 rounded-xl p-5">
-        <div className="flex items-center gap-2 mb-4">
-          <Shield className="w-4 h-4 text-[#a855f7]" />
-          <span className="text-[10px] font-bold text-[#a855f7] uppercase tracking-widest">Ensemble Portfolio Blueprint</span>
-        </div>
-        <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
-          {[
-            { label: 'Total Strategies', value: allStrats.length, color: '#ffffff' },
-            { label: 'Momentum Legs', value: momTop.length, color: '#39ff14' },
-            { label: 'Counter Legs', value: ctrTop.length, color: '#ff8800' },
-            { label: 'Combined Trades', value: totalTrades, color: '#00ffea' },
-            { label: 'Avg PF', value: avgPF.toFixed(2), color: avgPF >= 1.5 ? '#39ff14' : '#ff8800' },
-            { label: 'Direction Balance', value: `${(dirBalance * 100).toFixed(0)}%`, color: dirBalance >= 0.5 ? '#39ff14' : '#ff0055' },
-          ].map((m, i) => (
-            <div key={i} className="bg-slate-950/60 border border-slate-800/40 rounded-lg p-3 text-center">
-              <div className="text-[6px] text-slate-500 uppercase tracking-wider mb-1">{m.label}</div>
-              <div className="text-sm font-bold font-mono" style={{ color: m.color }}>{m.value}</div>
+    <div className="space-y-6">
+      {/* Activate Banner */}
+      <div className="bg-gradient-to-r from-[#a855f7]/15 to-[#39ff14]/15 border-2 border-[#a855f7]/40 rounded-2xl p-6">
+        <div className="flex items-center justify-between flex-wrap gap-4">
+          <div className="flex items-center gap-3">
+            <div className="w-12 h-12 rounded-xl flex items-center justify-center" style={{ background: '#a855f720', border: '2px solid #a855f760' }}>
+              <Shield className="w-6 h-6 text-[#a855f7]" />
             </div>
-          ))}
+            <div>
+              <h3 className="text-sm font-black text-white tracking-tight">ATLAS HEDGE PORTFOLIO</h3>
+              <p className="text-[9px] text-slate-400 font-mono">
+                {momTop.length} Momentum × {ctrTop.length} Counter-Leg = {allStrats.length} strategies
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={activatePortfolio}
+            disabled={activating || activated}
+            className="flex items-center gap-2 text-[11px] font-mono font-bold px-6 py-3 rounded-xl transition-all disabled:opacity-50"
+            style={{
+              background: activated ? '#39ff1420' : '#a855f720',
+              border: `2px solid ${activated ? '#39ff14' : '#a855f7'}`,
+              color: activated ? '#39ff14' : '#a855f7',
+            }}
+          >
+            {activating ? (
+              <><Loader2 className="w-4 h-4 animate-spin" /> ACTIVATING...</>
+            ) : activated ? (
+              <><CheckCircle className="w-4 h-4" /> PORTFOLIO LIVE</>
+            ) : (
+              <><Power className="w-4 h-4" /> ACTIVATE ATLAS HEDGE LIVE</>
+            )}
+          </button>
         </div>
+        {activated && (
+          <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="mt-4 bg-[#39ff14]/8 border border-[#39ff14]/20 rounded-xl p-3">
+            <p className="text-[9px] text-[#39ff14] font-mono">
+              ✅ All {allStrats.length} strategies are now live in agent_configs. The blend executor will trade them on 10-minute cycles.
+              The old Atlas Snap Hedge Matrix has been stopped.
+            </p>
+          </motion.div>
+        )}
       </div>
 
-      {/* Strategy roster */}
+      {/* Overview Stats */}
+      <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
+        {[
+          { label: 'Total Strategies', value: allStrats.length, color: '#ffffff' },
+          { label: 'Momentum', value: `${momTop.length} strategies`, color: '#39ff14' },
+          { label: 'Counter-Leg', value: `${ctrTop.length} strategies`, color: '#ff8800' },
+          { label: 'Combined Trades', value: totalTrades, color: '#00ffea' },
+          { label: 'Avg PF', value: avgPF.toFixed(2), color: avgPF >= 1.5 ? '#39ff14' : '#ff8800' },
+          { label: 'Direction Balance', value: `${(dirBalance * 100).toFixed(0)}%`, color: dirBalance >= 0.5 ? '#39ff14' : '#ff0055' },
+        ].map((m, i) => (
+          <div key={i} className="bg-slate-950/60 border border-slate-800/40 rounded-lg p-3 text-center">
+            <div className="text-[6px] text-slate-500 uppercase tracking-wider mb-1">{m.label}</div>
+            <div className="text-sm font-bold font-mono" style={{ color: m.color }}>{m.value}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Strategy Summaries — Momentum */}
+      {momTop.length > 0 && (
+        <div className="space-y-3">
+          <div className="flex items-center gap-2 border-b border-[#39ff14]/20 pb-2">
+            <TrendingUp className="w-4 h-4 text-[#39ff14]" />
+            <span className="text-[10px] font-bold text-[#39ff14] uppercase tracking-widest">
+              {momTop.length} Momentum Strategies — Trend Continuation
+            </span>
+          </div>
+          <p className="text-[8px] text-slate-500 font-mono leading-relaxed">
+            These strategies bet that <span className="text-[#39ff14] font-bold">rank divergence will expand</span> — the strong currency keeps getting stronger, the weak keeps falling.
+            They profit in trending markets with clear directional flow. All legs lose when ranks converge unexpectedly.
+          </p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {momTop.map((s: any, i: number) => (
+              <StrategySummaryCard key={`m-${i}`} strat={s} index={i} type="momentum" />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Strategy Summaries — Counter-Leg */}
+      {ctrTop.length > 0 && (
+        <div className="space-y-3">
+          <div className="flex items-center gap-2 border-b border-[#ff8800]/20 pb-2">
+            <TrendingDown className="w-4 h-4 text-[#ff8800]" />
+            <span className="text-[10px] font-bold text-[#ff8800] uppercase tracking-widest">
+              {ctrTop.length} Counter-Leg Strategies — Mean Reversion
+            </span>
+          </div>
+          <p className="text-[8px] text-slate-500 font-mono leading-relaxed">
+            These strategies bet that <span className="text-[#ff8800] font-bold">overextended ranks will snap back</span> — the strong currency weakens, the weak bounces.
+            They profit when momentum exhausts and provide <span className="text-[#ff8800] font-bold">structural offset</span> to the momentum legs above.
+          </p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {ctrTop.map((s: any, i: number) => (
+              <StrategySummaryCard key={`c-${i}`} strat={s} index={i} type="counter" />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Full Roster Table */}
       <div className="space-y-2">
-        <div className="text-[8px] font-bold text-slate-400 uppercase tracking-widest">Portfolio Members</div>
+        <div className="text-[8px] font-bold text-slate-400 uppercase tracking-widest">Complete Portfolio Roster</div>
         <div className="overflow-x-auto">
           <table className="w-full text-[9px] font-mono">
             <thead>
               <tr className="border-b border-slate-800">
-                {['#', 'Type', 'Rank', 'Session', 'Weight', 'Trades', 'WR%', 'Inst. PF', 'Pips', 'Role'].map(h => (
+                {['#', 'ID', 'Type', 'Rank', 'Session', 'Weight', 'Trades', 'WR%', 'Inst. PF', 'Pips', 'Role'].map(h => (
                   <th key={h} className="text-left text-[7px] text-slate-500 uppercase tracking-wider px-2 py-2">{h}</th>
                 ))}
               </tr>
@@ -514,10 +723,12 @@ function PortfolioBlend({ momentumResults, counterResults }: { momentumResults: 
               {allStrats.map((r: any, i: number) => {
                 const weight = (1 / allStrats.length * 100).toFixed(0);
                 const typeColor = r.type === 'MOMENTUM' ? '#39ff14' : '#ff8800';
+                const agentId = r.type === 'MOMENTUM' ? `atlas-hedge-m${r.idx + 1}` : `atlas-hedge-c${r.idx + 1}`;
                 const role = r.type === 'MOMENTUM' ? 'Trend continuation' : 'Mean reversion offset';
                 return (
                   <tr key={i} className="border-b border-slate-800/30 hover:bg-slate-800/20">
                     <td className="px-2 py-2 text-slate-500">{i + 1}</td>
+                    <td className="px-2 py-2 text-[8px]" style={{ color: typeColor }}>{agentId}</td>
                     <td className="px-2 py-2 font-bold" style={{ color: typeColor }}>{r.type}</td>
                     <td className="px-2 py-2">
                       <span className="text-[#00ffea]">#{r.predator}</span>
@@ -548,9 +759,9 @@ function PortfolioBlend({ momentumResults, counterResults }: { momentumResults: 
           {[
             {
               label: 'Directional Balance',
-              pass: longCount >= 2 && shortCount >= 2,
-              detail: `${longCount} momentum (directional) + ${shortCount} counter (mean-reversion)`,
-              need: 'Need ≥2 of each type for structural offset',
+              pass: momTop.length >= 5 && ctrTop.length >= 5,
+              detail: `${momTop.length} momentum + ${ctrTop.length} counter-leg`,
+              need: 'Need ≥5 of each type for structural offset',
             },
             {
               label: 'Average Profit Factor',
@@ -560,9 +771,9 @@ function PortfolioBlend({ momentumResults, counterResults }: { momentumResults: 
             },
             {
               label: 'Trade Volume',
-              pass: totalTrades >= 50,
+              pass: totalTrades >= 100,
               detail: `${totalTrades} total trades across portfolio`,
-              need: 'Need ≥50 combined trades for statistical significance',
+              need: 'Need ≥100 combined trades for statistical significance',
             },
             {
               label: 'Session Diversification',
@@ -570,10 +781,16 @@ function PortfolioBlend({ momentumResults, counterResults }: { momentumResults: 
               detail: `${new Set(allStrats.map(s => s.session)).size} unique sessions`,
               need: 'At least 2 different sessions for temporal diversification',
             },
+            {
+              label: 'Net Pips Positive',
+              pass: totalPips > 0,
+              detail: `Combined net: ${totalPips > 0 ? '+' : ''}${totalPips.toFixed(1)} pips`,
+              need: 'Portfolio should be net positive across all strategies',
+            },
           ].map((check, i) => (
             <div key={i} className="flex items-start gap-2 p-2 rounded-lg" style={{ background: check.pass ? '#39ff1408' : '#ff005508' }}>
               {check.pass ? (
-                <Target className="w-3.5 h-3.5 text-[#39ff14] shrink-0 mt-0.5" />
+                <CheckCircle className="w-3.5 h-3.5 text-[#39ff14] shrink-0 mt-0.5" />
               ) : (
                 <AlertTriangle className="w-3.5 h-3.5 text-[#ff0055] shrink-0 mt-0.5" />
               )}
@@ -594,7 +811,7 @@ function PortfolioBlend({ momentumResults, counterResults }: { momentumResults: 
 // ── MAIN COMPONENT ──
 // ══════════════════════════════════════════════════════════════════════
 
-export default function HedgeDiscoveryPanel() {
+export default function HedgeDiscoveryPanel({ onPortfolioActivated }: { onPortfolioActivated?: () => void } = {}) {
   const [activeTab, setActiveTab] = useState<PillarTab>('momentum');
   const [momentumResults, setMomentumResults] = useState<any>(null);
   const [counterResults, setCounterResults] = useState<any>(null);
@@ -618,9 +835,6 @@ export default function HedgeDiscoveryPanel() {
         toast.success(`Momentum: ${result.totalCombos} combos, ${result.profitableCombos} profitable. Top: #${top?.predator}v#${top?.prey} PF=${top?.institutionalPF}`);
       } else {
         toast.error(`Momentum failed: ${result.errors?.join('; ')}`);
-      }
-      if (result.errors?.length > 0 && result.success) {
-        toast.warning(`${result.errors.length} worker(s) failed: ${result.errors.join('; ')}`);
       }
     } catch (err) {
       toast.error(`Momentum error: ${(err as Error).message}`);
@@ -647,9 +861,6 @@ export default function HedgeDiscoveryPanel() {
       } else {
         toast.error(`Counter-Leg failed: ${result.errors?.join('; ')}`);
       }
-      if (result.errors?.length > 0 && result.success) {
-        toast.warning(`${result.errors.length} worker(s) failed: ${result.errors.join('; ')}`);
-      }
     } catch (err) {
       toast.error(`Counter-Leg error: ${(err as Error).message}`);
     } finally {
@@ -671,7 +882,7 @@ export default function HedgeDiscoveryPanel() {
             </div>
             <div>
               <h2 className="text-[11px] font-black text-white tracking-tighter">ATLAS HEDGE DEEP SEARCH</h2>
-              <p className="text-[7px] text-slate-500 tracking-[0.15em]">4-PILLAR OPTIMIZATION · MOMENTUM + COUNTER-LEG + REGIME + PORTFOLIO</p>
+              <p className="text-[7px] text-slate-500 tracking-[0.15em]">4-PILLAR OPTIMIZATION · 10 MOMENTUM + 10 COUNTER-LEG = 20 STRATEGY PORTFOLIO</p>
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -702,7 +913,7 @@ export default function HedgeDiscoveryPanel() {
             )}
             {activeTab === 'blend' && (
               <div className="flex items-center gap-1.5 text-[8px] font-mono text-slate-500">
-                <Shield className="w-3 h-3" /> Auto-blends best from all pillars
+                <Shield className="w-3 h-3" /> 10 momentum + 10 counter-leg
               </div>
             )}
           </div>
@@ -738,7 +949,6 @@ export default function HedgeDiscoveryPanel() {
 
       {/* Tab content */}
       <div className="p-6">
-        {/* ── TAB 1: MOMENTUM ── */}
         {activeTab === 'momentum' && (
           <div>
             {runningMomentum ? (
@@ -753,13 +963,11 @@ export default function HedgeDiscoveryPanel() {
               <div className="py-12 text-center space-y-3">
                 <TrendingUp className="w-10 h-10 mx-auto text-slate-600" />
                 <p className="text-[10px] text-slate-500 font-mono">Pillar 1: Find which rank combos, sessions, and SL/TP produce the best <span className="text-[#39ff14]">directional momentum</span> edge</p>
-                <p className="text-[8px] text-slate-600 font-mono">Long the strongest currency, short the weakest — optimized across all parameters</p>
               </div>
             )}
           </div>
         )}
 
-        {/* ── TAB 2: COUNTER-LEG ── */}
         {activeTab === 'counter' && (
           <div>
             {runningCounter ? (
@@ -774,10 +982,9 @@ export default function HedgeDiscoveryPanel() {
               <div className="py-12 text-center space-y-3">
                 <TrendingDown className="w-10 h-10 mx-auto text-slate-600" />
                 <p className="text-[10px] text-slate-500 font-mono">Pillar 2: Find <span className="text-[#ff8800]">mean-reversion</span> strategies that profit when rank spreads converge</p>
-                <p className="text-[8px] text-slate-600 font-mono">Short the strong currency, long the weak — these offset momentum losses when trends reverse</p>
                 <div className="bg-[#ff8800]/8 border border-[#ff8800]/20 rounded-lg p-3 max-w-md mx-auto mt-2">
                   <p className="text-[8px] text-[#ff8800] font-mono">
-                    ⚠️ Uses <span className="font-bold">inverted direction logic</span> — the same rank pairs (#1v#8 etc.) but trading the opposite direction to find when the divergence fades
+                    ⚠️ Uses <span className="font-bold">inverted direction logic</span> — same rank pairs but opposite direction
                   </p>
                 </div>
               </div>
@@ -785,14 +992,12 @@ export default function HedgeDiscoveryPanel() {
           </div>
         )}
 
-        {/* ── TAB 3: REGIME MAP ── */}
         {activeTab === 'regime' && (
           <RegimeBreakdown momentumResults={momentumResults} counterResults={counterResults} />
         )}
 
-        {/* ── TAB 4: PORTFOLIO BLEND ── */}
         {activeTab === 'blend' && (
-          <PortfolioBlend momentumResults={momentumResults} counterResults={counterResults} />
+          <PortfolioBlend momentumResults={momentumResults} counterResults={counterResults} onActivated={onPortfolioActivated} />
         )}
       </div>
     </div>
