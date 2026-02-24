@@ -483,15 +483,26 @@ Deno.serve(async (req) => {
           const gate2 = gateDir === 'long' ? currentPrice > snap.highest : currentPrice < snap.lowest;
 
           if (!gate2) {
-            // Record counterfactual for gate-skipped trades
-            await sb.from('oanda_orders').insert({
-              user_id: userId, signal_id: `cf-${comp.id}-${instrument}-${Date.now()}`,
-              currency_pair: instrument, direction, units: comp.fixedUnits || 500,
-              agent_id: comp.agentId || 'decorrelated-blend', environment: ENVIRONMENT,
-              status: 'skipped', error_message: `G2 Atlas Snap fail`,
-              counterfactual_entry_price: currentPrice,
-              gate_result: 'G2_FAIL', gate_reasons: [`G2 fail: close=${currentPrice.toFixed(prec)} hi=${snap.highest.toFixed(prec)} lo=${snap.lowest.toFixed(prec)}`],
-            }).select('id').single();
+            // Record counterfactual (max 1 per agent per pair per hour to avoid bloat)
+            const cfKey = `cf-${comp.id}-${instrument}`;
+            const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+            const { count: recentCf } = await sb.from('oanda_orders')
+              .select('id', { count: 'exact', head: true })
+              .eq('agent_id', comp.agentId || 'decorrelated-blend')
+              .eq('currency_pair', instrument)
+              .eq('status', 'skipped')
+              .gte('created_at', oneHourAgo);
+
+            if ((recentCf ?? 0) === 0) {
+              await sb.from('oanda_orders').insert({
+                user_id: userId, signal_id: `${cfKey}-${Date.now()}`,
+                currency_pair: instrument, direction, units: comp.fixedUnits || 500,
+                agent_id: comp.agentId || 'decorrelated-blend', environment: ENVIRONMENT,
+                status: 'skipped', error_message: `G2 Atlas Snap fail`,
+                counterfactual_entry_price: currentPrice,
+                gate_result: 'G2_FAIL', gate_reasons: [`G2 fail: close=${currentPrice.toFixed(prec)} hi=${snap.highest.toFixed(prec)} lo=${snap.lowest.toFixed(prec)}`],
+              });
+            }
             executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction, status: 'skipped', skipReason: `G2 Atlas Snap fail (close=${currentPrice.toFixed(prec)} hi=${snap.highest.toFixed(prec)} lo=${snap.lowest.toFixed(prec)})` });
             continue;
           }
@@ -502,14 +513,25 @@ Deno.serve(async (req) => {
             const slope = lrSlope(closes);
             const gate3 = gateDir === 'long' ? slope > 0 : slope < 0;
             if (!gate3) {
-              await sb.from('oanda_orders').insert({
-                user_id: userId, signal_id: `cf-${comp.id}-${instrument}-${Date.now()}`,
-                currency_pair: instrument, direction, units: comp.fixedUnits || 500,
-                agent_id: comp.agentId || 'decorrelated-blend', environment: ENVIRONMENT,
-                status: 'skipped', error_message: `G3 David Vector fail (slope=${slope.toExponential(3)})`,
-                counterfactual_entry_price: currentPrice,
-                gate_result: 'G3_FAIL', gate_reasons: [`G3 fail: slope=${slope.toExponential(3)}`],
-              }).select('id').single();
+              const cfKey = `cf-${comp.id}-${instrument}`;
+              const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+              const { count: recentCf } = await sb.from('oanda_orders')
+                .select('id', { count: 'exact', head: true })
+                .eq('agent_id', comp.agentId || 'decorrelated-blend')
+                .eq('currency_pair', instrument)
+                .eq('status', 'skipped')
+                .gte('created_at', oneHourAgo);
+
+              if ((recentCf ?? 0) === 0) {
+                await sb.from('oanda_orders').insert({
+                  user_id: userId, signal_id: `${cfKey}-${Date.now()}`,
+                  currency_pair: instrument, direction, units: comp.fixedUnits || 500,
+                  agent_id: comp.agentId || 'decorrelated-blend', environment: ENVIRONMENT,
+                  status: 'skipped', error_message: `G3 David Vector fail (slope=${slope.toExponential(3)})`,
+                  counterfactual_entry_price: currentPrice,
+                  gate_result: 'G3_FAIL', gate_reasons: [`G3 fail: slope=${slope.toExponential(3)}`],
+                });
+              }
               executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction, status: 'skipped', skipReason: `G3 David Vector fail (slope=${slope.toExponential(3)})` });
               continue;
             }
