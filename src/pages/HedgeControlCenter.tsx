@@ -5,13 +5,14 @@ import { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Link } from 'react-router-dom';
 import {
-  ShieldCheck, Activity, AlertTriangle, ArrowRight, BarChart3,
-  Brain, CheckCircle2, Clock, Crown, Layers, Loader2, Power,
+  ShieldCheck, Activity, AlertTriangle, BarChart3,
+  Brain, Clock, Crown, Loader2, Power,
   RefreshCw, Skull, Target, TrendingDown, TrendingUp, Wifi, Zap,
-  XCircle, DollarSign, Heart, Shield, Lock,
+  XCircle, DollarSign, Heart, Shield,
 } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
+import HedgeDiscoveryPanel from '@/components/matrix/HedgeDiscoveryPanel';
 
 const FLAGS: Record<string, string> = {
   USD: '🇺🇸', EUR: '🇪🇺', GBP: '🇬🇧', JPY: '🇯🇵',
@@ -110,8 +111,7 @@ const HedgeControlCenter = () => {
   const [executing, setExecuting] = useState(false);
   const [backtestResult, setBacktestResult] = useState<any>(null);
   const [backtesting, setBacktesting] = useState(false);
-  const [discoveryResults, setDiscoveryResults] = useState<any>(null);
-  const [discovering, setDiscovering] = useState(false);
+  // Discovery state moved to HedgeDiscoveryPanel component
 
   const fetchAll = useCallback(async () => {
     setLoading(true);
@@ -314,93 +314,7 @@ const HedgeControlCenter = () => {
       setBacktesting(false);
     }
   }, []);
-
-  const runProfileDiscovery = useCallback(async () => {
-    setDiscovering(true);
-    try {
-      // Parallelize: split by predator rank (R1, R2, R3) to avoid CPU limits
-      const ranks = [1, 2, 3];
-      const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/profile-live-backtest`;
-      const headers = {
-        'Content-Type': 'application/json',
-        apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
-        Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
-      };
-
-      toast.info(`Launching 3 parallel discovery workers (R1, R2, R3)...`);
-
-      const results = await Promise.allSettled(
-        ranks.map(rank =>
-          fetch(url, {
-            method: 'POST',
-            headers,
-            body: JSON.stringify({
-              candles: 15000,
-              environment: 'live',
-              predatorRanks: [rank],
-              topN: 10,
-            }),
-          }).then(r => r.json())
-        )
-      );
-
-      // Merge results from all 3 workers
-      let totalCombos = 0, profitableCombos = 0, rejectedCombos = 0;
-      let allTopResults: any[] = [];
-      let pairsLoaded = 0, totalSnapshots = 0, candlesPerPair = 0;
-      let dateRange: any = null;
-      let version = '';
-      let errors: string[] = [];
-
-      results.forEach((r, i) => {
-        if (r.status === 'fulfilled' && r.value.success) {
-          const d = r.value;
-          totalCombos += d.totalCombos || 0;
-          profitableCombos += d.profitableCombos || 0;
-          rejectedCombos += d.rejectedCombos || 0;
-          pairsLoaded = Math.max(pairsLoaded, d.pairsLoaded || 0);
-          totalSnapshots = Math.max(totalSnapshots, d.totalSnapshots || 0);
-          candlesPerPair = Math.max(candlesPerPair, d.candlesPerPair || 0);
-          if (d.dateRange) dateRange = d.dateRange;
-          if (d.version) version = d.version;
-          if (d.topResults) allTopResults.push(...d.topResults);
-        } else {
-          const errMsg = r.status === 'rejected' ? r.reason?.message : r.value?.error;
-          errors.push(`R${ranks[i]}: ${errMsg || 'Unknown error'}`);
-        }
-      });
-
-      // Sort merged results by institutional PF descending
-      allTopResults.sort((a, b) => (b.institutionalPF || 0) - (a.institutionalPF || 0));
-
-      if (allTopResults.length > 0) {
-        const merged = {
-          success: true,
-          totalCombos,
-          profitableCombos,
-          rejectedCombos,
-          pairsLoaded,
-          totalSnapshots,
-          candlesPerPair,
-          dateRange,
-          version,
-          topResults: allTopResults.slice(0, 15),
-        };
-        setDiscoveryResults(merged);
-        const top = allTopResults[0];
-        toast.success(`Profile Discovery: ${totalCombos} combos tested, ${profitableCombos} profitable. Top: #${top?.predator}v#${top?.prey} PF=${top?.institutionalPF}`);
-        if (errors.length > 0) {
-          toast.warning(`${errors.length} worker(s) failed: ${errors.join('; ')}`);
-        }
-      } else {
-        toast.error(`All discovery workers failed: ${errors.join('; ')}`);
-      }
-    } catch (err) {
-      toast.error(`Discovery error: ${(err as Error).message}`);
-    } finally {
-      setDiscovering(false);
-    }
-  }, []);
+  // Profile discovery moved to HedgeDiscoveryPanel component
 
   // Compute metrics
   const wins = closedTrades.filter(t => {
@@ -918,239 +832,8 @@ const HedgeControlCenter = () => {
           )}
         </div>
 
-        {/* ── Row 3.6: Profile Discovery — Find Optimal Parameters ── */}
-        <div className="bg-slate-900/80 backdrop-blur-md border border-[#39ff14]/20 rounded-2xl p-6 shadow-2xl">
-          <div className="flex items-center justify-between border-b border-[#39ff14]/20 pb-3 mb-4">
-            <div className="flex items-center gap-2">
-              <Crown className="w-4 h-4 text-[#39ff14]" />
-              <h2 className="text-[11px] font-bold tracking-widest text-[#39ff14]/80 uppercase">Profile Discovery</h2>
-              <span className="text-[8px] font-mono text-slate-500">· Sovereign-Alpha v6.0 · Triple-Lock · 20% DD Filter · 15,000 Candles · Live</span>
-            </div>
-            <button
-              onClick={runProfileDiscovery}
-              disabled={discovering}
-              className="flex items-center gap-1.5 text-[9px] font-mono px-4 py-2 rounded-lg border border-[#39ff14]/40 text-[#39ff14] hover:bg-[#39ff14]/10 transition-all disabled:opacity-50"
-            >
-              {discovering ? <Loader2 className="w-3 h-3 animate-spin" /> : <Brain className="w-3 h-3" />}
-              {discovering ? 'DISCOVERING...' : 'FIND OPTIMAL HEDGE'}
-            </button>
-          </div>
-
-          {discovering && (
-            <div className="py-12 text-center space-y-3">
-              <Loader2 className="w-8 h-8 animate-spin mx-auto text-[#39ff14]" />
-              <p className="text-[10px] text-slate-400 font-mono">Testing all rank combos × sessions × SL/TP × gate configs on 15,000 real M30 candles...</p>
-              <p className="text-[8px] text-slate-500 font-mono">Sovereign-Alpha v6.0: Triple-Lock G1+G2+G3 · 20% Fatal DD Filter · 1.5-pip friction · OANDA Live</p>
-            </div>
-          )}
-
-          {!discovering && !discoveryResults && (
-            <div className="py-8 text-center space-y-2">
-              <Crown className="w-10 h-10 mx-auto text-slate-600" />
-              <p className="text-[10px] text-slate-500 font-mono">Let the Profile Discovery Engine find which rank combos actually have edge</p>
-              <p className="text-[8px] text-slate-600 font-mono">
-                Tests all #1v#6..#8, #2v#6..#8, #3v#6..#8 combinations across sessions, SL/TP ratios, and gate configurations.
-                <br />Only profiles surviving the 20% max DD filter with Triple-Lock gate alignment are shown.
-              </p>
-            </div>
-          )}
-
-          {discoveryResults && (
-            <div className="space-y-5">
-              {/* Discovery summary */}
-              <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-                {[
-                  { label: 'Combos Tested', value: discoveryResults.totalCombos?.toLocaleString(), color: '#ffffff' },
-                  { label: 'Profitable', value: discoveryResults.profitableCombos?.toLocaleString(), color: '#39ff14' },
-                  { label: 'Rejected (20% DD)', value: discoveryResults.rejectedCombos?.toLocaleString(), color: '#ff0055' },
-                  { label: 'Pairs Loaded', value: discoveryResults.pairsLoaded, color: '#00ffea' },
-                  { label: 'Rank Snapshots', value: discoveryResults.totalSnapshots?.toLocaleString(), color: '#ffffff' },
-                ].map((m, i) => (
-                  <div key={i} className="bg-slate-950/60 border border-slate-800/40 rounded-lg p-3 text-center">
-                    <div className="text-[7px] text-slate-500 uppercase tracking-wider mb-1">{m.label}</div>
-                    <div className="text-sm font-bold font-mono" style={{ color: m.color }}>{m.value}</div>
-                  </div>
-                ))}
-              </div>
-
-              {/* Top profiles table */}
-              <div className="space-y-2">
-                <div className="text-[8px] font-bold text-slate-400 uppercase tracking-widest">Top Profiles — Ranked by Institutional PF</div>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-[9px] font-mono">
-                    <thead>
-                      <tr className="border-b border-slate-800">
-                        {['#', 'Rank', 'Session', 'SL/TP', 'Trades', 'WR%', 'PF', 'Pips', 'Inst. P/L', 'Agg. P/L', 'Inst. PF', 'Max DD'].map(h => (
-                          <th key={h} className="text-left text-[7px] text-slate-500 uppercase tracking-wider px-2 py-2">{h}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {discoveryResults.topResults?.slice(0, 10).map((r: any, i: number) => {
-                        const isGrade = r.institutionalPF >= 1.5 && r.maxDrawdown > -20 && r.trades >= 10;
-                        return (
-                          <tr key={i} className="border-b border-slate-800/30 hover:bg-slate-800/20">
-                            <td className="px-2 py-2 text-slate-500">{i + 1}</td>
-                            <td className="px-2 py-2">
-                              <span className="text-[#00ffea] font-bold">#{r.predator}</span>
-                              <span className="text-slate-600"> vs </span>
-                              <span className="text-[#ff0055] font-bold">#{r.prey}</span>
-                            </td>
-                            <td className="px-2 py-2 text-slate-400">{r.session}</td>
-                            <td className="px-2 py-2 text-slate-400">{r.slPips}p / {r.tpRatio === 'flip' ? 'Flip' : `${r.tpRatio}R`}</td>
-                            <td className="px-2 py-2 text-white">{r.trades}</td>
-                            <td className="px-2 py-2" style={{ color: r.winRate >= 50 ? '#39ff14' : '#ff8800' }}>{r.winRate}%</td>
-                            <td className="px-2 py-2" style={{ color: r.profitFactor >= 1.5 ? '#39ff14' : r.profitFactor >= 1 ? '#ff8800' : '#ff0055' }}>{r.profitFactor}</td>
-                            <td className="px-2 py-2" style={{ color: r.totalPips >= 0 ? '#39ff14' : '#ff0055' }}>
-                              {r.totalPips >= 0 ? '+' : ''}{r.totalPips}
-                            </td>
-                            <td className="px-2 py-2" style={{ color: r.institutionalProfit >= 0 ? '#39ff14' : '#ff0055' }}>
-                              ${r.institutionalProfit?.toFixed(0)}
-                            </td>
-                            <td className="px-2 py-2" style={{ color: r.aggressiveProfit >= 0 ? '#39ff14' : '#ff0055' }}>
-                              ${r.aggressiveProfit?.toFixed(0)}
-                            </td>
-                            <td className="px-2 py-2 font-bold" style={{ color: r.institutionalPF >= 1.5 ? '#39ff14' : r.institutionalPF >= 1 ? '#ff8800' : '#ff0055' }}>
-                              {r.institutionalPF}
-                            </td>
-                            <td className="px-2 py-2" style={{ color: r.maxDrawdown > -20 ? '#39ff14' : '#ff0055' }}>
-                              {r.maxDrawdown}%
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-
-              {/* OOS Validation for Top 3 */}
-              <div className="space-y-2">
-                <div className="text-[8px] font-bold text-slate-400 uppercase tracking-widest">OOS Validation — 70/30 Lie Detector</div>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  {discoveryResults.topResults?.slice(0, 3).map((r: any, i: number) => {
-                    const hasOOS = r.oosValidation || (r.tradeResults && r.tradeResults.length >= 20);
-                    const oos = r.oosValidation;
-                    return (
-                      <div key={i} className="bg-slate-950/60 border rounded-xl p-4 space-y-3"
-                        style={{ borderColor: oos?.passed ? '#39ff1440' : hasOOS ? '#ff005540' : '#334155' }}>
-                        <div className="flex items-center justify-between">
-                          <span className="text-[10px] font-bold font-mono">
-                            <span className="text-[#00ffea]">#{r.predator}</span>
-                            <span className="text-slate-600"> vs </span>
-                            <span className="text-[#ff0055]">#{r.prey}</span>
-                            <span className="text-slate-500"> · {r.session}</span>
-                          </span>
-                          {oos && (
-                            <span className="text-[7px] font-mono font-bold px-2 py-0.5 rounded-full"
-                              style={{
-                                color: oos.passed ? '#39ff14' : '#ff0055',
-                                background: oos.passed ? '#39ff1415' : '#ff005515',
-                                border: `1px solid ${oos.passed ? '#39ff1440' : '#ff005540'}`,
-                              }}>
-                              {oos.passed ? '✅ OOS PASSED' : '❌ OVERFIT'}
-                            </span>
-                          )}
-                        </div>
-
-                        {oos ? (
-                          <div className="overflow-x-auto">
-                            <table className="w-full text-center border-collapse">
-                              <thead>
-                                <tr>
-                                  <th className="p-1 text-[7px] text-slate-500 font-mono text-left">Metric</th>
-                                  <th className="p-1 text-[7px] text-[#00ffea] font-mono">IS (70%)</th>
-                                  <th className="p-1 text-[7px] text-[#ff8800] font-mono">OOS (30%)</th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {[
-                                  { label: 'Win Rate', is: `${oos.is?.winRate}%`, oos: `${oos.oos?.winRate}%`, alert: (oos.oos?.winRate || 0) < 40 },
-                                  { label: 'PF', is: oos.is?.profitFactor, oos: oos.oos?.profitFactor, alert: (oos.oos?.profitFactor || 0) < 1.2 },
-                                  { label: 'Max DD', is: `${oos.is?.maxDrawdown}%`, oos: `${oos.oos?.maxDrawdown}%`, alert: Math.abs(oos.oos?.maxDrawdown || 0) > Math.abs(oos.is?.maxDrawdown || 0) * 2 },
-                                  { label: 'Trades', is: oos.is?.trades, oos: oos.oos?.trades, alert: false },
-                                  { label: 'Net Pips', is: oos.is?.netPips, oos: oos.oos?.netPips, alert: (oos.oos?.netPips || 0) < 0 },
-                                ].map((row, ri) => (
-                                  <tr key={ri} className="border-t border-slate-800/30">
-                                    <td className="p-1 text-[8px] font-mono font-bold text-slate-300 text-left">{row.label}</td>
-                                    <td className="p-1 text-[8px] font-mono font-bold text-[#00ffea]">{row.is}</td>
-                                    <td className="p-1 text-[8px] font-mono font-bold" style={{ color: row.alert ? '#ff0055' : '#ff8800' }}>{row.oos}</td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                            {oos.failReasons?.length > 0 && (
-                              <div className="mt-2 space-y-0.5">
-                                {oos.failReasons.map((reason: string, ri: number) => (
-                                  <div key={ri} className="text-[7px] font-mono text-[#ff0055] flex items-center gap-1">
-                                    <AlertTriangle className="w-2.5 h-2.5 shrink-0" /> {reason}
-                                  </div>
-                                ))}
-                              </div>
-                            )}
-                          </div>
-                        ) : (
-                          <div className="text-[8px] text-slate-600 font-mono text-center py-4">
-                            OOS data not returned by engine — check if tradeResults are included in response
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* Top 3 equity curves */}
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                {discoveryResults.topResults?.slice(0, 3).map((r: any, i: number) => (
-                  <div key={i} className="bg-slate-950/60 border border-slate-800/40 rounded-xl p-4">
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-[10px] font-bold font-mono">
-                        <span className="text-[#00ffea]">#{r.predator}</span>
-                        <span className="text-slate-600"> vs </span>
-                        <span className="text-[#ff0055]">#{r.prey}</span>
-                        <span className="text-slate-500"> · {r.session}</span>
-                      </span>
-                      <span className="text-[8px] font-mono font-bold" style={{ color: r.institutionalPF >= 1.5 ? '#39ff14' : '#ff8800' }}>
-                        PF {r.institutionalPF}
-                      </span>
-                    </div>
-                    <div className="grid grid-cols-3 gap-1 mb-2">
-                      <div className="text-center">
-                        <div className="text-[6px] text-slate-600 uppercase">Trades</div>
-                        <div className="text-[10px] font-bold font-mono text-white">{r.trades}</div>
-                      </div>
-                      <div className="text-center">
-                        <div className="text-[6px] text-slate-600 uppercase">WR</div>
-                        <div className="text-[10px] font-bold font-mono" style={{ color: r.winRate >= 50 ? '#39ff14' : '#ff8800' }}>{r.winRate}%</div>
-                      </div>
-                      <div className="text-center">
-                        <div className="text-[6px] text-slate-600 uppercase">Inst. Return</div>
-                        <div className="text-[10px] font-bold font-mono" style={{ color: r.institutionalProfit >= 0 ? '#39ff14' : '#ff0055' }}>
-                          ${r.institutionalProfit?.toFixed(0)}
-                        </div>
-                      </div>
-                    </div>
-                    {r.equityCurve && r.equityCurve.length > 2 && (
-                      <MiniCurve
-                        data={r.equityCurve.map((pt: any) => pt.equity)}
-                        height={60}
-                        color={r.institutionalProfit >= 0 ? '#39ff14' : '#ff0055'}
-                      />
-                    )}
-                    {(!r.equityCurve || r.equityCurve.length < 2) && (
-                      <div className="h-[60px] flex items-center justify-center text-[8px] text-slate-600 font-mono">No curve data</div>
-                    )}
-                  </div>
-                ))}
-              </div>
-
-              <div className="text-[7px] text-slate-600 font-mono text-center">
-                {discoveryResults.dateRange?.start?.slice(0, 10)} → {discoveryResults.dateRange?.end?.slice(0, 10)} · v{discoveryResults.version} · {discoveryResults.pairsLoaded} pairs · {discoveryResults.candlesPerPair?.toLocaleString()} candles/pair · OANDA Live · 15,000 candles
-              </div>
-            </div>
-          )}
-        </div>
+        {/* ── Row 3.6: 4-Pillar Deep Search ── */}
+        <HedgeDiscoveryPanel />
 
         {/* ── Row 4: Active Hedge Trades ── */}
         <div className="bg-slate-900/80 backdrop-blur-md border border-yellow-500/20 rounded-2xl p-6 shadow-2xl">
