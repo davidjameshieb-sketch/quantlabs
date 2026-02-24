@@ -393,9 +393,9 @@ const HedgeControlCenter = () => {
 
   // Hedge legs
   const hedgeLegs = [
-    { label: '#1 vs #8', weight: '50%', desc: 'Primary divergence — strongest vs weakest currency', color: '#00ffea' },
-    { label: '#2 vs #7', weight: '30%', desc: 'Secondary spread — second strongest vs second weakest', color: '#39ff14' },
-    { label: '#3 vs #6', weight: '20%', desc: 'Tertiary hedge — third rank pair for correlation dampening', color: '#7fff00' },
+    { label: '#1 vs #8', weight: '50%', desc: 'Primary momentum — long strongest, short weakest currency', color: '#00ffea' },
+    { label: '#2 vs #7', weight: '30%', desc: 'Secondary momentum — same thesis, second-tier divergence', color: '#39ff14' },
+    { label: '#3 vs #6', weight: '20%', desc: 'Tertiary momentum — correlated leg, NOT an offset', color: '#7fff00' },
   ];
 
   return (
@@ -418,7 +418,7 @@ const HedgeControlCenter = () => {
                 HEDGE CONTROL CENTER
               </h1>
               <p className="text-[8px] text-slate-500 tracking-[0.15em] mt-0.5">
-                ATLAS SNAP HEDGE MATRIX · CASCADING RANK PAIRS · STRUCTURAL PROTECTION
+                ATLAS SNAP · RANK-DIVERGENCE MOMENTUM · USE DEEP SEARCH FOR TRUE HEDGING
               </p>
             </div>
           </div>
@@ -561,20 +561,21 @@ const HedgeControlCenter = () => {
         {/* ── Row 2: The Science + Hedge Map ── */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
           {/* How the Hedge Works */}
-          <div className="lg:col-span-6 bg-slate-900/80 backdrop-blur-md border border-purple-500/20 rounded-2xl p-6 shadow-2xl">
-            <div className="flex items-center gap-2 mb-4 border-b border-purple-500/20 pb-3">
-              <Brain className="w-4 h-4 text-purple-400" />
-              <h2 className="text-[11px] font-bold tracking-widest text-purple-300 uppercase">How the Hedge Works — The Science</h2>
+          <div className="lg:col-span-6 bg-slate-900/80 backdrop-blur-md border border-[#ff8800]/20 rounded-2xl p-6 shadow-2xl">
+            <div className="flex items-center gap-2 mb-4 border-b border-[#ff8800]/20 pb-3">
+              <AlertTriangle className="w-4 h-4 text-[#ff8800]" />
+              <h2 className="text-[11px] font-bold tracking-widest text-[#ff8800] uppercase">What This Strategy Actually Is</h2>
             </div>
 
             <div className="space-y-4">
-              <div className="bg-purple-950/20 border border-purple-500/15 rounded-xl p-4 space-y-3">
-                <h3 className="text-[10px] font-bold text-purple-300 uppercase tracking-widest">Currency Rank Divergence Theory</h3>
+              <div className="bg-[#ff8800]/8 border border-[#ff8800]/20 rounded-xl p-4 space-y-3">
+                <h3 className="text-[10px] font-bold text-[#ff8800] uppercase tracking-widest">⚠️ Directional Rank-Divergence Momentum</h3>
                 <p className="text-[9px] text-slate-400 leading-relaxed">
-                  The Atlas Snap Hedge Matrix exploits the mathematical certainty that when 8 currencies are ranked by strength,
-                  the <span className="text-[#00ffea] font-bold">strongest (#1)</span> and <span className="text-[#ff0055] font-bold">weakest (#8)</span> currencies
-                  create the maximum divergence. By trading <span className="text-[#39ff14] font-bold">3 cascading rank pairs simultaneously</span>,
-                  the portfolio hedges against single-pair risk while capturing multi-dimensional currency flow.
+                  The Atlas Snap Hedge Matrix ranks 8 currencies by strength, then goes
+                  <span className="text-[#00ffea] font-bold"> long the strongest</span> and
+                  <span className="text-[#ff0055] font-bold"> short the weakest</span>.
+                  This is a <span className="text-[#ff8800] font-bold">directional momentum trade</span> — it bets that
+                  the strong currency stays strong and the weak stays weak.
                 </p>
               </div>
 
@@ -590,15 +591,17 @@ const HedgeControlCenter = () => {
                 </div>
               ))}
 
-              <div className="bg-slate-950/60 border border-yellow-500/20 rounded-xl p-4 space-y-2">
+              <div className="bg-[#ff0055]/8 border border-[#ff0055]/20 rounded-xl p-4 space-y-2">
                 <div className="flex items-center gap-1.5">
-                  <Shield className="w-3.5 h-3.5 text-yellow-400" />
-                  <span className="text-[9px] font-bold text-yellow-400 uppercase tracking-widest">Why Hedging Reduces Risk</span>
+                  <Skull className="w-3.5 h-3.5 text-[#ff0055]" />
+                  <span className="text-[9px] font-bold text-[#ff0055] uppercase tracking-widest">Why This Is NOT a Hedge</span>
                 </div>
                 <p className="text-[8px] text-slate-400 leading-relaxed">
-                  When the primary divergence (#1v#8) compresses during macro events, the secondary spreads (#2v#7, #3v#6) typically
-                  <span className="text-[#39ff14] font-bold"> widen</span>, absorbing losses from the primary leg. This inverse correlation
-                  creates a self-balancing portfolio where single-event drawdowns are <span className="text-yellow-400 font-bold">structurally dampened</span>.
+                  All 3 legs bet on the <span className="text-[#ff0055] font-bold">same thesis</span> — that rank divergence continues.
+                  When the thesis fails (ranks converge), <span className="text-[#ff0055] font-bold">all 3 legs lose simultaneously</span>.
+                  Running correlated legs doesn't create offsetting risk — it concentrates it.
+                  <span className="text-[#ff8800] font-bold"> True hedging requires counter-legs</span> that profit from convergence.
+                  Use the Deep Search below to find counter-strategies that create actual structural offsets.
                 </p>
               </div>
             </div>
