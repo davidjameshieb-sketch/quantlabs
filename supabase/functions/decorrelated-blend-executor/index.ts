@@ -469,29 +469,39 @@ Deno.serve(async (req) => {
       // Entry trigger result — declared outside gate block so it's always available
       let trigger: { pass: boolean; detail: string } = { pass: true, detail: 'gates_skipped' };
 
-      // Skip gates entirely if config says skipGates: true
+      // Gate enforcement:
+      // - skipGates: true → skip everything (legacy, should not be used)
+      // - invertDirection (counter-leg/mean-reversion) → G1 only (rank imbalance is implicit from predator/prey), skip G2/G3, still check entry trigger
+      // - momentum → full G2 + G3 + entry trigger
       if (!comp.skipGates) {
-        // Gate 2: Atlas Snap
-        const snap = computeAtlasSnap(candles, 20);
-        const gate2 = gateDir === 'long' ? currentPrice > snap.highest : currentPrice < snap.lowest;
+        const isCounterLeg = comp.invertDirection === true;
 
-        if (!gate2) {
-          executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction, status: 'skipped', skipReason: `G2 Atlas Snap fail (close=${currentPrice.toFixed(prec)} hi=${snap.highest.toFixed(prec)} lo=${snap.lowest.toFixed(prec)})` });
-          continue;
-        }
+        if (!isCounterLeg) {
+          // Momentum strategies: full G2 + G3 gate enforcement
+          // Gate 2: Atlas Snap
+          const snap = computeAtlasSnap(candles, 20);
+          const gate2 = gateDir === 'long' ? currentPrice > snap.highest : currentPrice < snap.lowest;
 
-        // Gate 3: David Vector (if required)
-        if (comp.requireG3) {
-          const closes = candles.slice(-20).map(c => c.close);
-          const slope = lrSlope(closes);
-          const gate3 = gateDir === 'long' ? slope > 0 : slope < 0;
-          if (!gate3) {
-            executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction, status: 'skipped', skipReason: `G3 David Vector fail (slope=${slope.toExponential(3)})` });
+          if (!gate2) {
+            executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction, status: 'skipped', skipReason: `G2 Atlas Snap fail (close=${currentPrice.toFixed(prec)} hi=${snap.highest.toFixed(prec)} lo=${snap.lowest.toFixed(prec)})` });
             continue;
           }
+
+          // Gate 3: David Vector (if required)
+          if (comp.requireG3) {
+            const closes = candles.slice(-20).map(c => c.close);
+            const slope = lrSlope(closes);
+            const gate3 = gateDir === 'long' ? slope > 0 : slope < 0;
+            if (!gate3) {
+              executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction, status: 'skipped', skipReason: `G3 David Vector fail (slope=${slope.toExponential(3)})` });
+              continue;
+            }
+          }
+        } else {
+          console.log(`[BLEND] ↩ ${comp.id} counter-leg: G1-only mode (G2/G3 skipped)`);
         }
 
-        // Entry Trigger
+        // Entry Trigger (checked for both momentum and counter-leg)
         trigger = checkEntryTrigger(comp, candles, direction);
         if (!trigger.pass) {
           executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction, status: 'skipped', skipReason: `Entry trigger fail: ${trigger.detail}` });
@@ -515,7 +525,7 @@ Deno.serve(async (req) => {
       }
       const signedUnits = direction === 'short' ? -units : units;
 
-      const gateLabel = comp.requireG3 ? 'G1+G2+G3' : 'G1+G2';
+      const gateLabel = comp.invertDirection ? 'G1-only' : (comp.requireG3 ? 'G1+G2+G3' : 'G1+G2');
       const signalId = `blend-${comp.id}-${instrument}-${Date.now()}`;
       const slPips = Math.round(slDistance / pv * 10) / 10;
 
