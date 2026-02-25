@@ -256,6 +256,42 @@ Deno.serve(async (req) => {
 
     const body = await req.json().catch(() => ({}));
 
+    // ── Concurrency lock: only one executor at a time ──
+    const lockKey = 'blend_executor_lock';
+    const { data: lockRow } = await sb
+      .from('system_settings')
+      .select('value, updated_at')
+      .eq('key', lockKey)
+      .maybeSingle();
+
+    const now = Date.now();
+    const lockExpiry = 90_000; // 90 seconds max lock duration
+    if (lockRow) {
+      const lockTs = new Date(lockRow.updated_at).getTime();
+      const lockActive = (lockRow.value as any)?.locked === true;
+      if (lockActive && (now - lockTs) < lockExpiry) {
+        console.log(`[BLEND] ⏳ Skipping — another cycle is still running (locked ${Math.round((now - lockTs) / 1000)}s ago)`);
+        return new Response(
+          JSON.stringify({ success: true, reason: 'lock_held', age_ms: now - lockTs }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+    }
+
+    // Acquire lock
+    await sb.from('system_settings').upsert(
+      { key: lockKey, value: { locked: true, started: new Date().toISOString() }, updated_at: new Date().toISOString() },
+      { onConflict: 'key' }
+    );
+
+    // Ensure lock is released on exit
+    const releaseLock = async () => {
+      await sb.from('system_settings').upsert(
+        { key: lockKey, value: { locked: false }, updated_at: new Date().toISOString() },
+        { onConflict: 'key' }
+      );
+    };
+
     // ── Resolve active components (dynamic portfolio or hardcoded fallback) ──
     let activeComponents: BlendComponent[] = DEFAULT_COMPONENTS;
     let maxPositions = 5;
@@ -604,6 +640,23 @@ Deno.serve(async (req) => {
       console.log(`[BLEND] 🎯 ${comp.id} → ${instrument} ${direction.toUpperCase()} LIMIT @ ${limitPrice.toFixed(prec)} (bid=${pricing.bid.toFixed(prec)} ask=${pricing.ask.toFixed(prec)} ±2p) ${units}u | SL=${slPrice.toFixed(prec)} TP=${tpPrice.toFixed(prec)} | scaler=${scalerMultiplier}x`);
 
       try {
+        // Idempotency guard: skip if we already have a recent submitted/open order for this agent+pair
+        const recentCutoff = new Date(Date.now() - 15 * 60 * 1000).toISOString();
+        const { data: existingOrder } = await sb
+          .from('oanda_orders')
+          .select('id')
+          .eq('agent_id', comp.agentId || 'decorrelated-blend')
+          .eq('currency_pair', instrument)
+          .in('status', ['submitted', 'open', 'filled'])
+          .eq('environment', ENVIRONMENT)
+          .gt('created_at', recentCutoff)
+          .limit(1);
+
+        if (existingOrder && existingOrder.length > 0) {
+          executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction, status: 'skipped', skipReason: 'Recent order already exists for this agent+pair' });
+          continue;
+        }
+
         const { data: dbOrder, error: dbErr } = await sb
           .from('oanda_orders')
           .insert({
@@ -675,7 +728,7 @@ Deno.serve(async (req) => {
         const pipMult = instrument.includes('JPY') ? 100 : 10000;
         const slippagePips = filledPrice != null ? Math.abs((filledPrice - limitPrice) * pipMult) : null;
 
-        await sb.from('oanda_orders').update({
+        const { error: updateErr } = await sb.from('oanda_orders').update({
           status: wasImmediatelyFilled ? 'filled' : 'open',
           oanda_order_id: oandaOrderId,
           oanda_trade_id: oandaTradeId,
@@ -691,6 +744,12 @@ Deno.serve(async (req) => {
             `SL: ${slPrice.toFixed(prec)} (${slPips}p) | TP: ${tpPrice.toFixed(prec)} | Expires: ${limitExpiry}`,
           ],
         }).eq('id', dbOrder.id);
+
+        if (updateErr) {
+          console.error(`[BLEND] ❌ DB UPDATE FAILED for ${instrument} (id=${dbOrder.id}):`, updateErr.message);
+        } else {
+          console.log(`[BLEND] 📝 DB updated: ${dbOrder.id} → oanda_order_id=${oandaOrderId}, status=${wasImmediatelyFilled ? 'filled' : 'open'}`);
+        }
 
         const statusLabel = wasImmediatelyFilled ? 'filled' : 'pending_limit';
         console.log(`[BLEND] ✅ ${comp.id} ${instrument} ${direction.toUpperCase()} LIMIT ${units}u @ ${limitPrice.toFixed(prec)} [${statusLabel}] [${fillLatency}ms]`);
@@ -722,11 +781,13 @@ Deno.serve(async (req) => {
       }
     }
 
-    const filled = executionResults.filter(r => r.status === 'filled').length;
+    const filled = executionResults.filter(r => r.status === 'filled' || r.status === 'pending_limit').length;
     const skipped = executionResults.filter(r => r.status === 'skipped').length;
-    const errors = executionResults.filter(r => !['filled', 'skipped'].includes(r.status)).length;
+    const errors = executionResults.filter(r => !['filled', 'skipped', 'pending_limit'].includes(r.status)).length;
 
-    console.log(`[BLEND] Cycle complete: ${filled} filled, ${skipped} skipped, ${errors} errors, ${openPairs.size} total open`);
+    console.log(`[BLEND] Cycle complete: ${filled} placed, ${skipped} skipped, ${errors} errors, ${openPairs.size} total open`);
+
+    await releaseLock();
 
     return new Response(
       JSON.stringify({
@@ -749,6 +810,14 @@ Deno.serve(async (req) => {
 
   } catch (err) {
     console.error('[BLEND] Fatal error:', err);
+    // Try to release lock on error
+    try {
+      const sb2 = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
+      await sb2.from('system_settings').upsert(
+        { key: 'blend_executor_lock', value: { locked: false }, updated_at: new Date().toISOString() },
+        { onConflict: 'key' }
+      );
+    } catch {}
     return new Response(
       JSON.stringify({ success: false, error: (err as Error).message }),
       { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }

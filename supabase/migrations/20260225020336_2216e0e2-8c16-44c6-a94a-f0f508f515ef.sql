@@ -1,0 +1,2 @@
+ALTER TABLE oanda_orders DROP CONSTRAINT oanda_orders_status_check;
+ALTER TABLE oanda_orders ADD CONSTRAINT oanda_orders_status_check CHECK (status = ANY (ARRAY['pending','submitted','filled','rejected','closed','cancelled','open','expired']));
