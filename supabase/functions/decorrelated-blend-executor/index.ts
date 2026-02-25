@@ -553,6 +553,73 @@ Deno.serve(async (req) => {
       console.warn('[BLEND] SL/TP retroactive check error:', (e as Error).message);
     }
 
+    // ── Step 2d: CLOSED-TRADE RECONCILIATION ──
+    // Detect trades closed by OANDA native SL/TP and update DB
+    try {
+      const { data: filledDbOrders } = await sb
+        .from('oanda_orders')
+        .select('id, oanda_trade_id, currency_pair, direction, agent_id, entry_price')
+        .eq('status', 'filled')
+        .not('oanda_trade_id', 'is', null)
+        .eq('environment', ENVIRONMENT)
+        .in('agent_id', portfolioAgentIds);
+
+      if (filledDbOrders && filledDbOrders.length > 0) {
+        // Fetch open trades from OANDA
+        const openTradesRes = await fetch(`${oandaHost}/v3/accounts/${accountId}/openTrades`, {
+          headers: { Authorization: `Bearer ${apiToken}`, Accept: 'application/json' },
+        });
+        if (openTradesRes.ok) {
+          const openTradesData = (await openTradesRes.json()).trades || [];
+          const openTradeIds = new Set(openTradesData.map((t: any) => t.id));
+
+          for (const dbOrder of filledDbOrders) {
+            if (openTradeIds.has(dbOrder.oanda_trade_id)) continue; // Still open
+
+            // Trade is NOT in OANDA open trades → closed by SL/TP
+            // Fetch the trade details to get exit price
+            try {
+              const tradeDetailRes = await fetch(
+                `${oandaHost}/v3/accounts/${accountId}/trades/${dbOrder.oanda_trade_id}`,
+                { headers: { Authorization: `Bearer ${apiToken}`, Accept: 'application/json' } }
+              );
+              if (tradeDetailRes.ok) {
+                const tradeDetail = (await tradeDetailRes.json()).trade;
+                const exitPrice = tradeDetail?.averageClosePrice ? parseFloat(tradeDetail.averageClosePrice) : null;
+                const closeTime = tradeDetail?.closeTime || new Date().toISOString();
+                const realizedPL = tradeDetail?.realizedPL ? parseFloat(tradeDetail.realizedPL) : null;
+
+                await sb.from('oanda_orders').update({
+                  status: 'closed',
+                  exit_price: exitPrice,
+                  closed_at: closeTime,
+                }).eq('id', dbOrder.id);
+
+                const pv = dbOrder.currency_pair?.includes('JPY') ? 0.01 : 0.0001;
+                const pipResult = exitPrice && dbOrder.entry_price
+                  ? dbOrder.direction === 'long'
+                    ? ((exitPrice - dbOrder.entry_price) / pv)
+                    : ((dbOrder.entry_price - exitPrice) / pv)
+                  : null;
+                const resultLabel = pipResult != null ? (pipResult > 0 ? 'WIN' : 'LOSS') : '?';
+
+                console.log(`[BLEND] 🏁 Trade closed by SL/TP: ${dbOrder.currency_pair} ${dbOrder.direction} → ${resultLabel} ${pipResult?.toFixed(1)}p (PL=$${realizedPL?.toFixed(2)}) agent=${dbOrder.agent_id}`);
+              }
+            } catch (e) {
+              // Fallback: mark as closed without exit price
+              await sb.from('oanda_orders').update({
+                status: 'closed',
+                closed_at: new Date().toISOString(),
+              }).eq('id', dbOrder.id);
+              console.warn(`[BLEND] Trade ${dbOrder.oanda_trade_id} closed but details fetch failed:`, (e as Error).message);
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[BLEND] Closed-trade reconciliation error:', (e as Error).message);
+    }
+
     // ── Step 2b: Check open positions (only count orders that actually reached OANDA) ──
     const { data: openPositions } = await sb
       .from('oanda_orders')
@@ -697,6 +764,19 @@ Deno.serve(async (req) => {
       }
 
       const { instrument, inverted } = instrInfo;
+
+      // ── MOMENTUM 1v8 SAFEGUARD ──
+      // If this is a momentum agent (NOT invertDirection) and the resolved pair lands
+      // on the absolute extreme (rank 1 vs rank 8), SKIP to avoid buying peak exhaustion.
+      // Momentum agents should trade the "sweet spot" (e.g. 2v6, 3v7), not the extreme.
+      const isMomentumAgent = !comp.invertDirection;
+      const resolvedPredRank = currencyRanks[predCurrency] ?? comp.predatorRank;
+      const resolvedPreyRank = currencyRanks[preyCurrency] ?? comp.preyRank;
+      if (isMomentumAgent && resolvedPredRank === 1 && resolvedPreyRank === 8) {
+        executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction: 'long', status: 'skipped', skipReason: 'Momentum 1v8 safeguard — peak exhaustion' });
+        continue;
+      }
+
       // Momentum direction (used for gate evaluation)
       const momentumDirection: 'long' | 'short' = inverted ? 'short' : 'long';
       // Actual trade direction: flipped for counter-leg mean-reversion
