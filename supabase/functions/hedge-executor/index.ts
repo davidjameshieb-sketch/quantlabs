@@ -299,7 +299,7 @@ Deno.serve(async (req) => {
               const bid = parseFloat(p.bids?.[0]?.price || p.closeoutBid);
               const ask = parseFloat(p.asks?.[0]?.price || p.closeoutAsk);
               const mid = (bid + ask) / 2;
-              const trapOffset = pv * 20; // 2 pips
+              const trapOffset = pv * 2; // 2 pips (2 * 0.0001 = 0.0002)
               limitPrice = direction === 'long' ? mid - trapOffset : mid + trapOffset;
             }
           }

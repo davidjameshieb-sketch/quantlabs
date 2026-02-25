@@ -490,7 +490,7 @@ Deno.serve(async (req) => {
         continue;
       }
       const midPrice = (pricing.bid + pricing.ask) / 2;
-      const trapOffset = pv * 20; // 2.0 pips (20 * 0.0001 or 20 * 0.01 for JPY)
+      const trapOffset = pv * 2; // 2.0 pips (2 * 0.0001 = 0.0002, or 2 * 0.01 = 0.02 for JPY)
       const limitPrice = direction === 'long' ? midPrice - trapOffset : midPrice + trapOffset;
 
       // Compute SL/TP relative to LIMIT PRICE (not current market)
