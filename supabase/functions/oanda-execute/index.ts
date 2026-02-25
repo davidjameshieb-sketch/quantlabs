@@ -16,7 +16,7 @@ const OANDA_HOSTS = {
 } as const;
 
 interface ExecuteRequest {
-  action: "execute" | "close" | "status" | "account-summary" | "update-orders" | "barrage";
+  action: "execute" | "close" | "status" | "account-summary" | "update-orders" | "barrage" | "cancel-pending";
   signalId?: string;
   currencyPair?: string;
   direction?: "long" | "short";
@@ -510,8 +510,58 @@ Deno.serve(async (req) => {
       );
     }
 
+    // ─── Cancel All Pending Orders ───
+    if (body.action === "cancel-pending") {
+      const apiToken = environment === "live"
+        ? (Deno.env.get("OANDA_LIVE_API_TOKEN") || Deno.env.get("OANDA_API_TOKEN"))
+        : Deno.env.get("OANDA_API_TOKEN");
+      const accountId = environment === "live"
+        ? (Deno.env.get("OANDA_LIVE_ACCOUNT_ID") || Deno.env.get("OANDA_ACCOUNT_ID"))
+        : Deno.env.get("OANDA_ACCOUNT_ID");
+      const host = OANDA_HOSTS[environment];
+
+      // Fetch pending orders from OANDA
+      const pendingRes = await fetch(`${host}/v3/accounts/${accountId}/pendingOrders`, {
+        headers: { Authorization: `Bearer ${apiToken}`, Accept: "application/json" },
+      });
+      if (!pendingRes.ok) throw new Error(`Failed to fetch pending orders: ${pendingRes.status}`);
+      const pendingData = await pendingRes.json();
+      const pendingOrders = pendingData.orders || [];
+
+      console.log(`[OANDA] Cancelling ${pendingOrders.length} pending orders`);
+
+      const cancelResults = await Promise.allSettled(
+        pendingOrders.map(async (order: any) => {
+          const cancelRes = await fetch(`${host}/v3/accounts/${accountId}/orders/${order.id}/cancel`, {
+            method: "PUT",
+            headers: { Authorization: `Bearer ${apiToken}`, Accept: "application/json" },
+          });
+          return { orderId: order.id, instrument: order.instrument, status: cancelRes.ok ? "cancelled" : "failed" };
+        })
+      );
+
+      // Mark all submitted DB records as cancelled
+      const sb = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
+      await sb.from("oanda_orders")
+        .update({ status: "cancelled", error_message: "Pending OANDA order cancelled — stale 20-pip offset" })
+        .eq("status", "submitted")
+        .eq("environment", environment)
+        .like("agent_id", "atlas-hedge-%");
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          action: "cancel-pending",
+          cancelledOnOanda: cancelResults.filter((r: any) => r.status === "fulfilled").length,
+          cancelledInDb: true,
+          details: cancelResults.map((r: any) => r.status === "fulfilled" ? r.value : { error: (r as any).reason?.message }),
+        }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
     return new Response(
-      JSON.stringify({ error: "Invalid action. Use: execute, close, status, account-summary, update-orders, barrage" }),
+      JSON.stringify({ error: "Invalid action. Use: execute, close, status, account-summary, update-orders, barrage, cancel-pending" }),
       { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   } catch (err) {
