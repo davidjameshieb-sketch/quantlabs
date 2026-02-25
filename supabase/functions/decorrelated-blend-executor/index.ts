@@ -616,7 +616,6 @@ Deno.serve(async (req) => {
     // ── Step 5: Evaluate each component ──
     // apiToken, accountId, oandaHost already declared in fill-tracker section above
     const userId = '00000000-0000-0000-0000-000000000000';
-    const userId = '00000000-0000-0000-0000-000000000000';
 
     // ── Fetch live account equity for dynamic position sizing ──
     let accountEquity = 1000; // fallback
