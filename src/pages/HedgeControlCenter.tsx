@@ -136,13 +136,12 @@ const HedgeControlCenter = () => {
           .from('oanda_orders')
           .select('*')
           .in('agent_id', agentIds)
-          .in('status', ['filled', 'open'])
-          .not('entry_price', 'is', null)
-          .is('exit_price', null)
+          .in('status', ['filled', 'open', 'submitted'])
           .is('closed_at', null)
           .order('created_at', { ascending: false })
           .limit(50);
-        setActiveTrades(openTrades ?? []);
+        // Only show trades with confirmed OANDA fills or pending limits
+        setActiveTrades((openTrades ?? []).filter(t => t.entry_price != null || t.status === 'open'));
 
         // Fetch closed trades (last 30 days)
         const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();

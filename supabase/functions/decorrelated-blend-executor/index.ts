@@ -1,4 +1,4 @@
-// Decorrelated Portfolio Blend — Precision Executor v3
+// Decorrelated Portfolio Blend — Precision Executor v4 (LIMIT ORDER / GATES BYPASSED)
 // Supports dynamic portfolio from agent_configs OR hardcoded 5-component blend fallback.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
@@ -55,6 +55,22 @@ const DEFAULT_COMPONENTS: BlendComponent[] = [
   { id: '3v7', predatorRank: 3, preyRank: 7, requireG3: false, slType: 'fixed_30',      entryType: 'order_block', weight: 0.11, label: '#3v#7 · G1+G2 · 30 pip fixed · Order block' },
   { id: '3v6', predatorRank: 3, preyRank: 6, requireG3: false, slType: 'atr_2x',        entryType: 'order_block', weight: 0.09, label: '#3v#6 · G1+G2 · 2.0x ATR · Order block' },
 ];
+
+// ── Pricing Helper ──
+
+async function fetchBidAsk(instrument: string, apiToken: string): Promise<{ bid: number; ask: number } | null> {
+  const host = OANDA_HOSTS[ENVIRONMENT];
+  try {
+    const res = await fetch(`${host}/v3/accounts/${Deno.env.get('OANDA_ACCOUNT_ID')!}/pricing?instruments=${instrument}`, {
+      headers: { Authorization: `Bearer ${apiToken}`, Accept: 'application/json' },
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const p = data.prices?.[0];
+    if (!p) return null;
+    return { bid: parseFloat(p.bids?.[0]?.price || p.closeoutBid), ask: parseFloat(p.asks?.[0]?.price || p.closeoutAsk) };
+  } catch { return null; }
+}
 
 // ── Candle / Market Data Helpers ──
 
@@ -462,99 +478,26 @@ Deno.serve(async (req) => {
       const pv = pipValue(instrument);
       const prec = pricePrecision(instrument);
 
-      // Gates evaluated using MOMENTUM direction (breakout structure must exist first)
-      // Counter-leg then fades the breakout by taking the opposite trade
-      const gateDir = momentumDirection;
+      // ── GATES BYPASSED — raw rank-divergence alpha ──
+      // All G2/G3 gates disabled. Only G1 (rank) + spread guard apply.
+      console.log(`[BLEND] ⚡ ${comp.id} → gates bypassed, raw rank-divergence signal`);
+      const trigger = { pass: true, detail: 'gates_bypassed' };
 
-      // Entry trigger result — declared outside gate block so it's always available
-      let trigger: { pass: boolean; detail: string } = { pass: true, detail: 'gates_skipped' };
-
-      // Gate enforcement:
-      // - skipGates: true → skip everything (legacy, should not be used)
-      // - invertDirection (counter-leg/mean-reversion) → G1 only (rank imbalance is implicit from predator/prey), skip G2/G3, still check entry trigger
-      // - momentum → full G2 + G3 + entry trigger
-      if (!comp.skipGates) {
-        const isCounterLeg = comp.invertDirection === true;
-
-        if (!isCounterLeg) {
-          // Momentum strategies: full G2 + G3 gate enforcement
-          // Gate 2: Atlas Snap
-          const snap = computeAtlasSnap(candles, 20);
-          const gate2 = gateDir === 'long' ? currentPrice > snap.highest : currentPrice < snap.lowest;
-
-          if (!gate2) {
-            // Record counterfactual (max 1 per agent per pair per hour to avoid bloat)
-            const cfKey = `cf-${comp.id}-${instrument}`;
-            const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
-            const { count: recentCf } = await sb.from('oanda_orders')
-              .select('id', { count: 'exact', head: true })
-              .eq('agent_id', comp.agentId || 'decorrelated-blend')
-              .eq('currency_pair', instrument)
-              .eq('status', 'skipped')
-              .gte('created_at', oneHourAgo);
-
-            if ((recentCf ?? 0) === 0) {
-              await sb.from('oanda_orders').insert({
-                user_id: userId, signal_id: `${cfKey}-${Date.now()}`,
-                currency_pair: instrument, direction, units: comp.fixedUnits || 500,
-                agent_id: comp.agentId || 'decorrelated-blend', environment: ENVIRONMENT,
-                status: 'skipped', error_message: `G2 Atlas Snap fail`,
-                counterfactual_entry_price: currentPrice,
-                gate_result: 'G2_FAIL', gate_reasons: [`G2 fail: close=${currentPrice.toFixed(prec)} hi=${snap.highest.toFixed(prec)} lo=${snap.lowest.toFixed(prec)}`],
-              });
-            }
-            executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction, status: 'skipped', skipReason: `G2 Atlas Snap fail (close=${currentPrice.toFixed(prec)} hi=${snap.highest.toFixed(prec)} lo=${snap.lowest.toFixed(prec)})` });
-            continue;
-          }
-
-          // Gate 3: David Vector (if required)
-          if (comp.requireG3) {
-            const closes = candles.slice(-20).map(c => c.close);
-            const slope = lrSlope(closes);
-            const gate3 = gateDir === 'long' ? slope > 0 : slope < 0;
-            if (!gate3) {
-              const cfKey = `cf-${comp.id}-${instrument}`;
-              const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
-              const { count: recentCf } = await sb.from('oanda_orders')
-                .select('id', { count: 'exact', head: true })
-                .eq('agent_id', comp.agentId || 'decorrelated-blend')
-                .eq('currency_pair', instrument)
-                .eq('status', 'skipped')
-                .gte('created_at', oneHourAgo);
-
-              if ((recentCf ?? 0) === 0) {
-                await sb.from('oanda_orders').insert({
-                  user_id: userId, signal_id: `${cfKey}-${Date.now()}`,
-                  currency_pair: instrument, direction, units: comp.fixedUnits || 500,
-                  agent_id: comp.agentId || 'decorrelated-blend', environment: ENVIRONMENT,
-                  status: 'skipped', error_message: `G3 David Vector fail (slope=${slope.toExponential(3)})`,
-                  counterfactual_entry_price: currentPrice,
-                  gate_result: 'G3_FAIL', gate_reasons: [`G3 fail: slope=${slope.toExponential(3)}`],
-                });
-              }
-              executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction, status: 'skipped', skipReason: `G3 David Vector fail (slope=${slope.toExponential(3)})` });
-              continue;
-            }
-          }
-        } else {
-          console.log(`[BLEND] ↩ ${comp.id} counter-leg: G1-only mode (G2/G3 skipped)`);
-        }
-
-        // Entry Trigger (checked for both momentum and counter-leg)
-        // Counter-leg evaluates trigger in MOMENTUM direction (fading the breakout structure)
-        const triggerDir = isCounterLeg ? gateDir : direction;
-        trigger = checkEntryTrigger(comp, candles, triggerDir);
-        if (!trigger.pass) {
-          executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction, status: 'skipped', skipReason: `Entry trigger fail: ${trigger.detail}` });
-          continue;
-        }
+      // ── Fetch live bid/ask for LIMIT order placement ──
+      const pricing = await fetchBidAsk(instrument, apiToken);
+      if (!pricing) {
+        executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction, status: 'skipped', skipReason: 'Could not fetch bid/ask pricing' });
+        continue;
       }
+      const midPrice = (pricing.bid + pricing.ask) / 2;
+      const trapOffset = pv * 20; // 2.0 pips (20 * 0.0001 or 20 * 0.01 for JPY)
+      const limitPrice = direction === 'long' ? midPrice - trapOffset : midPrice + trapOffset;
 
-      // Compute SL/TP
-      const slDistance = computeSLDistance(comp, candles, direction, currentPrice, pv);
+      // Compute SL/TP relative to LIMIT PRICE (not current market)
+      const slDistance = computeSLDistance(comp, candles, direction, limitPrice, pv);
       const compTpRatio = comp.tpRatio || TP_RATIO;
-      const slPrice = direction === 'long' ? currentPrice - slDistance : currentPrice + slDistance;
-      const tpPrice = direction === 'long' ? currentPrice + slDistance * compTpRatio : currentPrice - slDistance * compTpRatio;
+      const slPrice = direction === 'long' ? limitPrice - slDistance : limitPrice + slDistance;
+      const tpPrice = direction === 'long' ? limitPrice + slDistance * compTpRatio : limitPrice - slDistance * compTpRatio;
 
       // Position sizing: use fixedUnits if configured, otherwise dynamic 5% equity risk
       let units: number;
@@ -566,11 +509,14 @@ Deno.serve(async (req) => {
       }
       const signedUnits = direction === 'short' ? -units : units;
 
-      const gateLabel = comp.invertDirection ? 'G1-only' : (comp.requireG3 ? 'G1+G2+G3' : 'G1+G2');
+      const gateLabel = 'G1-RAW';
       const signalId = `blend-${comp.id}-${instrument}-${Date.now()}`;
       const slPips = Math.round(slDistance / pv * 10) / 10;
 
-      console.log(`[BLEND] 🎯 ${comp.id} → ${instrument} ${direction.toUpperCase()} ${units}u | ${gateLabel} | SL=${comp.slType}(${slPips}p) | Entry=${trigger.detail}`);
+      // Limit order expiry: ~10 minutes from now (3 cron cycles)
+      const limitExpiry = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+
+      console.log(`[BLEND] 🎯 ${comp.id} → ${instrument} ${direction.toUpperCase()} LIMIT @ ${limitPrice.toFixed(prec)} (mid=${midPrice.toFixed(prec)} ±2p) ${units}u | SL=${comp.slType}(${slPips}p)`);
 
       try {
         const { data: dbOrder, error: dbErr } = await sb
@@ -585,6 +531,7 @@ Deno.serve(async (req) => {
             environment: ENVIRONMENT,
             status: 'submitted',
             confidence_score: comp.weight,
+            requested_price: limitPrice,
           })
           .select('id')
           .single();
@@ -595,15 +542,18 @@ Deno.serve(async (req) => {
           continue;
         }
 
-        // Execute on OANDA
+        // Execute LIMIT ORDER on OANDA
         const orderTs = Date.now();
         const orderBody = {
           order: {
-            type: 'MARKET',
+            type: 'LIMIT',
             instrument,
             units: signedUnits.toString(),
-            timeInForce: 'FOK',
+            price: limitPrice.toFixed(prec),
+            timeInForce: 'GTD',
+            gtdTime: limitExpiry,
             positionFill: 'DEFAULT',
+            triggerCondition: 'DEFAULT',
             stopLossOnFill: { price: slPrice.toFixed(prec), timeInForce: 'GTC' },
             takeProfitOnFill: { price: tpPrice.toFixed(prec), timeInForce: 'GTC' },
           },
@@ -625,51 +575,55 @@ Deno.serve(async (req) => {
         if (!oandaRes.ok) {
           const errMsg = oandaData.errorMessage || oandaData.rejectReason || `OANDA ${oandaRes.status}`;
           console.error(`[BLEND] OANDA rejected ${instrument}: ${errMsg}`);
-          await sb.from('oanda_orders').update({ status: 'rejected', error_message: errMsg, counterfactual_entry_price: currentPrice }).eq('id', dbOrder.id);
+          await sb.from('oanda_orders').update({ status: 'rejected', error_message: errMsg }).eq('id', dbOrder.id);
           executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction, status: 'rejected', error: errMsg });
           continue;
         }
 
-        const oandaOrderId = oandaData.orderCreateTransaction?.id || oandaData.orderFillTransaction?.orderID || null;
-        const oandaTradeId = oandaData.orderFillTransaction?.tradeOpened?.tradeID || oandaData.orderFillTransaction?.id || null;
+        // LIMIT orders create a pending order, not an immediate fill
+        const oandaOrderId = oandaData.orderCreateTransaction?.id || null;
+        // Check if it was immediately filled (unlikely for limit, but possible)
+        const oandaTradeId = oandaData.orderFillTransaction?.tradeOpened?.tradeID || null;
         const filledPrice = oandaData.orderFillTransaction?.price ? parseFloat(oandaData.orderFillTransaction.price) : null;
+        const wasImmediatelyFilled = filledPrice != null;
 
         const pipMult = instrument.includes('JPY') ? 100 : 10000;
-        const slippagePips = filledPrice != null ? Math.abs((filledPrice - currentPrice) * pipMult) : null;
+        const slippagePips = filledPrice != null ? Math.abs((filledPrice - limitPrice) * pipMult) : null;
 
         await sb.from('oanda_orders').update({
-          status: 'filled',
+          status: wasImmediatelyFilled ? 'filled' : 'open',
           oanda_order_id: oandaOrderId,
           oanda_trade_id: oandaTradeId,
           entry_price: filledPrice,
-          requested_price: currentPrice,
+          requested_price: limitPrice,
           slippage_pips: slippagePips,
           fill_latency_ms: fillLatency,
           gate_result: gateLabel,
           gate_reasons: [
             `Component: ${comp.id} (${(comp.weight * 100).toFixed(0)}% weight)`,
             `Rank: ${predCurrency}(#${comp.predatorRank}) vs ${preyCurrency}(#${comp.preyRank})`,
-            `SL: ${comp.slType} (${slPips} pips)`,
-            `Entry: ${comp.entryType} — ${trigger.detail}`,
+            `LIMIT @ ${limitPrice.toFixed(prec)} (mid=${midPrice.toFixed(prec)} ±2p trap)`,
+            `SL: ${comp.slType} (${slPips} pips) | Expires: ${limitExpiry}`,
           ],
         }).eq('id', dbOrder.id);
 
-        console.log(`[BLEND] ✅ ${comp.id} ${instrument} ${direction.toUpperCase()} ${units}u @ ${filledPrice} (SL=${slPrice.toFixed(prec)} TP=${tpPrice.toFixed(prec)}) [${fillLatency}ms]`);
+        const statusLabel = wasImmediatelyFilled ? 'filled' : 'pending_limit';
+        console.log(`[BLEND] ✅ ${comp.id} ${instrument} ${direction.toUpperCase()} LIMIT ${units}u @ ${limitPrice.toFixed(prec)} [${statusLabel}] [${fillLatency}ms]`);
 
         executionResults.push({
           component: comp.id,
           label: comp.label,
           pair: instrument,
           direction,
-          status: 'filled',
+          status: statusLabel,
           units,
           weight: comp.weight,
-          entryPrice: filledPrice ?? undefined,
+          entryPrice: filledPrice ?? limitPrice,
           slPrice: parseFloat(slPrice.toFixed(prec)),
           tpPrice: parseFloat(tpPrice.toFixed(prec)),
           slType: `${comp.slType} (${slPips}p)`,
-          entryTrigger: trigger.detail,
-          oandaTradeId: oandaTradeId ?? undefined,
+          entryTrigger: `LIMIT mid±2p (expires ${limitExpiry})`,
+          oandaTradeId: oandaTradeId ?? oandaOrderId ?? undefined,
         });
 
         slotsUsed++;
