@@ -489,15 +489,20 @@ Deno.serve(async (req) => {
         executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction, status: 'skipped', skipReason: 'Could not fetch bid/ask pricing' });
         continue;
       }
-      const midPrice = (pricing.bid + pricing.ask) / 2;
-      const trapOffset = pv * 2; // 2.0 pips (2 * 0.0001 = 0.0002, or 2 * 0.01 = 0.02 for JPY)
-      const limitPrice = direction === 'long' ? midPrice - trapOffset : midPrice + trapOffset;
 
-      // Compute SL/TP relative to LIMIT PRICE (not current market)
+      // ═══ HARDENED LIMIT ORDER MATH ═══
+      // LONG (Buy Limit): limitPrice = currentAsk - (2 × pip) → strictly below market
+      // SHORT (Sell Limit): limitPrice = currentBid + (2 × pip) → strictly above market
+      const trapOffset = pv * 2; // 2.0 pips
+      const limitPrice = direction === 'long'
+        ? parseFloat((pricing.ask - trapOffset).toFixed(prec))
+        : parseFloat((pricing.bid + trapOffset).toFixed(prec));
+
+      // SL/TP anchored to limitPrice, NOT current market price
       const slDistance = computeSLDistance(comp, candles, direction, limitPrice, pv);
       const compTpRatio = comp.tpRatio || TP_RATIO;
-      const slPrice = direction === 'long' ? limitPrice - slDistance : limitPrice + slDistance;
-      const tpPrice = direction === 'long' ? limitPrice + slDistance * compTpRatio : limitPrice - slDistance * compTpRatio;
+      const slPrice = parseFloat((direction === 'long' ? limitPrice - slDistance : limitPrice + slDistance).toFixed(prec));
+      const tpPrice = parseFloat((direction === 'long' ? limitPrice + slDistance * compTpRatio : limitPrice - slDistance * compTpRatio).toFixed(prec));
 
       // Position sizing: use fixedUnits if configured, otherwise dynamic 5% equity risk
       let units: number;
@@ -572,10 +577,10 @@ Deno.serve(async (req) => {
       const signalId = `blend-${comp.id}-${instrument}-${Date.now()}`;
       const slPips = Math.round(slDistance / pv * 10) / 10;
 
-      // Limit order expiry: ~10 minutes from now (3 cron cycles)
-      const limitExpiry = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+      // Limit order expiry: 15 minutes from now
+      const limitExpiry = new Date(Date.now() + 15 * 60 * 1000).toISOString();
 
-      console.log(`[BLEND] 🎯 ${comp.id} → ${instrument} ${direction.toUpperCase()} LIMIT @ ${limitPrice.toFixed(prec)} (mid=${midPrice.toFixed(prec)} ±2p) ${units}u | SL=${comp.slType}(${slPips}p)`);
+      console.log(`[BLEND] 🎯 ${comp.id} → ${instrument} ${direction.toUpperCase()} LIMIT @ ${limitPrice.toFixed(prec)} (bid=${pricing.bid.toFixed(prec)} ask=${pricing.ask.toFixed(prec)} ±2p) ${units}u | SL=${slPrice.toFixed(prec)} TP=${tpPrice.toFixed(prec)} | scaler=${scalerMultiplier}x`);
 
       try {
         const { data: dbOrder, error: dbErr } = await sb
@@ -659,10 +664,10 @@ Deno.serve(async (req) => {
           fill_latency_ms: fillLatency,
           gate_result: gateLabel,
           gate_reasons: [
-            `Component: ${comp.id} (${(comp.weight * 100).toFixed(0)}% weight)`,
+            `Component: ${comp.id} (${(comp.weight * 100).toFixed(0)}% weight) | Scaler: ${scalerMultiplier}x`,
             `Rank: ${predCurrency}(#${comp.predatorRank}) vs ${preyCurrency}(#${comp.preyRank})`,
-            `LIMIT @ ${limitPrice.toFixed(prec)} (mid=${midPrice.toFixed(prec)} ±2p trap)`,
-            `SL: ${comp.slType} (${slPips} pips) | Expires: ${limitExpiry}`,
+            `LIMIT @ ${limitPrice.toFixed(prec)} (bid=${pricing.bid.toFixed(prec)} ask=${pricing.ask.toFixed(prec)} ±2p trap)`,
+            `SL: ${slPrice.toFixed(prec)} (${slPips}p) | TP: ${tpPrice.toFixed(prec)} | Expires: ${limitExpiry}`,
           ],
         }).eq('id', dbOrder.id);
 
@@ -681,7 +686,7 @@ Deno.serve(async (req) => {
           slPrice: parseFloat(slPrice.toFixed(prec)),
           tpPrice: parseFloat(tpPrice.toFixed(prec)),
           slType: `${comp.slType} (${slPips}p)`,
-          entryTrigger: `LIMIT mid±2p (expires ${limitExpiry})`,
+          entryTrigger: `LIMIT ${direction === 'long' ? 'ask' : 'bid'}±2p (expires ${limitExpiry})`,
           oandaTradeId: oandaTradeId ?? oandaOrderId ?? undefined,
         });
 

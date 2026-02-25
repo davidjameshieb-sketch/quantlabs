@@ -194,18 +194,13 @@ function RemovalDialog({ strategy, onClose, onConfirm, loading }: RemovalDialogP
           You are removing <span className="text-[#00ffea] font-bold">{strategy.name}</span> from your live portfolio.
         </p>
         <p className="text-[10px] text-slate-400 mb-6">
-          What should happen to any open trades placed by this strategy?
+          Existing trades will close naturally via OANDA TP/SL (Natural Death mandate).
         </p>
         <div className="space-y-2">
-          <button onClick={() => onConfirm(true)} disabled={loading}
-            className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-[10px] font-mono font-bold uppercase tracking-wider transition-all border border-[#ff0055]/30 text-[#ff0055] hover:bg-[#ff0055]/10 disabled:opacity-50">
-            {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <XCircle className="w-4 h-4" />}
-            Close open trades immediately
-          </button>
           <button onClick={() => onConfirm(false)} disabled={loading}
             className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-[10px] font-mono font-bold uppercase tracking-wider transition-all border border-yellow-500/30 text-yellow-400 hover:bg-yellow-500/10 disabled:opacity-50">
             {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Shield className="w-4 h-4" />}
-            Let existing trades hit SL/TP naturally
+            Deactivate — let trades hit SL/TP naturally
           </button>
           <button onClick={onClose} disabled={loading}
             className="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-[10px] font-mono text-slate-400 hover:text-white transition-all disabled:opacity-50">
