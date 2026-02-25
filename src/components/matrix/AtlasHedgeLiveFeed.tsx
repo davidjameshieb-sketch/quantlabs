@@ -1,11 +1,11 @@
-// AtlasHedgeLiveFeed — 10-Minute Batch Processing Timeline
-// High-density Bloomberg-terminal aesthetic with progressive disclosure via HoverCards
+// AtlasHedgeLiveFeed — Real Trade Activity Feed from oanda_orders
+// Groups recent atlas-hedge trades into time batches with audit details
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Activity, ShieldCheck, Bot, Clock, Target, Wallet, CheckSquare,
-  TrendingUp, TrendingDown, ChevronDown,
+  TrendingUp, TrendingDown, ChevronDown, RefreshCw,
 } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -21,168 +21,98 @@ import {
   HoverCardContent,
   HoverCardTrigger,
 } from '@/components/ui/hover-card';
+import { supabase } from '@/integrations/supabase/client';
 
-// ── Data Schema ──
+// ── Helpers ──
 
-interface AuditSnapshot {
-  predatorRank: number;
-  preyRank: number;
-  spread: number;
-  volRegime: 'EXPAND' | 'CONTRACT' | 'FLAT';
-  triggerSpeedMs?: number;
-  exitSpread?: number;
-  barsHeld?: number;
+const ATLAS_HEDGE_PREFIX = 'atlas-hedge-';
+
+function getPips(trade: any): number {
+  if (!trade.entry_price || !trade.exit_price) return 0;
+  const isJPY = trade.currency_pair?.includes('JPY');
+  const mult = isJPY ? 100 : 10000;
+  return trade.direction === 'long'
+    ? (trade.exit_price - trade.entry_price) * mult
+    : (trade.entry_price - trade.exit_price) * mult;
 }
 
-interface TradeAction {
-  type: 'OPEN' | 'CLOSE';
-  pair: string;
-  strategy: 'MOM' | 'CTR';
-  direction: 'LONG' | 'SHORT';
-  pnlMoney?: number;
-  pnlPips?: number;
-  auditSnapshot: AuditSnapshot;
+function formatPair(pair: string): string {
+  return pair?.replace('_', '/') || pair;
 }
 
-interface BatchPulse {
+function getStrategyType(agentId: string): 'MOM' | 'CTR' {
+  return agentId?.includes('-m') ? 'MOM' : 'CTR';
+}
+
+function getTradeType(trade: any): 'OPEN' | 'CLOSE' {
+  return trade.exit_price != null ? 'CLOSE' : 'OPEN';
+}
+
+// ── Batch grouping ──
+
+interface TradeBatch {
   batchId: string;
   timeWindow: string;
-  netPnlMoney: number;
+  startTime: Date;
+  trades: any[];
   netPnlPips: number;
-  totalTrades: number;
-  actions: TradeAction[];
 }
 
-// ── Snark Banks ──
+function groupIntoBatches(trades: any[]): TradeBatch[] {
+  if (trades.length === 0) return [];
 
-const SNARK_WIN = [
-  "Extracting alpha from retail inefficiency.",
-  "Ranks diverged nicely. The liquidity gods are pleased.",
-  "Pure mathematical inevitability. Don't get emotional about it.",
-  "Dispersion harvesting on schedule. Variance is our friend.",
-  "Edge captured. The matrix doesn't negotiate.",
-];
+  // Sort by created_at desc
+  const sorted = [...trades].sort((a, b) =>
+    new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+  );
 
-const SNARK_LOSS = [
-  "Paid the spread tax. Cost of doing business.",
-  "Variance happens. 19 other strategies are picking up the slack.",
-  "Temporary drawdown. Just noise in the dispersion envelope.",
-  "Friction absorbed. The ensemble shrugs.",
-  "Drawdown noted. Statistically irrelevant over N trades.",
-];
+  // Group into 30-minute windows
+  const batches: TradeBatch[] = [];
+  let currentBatch: any[] = [];
+  let batchStart: Date | null = null;
 
-const SNARK_IDLE = [
-  "No structural edge detected. Capital preservation is an active position.",
-  "Matrix ranks stagnant. Refusing to pay the spread for zero edge.",
-  "Standing down. No divergence worth the transaction cost.",
-  "Flat. Waiting for the matrix to speak.",
-];
+  for (const trade of sorted) {
+    const tradeTime = new Date(trade.created_at);
 
-// ── Mock Pairs ──
-
-const PAIRS = [
-  'GBP/JPY', 'EUR/USD', 'AUD/NZD', 'GBP/AUD', 'EUR/GBP',
-  'USD/CAD', 'NZD/JPY', 'AUD/JPY', 'GBP/NZD', 'EUR/AUD',
-];
-
-const VOL_REGIMES: AuditSnapshot['volRegime'][] = ['EXPAND', 'CONTRACT', 'FLAT'];
-
-// ── Mock Engine ──
-
-function generateBatch(): BatchPulse {
-  const now = new Date();
-  const start = new Date(now.getTime() - 10 * 60 * 1000);
-  const fmt = (d: Date) => d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
-  const timeWindow = `${fmt(start)} → ${fmt(now)}`;
-
-  const tradeCount = Math.random() < 0.15 ? 0 : Math.floor(Math.random() * 6) + 1;
-  const actions: TradeAction[] = [];
-
-  for (let i = 0; i < tradeCount; i++) {
-    const isClose = Math.random() > 0.5;
-    const strategy = Math.random() > 0.5 ? 'MOM' : 'CTR';
-    const direction = Math.random() > 0.5 ? 'LONG' : 'SHORT';
-    const pair = PAIRS[Math.floor(Math.random() * PAIRS.length)];
-    const volRegime = VOL_REGIMES[Math.floor(Math.random() * 3)];
-
-    // Generate valid rank pair: predator must differ from prey, spread = |predator - prey|
-    const predatorRank = Math.floor(Math.random() * 8) + 1; // 1-8
-    let preyRank: number;
-    do {
-      preyRank = Math.floor(Math.random() * 8) + 1;
-    } while (preyRank === predatorRank);
-    const spread = Math.abs(predatorRank - preyRank); // max 7, mathematically correct
-
-    const action: TradeAction = {
-      type: isClose ? 'CLOSE' : 'OPEN',
-      pair,
-      strategy,
-      direction,
-      auditSnapshot: {
-        predatorRank,
-        preyRank,
-        spread,
-        volRegime,
-        triggerSpeedMs: isClose ? undefined : Math.floor(Math.random() * 200) + 30,
-        exitSpread: isClose ? Math.max(1, spread - Math.floor(Math.random() * 5)) : undefined,
-        barsHeld: isClose ? Math.floor(Math.random() * 40) + 2 : undefined,
-      },
-    };
-
-    if (isClose) {
-      const pips = (Math.random() - 0.45) * 30;
-      action.pnlPips = Math.round(pips * 10) / 10;
-      action.pnlMoney = Math.round(pips * 1.1 * 100) / 100;
+    if (!batchStart || (batchStart.getTime() - tradeTime.getTime()) > 30 * 60 * 1000) {
+      if (currentBatch.length > 0 && batchStart) {
+        const oldest = new Date(currentBatch[currentBatch.length - 1].created_at);
+        batches.push(createBatch(currentBatch, oldest, batchStart));
+      }
+      currentBatch = [trade];
+      batchStart = tradeTime;
+    } else {
+      currentBatch.push(trade);
     }
-
-    actions.push(action);
   }
 
-  const netPnlPips = actions.reduce((s, a) => s + (a.pnlPips || 0), 0);
-  const netPnlMoney = actions.reduce((s, a) => s + (a.pnlMoney || 0), 0);
+  if (currentBatch.length > 0 && batchStart) {
+    const oldest = new Date(currentBatch[currentBatch.length - 1].created_at);
+    batches.push(createBatch(currentBatch, oldest, batchStart));
+  }
+
+  return batches;
+}
+
+function createBatch(trades: any[], start: Date, end: Date): TradeBatch {
+  const fmt = (d: Date) => d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+  const netPips = trades.reduce((sum, t) => sum + getPips(t), 0);
 
   return {
-    batchId: `B-${Date.now().toString(36).toUpperCase()}`,
-    timeWindow,
-    netPnlMoney: Math.round(netPnlMoney * 100) / 100,
-    netPnlPips: Math.round(netPnlPips * 10) / 10,
-    totalTrades: tradeCount,
-    actions,
+    batchId: `B-${end.getTime().toString(36).toUpperCase().slice(-8)}`,
+    timeWindow: `${fmt(start)} → ${fmt(end)}`,
+    startTime: end,
+    trades,
+    netPnlPips: Math.round(netPips * 10) / 10,
   };
-}
-
-function pickSnark(pnl: number, tradeCount: number): string {
-  if (tradeCount === 0) return SNARK_IDLE[Math.floor(Math.random() * SNARK_IDLE.length)];
-  const bank = pnl > 0 ? SNARK_WIN : SNARK_LOSS;
-  return bank[Math.floor(Math.random() * bank.length)];
-}
-
-// ── Countdown Hook ──
-
-function useCountdown(intervalSec: number) {
-  const [remaining, setRemaining] = useState(intervalSec);
-
-  useEffect(() => {
-    const id = setInterval(() => {
-      setRemaining(prev => (prev <= 1 ? intervalSec : prev - 1));
-    }, 1000);
-    return () => clearInterval(id);
-  }, [intervalSec]);
-
-  const m = Math.floor(remaining / 60);
-  const s = remaining % 60;
-  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
 // ── Sub-Components ──
 
-function PnlDisplay({ value, isMoney = false }: { value: number; isMoney?: boolean }) {
+function PnlDisplay({ value }: { value: number }) {
   const color = value > 0 ? 'text-[#39ff14]' : value < 0 ? 'text-[#ff0055]' : 'text-slate-500';
   const prefix = value > 0 ? '+' : '';
-  const display = isMoney
-    ? `${prefix}$${Math.abs(value).toFixed(2)}`
-    : `${prefix}${value.toFixed(1)}p`;
-  return <span className={`font-mono font-bold ${color}`}>{display}</span>;
+  return <span className={`font-mono font-bold ${color}`}>{prefix}{value.toFixed(1)}p</span>;
 }
 
 function StratBadge({ strategy }: { strategy: 'MOM' | 'CTR' }) {
@@ -197,81 +127,86 @@ function StratBadge({ strategy }: { strategy: 'MOM' | 'CTR' }) {
   );
 }
 
-function OpenHoverContent({ audit }: { audit: AuditSnapshot }) {
-  const spreadPass = audit.spread >= 6;
-  return (
-    <div className="space-y-2 p-1">
-      <div className="text-[10px] font-mono font-bold text-[#00ffea] tracking-widest uppercase border-b border-slate-700/50 pb-1.5">
-        SYSTEM AUDIT: ENTRY LOG
-      </div>
-      <div className="space-y-1.5">
-        {[
-          { pass: spreadPass, label: `Matrix Divergence Confirmed (Spread ≥ 6) → ${audit.spread}` },
-          { pass: true, label: 'Diversification Guard Passed' },
-          { pass: true, label: `Volatility Gate Cleared (${audit.volRegime})` },
-          { pass: true, label: `First-In-Wins Execution: ${audit.triggerSpeedMs}ms` },
-        ].map((item, i) => (
-          <div key={i} className="flex items-start gap-1.5">
-            <CheckSquare className={`w-3 h-3 mt-0.5 shrink-0 ${item.pass ? 'text-[#39ff14]' : 'text-[#ff0055]'}`} />
-            <span className="text-[10px] font-mono text-slate-300">{item.label}</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
+function TradeHoverContent({ trade }: { trade: any }) {
+  const isClose = trade.exit_price != null;
+  const pips = getPips(trade);
 
-function CloseHoverContent({ audit }: { audit: AuditSnapshot }) {
-  const spreadDelta = audit.spread - (audit.exitSpread || audit.spread);
   return (
     <div className="space-y-2 p-1">
-      <div className="text-[10px] font-mono font-bold text-[#a855f7] tracking-widest uppercase border-b border-slate-700/50 pb-1.5">
-        SYSTEM AUDIT: EXIT LOG
+      <div className={`text-[10px] font-mono font-bold tracking-widest uppercase border-b border-slate-700/50 pb-1.5 ${isClose ? 'text-[#a855f7]' : 'text-[#00ffea]'}`}>
+        {isClose ? 'EXIT DETAILS' : 'ENTRY DETAILS'}
       </div>
       <div className="space-y-1.5">
-        {[
-          'Position Lock Released',
-          `Rank Delta: Spread compressed by ${spreadDelta}`,
-          'Strategy Cycle Complete',
-        ].map((label, i) => (
-          <div key={i} className="flex items-start gap-1.5">
+        <div className="flex items-start gap-1.5">
+          <CheckSquare className="w-3 h-3 mt-0.5 shrink-0 text-[#39ff14]" />
+          <span className="text-[10px] font-mono text-slate-300">Agent: {trade.agent_id}</span>
+        </div>
+        <div className="flex items-start gap-1.5">
+          <CheckSquare className="w-3 h-3 mt-0.5 shrink-0 text-[#39ff14]" />
+          <span className="text-[10px] font-mono text-slate-300">Entry: {trade.entry_price || 'Pending'}</span>
+        </div>
+        {isClose && (
+          <>
+            <div className="flex items-start gap-1.5">
+              <CheckSquare className="w-3 h-3 mt-0.5 shrink-0 text-[#39ff14]" />
+              <span className="text-[10px] font-mono text-slate-300">Exit: {trade.exit_price}</span>
+            </div>
+            <div className="flex items-start gap-1.5">
+              <CheckSquare className={`w-3 h-3 mt-0.5 shrink-0 ${pips >= 0 ? 'text-[#39ff14]' : 'text-[#ff0055]'}`} />
+              <span className="text-[10px] font-mono text-slate-300">Result: {pips > 0 ? '+' : ''}{pips.toFixed(1)} pips</span>
+            </div>
+          </>
+        )}
+        {trade.gate_result && (
+          <div className="flex items-start gap-1.5">
             <CheckSquare className="w-3 h-3 mt-0.5 shrink-0 text-[#39ff14]" />
-            <span className="text-[10px] font-mono text-slate-300">{label}</span>
+            <span className="text-[10px] font-mono text-slate-300">Gate: {trade.gate_result}</span>
           </div>
-        ))}
+        )}
+        {trade.session_label && (
+          <div className="flex items-start gap-1.5">
+            <CheckSquare className="w-3 h-3 mt-0.5 shrink-0 text-[#39ff14]" />
+            <span className="text-[10px] font-mono text-slate-300">Session: {trade.session_label}</span>
+          </div>
+        )}
+        {trade.regime_label && (
+          <div className="flex items-start gap-1.5">
+            <CheckSquare className="w-3 h-3 mt-0.5 shrink-0 text-[#39ff14]" />
+            <span className="text-[10px] font-mono text-slate-300">Regime: {trade.regime_label}</span>
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
-function TradeRow({ action, index }: { action: TradeAction; index: number }) {
-  const isOpen = action.type === 'OPEN';
-  const Icon = isOpen ? TrendingUp : TrendingDown;
-  const iconColor = isOpen ? 'text-[#00ffea]' : action.pnlPips && action.pnlPips > 0 ? 'text-[#39ff14]' : 'text-[#ff0055]';
-  const a = action.auditSnapshot;
+function TradeRow({ trade, index }: { trade: any; index: number }) {
+  const isClose = trade.exit_price != null;
+  const strategy = getStrategyType(trade.agent_id);
+  const pips = getPips(trade);
+  const Icon = isClose ? TrendingDown : TrendingUp;
+  const iconColor = isClose
+    ? (pips > 0 ? 'text-[#39ff14]' : 'text-[#ff0055]')
+    : 'text-[#00ffea]';
 
-  const telemetryLine = isOpen
-    ? `↳ ${action.strategy} | Ranks: #${a.predatorRank}v#${a.preyRank} | Spread: ${a.spread} | Vol: ${a.volRegime}`
-    : `↳ Result | Entry Spread: ${a.spread} → Exit Spread: ${a.exitSpread} | Bars Held: ${a.barsHeld}`;
+  const telemetryLine = isClose
+    ? `↳ ${trade.agent_id?.replace('atlas-hedge-', '')} | Entry: ${trade.entry_price} → Exit: ${trade.exit_price} | ${pips > 0 ? '+' : ''}${pips.toFixed(1)}p`
+    : `↳ ${trade.agent_id?.replace('atlas-hedge-', '')} | Entry: ${trade.entry_price || 'pending'} | Status: ${trade.status}`;
 
   return (
     <div className={`${index % 2 === 0 ? 'bg-slate-800/20' : 'bg-transparent'} px-2 py-1.5`}>
-      {/* Main Row */}
       <div className="flex items-center gap-2 text-xs">
         <Icon className={`w-3 h-3 shrink-0 ${iconColor}`} />
-        <span className="font-mono font-bold text-[10px] text-slate-400 w-10">{action.type}</span>
-        <StratBadge strategy={action.strategy} />
-        <span className={`font-mono text-[10px] font-bold ${action.direction === 'LONG' ? 'text-[#39ff14]' : 'text-[#ff0055]'}`}>
-          {action.direction}
+        <span className="font-mono font-bold text-[10px] text-slate-400 w-10">{isClose ? 'CLOSE' : 'OPEN'}</span>
+        <StratBadge strategy={strategy} />
+        <span className={`font-mono text-[10px] font-bold ${trade.direction === 'long' ? 'text-[#39ff14]' : 'text-[#ff0055]'}`}>
+          {trade.direction?.toUpperCase()}
         </span>
-        <span className="font-mono text-[10px] text-white font-semibold">{action.pair}</span>
+        <span className="font-mono text-[10px] text-white font-semibold">{formatPair(trade.currency_pair)}</span>
         <span className="flex-1" />
-        {action.pnlPips !== undefined && (
-          <PnlDisplay value={action.pnlPips} />
-        )}
+        {isClose && <PnlDisplay value={Math.round(pips * 10) / 10} />}
       </div>
 
-      {/* Inline Audit Row with HoverCard */}
       <HoverCard openDelay={150} closeDelay={100}>
         <HoverCardTrigger asChild>
           <div className="text-[10px] text-muted-foreground font-mono mt-0.5 pl-5 cursor-help hover:text-slate-300 transition-colors">
@@ -283,26 +218,20 @@ function TradeRow({ action, index }: { action: TradeAction; index: number }) {
           align="start"
           className="w-72 bg-slate-900/95 backdrop-blur-xl border border-slate-700/60 shadow-2xl"
         >
-          {isOpen
-            ? <OpenHoverContent audit={a} />
-            : <CloseHoverContent audit={a} />}
+          <TradeHoverContent trade={trade} />
         </HoverCardContent>
       </HoverCard>
     </div>
   );
 }
 
-function BatchCard({ batch }: { batch: BatchPulse }) {
+function BatchCard({ batch }: { batch: TradeBatch }) {
   const [collapseOpen, setCollapseOpen] = useState(false);
-  const snark = pickSnark(batch.netPnlPips, batch.totalTrades);
-  const snarkTint = batch.netPnlPips > 0
-    ? 'text-[#39ff14]/60 bg-[#39ff14]/5'
-    : batch.netPnlPips < 0
-      ? 'text-[#ff0055]/60 bg-[#ff0055]/5'
-      : 'text-slate-500 bg-slate-800/30';
+  const visibleTrades = batch.trades.slice(0, 3);
+  const hiddenTrades = batch.trades.slice(3);
 
-  const visibleActions = batch.actions.slice(0, 3);
-  const hiddenActions = batch.actions.slice(3);
+  const closedCount = batch.trades.filter(t => t.exit_price != null).length;
+  const openCount = batch.trades.length - closedCount;
 
   return (
     <motion.div
@@ -326,52 +255,39 @@ function BatchCard({ batch }: { batch: BatchPulse }) {
               variant="outline"
               className="text-[9px] font-mono px-1.5 py-0 border-slate-700 text-slate-400"
             >
-              {batch.totalTrades} trades
+              {closedCount > 0 && `${closedCount} closed`}
+              {closedCount > 0 && openCount > 0 && ' · '}
+              {openCount > 0 && `${openCount} opened`}
             </Badge>
           </div>
         </div>
 
         <CardContent className="p-0">
-          {/* Trade Rows */}
-          {batch.totalTrades === 0 ? (
-            <div className="px-3 py-3 text-[10px] font-mono text-slate-600 text-center italic">
-              No executions this cycle. Matrix dormant.
-            </div>
-          ) : (
-            <>
-              {visibleActions.map((action, i) => (
-                <TradeRow key={i} action={action} index={i} />
-              ))}
+          {visibleTrades.map((trade, i) => (
+            <TradeRow key={trade.id || i} trade={trade} index={i} />
+          ))}
 
-              {hiddenActions.length > 0 && (
-                <Collapsible open={collapseOpen} onOpenChange={setCollapseOpen}>
-                  <CollapsibleTrigger className="w-full px-3 py-1.5 text-[10px] font-mono text-[#00ffea] hover:text-white hover:bg-slate-800/40 transition-colors flex items-center gap-1 cursor-pointer">
-                    <ChevronDown className={`w-3 h-3 transition-transform ${collapseOpen ? 'rotate-180' : ''}`} />
-                    View {hiddenActions.length} more executions…
-                  </CollapsibleTrigger>
-                  <CollapsibleContent>
-                    {hiddenActions.map((action, i) => (
-                      <TradeRow key={i + 3} action={action} index={i + 3} />
-                    ))}
-                  </CollapsibleContent>
-                </Collapsible>
-              )}
-            </>
+          {hiddenTrades.length > 0 && (
+            <Collapsible open={collapseOpen} onOpenChange={setCollapseOpen}>
+              <CollapsibleTrigger className="w-full px-3 py-1.5 text-[10px] font-mono text-[#00ffea] hover:text-white hover:bg-slate-800/40 transition-colors flex items-center gap-1 cursor-pointer">
+                <ChevronDown className={`w-3 h-3 transition-transform ${collapseOpen ? 'rotate-180' : ''}`} />
+                View {hiddenTrades.length} more executions…
+              </CollapsibleTrigger>
+              <CollapsibleContent>
+                {hiddenTrades.map((trade, i) => (
+                  <TradeRow key={trade.id || i + 3} trade={trade} index={i + 3} />
+                ))}
+              </CollapsibleContent>
+            </Collapsible>
           )}
 
           <Separator className="bg-slate-800/40" />
 
-          {/* QuantSnark */}
-          <div className={`flex items-start gap-2 px-3 py-2 ${snarkTint} rounded-none`}>
-            <Bot className="w-3 h-3 mt-0.5 shrink-0 opacity-60" />
-            <span className="text-xs italic font-mono leading-tight opacity-70">{snark}</span>
-          </div>
-
-          {/* Portfolio Thesis */}
+          {/* Portfolio context */}
           <div className="flex items-start gap-2 px-3 py-2 border-t border-slate-800/30">
             <ShieldCheck className="w-3 h-3 mt-0.5 shrink-0 text-slate-600" />
             <span className="text-[10px] font-mono text-slate-600 leading-tight">
-              System Integrity Normal. The Atlas Hedge maintains delta-neutrality via 20 decorrelated Momentum & Counter-Leg strategies. Individual batch variance is irrelevant to long-term dispersion yield.
+              Real OANDA executions from the Atlas Hedge portfolio. {closedCount} position{closedCount !== 1 ? 's' : ''} closed, {openCount} opened in this window.
             </span>
           </div>
         </CardContent>
@@ -383,58 +299,130 @@ function BatchCard({ batch }: { batch: BatchPulse }) {
 // ── Main Component ──
 
 export default function AtlasHedgeLiveFeed() {
-  const [batches, setBatches] = useState<BatchPulse[]>(() => [generateBatch()]);
+  const [batches, setBatches] = useState<TradeBatch[]>([]);
+  const [loading, setLoading] = useState(true);
   const [cumulativePnl, setCumulativePnl] = useState(0);
-  const countdown = useCountdown(60);
+  const [totalTrades, setTotalTrades] = useState(0);
 
-  useEffect(() => {
-    const id = setInterval(() => {
-      const newBatch = generateBatch();
-      setBatches(prev => [newBatch, ...prev].slice(0, 20));
-      setCumulativePnl(prev => Math.round((prev + newBatch.netPnlPips) * 10) / 10);
-    }, 60000);
+  const fetchTrades = useCallback(async () => {
+    try {
+      // Get all atlas-hedge agent IDs
+      const { data: agents } = await supabase
+        .from('agent_configs')
+        .select('agent_id')
+        .like('agent_id', `${ATLAS_HEDGE_PREFIX}%`);
 
-    return () => clearInterval(id);
+      if (!agents || agents.length === 0) {
+        setBatches([]);
+        setLoading(false);
+        return;
+      }
+
+      const agentIds = agents.map(a => a.agent_id);
+
+      // Fetch recent trades (last 48 hours) — both open and closed
+      const cutoff = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+      const { data: trades } = await supabase
+        .from('oanda_orders')
+        .select('*')
+        .in('agent_id', agentIds)
+        .in('status', ['filled', 'open', 'closed'])
+        .not('entry_price', 'is', null)
+        .eq('baseline_excluded', false)
+        .gte('created_at', cutoff)
+        .order('created_at', { ascending: false })
+        .limit(200);
+
+      const allTrades = trades ?? [];
+      setTotalTrades(allTrades.length);
+
+      // Calculate cumulative PnL from closed trades
+      const pnl = allTrades
+        .filter(t => t.exit_price != null)
+        .reduce((sum, t) => sum + getPips(t), 0);
+      setCumulativePnl(Math.round(pnl * 10) / 10);
+
+      // Group into batches
+      setBatches(groupIntoBatches(allTrades));
+    } catch (err) {
+      console.error('[AtlasHedgeLiveFeed] Fetch error:', err);
+    } finally {
+      setLoading(false);
+    }
   }, []);
+
+  // Initial fetch + 60s polling
+  useEffect(() => {
+    fetchTrades();
+    const id = setInterval(fetchTrades, 60000);
+    return () => clearInterval(id);
+  }, [fetchTrades]);
+
+  // Realtime subscription
+  useEffect(() => {
+    const channel = supabase
+      .channel('atlas-live-feed')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'oanda_orders' }, (payload) => {
+        const agentId = (payload.new as any)?.agent_id || '';
+        if (agentId.startsWith(ATLAS_HEDGE_PREFIX)) fetchTrades();
+      })
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [fetchTrades]);
 
   const pnlColor = cumulativePnl > 0 ? 'text-[#39ff14]' : cumulativePnl < 0 ? 'text-[#ff0055]' : 'text-slate-500';
 
   return (
     <div className="bg-slate-900/80 backdrop-blur-md border border-slate-700/40 rounded-2xl overflow-hidden shadow-2xl">
-      {/* Sticky Header */}
+      {/* Header */}
       <div className="sticky top-0 z-10 backdrop-blur-xl bg-slate-900/90 border-b border-slate-700/40 px-4 py-2.5 flex items-center justify-between">
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-1.5">
-            <div className="w-2 h-2 rounded-full bg-[#39ff14] animate-pulse" />
-            <span className="text-[10px] font-mono font-bold text-[#39ff14] uppercase tracking-widest">
-              SYSTEM LIVE
+            <Activity className="w-3 h-3 text-[#a855f7]" />
+            <span className="text-[10px] font-mono font-bold text-[#a855f7] uppercase tracking-widest">
+              TRADE LOG
             </span>
           </div>
           <Separator orientation="vertical" className="h-3 bg-slate-700" />
-          <div className="flex items-center gap-1">
-            <Clock className="w-3 h-3 text-slate-500" />
-            <span className="text-[10px] font-mono text-slate-400">
-              Next Matrix Pulse in <span className="text-white font-bold">{countdown}</span>
+          <span className="text-[10px] font-mono text-slate-400">
+            Last 48h · {totalTrades} executions
+          </span>
+        </div>
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-1.5">
+            <Wallet className="w-3 h-3 text-slate-500" />
+            <span className="text-[10px] font-mono text-slate-500">PnL:</span>
+            <span className={`text-xs font-mono font-bold ${pnlColor}`}>
+              {cumulativePnl > 0 ? '+' : ''}{cumulativePnl.toFixed(1)}p
             </span>
           </div>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <Wallet className="w-3 h-3 text-slate-500" />
-          <span className="text-[10px] font-mono text-slate-500">Session PnL:</span>
-          <span className={`text-xs font-mono font-bold ${pnlColor}`}>
-            {cumulativePnl > 0 ? '+' : ''}{cumulativePnl.toFixed(1)}p
-          </span>
+          <button onClick={fetchTrades} className="text-slate-500 hover:text-white transition-colors">
+            <RefreshCw className={`w-3 h-3 ${loading ? 'animate-spin' : ''}`} />
+          </button>
         </div>
       </div>
 
       {/* Feed */}
       <ScrollArea className="h-[600px]">
         <div className="p-3 space-y-2">
-          <AnimatePresence initial={false}>
-            {batches.map(batch => (
-              <BatchCard key={batch.batchId} batch={batch} />
-            ))}
-          </AnimatePresence>
+          {loading && batches.length === 0 ? (
+            <div className="flex items-center justify-center py-12">
+              <RefreshCw className="w-4 h-4 animate-spin text-slate-500" />
+              <span className="text-[10px] font-mono text-slate-500 ml-2">Loading trade history…</span>
+            </div>
+          ) : batches.length === 0 ? (
+            <div className="text-center py-12">
+              <Activity className="w-6 h-6 mx-auto text-slate-600 mb-2" />
+              <p className="text-[10px] font-mono text-slate-500">No trade activity in the last 48 hours.</p>
+              <p className="text-[9px] font-mono text-slate-600 mt-1">The system is monitoring for entry signals.</p>
+            </div>
+          ) : (
+            <AnimatePresence initial={false}>
+              {batches.map(batch => (
+                <BatchCard key={batch.batchId} batch={batch} />
+              ))}
+            </AnimatePresence>
+          )}
         </div>
       </ScrollArea>
     </div>
