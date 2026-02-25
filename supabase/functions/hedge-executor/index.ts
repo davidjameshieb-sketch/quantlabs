@@ -238,19 +238,8 @@ Deno.serve(async (req) => {
       const pv = pipValue(instrument);
       const prec = pricePrecision(instrument);
 
-      // Gate 2: Atlas Snap — price must break 20-bar structure
-      const g2 = atlasSnapGate(candles, direction);
-      if (!g2) {
-        results.push({ leg: leg.id, label: leg.label, pair: instrument, direction, status: 'skipped', reason: 'G2 Atlas Snap fail — no structural break' });
-        continue;
-      }
-
-      // Gate 3: David Vector — trend slope must agree
-      const g3 = davidVectorGate(candles, direction);
-      if (!g3) {
-        results.push({ leg: leg.id, label: leg.label, pair: instrument, direction, status: 'skipped', reason: 'G3 David Vector fail — slope disagrees' });
-        continue;
-      }
+      // Gate bypass: skip G2/G3 — raw rank-divergence
+      console.log(`[HEDGE] ⚡ ${leg.label} → gates bypassed, raw rank signal`);
 
       // Compute SL using ATR-based method, floored at leg.slPips
       const atr = computeATR(candles, 14);
@@ -297,7 +286,31 @@ Deno.serve(async (req) => {
           continue;
         }
 
-        // Execute on OANDA
+        // ── Fetch bid/ask for LIMIT order placement ──
+        let limitPrice = currentPrice;
+        try {
+          const pricingRes = await fetch(`${OANDA_HOST}/v3/accounts/${accountId}/pricing?instruments=${instrument}`, {
+            headers: { Authorization: `Bearer ${apiToken}`, Accept: 'application/json' },
+          });
+          if (pricingRes.ok) {
+            const pData = await pricingRes.json();
+            const p = pData.prices?.[0];
+            if (p) {
+              const bid = parseFloat(p.bids?.[0]?.price || p.closeoutBid);
+              const ask = parseFloat(p.asks?.[0]?.price || p.closeoutAsk);
+              const mid = (bid + ask) / 2;
+              const trapOffset = pv * 20; // 2 pips
+              limitPrice = direction === 'long' ? mid - trapOffset : mid + trapOffset;
+            }
+          }
+        } catch {}
+
+        // Recalculate SL/TP relative to limit price
+        const adjSlPrice = direction === 'long' ? limitPrice - slDistance : limitPrice + slDistance;
+        const adjTpPrice = direction === 'long' ? limitPrice + tpDistance : limitPrice - tpDistance;
+        const limitExpiry = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+
+        // Execute LIMIT ORDER on OANDA
         const orderTs = Date.now();
         const oandaRes = await fetch(`${OANDA_HOST}/v3/accounts/${accountId}/orders`, {
           method: 'POST',
@@ -308,13 +321,16 @@ Deno.serve(async (req) => {
           },
           body: JSON.stringify({
             order: {
-              type: 'MARKET',
+              type: 'LIMIT',
               instrument,
               units: signedUnits.toString(),
-              timeInForce: 'FOK',
+              price: limitPrice.toFixed(prec),
+              timeInForce: 'GTD',
+              gtdTime: limitExpiry,
               positionFill: 'DEFAULT',
-              stopLossOnFill: { price: slPrice.toFixed(prec), timeInForce: 'GTC' },
-              takeProfitOnFill: { price: tpPrice.toFixed(prec), timeInForce: 'GTC' },
+              triggerCondition: 'DEFAULT',
+              stopLossOnFill: { price: adjSlPrice.toFixed(prec), timeInForce: 'GTC' },
+              takeProfitOnFill: { price: adjTpPrice.toFixed(prec), timeInForce: 'GTC' },
             },
           }),
         });
@@ -330,37 +346,39 @@ Deno.serve(async (req) => {
           continue;
         }
 
-        const oandaOrderId = oandaData.orderCreateTransaction?.id || oandaData.orderFillTransaction?.orderID || null;
+        const oandaOrderId = oandaData.orderCreateTransaction?.id || null;
         const oandaTradeId = oandaData.orderFillTransaction?.tradeOpened?.tradeID || null;
         const filledPrice = oandaData.orderFillTransaction?.price ? parseFloat(oandaData.orderFillTransaction.price) : null;
+        const wasImmediatelyFilled = filledPrice != null;
         const pipMult = instrument.includes('JPY') ? 100 : 10000;
-        const slippagePips = filledPrice ? Math.abs((filledPrice - currentPrice) * pipMult) : null;
+        const slippagePips = filledPrice ? Math.abs((filledPrice - limitPrice) * pipMult) : null;
 
         await sb.from('oanda_orders').update({
-          status: 'filled',
+          status: wasImmediatelyFilled ? 'filled' : 'open',
           oanda_order_id: oandaOrderId,
           oanda_trade_id: oandaTradeId,
           entry_price: filledPrice,
-          requested_price: currentPrice,
+          requested_price: limitPrice,
           slippage_pips: slippagePips,
           fill_latency_ms: fillLatency,
-          gate_result: 'G1+G2+G3',
+          gate_result: 'G1-RAW',
           gate_reasons: [
             `Hedge Leg: ${leg.label}`,
             `Strong: ${strongCcy}(#${leg.strongRank}) vs Weak: ${weakCcy}(#${leg.weakRank})`,
+            `LIMIT @ ${limitPrice.toFixed(prec)} (mid±2p trap) | Expires: ${limitExpiry}`,
             `SL: ATR-based ${slPips} pips | TP: ${leg.tpRatio}R`,
-            `Weight: ${(leg.weight * 100).toFixed(0)}% | Risk: $${riskAmount.toFixed(0)} (5% of $${accountEquity.toFixed(0)})`,
           ],
         }).eq('id', dbOrder.id);
 
-        console.log(`[HEDGE] ✅ ${leg.label} → ${instrument} ${direction.toUpperCase()} ${units}u @ ${filledPrice} [${fillLatency}ms]`);
+        const statusLabel = wasImmediatelyFilled ? 'filled' : 'pending_limit';
+        console.log(`[HEDGE] ✅ ${leg.label} → ${instrument} ${direction.toUpperCase()} LIMIT ${units}u @ ${limitPrice.toFixed(prec)} [${statusLabel}] [${fillLatency}ms]`);
 
         results.push({
           leg: leg.id, label: leg.label, pair: instrument, direction,
-          status: 'filled', units, entryPrice: filledPrice,
-          slPrice: parseFloat(slPrice.toFixed(prec)),
-          tpPrice: parseFloat(tpPrice.toFixed(prec)),
-          slPips, oandaTradeId,
+          status: statusLabel, units, entryPrice: filledPrice ?? limitPrice,
+          slPrice: parseFloat(adjSlPrice.toFixed(prec)),
+          tpPrice: parseFloat(adjTpPrice.toFixed(prec)),
+          slPips, oandaTradeId: oandaTradeId ?? oandaOrderId,
         });
 
         openPairs.add(instrument);
