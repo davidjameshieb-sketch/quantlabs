@@ -507,6 +507,65 @@ Deno.serve(async (req) => {
         const riskAmount = accountEquity * RISK_FRACTION * comp.weight;
         units = Math.max(1, Math.round(riskAmount / slDistance));
       }
+
+      // ── Dynamic Kelly Auto-Scaler ──
+      // If enabled, check last 3 real closed trades for this agent.
+      // 3 consecutive losses → 0.8x size. Last win → reset to 1.0x.
+      let scalerMultiplier = 1.0;
+      try {
+        const { data: scalerSetting } = await sb
+          .from('system_settings')
+          .select('value')
+          .eq('key', 'auto_scaler_enabled')
+          .single();
+
+        const scalerEnabled = (scalerSetting?.value as any)?.enabled ?? false;
+
+        if (scalerEnabled && comp.agentId) {
+          const { data: lastTrades } = await sb
+            .from('oanda_orders')
+            .select('currency_pair, direction, entry_price, exit_price')
+            .eq('agent_id', comp.agentId)
+            .eq('status', 'closed')
+            .not('entry_price', 'is', null)
+            .not('exit_price', 'is', null)
+            .not('oanda_trade_id', 'is', null)
+            .eq('baseline_excluded', false)
+            .order('closed_at', { ascending: false })
+            .limit(3);
+
+          if (lastTrades && lastTrades.length >= 3) {
+            const pips = lastTrades.map(t => {
+              const isJPY = t.currency_pair?.includes('JPY');
+              const mult = isJPY ? 100 : 10000;
+              return t.direction === 'long'
+                ? ((t.exit_price || 0) - (t.entry_price || 0)) * mult
+                : ((t.entry_price || 0) - (t.exit_price || 0)) * mult;
+            });
+            const allNegative = pips.every(p => p < 0);
+            if (allNegative) {
+              scalerMultiplier = 0.8;
+              console.log(`[BLEND] 📉 Auto-Scaler: ${comp.agentId} last 3 trades all losses → sizing at 80%`);
+            }
+          }
+          // If last trade is positive, multiplier stays 1.0 (reset)
+          if (lastTrades && lastTrades.length > 0) {
+            const lastPips = (() => {
+              const t = lastTrades[0];
+              const isJPY = t.currency_pair?.includes('JPY');
+              const mult = isJPY ? 100 : 10000;
+              return t.direction === 'long'
+                ? ((t.exit_price || 0) - (t.entry_price || 0)) * mult
+                : ((t.entry_price || 0) - (t.exit_price || 0)) * mult;
+            })();
+            if (lastPips > 0) scalerMultiplier = 1.0;
+          }
+        }
+      } catch (scalerErr) {
+        console.warn('[BLEND] Auto-scaler check failed, using 1.0x:', (scalerErr as Error).message);
+      }
+
+      units = Math.max(1, Math.round(units * scalerMultiplier));
       const signedUnits = direction === 'short' ? -units : units;
 
       const gateLabel = 'G1-RAW';
