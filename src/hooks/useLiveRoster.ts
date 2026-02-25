@@ -17,9 +17,15 @@ export interface AgentRosterEntry {
   dailyPnl: number;
   totalTrades: number;
   todayTrades: number;
-  status: 'ACTIVE' | 'DORMANT';
+  status: 'ACTIVE' | 'PENDING_LIMIT' | 'DORMANT';
   currentPair: string | null;
   currentDirection: string | null;
+  // Live trade details
+  entryPrice: number | null;
+  units: number | null;
+  tradeOpenedAt: string | null;
+  oandaTradeId: string | null;
+  tradeStatus: string | null; // 'filled' | 'open' (limit pending)
   // Auto-scaler
   scalerMultiplier: number; // 1.0 or 0.8
   isScaledDown: boolean;
@@ -70,7 +76,7 @@ export function useLiveRoster() {
         // 3. Currently open trades (real fills only)
         supabase
           .from('oanda_orders')
-          .select('agent_id, currency_pair, direction, oanda_trade_id')
+          .select('agent_id, currency_pair, direction, oanda_trade_id, entry_price, units, created_at, status')
           .like('agent_id', 'atlas-hedge-%')
           .in('status', ['filled', 'open'])
           .not('entry_price', 'is', null)
@@ -147,6 +153,9 @@ export function useLiveRoster() {
         const lastPositive = last3.length > 0 && last3[0] > 0;
         const isScaledDown = autoScalerEnabled && allNegative && !lastPositive;
 
+        const isFilled = openTrade?.status === 'filled';
+        const isPendingLimit = openTrade && !isFilled; // status='open' = limit pending
+
         return {
           agentId: agent.agent_id,
           label: `#${cfg.predatorRank || '?'} vs #${cfg.preyRank || '?'}`,
@@ -159,9 +168,14 @@ export function useLiveRoster() {
           dailyPnl: daily?.pnl ?? 0,
           totalTrades: daily?.count ?? 0,
           todayTrades: daily?.count ?? 0,
-          status: openTrade ? 'ACTIVE' : 'DORMANT',
+          status: isFilled ? 'ACTIVE' : isPendingLimit ? 'PENDING_LIMIT' : 'DORMANT',
           currentPair: openTrade?.currency_pair?.replace('_', '/') || null,
           currentDirection: openTrade?.direction || null,
+          entryPrice: openTrade?.entry_price ?? null,
+          units: openTrade?.units ?? null,
+          tradeOpenedAt: openTrade?.created_at ?? null,
+          oandaTradeId: openTrade?.oanda_trade_id ?? null,
+          tradeStatus: openTrade?.status ?? null,
           scalerMultiplier: isScaledDown ? 0.8 : 1.0,
           isScaledDown,
           lastThreeResults: last3,
