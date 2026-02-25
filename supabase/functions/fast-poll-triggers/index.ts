@@ -1,5 +1,5 @@
-// Fast Poll Triggers — fires decorrelated-blend-executor every 10 seconds
-// Called once per minute by pg_cron. Fires sequentially: waits for each cycle to complete before next.
+// Fast Poll Triggers — fires decorrelated-blend-executor once per cron invocation.
+// Called every minute by pg_cron. No internal loop — one call per minute.
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -13,37 +13,31 @@ Deno.serve(async (req) => {
   const anonKey = Deno.env.get('SUPABASE_ANON_KEY')!;
   const blendUrl = `${supabaseUrl}/functions/v1/decorrelated-blend-executor`;
 
-  const results: Array<{ tick: number; status: number; ms: number }> = [];
-  const TICKS = 3; // 3 ticks × ~20s spacing ≈ 60s coverage
-  const SPACING_MS = 15_000; // 15s between ticks (after previous completes)
+  const t0 = Date.now();
+  try {
+    const res = await fetch(blendUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${anonKey}`,
+        apikey: anonKey,
+      },
+      body: JSON.stringify({ ts: new Date().toISOString() }),
+    });
+    const body = await res.text();
+    const ms = Date.now() - t0;
+    console.log(`[FAST-POLL] Executor returned ${res.status} in ${ms}ms`);
 
-  for (let tick = 0; tick < TICKS; tick++) {
-    if (tick > 0) await new Promise(r => setTimeout(r, SPACING_MS));
-
-    const t0 = Date.now();
-    try {
-      const res = await fetch(blendUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${anonKey}`,
-          apikey: anonKey,
-        },
-        body: JSON.stringify({ tick, ts: new Date().toISOString() }),
-      });
-      const body = await res.text(); // consume body — MUST await before next tick
-      results.push({ tick, status: res.status, ms: Date.now() - t0 });
-      console.log(`[FAST-POLL] Tick ${tick}: ${res.status} in ${Date.now() - t0}ms`);
-    } catch (err) {
-      results.push({ tick, status: 0, ms: Date.now() - t0 });
-      console.error(`[FAST-POLL] Tick ${tick} error:`, (err as Error).message);
-    }
+    return new Response(
+      JSON.stringify({ success: true, status: res.status, ms }),
+      { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+    );
+  } catch (err) {
+    const ms = Date.now() - t0;
+    console.error(`[FAST-POLL] Error after ${ms}ms:`, (err as Error).message);
+    return new Response(
+      JSON.stringify({ success: false, error: (err as Error).message, ms }),
+      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+    );
   }
-
-  console.log(`[FAST-POLL] ${TICKS} ticks complete: ${results.map(r => `t${r.tick}=${r.status}/${r.ms}ms`).join(' ')}`);
-
-  return new Response(
-    JSON.stringify({ success: true, ticks: results }),
-    { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-  );
 });
