@@ -1032,16 +1032,14 @@ Deno.serve(async (req) => {
         .eq("id", order.id);
 
       // ═══ MAE-BASED KILL SWITCH (0.65R) ═══
-      // FIX #1: Guard with MFE < 0.15R — only kill if trade has NOT shown meaningful
-      // favorable movement. If MFE >= 0.15R, the trade found its edge and the adverse
-      // move is a snapback/retrace, not invalidation. Prevents killing valid trend entries
-      // that dip before the move accelerates.
+      // NATURAL DEATH: Skip for atlas-hedge agents — let OANDA SL handle it
+      const isAtlasHedgeAgent = (order.agent_id || '').startsWith('atlas-hedge-');
       const MAE_KILL_THRESHOLD = 0.65;
-      if (maeRValue >= MAE_KILL_THRESHOLD && decision.action === "hold" && currentMfeR < 0.15) {
+      if (!isAtlasHedgeAgent && maeRValue >= MAE_KILL_THRESHOLD && decision.action === "hold" && currentMfeR < 0.15) {
         console.log(`[MAE-KILL] ${order.currency_pair} ${order.direction}: MAE=${maeRValue}R >= ${MAE_KILL_THRESHOLD}R AND MFE=${currentMfeR.toFixed(2)}R < 0.15R — KILLING trade (no edge shown, pure adverse)`);
         decision.action = "mae-kill" as typeof decision.action;
         decision.reason = `MAE kill switch: ${maeRValue}R adverse + MFE=${currentMfeR.toFixed(2)}R < 0.15R — edge never materialised`;
-      } else if (maeRValue >= MAE_KILL_THRESHOLD && decision.action === "hold" && currentMfeR >= 0.15) {
+      } else if (!isAtlasHedgeAgent && maeRValue >= MAE_KILL_THRESHOLD && decision.action === "hold" && currentMfeR >= 0.15) {
         console.log(`[MAE-KILL] ${order.currency_pair} ${order.direction}: MAE=${maeRValue}R but MFE=${currentMfeR.toFixed(2)}R >= 0.15R — SNAPBACK GUARD active, not killing`);
       }
 
@@ -1094,8 +1092,9 @@ Deno.serve(async (req) => {
       // ═══════════════════════════════════════════════════════════
 
       // ─── Hook 1: THS-Based Exit Acceleration ───
+      // NATURAL DEATH: Skip for atlas-hedge agents
       const THS_EXIT_THRESHOLD = 40;
-      if (decision.action === "hold" && ueRValue > 0 && healthResult.tradeHealthScore < THS_EXIT_THRESHOLD) {
+      if (!isAtlasHedgeAgent && decision.action === "hold" && ueRValue > 0 && healthResult.tradeHealthScore < THS_EXIT_THRESHOLD) {
         console.log(`[AUTO-EXIT] ${order.currency_pair} ${order.direction}: THS=${healthResult.tradeHealthScore} < ${THS_EXIT_THRESHOLD} while in profit (${ueRValue}R) — AUTONOMOUS EXIT (behavioral edge gone)`);
         decision.action = "ths-exit" as typeof decision.action;
         decision.reason = `AUTONOMOUS EXIT: profitable (${ueRValue}R) but THS=${healthResult.tradeHealthScore} collapsed below ${THS_EXIT_THRESHOLD} — behavioral edge gone`;
@@ -1115,7 +1114,7 @@ Deno.serve(async (req) => {
         : {};
       const prevDecayCycles = (decayGovPayload.profitDecayCycles as number) ?? 0;
 
-      if (decision.action === "hold" && currentMfeR >= DECAY_MFE_THRESHOLD && ueRValue < DECAY_UE_UPPER && ueRValue > DECAY_UE_LOWER) {
+      if (!isAtlasHedgeAgent && decision.action === "hold" && currentMfeR >= DECAY_MFE_THRESHOLD && ueRValue < DECAY_UE_UPPER && ueRValue > DECAY_UE_LOWER) {
         const newDecayCycles = prevDecayCycles + 1;
         if (newDecayCycles >= 2) {
           console.log(`[AUTO-EXIT] ${order.currency_pair} ${order.direction}: Profit decay confirmed (${newDecayCycles} cycles) — MFE=${currentMfeR.toFixed(2)}R retraced to UE=${ueRValue}R — AUTONOMOUS EXIT`);
@@ -1148,7 +1147,8 @@ Deno.serve(async (req) => {
       const nowUtc = new Date();
       const isFriday = nowUtc.getUTCDay() === 5;
       const hourUtc = nowUtc.getUTCHours();
-      if (isFriday && hourUtc >= 20 && decision.action === "hold") {
+      // NATURAL DEATH: Skip Friday flush for atlas-hedge agents
+      if (!isAtlasHedgeAgent && isFriday && hourUtc >= 20 && decision.action === "hold") {
         console.log(`[FRIDAY-FLUSH] ${order.currency_pair} ${order.direction}: Friday ${hourUtc}:00 UTC — closing all positions`);
         const currentPnlPips = decision.currentPnlPips;
         decision.action = "friday-flush" as typeof decision.action;
@@ -1241,7 +1241,56 @@ Deno.serve(async (req) => {
         continue;
       }
 
-      // Close the trade
+      // ═══ NATURAL DEATH MANDATE ═══
+      // Atlas Hedge agents are FORBIDDEN from bot-initiated closes.
+      // Trades ONLY close by hitting OANDA-native TP or SL.
+      // The monitor may only reconcile/sync status for atlas-hedge agents.
+      const isAtlasHedge = (order.agent_id || '').startsWith('atlas-hedge-');
+      if (isAtlasHedge) {
+        console.log(`[NATURAL-DEATH] ${order.currency_pair} ${order.direction} (${order.agent_id}): Exit signal "${decision.action}" SUPPRESSED — atlas-hedge trades close only via OANDA TP/SL`);
+        heldCount++;
+
+        // Still push trailing SL updates to OANDA for protection
+        const oandaTradeId = order.oanda_trade_id;
+        const env = order.environment || "practice";
+        if (oandaTradeId && currentMfeR >= 1.0) {
+          const effectiveRPips = rPipsEst;
+          const pipMultSl = getPipMultiplier(order.currency_pair);
+          let targetSlPrice: number | null = null;
+
+          if (currentMfeR >= 1.5) {
+            const oneR = effectiveRPips * pipMultSl;
+            targetSlPrice = order.direction === "long"
+              ? entryPrice + oneR
+              : entryPrice - oneR;
+          } else if (currentMfeR >= 1.0) {
+            targetSlPrice = order.direction === "long"
+              ? entryPrice + 0.5 * pipMultSl
+              : entryPrice - 0.5 * pipMultSl;
+          }
+
+          if (targetSlPrice != null) {
+            const isTighter = order.direction === "long"
+              ? targetSlPrice > dynamicSl.slPrice
+              : targetSlPrice < dynamicSl.slPrice;
+            if (isTighter) {
+              await updateTrailingStop(oandaTradeId, targetSlPrice, env, order.currency_pair);
+              console.log(`[NATURAL-DEATH] ${order.currency_pair}: SL tightened on OANDA to ${targetSlPrice.toFixed(5)} (protecting gains, NOT closing)`);
+            }
+          }
+        }
+
+        results.push({
+          pair: order.currency_pair,
+          direction: order.direction,
+          action: "hold-natural-death",
+          reason: `Atlas Hedge: exit signal "${decision.action}" suppressed — TP/SL only`,
+          pnlPips: decision.currentPnlPips,
+        });
+        continue;
+      }
+
+      // Close the trade (non-atlas-hedge agents only)
       console.log(`[TRADE-MONITOR] CLOSING ${order.currency_pair} ${order.direction}: ${decision.reason}`);
 
       try {
