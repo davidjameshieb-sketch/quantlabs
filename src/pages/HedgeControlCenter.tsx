@@ -8,10 +8,12 @@ import {
   ShieldCheck, Activity, AlertTriangle, BarChart3,
   Brain, Clock, Crown, Loader2, Power,
   RefreshCw, Skull, Target, TrendingDown, TrendingUp, Wifi, Zap,
-  XCircle, DollarSign, Heart, Shield,
+  XCircle, DollarSign, Heart, Shield, Crosshair,
 } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
+import { Switch } from '@/components/ui/switch';
+import { useLiveRoster } from '@/hooks/useLiveRoster';
 import HedgeDiscoveryPanel from '@/components/matrix/HedgeDiscoveryPanel';
 import AtlasHedgeLiveFeed from '@/components/matrix/AtlasHedgeLiveFeed';
 import AtlasNeuralNet from '@/components/matrix/AtlasNeuralNet';
@@ -98,6 +100,174 @@ function MiniCurve({ data, height = 80, color = '#39ff14' }: { data: number[]; h
       <polygon points={`${pad},${h - pad} ${points.join(' ')} ${w - pad},${h - pad}`} fill="url(#hedge-grad)" />
       <polyline points={points.join(' ')} fill="none" stroke={color} strokeWidth="2" />
     </svg>
+  );
+}
+
+// ── Roster Grid with Auto-Scaler ──
+function RosterGrid() {
+  const { agents, autoScalerEnabled, loading, toggleAutoScaler } = useLiveRoster();
+  const [togglingScaler, setTogglingScaler] = useState(false);
+
+  const momAgents = agents.filter(a => a.type === 'MOM');
+  const ctrAgents = agents.filter(a => a.type === 'CTR');
+
+  const handleScalerToggle = async (checked: boolean) => {
+    setTogglingScaler(true);
+    try {
+      await toggleAutoScaler(checked);
+      toast.success(checked ? 'Auto-Scaler ENABLED — drawdown protection active' : 'Auto-Scaler DISABLED — full sizing on all agents');
+    } catch (err) {
+      toast.error('Failed to toggle auto-scaler');
+    } finally {
+      setTogglingScaler(false);
+    }
+  };
+
+  if (agents.length === 0) return null;
+
+  const renderCard = (agent: typeof agents[0]) => {
+    const isMom = agent.type === 'MOM';
+    const accent = isMom ? '#3b82f6' : '#f97316';
+    const accentDim = isMom ? '#3b82f620' : '#f9731620';
+    const accentBorder = isMom ? '#3b82f640' : '#f9731640';
+
+    return (
+      <motion.div
+        key={agent.agentId}
+        initial={{ opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="relative rounded-xl border p-3.5 transition-all hover:scale-[1.02]"
+        style={{
+          borderColor: agent.status === 'ACTIVE' ? accent : accentBorder,
+          background: agent.status === 'ACTIVE'
+            ? `linear-gradient(135deg, ${accentDim}, transparent)`
+            : '#0f172a60',
+          boxShadow: agent.status === 'ACTIVE' ? `0 0 20px ${accentDim}` : 'none',
+        }}
+      >
+        {/* Status dot */}
+        <div className="absolute top-2.5 right-2.5">
+          {agent.status === 'ACTIVE' ? (
+            <motion.div animate={{ opacity: [0.5, 1, 0.5] }} transition={{ repeat: Infinity, duration: 1.5 }}
+              className="w-2.5 h-2.5 rounded-full" style={{ background: accent, boxShadow: `0 0 8px ${accent}` }} />
+          ) : (
+            <div className="w-2 h-2 rounded-full bg-slate-600" />
+          )}
+        </div>
+
+        {/* Header */}
+        <div className="flex items-center gap-2 mb-2">
+          <span className="text-[10px] font-black font-mono uppercase px-1.5 py-0.5 rounded"
+            style={{ color: accent, background: accentDim, border: `1px solid ${accentBorder}` }}>
+            {isMom ? '⚡ MOM' : '🔄 CTR'}
+          </span>
+          <span className="text-xs font-bold font-mono text-white">{agent.label}</span>
+        </div>
+
+        {/* Target pair */}
+        <div className="text-[9px] font-mono mb-2.5" style={{ color: agent.status === 'ACTIVE' ? accent : '#64748b' }}>
+          {agent.status === 'ACTIVE' ? (
+            <span className="flex items-center gap-1">
+              <Crosshair className="w-3 h-3" />
+              Hunting: {agent.currentPair} {agent.currentDirection?.toUpperCase()}
+            </span>
+          ) : (
+            'Waiting for divergence…'
+          )}
+        </div>
+
+        {/* Metrics row */}
+        <div className="grid grid-cols-2 gap-2 text-center">
+          <div className="bg-slate-950/70 rounded-lg p-1.5">
+            <div className="text-[6px] text-slate-500 uppercase tracking-wider">Daily P&L</div>
+            <div className="text-[11px] font-bold font-mono" style={{ color: agent.dailyPnl >= 0 ? '#39ff14' : '#ff0055' }}>
+              {agent.dailyPnl >= 0 ? '+' : ''}{agent.dailyPnl.toFixed(1)}p
+            </div>
+          </div>
+          <div className="bg-slate-950/70 rounded-lg p-1.5">
+            <div className="text-[6px] text-slate-500 uppercase tracking-wider">Size</div>
+            <div className="text-[11px] font-bold font-mono" style={{ color: agent.isScaledDown ? '#ff0055' : '#39ff14' }}>
+              {agent.isScaledDown ? '80%' : '100%'}
+            </div>
+          </div>
+        </div>
+
+        {/* Scaler warning */}
+        {agent.isScaledDown && (
+          <div className="mt-2 flex items-center gap-1 text-[7px] font-mono text-[#ff0055] bg-[#ff005510] border border-[#ff005530] rounded px-2 py-1">
+            <AlertTriangle className="w-2.5 h-2.5" /> Drawdown Mode — 3 consecutive losses
+          </div>
+        )}
+
+        {/* Config footer */}
+        <div className="mt-2 text-[7px] text-slate-600 font-mono">
+          {agent.slPips}p SL · {agent.tpRatio}R TP · {agent.todayTrades} trades today
+        </div>
+      </motion.div>
+    );
+  };
+
+  return (
+    <div className="bg-slate-900/80 backdrop-blur-md border border-[#a855f7]/20 rounded-2xl p-6 shadow-2xl space-y-5">
+      {/* Header with auto-scaler toggle */}
+      <div className="flex items-center justify-between border-b border-[#a855f7]/20 pb-3">
+        <div className="flex items-center gap-2">
+          <Shield className="w-4 h-4 text-[#a855f7]" />
+          <h2 className="text-[11px] font-bold tracking-widest text-white uppercase">
+            Atlas Hedge Roster
+          </h2>
+          <span className="text-[8px] font-mono text-slate-500">
+            {momAgents.length}M + {ctrAgents.length}C
+          </span>
+        </div>
+
+        {/* Auto-Scaler Master Toggle */}
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg border"
+            style={{
+              borderColor: autoScalerEnabled ? '#39ff1440' : '#33415540',
+              background: autoScalerEnabled ? '#39ff1408' : 'transparent',
+            }}>
+            <Brain className="w-3.5 h-3.5" style={{ color: autoScalerEnabled ? '#39ff14' : '#64748b' }} />
+            <span className="text-[9px] font-bold font-mono uppercase" style={{ color: autoScalerEnabled ? '#39ff14' : '#64748b' }}>
+              Dynamic Kelly Auto-Scaler
+            </span>
+            <Switch
+              checked={autoScalerEnabled}
+              onCheckedChange={handleScalerToggle}
+              disabled={togglingScaler}
+              className="data-[state=checked]:bg-[#39ff14]"
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* Momentum grid */}
+      <div>
+        <div className="text-[9px] font-bold text-[#3b82f6] uppercase tracking-widest flex items-center gap-1.5 mb-3">
+          <TrendingUp className="w-3 h-3" /> MOMENTUM LEGS ({momAgents.length})
+          <span className="text-[7px] text-slate-500 font-normal ml-2">
+            Long strongest, Short weakest — profits when rank divergence expands
+          </span>
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
+          {momAgents.map(renderCard)}
+        </div>
+      </div>
+
+      {/* Counter-leg grid */}
+      <div>
+        <div className="text-[9px] font-bold text-[#f97316] uppercase tracking-widest flex items-center gap-1.5 mb-3">
+          <TrendingDown className="w-3 h-3" /> COUNTER-LEGS ({ctrAgents.length})
+          <span className="text-[7px] text-slate-500 font-normal ml-2">
+            Short strongest, Long weakest — profits on mean reversion
+          </span>
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
+          {ctrAgents.map(renderCard)}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -478,92 +648,8 @@ const HedgeControlCenter = () => {
           </div>
         </div>
 
-        {/* ── Row 2: Strategy Roster (20 strategies) ── */}
-        {atlasAgents.length > 0 && (
-          <div className="bg-slate-900/80 backdrop-blur-md border border-[#a855f7]/20 rounded-2xl p-6 shadow-2xl">
-            <div className="flex items-center gap-2 mb-4 border-b border-[#a855f7]/20 pb-3">
-              <Shield className="w-4 h-4 text-[#a855f7]" />
-              <h2 className="text-[11px] font-bold tracking-widest text-white uppercase">
-                Atlas Hedge Strategy Roster
-              </h2>
-              <span className="text-[8px] font-mono text-slate-500 ml-auto">
-                {momAgents.filter(a => a.is_active).length}M + {ctrAgents.filter(a => a.is_active).length}C active
-              </span>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-              {/* Momentum column */}
-              <div className="space-y-2">
-                <div className="text-[9px] font-bold text-[#39ff14] uppercase tracking-widest flex items-center gap-1.5">
-                  <TrendingUp className="w-3 h-3" /> MOMENTUM ({momAgents.length})
-                </div>
-                <p className="text-[7px] text-slate-500 leading-relaxed">
-                  Trend continuation — Long strongest, Short weakest. Profits when rank divergence expands.
-                </p>
-                {momAgents.map(agent => {
-                  const cfg = agent.config || {};
-                  const stats = agentTradeMap.get(agent.agent_id);
-                  return (
-                    <div key={agent.agent_id} className="flex items-center gap-2 p-2.5 rounded-lg border" style={{
-                      borderColor: agent.is_active ? '#39ff1430' : '#33415530',
-                      background: agent.is_active ? '#39ff1408' : '#0f172a40',
-                    }}>
-                      <div className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: agent.is_active ? '#39ff14' : '#374151' }} />
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className="text-[9px] font-bold font-mono text-[#39ff14]">
-                            #{cfg.predatorRank || '?'} vs #{cfg.preyRank || '?'}
-                          </span>
-                          <span className="text-[7px] text-slate-500">{cfg.session || 'ALL'}</span>
-                          <span className="text-[7px] text-slate-600">{cfg.slPips}p SL · {cfg.tpRatio}R TP</span>
-                        </div>
-                        <div className="text-[7px] text-slate-500 mt-0.5">
-                          BT: PF {cfg.backtestPF} · WR {cfg.backtestWR}% · {cfg.backtestTrades} trades
-                          {stats ? ` | Live: ${stats.closed} trades · ${stats.pips >= 0 ? '+' : ''}${stats.pips.toFixed(1)}p` : ''}
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-
-              {/* Counter-Leg column */}
-              <div className="space-y-2">
-                <div className="text-[9px] font-bold text-[#ff8800] uppercase tracking-widest flex items-center gap-1.5">
-                  <TrendingDown className="w-3 h-3" /> COUNTER-LEG ({ctrAgents.length})
-                </div>
-                <p className="text-[7px] text-slate-500 leading-relaxed">
-                  Mean reversion — Short strongest, Long weakest. Profits when ranks converge, offsetting momentum losses.
-                </p>
-                {ctrAgents.map(agent => {
-                  const cfg = agent.config || {};
-                  const stats = agentTradeMap.get(agent.agent_id);
-                  return (
-                    <div key={agent.agent_id} className="flex items-center gap-2 p-2.5 rounded-lg border" style={{
-                      borderColor: agent.is_active ? '#ff880030' : '#33415530',
-                      background: agent.is_active ? '#ff880008' : '#0f172a40',
-                    }}>
-                      <div className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: agent.is_active ? '#ff8800' : '#374151' }} />
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className="text-[9px] font-bold font-mono text-[#ff8800]">
-                            #{cfg.predatorRank || '?'} vs #{cfg.preyRank || '?'}
-                          </span>
-                          <span className="text-[7px] text-slate-500">{cfg.session || 'ALL'}</span>
-                          <span className="text-[7px] text-slate-600">{cfg.slPips}p SL · {cfg.tpRatio}R TP</span>
-                        </div>
-                        <div className="text-[7px] text-slate-500 mt-0.5">
-                          BT: PF {cfg.backtestPF} · WR {cfg.backtestWR}% · {cfg.backtestTrades} trades
-                          {stats ? ` | Live: ${stats.closed} trades · ${stats.pips >= 0 ? '+' : ''}${stats.pips.toFixed(1)}p` : ''}
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
-        )}
+        {/* ── Row 2: Auto-Scaler Toggle + Strategy Roster (20 cards) ── */}
+        <RosterGrid />
 
         {/* ── Row 3: Equity Curve + Payout Projection ── */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
