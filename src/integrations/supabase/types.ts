@@ -935,6 +935,20 @@ export type Database = {
         }
         Returns: boolean
       }
+      try_acquire_blend_slot: {
+        Args: {
+          p_agent_id: string
+          p_confidence_score?: number
+          p_currency_pair: string
+          p_direction: string
+          p_environment: string
+          p_requested_price?: number
+          p_signal_id: string
+          p_units: number
+          p_user_id: string
+        }
+        Returns: string
+      }
     }
     Enums: {
       app_plan: "free" | "premium"

@@ -660,44 +660,30 @@ Deno.serve(async (req) => {
           signalId, gateLabel, limitExpiry, units, signedUnits, scalerMultiplier,
           predCurrency, preyCurrency, prec, slPips, pricing } = task;
 
-        // Idempotency guard
-        const recentCutoff = new Date(Date.now() - 15 * 60 * 1000).toISOString();
-        const { data: existingOrder } = await sb
-          .from('oanda_orders')
-          .select('id')
-          .eq('agent_id', comp.agentId || 'decorrelated-blend')
-          .eq('currency_pair', instrument)
-          .in('status', ['submitted', 'open', 'filled'])
-          .eq('environment', ENVIRONMENT)
-          .gt('created_at', recentCutoff)
-          .limit(1);
+        // Atomic idempotency: advisory lock + check + insert in one DB call
+        const agentId = comp.agentId || 'decorrelated-blend';
+        const { data: slotId, error: slotErr } = await sb.rpc('try_acquire_blend_slot', {
+          p_agent_id: agentId,
+          p_currency_pair: instrument,
+          p_user_id: userId,
+          p_signal_id: signalId,
+          p_direction: direction,
+          p_units: units,
+          p_environment: ENVIRONMENT,
+          p_confidence_score: comp.weight,
+          p_requested_price: limitPrice,
+        });
 
-        if (existingOrder && existingOrder.length > 0) {
-          return { component: comp.id, label: comp.label, pair: instrument, direction, status: 'skipped', skipReason: 'Recent order already exists' };
+        if (slotErr) {
+          console.error(`[BLEND] Slot acquire error ${instrument}:`, slotErr.message);
+          return { component: comp.id, label: comp.label, pair: instrument, direction, status: 'db_error', error: slotErr.message };
         }
 
-        // Insert DB record
-        const { data: dbOrder, error: dbErr } = await sb
-          .from('oanda_orders')
-          .insert({
-            user_id: userId,
-            signal_id: signalId,
-            currency_pair: instrument,
-            direction,
-            units,
-            agent_id: comp.agentId || 'decorrelated-blend',
-            environment: ENVIRONMENT,
-            status: 'submitted',
-            confidence_score: comp.weight,
-            requested_price: limitPrice,
-          })
-          .select('id')
-          .single();
-
-        if (dbErr) {
-          console.error(`[BLEND] DB insert error ${instrument}:`, dbErr.message);
-          return { component: comp.id, label: comp.label, pair: instrument, direction, status: 'db_error', error: dbErr.message };
+        if (!slotId) {
+          return { component: comp.id, label: comp.label, pair: instrument, direction, status: 'skipped', skipReason: 'Slot occupied (advisory lock)' };
         }
+
+        const dbOrder = { id: slotId };
 
         // Execute LIMIT ORDER on OANDA
         const orderTs = Date.now();
