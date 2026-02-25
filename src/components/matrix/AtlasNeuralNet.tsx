@@ -160,20 +160,21 @@ export default function AtlasNeuralNet() {
   // ── Fetch live stats from DB ──
   const fetchLiveStats = useCallback(async () => {
     try {
-      // Only track trades closed from the start of today (UTC)
-      const todayStart = new Date();
-      todayStart.setUTCHours(0, 0, 0, 0);
+      // Use a 7-day rolling window so the web has meaningful data
+      const windowStart = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
 
       const agentIds = ATLAS_AGENTS.map(a => a.agentId);
 
       const { data: orders } = await supabase
         .from('oanda_orders')
-        .select('agent_id, direction, entry_price, exit_price, currency_pair')
+        .select('agent_id, direction, entry_price, exit_price, currency_pair, oanda_trade_id')
         .in('agent_id', agentIds)
-        .in('status', ['closed', 'filled'])
+        .eq('status', 'closed')
         .not('exit_price', 'is', null)
         .not('entry_price', 'is', null)
-        .gte('closed_at', todayStart.toISOString());
+        .not('oanda_trade_id', 'is', null)
+        .eq('baseline_excluded', false)
+        .gte('closed_at', windowStart);
 
       const statsMap = new Map<string, { trades: number; wins: number; netPips: number; grossProfit: number; grossLoss: number }>();
 
