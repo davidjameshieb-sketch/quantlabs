@@ -256,24 +256,43 @@ Deno.serve(async (req) => {
 
     const body = await req.json().catch(() => ({}));
 
-    // ── Concurrency lock: pg_advisory_lock (non-blocking) ──
-    // Uses a fixed lock ID derived from 'blend_executor'. If another cycle holds it, skip immediately.
-    const LOCK_ID = 839271; // fixed advisory lock ID for blend executor
-    const { data: lockAcquired } = await sb.rpc('exec_sql', {
-      sql_text: `SELECT pg_try_advisory_lock(${LOCK_ID}) as acquired`,
-    });
-    const gotLock = (lockAcquired as any)?.acquired ?? (Array.isArray(lockAcquired) ? (lockAcquired as any)[0]?.acquired : false);
-    if (!gotLock) {
-      console.log(`[BLEND] ⏳ Skipping — another cycle holds advisory lock`);
+    // ── Concurrency lock: row-level DB lock (advisory locks break with PgBouncer) ──
+    const LOCK_KEY = 'blend_executor_lock';
+    const LOCK_TIMEOUT_MS = 5 * 60 * 1000; // 5 minute stale lock timeout
+
+    // Try to acquire lock — only succeeds if not locked or lock is stale (>5 min)
+    const { data: lockRows } = await sb
+      .from('system_settings')
+      .select('value')
+      .eq('key', LOCK_KEY)
+      .single();
+
+    const lockVal = lockRows?.value as any;
+    const isLocked = lockVal?.locked === true;
+    const lockedAt = lockVal?.locked_at ? new Date(lockVal.locked_at).getTime() : 0;
+    const isStale = Date.now() - lockedAt > LOCK_TIMEOUT_MS;
+
+    if (isLocked && !isStale) {
+      console.log(`[BLEND] ⏳ Skipping — another cycle holds DB lock (locked ${Math.round((Date.now() - lockedAt) / 1000)}s ago)`);
       return new Response(
-        JSON.stringify({ success: true, reason: 'advisory_lock_held' }),
+        JSON.stringify({ success: true, reason: 'db_lock_held' }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    // Release advisory lock helper
+    // Acquire lock
+    await sb.from('system_settings').upsert({
+      key: LOCK_KEY,
+      value: { locked: true, locked_at: new Date().toISOString() } as any,
+      updated_at: new Date().toISOString(),
+    });
+
+    // Release lock helper
     const releaseLock = async () => {
-      await sb.rpc('exec_sql', { sql_text: `SELECT pg_advisory_unlock(${LOCK_ID})` });
+      await sb.from('system_settings').update({
+        value: { locked: false, locked_at: null } as any,
+        updated_at: new Date().toISOString(),
+      }).eq('key', LOCK_KEY);
     };
 
     // ── Resolve active components (dynamic portfolio or hardcoded fallback) ──
@@ -367,6 +386,173 @@ Deno.serve(async (req) => {
       console.log(`[BLEND] 🧹 Cleaned ${staleIds.length} orphaned submitted orders`);
     }
 
+    // ── Step 2b: LIMIT ORDER FILL TRACKER — sync OANDA fills back to DB ──
+    const apiToken = Deno.env.get('OANDA_API_TOKEN')!;
+    const accountId = Deno.env.get('OANDA_ACCOUNT_ID')!;
+    const oandaHost = OANDA_HOSTS[ENVIRONMENT];
+
+    // Find DB orders with status='open' that have an oanda_order_id (sent to OANDA) but no trade_id yet
+    const { data: pendingLimits } = await sb
+      .from('oanda_orders')
+      .select('id, oanda_order_id, currency_pair, direction, agent_id, requested_price')
+      .eq('status', 'open')
+      .not('oanda_order_id', 'is', null)
+      .is('oanda_trade_id', null)
+      .eq('environment', ENVIRONMENT)
+      .in('agent_id', portfolioAgentIds);
+
+    if (pendingLimits && pendingLimits.length > 0) {
+      console.log(`[BLEND] 🔍 Checking ${pendingLimits.length} pending limit orders for fills...`);
+
+      // Fetch all open trades from OANDA to match against pending limits
+      try {
+        const tradesRes = await fetch(`${oandaHost}/v3/accounts/${accountId}/openTrades`, {
+          headers: { Authorization: `Bearer ${apiToken}`, Accept: 'application/json' },
+        });
+        if (tradesRes.ok) {
+          const tradesData = await tradesRes.json();
+          const oandaTrades = tradesData.trades || [];
+
+          // Also fetch recent orders to find which order spawned which trade
+          const ordersRes = await fetch(`${oandaHost}/v3/accounts/${accountId}/orders`, {
+            headers: { Authorization: `Bearer ${apiToken}`, Accept: 'application/json' },
+          });
+          const ordersData = ordersRes.ok ? await ordersRes.json() : { orders: [] };
+          const oandaPendingOrderIds = new Set((ordersData.orders || []).map((o: any) => o.id));
+
+          for (const pl of pendingLimits) {
+            // Check if the order is still pending on OANDA
+            if (oandaPendingOrderIds.has(pl.oanda_order_id)) {
+              continue; // Still pending, nothing to do
+            }
+
+            // Order is no longer pending — check if it filled into a trade
+            const matchedTrade = oandaTrades.find((t: any) => t.instrument === pl.currency_pair);
+            if (matchedTrade) {
+              const fillPrice = parseFloat(matchedTrade.price);
+              const tradeId = matchedTrade.id;
+              const units = parseInt(matchedTrade.currentUnits || matchedTrade.initialUnits);
+              const hasSL = !!matchedTrade.stopLossOrder;
+              const hasTP = !!matchedTrade.takeProfitOrder;
+
+              await sb.from('oanda_orders').update({
+                status: 'filled',
+                oanda_trade_id: tradeId,
+                entry_price: fillPrice,
+                units: Math.abs(units),
+                fill_latency_ms: 0,
+              }).eq('id', pl.id);
+
+              console.log(`[BLEND] ✅ Fill detected: ${pl.currency_pair} ${pl.direction} @ ${fillPrice} (trade=${tradeId}, SL=${hasSL}, TP=${hasTP})`);
+
+              // If trade is missing SL or TP, add them now
+              if (!hasSL || !hasTP) {
+                const prec = pl.currency_pair.includes('JPY') ? 3 : 5;
+                const pv = pl.currency_pair.includes('JPY') ? 0.01 : 0.0001;
+                // Look up agent config for SL/TP params
+                const { data: agentCfg } = await sb.from('agent_configs').select('config').eq('agent_id', pl.agent_id).single();
+                const cfg = (agentCfg?.config || {}) as any;
+                const slPips = cfg.slPips || 25;
+                const tpRatio = cfg.tpRatio || 2.0;
+                const slDist = slPips * pv;
+
+                if (!hasSL) {
+                  const slPrice = pl.direction === 'long'
+                    ? (fillPrice - slDist).toFixed(prec)
+                    : (fillPrice + slDist).toFixed(prec);
+                  try {
+                    await fetch(`${oandaHost}/v3/accounts/${accountId}/orders`, {
+                      method: 'POST',
+                      headers: { Authorization: `Bearer ${apiToken}`, 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ order: { type: 'STOP_LOSS', tradeID: tradeId, price: slPrice, timeInForce: 'GTC' } }),
+                    });
+                    console.log(`[BLEND] 🛡️ Added SL @ ${slPrice} to trade ${tradeId}`);
+                  } catch (e) { console.warn(`[BLEND] Failed to add SL:`, (e as Error).message); }
+                }
+
+                if (!hasTP) {
+                  const tpPrice = pl.direction === 'long'
+                    ? (fillPrice + slDist * tpRatio).toFixed(prec)
+                    : (fillPrice - slDist * tpRatio).toFixed(prec);
+                  try {
+                    await fetch(`${oandaHost}/v3/accounts/${accountId}/orders`, {
+                      method: 'POST',
+                      headers: { Authorization: `Bearer ${apiToken}`, 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ order: { type: 'TAKE_PROFIT', tradeID: tradeId, price: tpPrice, timeInForce: 'GTC' } }),
+                    });
+                    console.log(`[BLEND] 🎯 Added TP @ ${tpPrice} to trade ${tradeId}`);
+                  } catch (e) { console.warn(`[BLEND] Failed to add TP:`, (e as Error).message); }
+                }
+              }
+            } else {
+              // Order not pending and no matching trade → it expired or was cancelled
+              await sb.from('oanda_orders').update({
+                status: 'expired',
+                error_message: 'Limit order expired or cancelled on OANDA',
+              }).eq('id', pl.id);
+              console.log(`[BLEND] ⏰ Limit expired: ${pl.currency_pair} ${pl.direction} (order=${pl.oanda_order_id})`);
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('[BLEND] Fill tracker error:', (e as Error).message);
+      }
+    }
+
+    // ── Step 2c: Add SL/TP to any existing OANDA trades that are missing them ──
+    try {
+      const tradesCheckRes = await fetch(`${oandaHost}/v3/accounts/${accountId}/openTrades`, {
+        headers: { Authorization: `Bearer ${apiToken}`, Accept: 'application/json' },
+      });
+      if (tradesCheckRes.ok) {
+        const allTrades = (await tradesCheckRes.json()).trades || [];
+        for (const trade of allTrades) {
+          const hasSL = !!trade.stopLossOrder;
+          const hasTP = !!trade.takeProfitOrder;
+          if (hasSL && hasTP) continue;
+
+          const instrument = trade.instrument;
+          const prec = instrument.includes('JPY') ? 3 : 5;
+          const pv = instrument.includes('JPY') ? 0.01 : 0.0001;
+          const fillPrice = parseFloat(trade.price);
+          const isLong = parseInt(trade.currentUnits) > 0;
+          const slPips = 25; // default
+          const tpRatio = 2.0;
+          const slDist = slPips * pv;
+
+          if (!hasSL) {
+            const slPrice = isLong
+              ? (fillPrice - slDist).toFixed(prec)
+              : (fillPrice + slDist).toFixed(prec);
+            try {
+              const slRes = await fetch(`${oandaHost}/v3/accounts/${accountId}/orders`, {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${apiToken}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ order: { type: 'STOP_LOSS', tradeID: trade.id, price: slPrice, timeInForce: 'GTC' } }),
+              });
+              console.log(`[BLEND] 🛡️ Retroactive SL @ ${slPrice} for ${instrument} trade ${trade.id} (${slRes.ok ? 'OK' : 'FAILED'})`);
+            } catch (e) { console.warn(`SL add failed:`, (e as Error).message); }
+          }
+
+          if (!hasTP) {
+            const tpPrice = isLong
+              ? (fillPrice + slDist * tpRatio).toFixed(prec)
+              : (fillPrice - slDist * tpRatio).toFixed(prec);
+            try {
+              const tpRes = await fetch(`${oandaHost}/v3/accounts/${accountId}/orders`, {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${apiToken}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ order: { type: 'TAKE_PROFIT', tradeID: trade.id, price: tpPrice, timeInForce: 'GTC' } }),
+              });
+              console.log(`[BLEND] 🎯 Retroactive TP @ ${tpPrice} for ${instrument} trade ${trade.id} (${tpRes.ok ? 'OK' : 'FAILED'})`);
+            } catch (e) { console.warn(`TP add failed:`, (e as Error).message); }
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[BLEND] SL/TP retroactive check error:', (e as Error).message);
+    }
+
     // ── Step 2b: Check open positions (only count orders that actually reached OANDA) ──
     const { data: openPositions } = await sb
       .from('oanda_orders')
@@ -428,9 +614,8 @@ Deno.serve(async (req) => {
     const blockedPairs = new Set((spreadGuards || []).map(g => g.pair));
 
     // ── Step 5: Evaluate each component ──
-    const apiToken = Deno.env.get('OANDA_API_TOKEN')!;
-    const accountId = Deno.env.get('OANDA_ACCOUNT_ID')!;
-    const oandaHost = OANDA_HOSTS[ENVIRONMENT];
+    // apiToken, accountId, oandaHost already declared in fill-tracker section above
+    const userId = '00000000-0000-0000-0000-000000000000';
     const userId = '00000000-0000-0000-0000-000000000000';
 
     // ── Fetch live account equity for dynamic position sizing ──
@@ -815,10 +1000,13 @@ Deno.serve(async (req) => {
 
   } catch (err) {
     console.error('[BLEND] Fatal error:', err);
-    // Try to release advisory lock on error
+    // Release DB lock on error
     try {
       const sb2 = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
-      await sb2.rpc('exec_sql', { sql_text: `SELECT pg_advisory_unlock(839271)` });
+      await sb2.from('system_settings').update({
+        value: { locked: false, locked_at: null } as any,
+        updated_at: new Date().toISOString(),
+      }).eq('key', 'blend_executor_lock');
     } catch {}
     return new Response(
       JSON.stringify({ success: false, error: (err as Error).message }),
