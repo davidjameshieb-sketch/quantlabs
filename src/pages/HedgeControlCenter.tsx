@@ -300,14 +300,13 @@ const HedgeControlCenter = () => {
 
       const agentIds = (agents ?? []).map((a: any) => a.agent_id);
 
-      // Fetch active trades — ONLY confirmed OANDA fills (has entry_price, not closed)
+      // Fetch active trades — confirmed fills + pending LIMIT orders
       if (agentIds.length > 0) {
         const { data: openTrades } = await supabase
           .from('oanda_orders')
           .select('*')
           .in('agent_id', agentIds)
-          .in('status', ['filled', 'open'])
-          .not('entry_price', 'is', null)
+          .in('status', ['filled', 'open', 'submitted'])
           .is('closed_at', null)
           .eq('baseline_excluded', false)
           .order('created_at', { ascending: false })
