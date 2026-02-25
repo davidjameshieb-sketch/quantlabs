@@ -367,14 +367,14 @@ const HedgeControlCenter = () => {
     }
   }, []);
 
-  // Auto-refresh every 60s to match batch interval
-  const [refreshCountdown, setRefreshCountdown] = useState(60);
+  // Auto-refresh every 10s
+  const [refreshCountdown, setRefreshCountdown] = useState(10);
   useEffect(() => {
     const id = setInterval(() => {
       setRefreshCountdown(prev => {
         if (prev <= 1) {
           fetchAll();
-          return 60;
+          return 10;
         }
         return prev - 1;
       });
@@ -382,10 +382,7 @@ const HedgeControlCenter = () => {
     fetchAll();
     return () => clearInterval(id);
   }, [fetchAll]);
-  const countdownMin = Math.floor(refreshCountdown / 60);
-  const countdownSec = refreshCountdown % 60;
-  const countdownDisplay = `${String(countdownMin).padStart(2, '0')}:${String(countdownSec).padStart(2, '0')}`;
-
+  const countdownDisplay = `00:${String(refreshCountdown).padStart(2, '0')}`;
   // Realtime updates
   useEffect(() => {
     const channel = supabase
