@@ -25,7 +25,8 @@ export interface AgentRosterEntry {
   units: number | null;
   tradeOpenedAt: string | null;
   oandaTradeId: string | null;
-  tradeStatus: string | null; // 'filled' | 'open' (limit pending)
+  tradeStatus: string | null; // 'filled' | 'open' | 'submitted'
+  requestedPrice: number | null;
   // Auto-scaler
   scalerMultiplier: number; // 1.0 or 0.8
   isScaledDown: boolean;
@@ -73,14 +74,12 @@ export function useLiveRoster() {
           .eq('key', 'auto_scaler_enabled')
           .single(),
 
-        // 3. Currently open trades (real fills only)
+        // 3. Currently open/pending trades (includes limit orders awaiting fill)
         supabase
           .from('oanda_orders')
-          .select('agent_id, currency_pair, direction, oanda_trade_id, entry_price, units, created_at, status')
+          .select('agent_id, currency_pair, direction, oanda_trade_id, entry_price, units, created_at, status, requested_price')
           .like('agent_id', 'atlas-hedge-%')
-          .in('status', ['filled', 'open'])
-          .not('entry_price', 'is', null)
-          .not('oanda_trade_id', 'is', null)
+          .in('status', ['filled', 'open', 'submitted'])
           .is('closed_at', null)
           .eq('baseline_excluded', false),
 
@@ -153,8 +152,8 @@ export function useLiveRoster() {
         const lastPositive = last3.length > 0 && last3[0] > 0;
         const isScaledDown = autoScalerEnabled && allNegative && !lastPositive;
 
-        const isFilled = openTrade?.status === 'filled';
-        const isPendingLimit = openTrade && !isFilled; // status='open' = limit pending
+        const isFilled = openTrade?.status === 'filled' && openTrade?.oanda_trade_id;
+        const isPendingLimit = openTrade && !isFilled; // status='open'/'submitted' or no oanda_trade_id yet
 
         return {
           agentId: agent.agent_id,
@@ -176,6 +175,7 @@ export function useLiveRoster() {
           tradeOpenedAt: openTrade?.created_at ?? null,
           oandaTradeId: openTrade?.oanda_trade_id ?? null,
           tradeStatus: openTrade?.status ?? null,
+          requestedPrice: openTrade?.requested_price ?? null,
           scalerMultiplier: isScaledDown ? 0.8 : 1.0,
           isScaledDown,
           lastThreeResults: last3,
