@@ -330,15 +330,36 @@ Deno.serve(async (req) => {
       );
     }
 
-    // ── Step 2: Check open positions ──
+    // ── Step 2a: Clean up orphaned submitted orders (no OANDA ID, older than 15 min) ──
+    const staleThreshold = new Date(Date.now() - 15 * 60 * 1000).toISOString();
+    const { data: staleOrders } = await sb
+      .from('oanda_orders')
+      .select('id')
+      .eq('status', 'submitted')
+      .is('oanda_order_id', null)
+      .lt('created_at', staleThreshold)
+      .eq('environment', ENVIRONMENT)
+      .in('agent_id', portfolioAgentIds);
+
+    if (staleOrders && staleOrders.length > 0) {
+      const staleIds = staleOrders.map(o => o.id);
+      await sb.from('oanda_orders').update({ status: 'expired', error_message: 'Stale submitted order — never reached OANDA' }).in('id', staleIds);
+      console.log(`[BLEND] 🧹 Cleaned ${staleIds.length} orphaned submitted orders`);
+    }
+
+    // ── Step 2b: Check open positions (only count orders that actually reached OANDA) ──
     const { data: openPositions } = await sb
       .from('oanda_orders')
-      .select('currency_pair, agent_id')
+      .select('currency_pair, agent_id, status, oanda_order_id')
       .in('status', ['filled', 'open', 'submitted'])
       .eq('environment', ENVIRONMENT)
       .in('agent_id', portfolioAgentIds);
 
-    const openPairs = new Set((openPositions || []).map(p => p.currency_pair));
+    // Only count as "open" if filled/open, OR submitted WITH an oanda_order_id
+    const realOpen = (openPositions || []).filter(p =>
+      p.status === 'filled' || p.status === 'open' || (p.status === 'submitted' && p.oanda_order_id != null)
+    );
+    const openPairs = new Set(realOpen.map(p => p.currency_pair));
 
     if (openPairs.size >= maxPositions) {
       console.log(`[BLEND] Max positions (${maxPositions}) reached`);
