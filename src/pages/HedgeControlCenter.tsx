@@ -130,6 +130,20 @@ function RosterGrid() {
     const accent = isMom ? '#3b82f6' : '#f97316';
     const accentDim = isMom ? '#3b82f620' : '#f9731620';
     const accentBorder = isMom ? '#3b82f640' : '#f9731640';
+    const isLive = agent.status === 'ACTIVE';
+    const isPending = agent.status === 'PENDING_LIMIT';
+    const hasPosition = isLive || isPending;
+
+    // Compute trade age
+    const tradeAge = agent.tradeOpenedAt
+      ? (() => {
+          const mins = Math.floor((Date.now() - new Date(agent.tradeOpenedAt).getTime()) / 60000);
+          if (mins < 60) return `${mins}m`;
+          const hrs = Math.floor(mins / 60);
+          if (hrs < 24) return `${hrs}h ${mins % 60}m`;
+          return `${Math.floor(hrs / 24)}d ${hrs % 24}h`;
+        })()
+      : null;
 
     return (
       <motion.div
@@ -138,18 +152,23 @@ function RosterGrid() {
         animate={{ opacity: 1, y: 0 }}
         className="relative rounded-xl border p-3.5 transition-all hover:scale-[1.02]"
         style={{
-          borderColor: agent.status === 'ACTIVE' ? accent : accentBorder,
-          background: agent.status === 'ACTIVE'
+          borderColor: isLive ? accent : isPending ? '#eab30880' : accentBorder,
+          background: isLive
             ? `linear-gradient(135deg, ${accentDim}, transparent)`
+            : isPending
+            ? 'linear-gradient(135deg, #eab30810, transparent)'
             : '#0f172a60',
-          boxShadow: agent.status === 'ACTIVE' ? `0 0 20px ${accentDim}` : 'none',
+          boxShadow: isLive ? `0 0 20px ${accentDim}` : 'none',
         }}
       >
         {/* Status dot */}
         <div className="absolute top-2.5 right-2.5">
-          {agent.status === 'ACTIVE' ? (
+          {isLive ? (
             <motion.div animate={{ opacity: [0.5, 1, 0.5] }} transition={{ repeat: Infinity, duration: 1.5 }}
               className="w-2.5 h-2.5 rounded-full" style={{ background: accent, boxShadow: `0 0 8px ${accent}` }} />
+          ) : isPending ? (
+            <motion.div animate={{ opacity: [0.3, 0.8, 0.3] }} transition={{ repeat: Infinity, duration: 2 }}
+              className="w-2.5 h-2.5 rounded-full bg-yellow-500" style={{ boxShadow: '0 0 8px #eab308' }} />
           ) : (
             <div className="w-2 h-2 rounded-full bg-slate-600" />
           )}
@@ -164,15 +183,47 @@ function RosterGrid() {
           <span className="text-xs font-bold font-mono text-white">{agent.label}</span>
         </div>
 
-        {/* Target pair */}
-        <div className="text-[9px] font-mono mb-2.5" style={{ color: agent.status === 'ACTIVE' ? accent : '#64748b' }}>
-          {agent.status === 'ACTIVE' ? (
-            <span className="flex items-center gap-1">
-              <Crosshair className="w-3 h-3" />
-              Hunting: {agent.currentPair} {agent.currentDirection?.toUpperCase()}
-            </span>
+        {/* Live trade details */}
+        <div className="text-[9px] font-mono mb-2.5">
+          {isLive ? (
+            <div className="space-y-1">
+              <span className="flex items-center gap-1" style={{ color: accent }}>
+                <Crosshair className="w-3 h-3" />
+                <span className="font-bold">{agent.currentPair}</span>
+                <span className={agent.currentDirection === 'long' ? 'text-[#39ff14]' : 'text-[#ff0055]'}>
+                  {agent.currentDirection?.toUpperCase()}
+                </span>
+              </span>
+              <div className="grid grid-cols-2 gap-x-2 text-[8px] text-slate-400">
+                {agent.entryPrice && (
+                  <span>Entry: <span className="text-white font-bold">{agent.entryPrice.toFixed(agent.currentPair?.includes('JPY') ? 3 : 5)}</span></span>
+                )}
+                {agent.units && (
+                  <span>Units: <span className="text-white font-bold">{agent.units.toLocaleString()}</span></span>
+                )}
+                {tradeAge && (
+                  <span>Age: <span className="text-[#00ffea]">{tradeAge}</span></span>
+                )}
+                {agent.oandaTradeId && (
+                  <span>ID: <span className="text-slate-500">{agent.oandaTradeId}</span></span>
+                )}
+              </div>
+            </div>
+          ) : isPending ? (
+            <div className="space-y-1">
+              <span className="flex items-center gap-1 text-yellow-500">
+                <Clock className="w-3 h-3" />
+                <span className="font-bold">LIMIT PENDING</span>
+              </span>
+              <div className="text-[8px] text-slate-400">
+                <span className="font-bold text-yellow-400">{agent.currentPair}</span>
+                {' '}{agent.currentDirection?.toUpperCase()}
+                {agent.entryPrice && <span> @ {agent.entryPrice.toFixed(agent.currentPair?.includes('JPY') ? 3 : 5)}</span>}
+                {tradeAge && <span className="text-slate-500"> · {tradeAge} ago</span>}
+              </div>
+            </div>
           ) : (
-            'Waiting for divergence…'
+            <span className="text-slate-500">Waiting for divergence…</span>
           )}
         </div>
 
