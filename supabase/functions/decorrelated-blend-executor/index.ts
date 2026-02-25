@@ -486,6 +486,8 @@ Deno.serve(async (req) => {
       skipReason?: string;
     }> = [];
 
+    const executionTasks: Array<any> = [];
+
     for (const comp of activeComponents) {
       if (slotsUsed >= slotsAvailable) {
         executionResults.push({ component: comp.id, label: comp.label, pair: '-', direction: '-', status: 'skipped', skipReason: 'No slots available' });
@@ -639,8 +641,26 @@ Deno.serve(async (req) => {
 
       console.log(`[BLEND] 🎯 ${comp.id} → ${instrument} ${direction.toUpperCase()} LIMIT @ ${limitPrice.toFixed(prec)} (bid=${pricing.bid.toFixed(prec)} ask=${pricing.ask.toFixed(prec)} ±2p) ${units}u | SL=${slPrice.toFixed(prec)} TP=${tpPrice.toFixed(prec)} | scaler=${scalerMultiplier}x`);
 
-      try {
-        // Idempotency guard: skip if we already have a recent submitted/open order for this agent+pair
+      // Collect execution tasks to run in parallel
+      executionTasks.push({
+        comp, instrument, direction, limitPrice, slPrice, tpPrice, slDistance, 
+        signalId, gateLabel, limitExpiry, units, signedUnits, scalerMultiplier,
+        predCurrency, preyCurrency, pv, prec, slPips: Math.round(slDistance / pv * 10) / 10,
+        pricing: pricing!,
+      });
+
+      slotsUsed++;
+      openPairs.add(instrument);
+    }
+
+    // ── Execute all orders in parallel ──
+    const parallelResults = await Promise.allSettled(
+      executionTasks.map(async (task) => {
+        const { comp, instrument, direction, limitPrice, slPrice, tpPrice,
+          signalId, gateLabel, limitExpiry, units, signedUnits, scalerMultiplier,
+          predCurrency, preyCurrency, prec, slPips, pricing } = task;
+
+        // Idempotency guard
         const recentCutoff = new Date(Date.now() - 15 * 60 * 1000).toISOString();
         const { data: existingOrder } = await sb
           .from('oanda_orders')
@@ -653,10 +673,10 @@ Deno.serve(async (req) => {
           .limit(1);
 
         if (existingOrder && existingOrder.length > 0) {
-          executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction, status: 'skipped', skipReason: 'Recent order already exists for this agent+pair' });
-          continue;
+          return { component: comp.id, label: comp.label, pair: instrument, direction, status: 'skipped', skipReason: 'Recent order already exists' };
         }
 
+        // Insert DB record
         const { data: dbOrder, error: dbErr } = await sb
           .from('oanda_orders')
           .insert({
@@ -675,9 +695,8 @@ Deno.serve(async (req) => {
           .single();
 
         if (dbErr) {
-          console.error(`[BLEND] DB error for ${instrument}:`, dbErr.message);
-          executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction, status: 'db_error', error: dbErr.message });
-          continue;
+          console.error(`[BLEND] DB insert error ${instrument}:`, dbErr.message);
+          return { component: comp.id, label: comp.label, pair: instrument, direction, status: 'db_error', error: dbErr.message };
         }
 
         // Execute LIMIT ORDER on OANDA
@@ -714,13 +733,10 @@ Deno.serve(async (req) => {
           const errMsg = oandaData.errorMessage || oandaData.rejectReason || `OANDA ${oandaRes.status}`;
           console.error(`[BLEND] OANDA rejected ${instrument}: ${errMsg}`);
           await sb.from('oanda_orders').update({ status: 'rejected', error_message: errMsg }).eq('id', dbOrder.id);
-          executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction, status: 'rejected', error: errMsg });
-          continue;
+          return { component: comp.id, label: comp.label, pair: instrument, direction, status: 'rejected', error: errMsg };
         }
 
-        // LIMIT orders create a pending order, not an immediate fill
         const oandaOrderId = oandaData.orderCreateTransaction?.id || null;
-        // Check if it was immediately filled (unlikely for limit, but possible)
         const oandaTradeId = oandaData.orderFillTransaction?.tradeOpened?.tradeID || null;
         const filledPrice = oandaData.orderFillTransaction?.price ? parseFloat(oandaData.orderFillTransaction.price) : null;
         const wasImmediatelyFilled = filledPrice != null;
@@ -728,6 +744,7 @@ Deno.serve(async (req) => {
         const pipMult = instrument.includes('JPY') ? 100 : 10000;
         const slippagePips = filledPrice != null ? Math.abs((filledPrice - limitPrice) * pipMult) : null;
 
+        // CRITICAL: Update DB with OANDA order ID immediately
         const { error: updateErr } = await sb.from('oanda_orders').update({
           status: wasImmediatelyFilled ? 'filled' : 'open',
           oanda_order_id: oandaOrderId,
@@ -746,38 +763,30 @@ Deno.serve(async (req) => {
         }).eq('id', dbOrder.id);
 
         if (updateErr) {
-          console.error(`[BLEND] ❌ DB UPDATE FAILED for ${instrument} (id=${dbOrder.id}):`, updateErr.message);
-        } else {
-          console.log(`[BLEND] 📝 DB updated: ${dbOrder.id} → oanda_order_id=${oandaOrderId}, status=${wasImmediatelyFilled ? 'filled' : 'open'}`);
+          console.error(`[BLEND] ❌ DB UPDATE FAILED ${instrument} (id=${dbOrder.id}):`, updateErr.message);
         }
 
         const statusLabel = wasImmediatelyFilled ? 'filled' : 'pending_limit';
-        console.log(`[BLEND] ✅ ${comp.id} ${instrument} ${direction.toUpperCase()} LIMIT ${units}u @ ${limitPrice.toFixed(prec)} [${statusLabel}] [${fillLatency}ms]`);
+        console.log(`[BLEND] ✅ ${comp.id} ${instrument} ${direction.toUpperCase()} LIMIT ${units}u @ ${limitPrice.toFixed(prec)} [${statusLabel}] oanda=${oandaOrderId} [${fillLatency}ms]`);
 
-        executionResults.push({
-          component: comp.id,
-          label: comp.label,
-          pair: instrument,
-          direction,
-          status: statusLabel,
-          units,
-          weight: comp.weight,
+        return {
+          component: comp.id, label: comp.label, pair: instrument, direction,
+          status: statusLabel, units, weight: comp.weight,
           entryPrice: filledPrice ?? limitPrice,
           slPrice: parseFloat(slPrice.toFixed(prec)),
           tpPrice: parseFloat(tpPrice.toFixed(prec)),
-          slType: `${comp.slType} (${slPips}p)`,
-          entryTrigger: `LIMIT ${direction === 'long' ? 'ask' : 'bid'}±2p (expires ${limitExpiry})`,
           oandaTradeId: oandaTradeId ?? oandaOrderId ?? undefined,
-        });
+        };
+      })
+    );
 
-        slotsUsed++;
-        openPairs.add(instrument);
-
-        await new Promise(r => setTimeout(r, 300));
-
-      } catch (execErr) {
-        console.error(`[BLEND] Execution error ${instrument}:`, (execErr as Error).message);
-        executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction, status: 'error', error: (execErr as Error).message });
+    // Collect results
+    for (const result of parallelResults) {
+      if (result.status === 'fulfilled') {
+        executionResults.push(result.value as any);
+      } else {
+        console.error(`[BLEND] Parallel task failed:`, result.reason);
+        executionResults.push({ component: '?', label: '?', pair: '?', direction: '?', status: 'error', error: String(result.reason) });
       }
     }
 
