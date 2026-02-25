@@ -256,40 +256,24 @@ Deno.serve(async (req) => {
 
     const body = await req.json().catch(() => ({}));
 
-    // ── Concurrency lock: only one executor at a time ──
-    const lockKey = 'blend_executor_lock';
-    const { data: lockRow } = await sb
-      .from('system_settings')
-      .select('value, updated_at')
-      .eq('key', lockKey)
-      .maybeSingle();
-
-    const now = Date.now();
-    const lockExpiry = 90_000; // 90 seconds max lock duration
-    if (lockRow) {
-      const lockTs = new Date(lockRow.updated_at).getTime();
-      const lockActive = (lockRow.value as any)?.locked === true;
-      if (lockActive && (now - lockTs) < lockExpiry) {
-        console.log(`[BLEND] ⏳ Skipping — another cycle is still running (locked ${Math.round((now - lockTs) / 1000)}s ago)`);
-        return new Response(
-          JSON.stringify({ success: true, reason: 'lock_held', age_ms: now - lockTs }),
-          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-        );
-      }
+    // ── Concurrency lock: pg_advisory_lock (non-blocking) ──
+    // Uses a fixed lock ID derived from 'blend_executor'. If another cycle holds it, skip immediately.
+    const LOCK_ID = 839271; // fixed advisory lock ID for blend executor
+    const { data: lockAcquired } = await sb.rpc('exec_sql', {
+      sql_text: `SELECT pg_try_advisory_lock(${LOCK_ID}) as acquired`,
+    });
+    const gotLock = (lockAcquired as any)?.acquired ?? (Array.isArray(lockAcquired) ? (lockAcquired as any)[0]?.acquired : false);
+    if (!gotLock) {
+      console.log(`[BLEND] ⏳ Skipping — another cycle holds advisory lock`);
+      return new Response(
+        JSON.stringify({ success: true, reason: 'advisory_lock_held' }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
     }
 
-    // Acquire lock
-    await sb.from('system_settings').upsert(
-      { key: lockKey, value: { locked: true, started: new Date().toISOString() }, updated_at: new Date().toISOString() },
-      { onConflict: 'key' }
-    );
-
-    // Ensure lock is released on exit
+    // Release advisory lock helper
     const releaseLock = async () => {
-      await sb.from('system_settings').upsert(
-        { key: lockKey, value: { locked: false }, updated_at: new Date().toISOString() },
-        { onConflict: 'key' }
-      );
+      await sb.rpc('exec_sql', { sql_text: `SELECT pg_advisory_unlock(${LOCK_ID})` });
     };
 
     // ── Resolve active components (dynamic portfolio or hardcoded fallback) ──
@@ -465,6 +449,26 @@ Deno.serve(async (req) => {
       console.warn('[BLEND] Could not fetch account equity, using fallback $1000:', (e as Error).message);
     }
 
+    // ── Step 5b: Fetch OANDA pending orders to prevent duplicate limit stacking ──
+    const oandaPendingInstruments = new Set<string>();
+    try {
+      const pendingRes = await fetch(`${oandaHost}/v3/accounts/${accountId}/pendingOrders`, {
+        headers: { Authorization: `Bearer ${apiToken}`, Accept: 'application/json' },
+      });
+      if (pendingRes.ok) {
+        const pendingData = await pendingRes.json();
+        const pendingOrders = pendingData.orders || [];
+        pendingOrders.forEach((o: any) => {
+          if (o.instrument) oandaPendingInstruments.add(o.instrument);
+        });
+        if (oandaPendingInstruments.size > 0) {
+          console.log(`[BLEND] 🔒 OANDA pending limits: ${[...oandaPendingInstruments].join(', ')}`);
+        }
+      }
+    } catch (e) {
+      console.warn('[BLEND] Could not fetch OANDA pending orders:', (e as Error).message);
+    }
+
     const slotsAvailable = maxPositions - openPairs.size;
     let slotsUsed = 0;
 
@@ -524,6 +528,11 @@ Deno.serve(async (req) => {
 
       if (blockedPairs.has(instrument) || blockedPairs.has(instrument.replace('_', '/'))) {
         executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction, status: 'skipped', skipReason: 'Spread guard active' });
+        continue;
+      }
+      // ── OANDA pending limit guard: skip if broker already has a pending limit for this instrument ──
+      if (oandaPendingInstruments.has(instrument)) {
+        executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction, status: 'skipped', skipReason: 'OANDA pending limit already exists' });
         continue;
       }
 
@@ -636,8 +645,9 @@ Deno.serve(async (req) => {
       const signalId = `blend-${comp.id}-${instrument}-${Date.now()}`;
       const slPips = Math.round(slDistance / pv * 10) / 10;
 
-      // Limit order expiry: 15 minutes from now
-      const limitExpiry = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+      // Limit order expiry: 15 minutes from now — OANDA requires RFC3339 with nanosecond precision
+      const limitExpiryDate = new Date(Date.now() + 15 * 60 * 1000);
+      const limitExpiry = limitExpiryDate.toISOString().replace('Z', '000000Z'); // e.g. 2026-02-25T02:30:00.000000000Z
 
       console.log(`[BLEND] 🎯 ${comp.id} → ${instrument} ${direction.toUpperCase()} LIMIT @ ${limitPrice.toFixed(prec)} (bid=${pricing.bid.toFixed(prec)} ask=${pricing.ask.toFixed(prec)} ±2p) ${units}u | SL=${slPrice.toFixed(prec)} TP=${tpPrice.toFixed(prec)} | scaler=${scalerMultiplier}x`);
 
@@ -805,13 +815,10 @@ Deno.serve(async (req) => {
 
   } catch (err) {
     console.error('[BLEND] Fatal error:', err);
-    // Try to release lock on error
+    // Try to release advisory lock on error
     try {
       const sb2 = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
-      await sb2.from('system_settings').upsert(
-        { key: 'blend_executor_lock', value: { locked: false }, updated_at: new Date().toISOString() },
-        { onConflict: 'key' }
-      );
+      await sb2.rpc('exec_sql', { sql_text: `SELECT pg_advisory_unlock(839271)` });
     } catch {}
     return new Response(
       JSON.stringify({ success: false, error: (err as Error).message }),
