@@ -130,27 +130,30 @@ const HedgeControlCenter = () => {
 
       const agentIds = (agents ?? []).map((a: any) => a.agent_id);
 
-      // Fetch active trades for all atlas-hedge agents
+      // Fetch active trades — ONLY confirmed OANDA fills (has entry_price, not closed)
       if (agentIds.length > 0) {
         const { data: openTrades } = await supabase
           .from('oanda_orders')
           .select('*')
           .in('agent_id', agentIds)
-          .in('status', ['filled', 'open', 'submitted'])
+          .in('status', ['filled', 'open'])
+          .not('entry_price', 'is', null)
           .is('closed_at', null)
+          .eq('baseline_excluded', false)
           .order('created_at', { ascending: false })
           .limit(50);
-        // Only show trades with confirmed OANDA fills or pending limits
-        setActiveTrades((openTrades ?? []).filter(t => t.entry_price != null || t.status === 'open'));
+        setActiveTrades(openTrades ?? []);
 
-        // Fetch closed trades (last 30 days)
+        // Fetch closed trades (last 30 days) — only real fills with exit prices
         const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
         const { data: closed } = await supabase
           .from('oanda_orders')
           .select('*')
           .in('agent_id', agentIds)
-          .in('status', ['closed', 'filled'])
+          .eq('status', 'closed')
           .not('exit_price', 'is', null)
+          .not('entry_price', 'is', null)
+          .eq('baseline_excluded', false)
           .gte('created_at', thirtyDaysAgo)
           .order('created_at', { ascending: false })
           .limit(200);
