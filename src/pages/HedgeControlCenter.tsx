@@ -213,12 +213,14 @@ function RosterGrid() {
             <div className="space-y-1">
               <span className="flex items-center gap-1 text-yellow-500">
                 <Clock className="w-3 h-3" />
-                <span className="font-bold">LIMIT PENDING</span>
+                <span className="font-bold">{agent.tradeStatus === 'submitted' ? 'SUBMITTING…' : 'LIMIT PENDING'}</span>
               </span>
               <div className="text-[8px] text-slate-400">
                 <span className="font-bold text-yellow-400">{agent.currentPair}</span>
                 {' '}{agent.currentDirection?.toUpperCase()}
-                {agent.entryPrice && <span> @ {agent.entryPrice.toFixed(agent.currentPair?.includes('JPY') ? 3 : 5)}</span>}
+                {(agent.entryPrice || agent.requestedPrice) && (
+                  <span> @ {(agent.entryPrice || agent.requestedPrice)!.toFixed(agent.currentPair?.includes('JPY') ? 3 : 5)}</span>
+                )}
                 {tradeAge && <span className="text-slate-500"> · {tradeAge} ago</span>}
               </div>
             </div>
