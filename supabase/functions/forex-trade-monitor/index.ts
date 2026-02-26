@@ -1031,30 +1031,48 @@ Deno.serve(async (req) => {
         })
         .eq("id", order.id);
 
-      // ═══ V12.3 BANKER LOGIC — Break-Even at +30 pips ═══
-      // If trade is +30 pips or more, move SL to entry + 1 pip (protect the winner)
+      // ═══ V12.4 THRESHOLD TRAILING STOP ═══
+      // MOM agents (m4, m8, m9): Activate at +25p, BE+1 first, then trail 15p from high-water mark
+      // CTR agents (c-prefixed): Skip trailing entirely — keep fixed TP (mean reversion)
       if (decision.action === "hold" && order.oanda_trade_id) {
-        const bankerPipMult = getPipMultiplier(order.currency_pair);
-        const bankerPnlPips = order.direction === "long"
-          ? (currentPrice - entryPrice) / bankerPipMult
-          : (entryPrice - currentPrice) / bankerPipMult;
+        const agentIdForTrail = order.agent_id || '';
+        const isCtrAgent = agentIdForTrail.includes('-c') && !agentIdForTrail.includes('-m');
+        const isMomAgent = agentIdForTrail.includes('-m');
 
-        if (bankerPnlPips >= 30) {
-          const breakEvenPrice = order.direction === "long"
-            ? entryPrice + 1 * bankerPipMult
-            : entryPrice - 1 * bankerPipMult;
+        if (!isCtrAgent) {
+          const trailPipMult = getPipMultiplier(order.currency_pair);
+          const trailPnlPips = order.direction === "long"
+            ? (currentPrice - entryPrice) / trailPipMult
+            : (entryPrice - currentPrice) / trailPipMult;
 
-          // Only move SL if current SL is worse than break-even
-          const currentOandaSL = oandaTrade ? parseFloat((oandaTrade as any).stopLossOrder?.price || '0') : 0;
-          const slNeedsUpdate = order.direction === "long"
-            ? (currentOandaSL < breakEvenPrice || currentOandaSL === 0)
-            : (currentOandaSL > breakEvenPrice || currentOandaSL === 0);
+          const TRAIL_ACTIVATION_PIPS = 25;
+          const TRAIL_DISTANCE_PIPS = isMomAgent ? 15 : 15; // MOM uses 15p trail
 
-          if (slNeedsUpdate) {
-            console.log(`[BANKER] 🏦 ${order.currency_pair} ${order.direction}: +${bankerPnlPips.toFixed(1)}p ≥ 30p → Moving SL to BE+1p @ ${breakEvenPrice.toFixed(order.currency_pair.includes('JPY') ? 3 : 5)}`);
-            const bankerResult = await updateTrailingStop(order.oanda_trade_id, breakEvenPrice, order.environment || "practice", order.currency_pair);
-            if (bankerResult.success) {
-              console.log(`[BANKER] ✅ SL locked at break-even for ${order.currency_pair} — winner protected`);
+          if (trailPnlPips >= TRAIL_ACTIVATION_PIPS) {
+            // High-water mark from MFE price
+            const hwmPips = order.direction === "long"
+              ? (updatedMfePrice - entryPrice) / trailPipMult
+              : (entryPrice - updatedMfePrice) / trailPipMult;
+
+            // Trail SL = high-water mark - trail distance (minimum: BE+1)
+            const trailSlPips = Math.max(1, hwmPips - TRAIL_DISTANCE_PIPS);
+            const trailSlPrice = order.direction === "long"
+              ? entryPrice + trailSlPips * trailPipMult
+              : entryPrice - trailSlPips * trailPipMult;
+
+            // Only tighten, never widen
+            const currentOandaSL = oandaTrade ? parseFloat((oandaTrade as any).stopLossOrder?.price || '0') : 0;
+            const slNeedsUpdate = order.direction === "long"
+              ? (currentOandaSL < trailSlPrice || currentOandaSL === 0)
+              : (currentOandaSL > trailSlPrice || currentOandaSL === 0);
+
+            if (slNeedsUpdate) {
+              const pricePrecision = order.currency_pair.includes('JPY') ? 3 : 5;
+              console.log(`[V12.4-TRAIL] 📈 ${order.currency_pair} ${order.direction}: +${trailPnlPips.toFixed(1)}p | HWM=+${hwmPips.toFixed(1)}p | Trail SL → +${trailSlPips.toFixed(1)}p @ ${trailSlPrice.toFixed(pricePrecision)}`);
+              const trailResult = await updateTrailingStop(order.oanda_trade_id, trailSlPrice, order.environment || "practice", order.currency_pair);
+              if (trailResult.success) {
+                console.log(`[V12.4-TRAIL] ✅ SL locked for ${order.currency_pair} — profit floor secured`);
+              }
             }
           }
         }
@@ -1274,37 +1292,46 @@ Deno.serve(async (req) => {
       // Atlas Hedge agents are FORBIDDEN from bot-initiated closes.
       // Trades ONLY close by hitting OANDA-native TP or SL.
       // The monitor may only reconcile/sync status for atlas-hedge agents.
+      // V12.4: MOM agents get threshold trailing stop pushed to OANDA. CTR agents keep fixed TP.
       const isAtlasHedge = (order.agent_id || '').startsWith('atlas-hedge-');
       if (isAtlasHedge) {
         console.log(`[NATURAL-DEATH] ${order.currency_pair} ${order.direction} (${order.agent_id}): Exit signal "${decision.action}" SUPPRESSED — atlas-hedge trades close only via OANDA TP/SL`);
         heldCount++;
 
-        // Still push trailing SL updates to OANDA for protection
+        // V12.4: Push threshold trailing SL for MOM agents only
+        const ndAgentId = order.agent_id || '';
+        const ndIsCtr = ndAgentId.includes('-c') && !ndAgentId.includes('-m');
         const oandaTradeId = order.oanda_trade_id;
         const env = order.environment || "practice";
-        if (oandaTradeId && currentMfeR >= 1.0) {
-          const effectiveRPips = rPipsEst;
-          const pipMultSl = getPipMultiplier(order.currency_pair);
-          let targetSlPrice: number | null = null;
 
-          if (currentMfeR >= 1.5) {
-            const oneR = effectiveRPips * pipMultSl;
-            targetSlPrice = order.direction === "long"
-              ? entryPrice + oneR
-              : entryPrice - oneR;
-          } else if (currentMfeR >= 1.0) {
-            targetSlPrice = order.direction === "long"
-              ? entryPrice + 0.5 * pipMultSl
-              : entryPrice - 0.5 * pipMultSl;
-          }
+        if (oandaTradeId && !ndIsCtr) {
+          const ndPipMult = getPipMultiplier(order.currency_pair);
+          const ndPnlPips = order.direction === "long"
+            ? (currentPrice - entryPrice) / ndPipMult
+            : (entryPrice - currentPrice) / ndPipMult;
 
-          if (targetSlPrice != null) {
-            const isTighter = order.direction === "long"
-              ? targetSlPrice > dynamicSl.slPrice
-              : targetSlPrice < dynamicSl.slPrice;
-            if (isTighter) {
-              await updateTrailingStop(oandaTradeId, targetSlPrice, env, order.currency_pair);
-              console.log(`[NATURAL-DEATH] ${order.currency_pair}: SL tightened on OANDA to ${targetSlPrice.toFixed(5)} (protecting gains, NOT closing)`);
+          const ND_TRAIL_ACTIVATION = 25;
+          const ND_TRAIL_DISTANCE = 15;
+
+          if (ndPnlPips >= ND_TRAIL_ACTIVATION) {
+            const ndHwmPips = order.direction === "long"
+              ? (updatedMfePrice - entryPrice) / ndPipMult
+              : (entryPrice - updatedMfePrice) / ndPipMult;
+
+            const ndTrailSlPips = Math.max(1, ndHwmPips - ND_TRAIL_DISTANCE);
+            const ndTrailSlPrice = order.direction === "long"
+              ? entryPrice + ndTrailSlPips * ndPipMult
+              : entryPrice - ndTrailSlPips * ndPipMult;
+
+            const ndCurrentSL = oandaTrade ? parseFloat((oandaTrade as any).stopLossOrder?.price || '0') : 0;
+            const ndSlNeedsUpdate = order.direction === "long"
+              ? (ndCurrentSL < ndTrailSlPrice || ndCurrentSL === 0)
+              : (ndCurrentSL > ndTrailSlPrice || ndCurrentSL === 0);
+
+            if (ndSlNeedsUpdate) {
+              await updateTrailingStop(oandaTradeId, ndTrailSlPrice, env, order.currency_pair);
+              const pp = order.currency_pair.includes('JPY') ? 3 : 5;
+              console.log(`[V12.4-TRAIL] ${order.currency_pair} (${ndAgentId}): HWM=+${ndHwmPips.toFixed(1)}p → SL@+${ndTrailSlPips.toFixed(1)}p = ${ndTrailSlPrice.toFixed(pp)} (natural death + trailing)`);
             }
           }
         }
