@@ -783,24 +783,24 @@ Deno.serve(async (req) => {
       const sessionLabel = utcHour >= 0 && utcHour < 8 ? 'Asia' : utcHour >= 8 && utcHour < 16 ? 'London' : 'NY';
       const isCTR = comp.invertDirection === true;
 
-      // OPTION 4: NY SESSION FULL KILL — no new entries 16:00–00:00 UTC
-      if (sessionLabel === 'NY') {
-        executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction: '-', status: 'skipped', skipReason: 'NY session kill — no entries 16:00-00:00 UTC' });
+      // V12: NY BLACKOUT — no new entries 16:00–22:00 UTC
+      if (utcHour >= 16 && utcHour < 22) {
+        executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction: '-', status: 'skipped', skipReason: 'V12 NY Blackout — no entries 16:00-22:00 UTC' });
         continue;
       }
 
-      // OPTION 1: CTR ASIA BLOCK — no CTR entries during 00:00–08:00 UTC
+      // V12: CTR ASIA BAN — no CTR entries during 00:00–08:00 UTC
       if (isCTR && sessionLabel === 'Asia') {
-        executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction: '-', status: 'skipped', skipReason: 'CTR Asia block — counter-leg disabled in Asia session' });
+        executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction: '-', status: 'skipped', skipReason: 'V12 CTR Asia ban — counter-leg disabled in Asia session' });
         continue;
       }
 
-      // OPTION 3: JPY REGIME FILTER FOR CTR — block CTR from fading JPY when JPY is #1 or #2
+      // V12: JPY DIRECTIONAL LOCK — CTR blocked when JPY at extremes (#1, #2, #7, #8)
       if (isCTR) {
         const jpyRank = currencyRanks['JPY'] ?? 99;
         const pairIsJPY = instrument.includes('JPY');
-        if (pairIsJPY && jpyRank <= 2) {
-          executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction: '-', status: 'skipped', skipReason: `JPY regime filter — JPY rank #${jpyRank}, CTR blocked from fading` });
+        if (pairIsJPY && (jpyRank <= 2 || jpyRank >= 7)) {
+          executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction: '-', status: 'skipped', skipReason: `V12 JPY lock — JPY rank #${jpyRank} (extreme), CTR blocked` });
           continue;
         }
       }
@@ -850,10 +850,11 @@ Deno.serve(async (req) => {
         continue;
       }
 
-      // ═══ HARDENED LIMIT ORDER MATH ═══
-      // LONG (Buy Limit): limitPrice = currentAsk - (2 × pip) → strictly below market
-      // SHORT (Sell Limit): limitPrice = currentBid + (2 × pip) → strictly above market
-      const trapOffset = pv * 2; // 2.0 pips
+      // ═══ V12 DIFFERENTIATED TRAP MATH ═══
+      // MOM: 2-pip Retest Trap (behind price) — catch expansions
+      // CTR: 5-pip Exhaustion Trap (ahead of price) — only catch blown-out reversals
+      const trapPips = isCTR ? 5 : 2;
+      const trapOffset = pv * trapPips;
       const limitPrice = direction === 'long'
         ? parseFloat((pricing.ask - trapOffset).toFixed(prec))
         : parseFloat((pricing.bid + trapOffset).toFixed(prec));
@@ -948,7 +949,7 @@ Deno.serve(async (req) => {
         comp, instrument, direction, limitPrice, slPrice, tpPrice, slDistance, 
         signalId, gateLabel, limitExpiry, units, signedUnits, scalerMultiplier,
         predCurrency, preyCurrency, pv, prec, slPips: Math.round(slDistance / pv * 10) / 10,
-        pricing: pricing!,
+        pricing: pricing!, sessionLabel, trapPips,
       });
 
       slotsUsed++;
@@ -960,7 +961,7 @@ Deno.serve(async (req) => {
       executionTasks.map(async (task) => {
         const { comp, instrument, direction, limitPrice, slPrice, tpPrice,
           signalId, gateLabel, limitExpiry, units, signedUnits, scalerMultiplier,
-          predCurrency, preyCurrency, prec, slPips, pricing } = task;
+          predCurrency, preyCurrency, prec, slPips, pricing, sessionLabel, trapPips } = task;
 
         // Atomic idempotency: advisory lock + check + insert in one DB call
         const agentId = comp.agentId || 'decorrelated-blend';
@@ -1032,7 +1033,7 @@ Deno.serve(async (req) => {
         const pipMult = instrument.includes('JPY') ? 100 : 10000;
         const slippagePips = filledPrice != null ? Math.abs((filledPrice - limitPrice) * pipMult) : null;
 
-        // CRITICAL: Update DB with OANDA order ID immediately
+        // CRITICAL: Update DB with OANDA order ID and session_label immediately
         const { error: updateErr } = await sb.from('oanda_orders').update({
           status: wasImmediatelyFilled ? 'filled' : 'open',
           oanda_order_id: oandaOrderId,
@@ -1041,11 +1042,13 @@ Deno.serve(async (req) => {
           requested_price: limitPrice,
           slippage_pips: slippagePips,
           fill_latency_ms: fillLatency,
+          session_label: sessionLabel,
           gate_result: gateLabel,
           gate_reasons: [
+            `V12 | ${comp.invertDirection ? 'CTR' : 'MOM'} | ${sessionLabel} | Trap: ${trapPips}p`,
             `Component: ${comp.id} (${(comp.weight * 100).toFixed(0)}% weight) | Scaler: ${scalerMultiplier}x`,
             `Rank: ${predCurrency}(#${comp.predatorRank}) vs ${preyCurrency}(#${comp.preyRank})`,
-            `LIMIT @ ${limitPrice.toFixed(prec)} (bid=${pricing.bid.toFixed(prec)} ask=${pricing.ask.toFixed(prec)} ±2p trap)`,
+            `LIMIT @ ${limitPrice.toFixed(prec)} (bid=${pricing.bid.toFixed(prec)} ask=${pricing.ask.toFixed(prec)} ±${trapPips}p trap)`,
             `SL: ${slPrice.toFixed(prec)} (${slPips}p) | TP: ${tpPrice.toFixed(prec)} | Expires: ${limitExpiry}`,
           ],
         }).eq('id', dbOrder.id);
