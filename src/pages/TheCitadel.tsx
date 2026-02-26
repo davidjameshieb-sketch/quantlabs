@@ -826,11 +826,11 @@ const TheCitadel = () => {
                         <td className="px-3 py-2.5 text-right font-mono font-bold text-slate-700">
                           {formatPrice(trap.entryPrice, trap.pair)}
                         </td>
-                        <td className="px-3 py-2.5 max-w-[280px]">
+                        <td className="px-3 py-2.5 min-w-[320px]">
                           {verdict && (
                             <div className="flex items-start gap-1 text-[10px] leading-snug">
                               <span className="font-black shrink-0" style={{ color: gradeColor }}>{verdict.grade}</span>
-                              <span className="text-slate-500 truncate">{verdict.verdict.replace(/^(CORRECT|ALIGNED|WARNING)\.\s*/, '')}</span>
+                              <span className="text-slate-500">{verdict.verdict.replace(/^(CORRECT|ALIGNED|WARNING)\.\s*/, '')}</span>
                             </div>
                           )}
                         </td>
