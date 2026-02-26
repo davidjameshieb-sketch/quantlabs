@@ -73,21 +73,64 @@ function estimateVWAP(
   return { vwap, slippagePips: +slippagePips.toFixed(2), midPrice, fillable };
 }
 
-// In-memory 24h spread history for moving average
-const spreadHistory: Record<string, { spread: number; ts: number }[]> = {};
+// ═══ V15: DB-PERSISTED SPREAD HISTORY (sovereign_memory) ═══
+// Replaces in-memory spreadHistory that reset on every cold start.
+// Stores rolling 24h spread samples in sovereign_memory for true persistence.
 
-function recordSpread(pair: string, spreadPips: number) {
-  if (!spreadHistory[pair]) spreadHistory[pair] = [];
-  spreadHistory[pair].push({ spread: spreadPips, ts: Date.now() });
-  // Keep only last 24h
-  const cutoff = Date.now() - 24 * 60 * 60_000;
-  spreadHistory[pair] = spreadHistory[pair].filter(s => s.ts > cutoff);
+async function recordSpreadToDB(sb: any, pair: string, spreadPips: number) {
+  const memoryKey = `spread_history:${pair}`;
+  try {
+    const { data: existing } = await sb
+      .from('sovereign_memory')
+      .select('payload')
+      .eq('memory_key', memoryKey)
+      .eq('memory_type', 'spread_history')
+      .single();
+
+    const cutoff = Date.now() - 24 * 60 * 60_000;
+    let history: { spread: number; ts: number }[] = [];
+    if (existing?.payload?.samples) {
+      history = (existing.payload.samples as any[]).filter((s: any) => s.ts > cutoff);
+    }
+    history.push({ spread: spreadPips, ts: Date.now() });
+
+    // Keep max 500 samples per pair (every 10min = 144/day, plenty of room)
+    if (history.length > 500) history = history.slice(-500);
+
+    await sb.from('sovereign_memory').upsert({
+      memory_key: memoryKey,
+      memory_type: 'spread_history',
+      payload: { samples: history, lastSpread: spreadPips, updatedAt: new Date().toISOString() },
+      updated_at: new Date().toISOString(),
+      created_by: 'slippage-sentinel',
+    }, { onConflict: 'memory_key' });
+  } catch (e) {
+    console.warn(`[SPREAD-HISTORY] Failed to persist spread for ${pair}:`, (e as Error).message);
+  }
 }
 
-function getAvgSpread(pair: string): number {
-  const hist = spreadHistory[pair];
-  if (!hist || hist.length === 0) return 0;
-  return hist.reduce((s, h) => s + h.spread, 0) / hist.length;
+async function getAvgSpreadFromDB(sb: any, pair: string): Promise<number> {
+  const memoryKey = `spread_history:${pair}`;
+  try {
+    const { data } = await sb
+      .from('sovereign_memory')
+      .select('payload')
+      .eq('memory_key', memoryKey)
+      .eq('memory_type', 'spread_history')
+      .single();
+
+    if (!data?.payload?.samples) return 0;
+    const cutoff = Date.now() - 24 * 60 * 60_000;
+    const samples = (data.payload.samples as any[]).filter((s: any) => s.ts > cutoff);
+    if (samples.length === 0) return 0;
+
+    // Use MEDIAN instead of mean for robustness against spike outliers
+    const sorted = samples.map((s: any) => s.spread).sort((a: number, b: number) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    return sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+  } catch {
+    return 0;
+  }
 }
 
 Deno.serve(async (req) => {
@@ -136,9 +179,13 @@ Deno.serve(async (req) => {
     const pipMultiplier = isJPY ? 100 : 10000;
     const currentSpreadPips = +((ask - bid) * pipMultiplier).toFixed(1);
 
-    // Record spread for MA calculation
-    recordSpread(pair, currentSpreadPips);
-    const avgSpread24h = getAvgSpread(pair);
+    // Record spread to DB for persistent 24h history
+    const sb = createClient(
+      Deno.env.get('SUPABASE_URL')!,
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+    );
+    await recordSpreadToDB(sb, pair, currentSpreadPips);
+    const avgSpread24h = await getAvgSpreadFromDB(sb, pair);
 
     // Walk the depth book
     const depthLevels = direction === "long" ? price.asks : price.bids;
