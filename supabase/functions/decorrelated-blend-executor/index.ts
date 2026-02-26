@@ -818,6 +818,15 @@ Deno.serve(async (req) => {
         continue;
       }
 
+      // V12.3: JPY DIVERSIFICATION LOCK — max 2 concurrent JPY positions
+      if (instrument.includes('JPY')) {
+        const openJpyCount = [...openPairs].filter(p => p.includes('JPY')).length;
+        if (openJpyCount >= 2) {
+          executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction, status: 'skipped', skipReason: `JPY diversification lock — ${openJpyCount}/2 JPY slots full` });
+          continue;
+        }
+      }
+
       if (blockedPairs.has(instrument) || blockedPairs.has(instrument.replace('_', '/'))) {
         executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction, status: 'skipped', skipReason: 'Spread guard active' });
         continue;
@@ -874,20 +883,11 @@ Deno.serve(async (req) => {
         units = Math.max(1, Math.round(riskAmount / slDistance));
       }
 
-      // ── Dynamic Kelly Auto-Scaler ──
-      // If enabled, check last 3 real closed trades for this agent.
-      // 3 consecutive losses → 0.8x size. Last win → reset to 1.0x.
+      // ── V12.3 KELLY CIRCUIT BREAKER (HARD KILL) ──
+      // 3 consecutive losses → DEACTIVATE agent entirely. Manual reactivation only.
       let scalerMultiplier = 1.0;
-      try {
-        const { data: scalerSetting } = await sb
-          .from('system_settings')
-          .select('value')
-          .eq('key', 'auto_scaler_enabled')
-          .single();
-
-        const scalerEnabled = (scalerSetting?.value as any)?.enabled ?? false;
-
-        if (scalerEnabled && comp.agentId) {
+      if (comp.agentId) {
+        try {
           const { data: lastTrades } = await sb
             .from('oanda_orders')
             .select('currency_pair, direction, entry_price, exit_price')
@@ -910,25 +910,16 @@ Deno.serve(async (req) => {
             });
             const allNegative = pips.every(p => p < 0);
             if (allNegative) {
-              scalerMultiplier = 0.8;
-              console.log(`[BLEND] 📉 Auto-Scaler: ${comp.agentId} last 3 trades all losses → sizing at 80%`);
+              // HARD KILL: deactivate agent, skip this trade
+              console.log(`[BLEND] 🔴 KELLY KILL: ${comp.agentId} — 3 consecutive losses (${pips.map(p => p.toFixed(1)).join(', ')}p) → DEACTIVATING`);
+              await sb.from('agent_configs').update({ is_active: false, updated_at: new Date().toISOString() }).eq('agent_id', comp.agentId);
+              executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction, status: 'skipped', skipReason: `Kelly circuit breaker — 3 consecutive losses, agent deactivated` });
+              continue;
             }
           }
-          // If last trade is positive, multiplier stays 1.0 (reset)
-          if (lastTrades && lastTrades.length > 0) {
-            const lastPips = (() => {
-              const t = lastTrades[0];
-              const isJPY = t.currency_pair?.includes('JPY');
-              const mult = isJPY ? 100 : 10000;
-              return t.direction === 'long'
-                ? ((t.exit_price || 0) - (t.entry_price || 0)) * mult
-                : ((t.entry_price || 0) - (t.exit_price || 0)) * mult;
-            })();
-            if (lastPips > 0) scalerMultiplier = 1.0;
-          }
+        } catch (scalerErr) {
+          console.warn('[BLEND] Kelly check failed:', (scalerErr as Error).message);
         }
-      } catch (scalerErr) {
-        console.warn('[BLEND] Auto-scaler check failed, using 1.0x:', (scalerErr as Error).message);
       }
 
       units = Math.max(1, Math.round(units * scalerMultiplier));
@@ -938,9 +929,9 @@ Deno.serve(async (req) => {
       const signalId = `blend-${comp.id}-${instrument}-${Date.now()}`;
       const slPips = Math.round(slDistance / pv * 10) / 10;
 
-      // Limit order expiry: 15 minutes from now — OANDA requires RFC3339 with nanosecond precision
-      const limitExpiryDate = new Date(Date.now() + 15 * 60 * 1000);
-      const limitExpiry = limitExpiryDate.toISOString().replace('Z', '000000Z'); // e.g. 2026-02-25T02:30:00.000000000Z
+      // V12.3: Limit order expiry: 60 minutes — OANDA requires RFC3339 with nanosecond precision
+      const limitExpiryDate = new Date(Date.now() + 60 * 60 * 1000);
+      const limitExpiry = limitExpiryDate.toISOString().replace('Z', '000000Z');
 
       console.log(`[BLEND] 🎯 ${comp.id} → ${instrument} ${direction.toUpperCase()} LIMIT @ ${limitPrice.toFixed(prec)} (bid=${pricing.bid.toFixed(prec)} ask=${pricing.ask.toFixed(prec)} ±2p) ${units}u | SL=${slPrice.toFixed(prec)} TP=${tpPrice.toFixed(prec)} | scaler=${scalerMultiplier}x`);
 
