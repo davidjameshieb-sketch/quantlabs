@@ -21,6 +21,71 @@ const FLAGS: Record<string, string> = {
   AUD: '🇦🇺', CAD: '🇨🇦', CHF: '🇨🇭', NZD: '🇳🇿',
 };
 
+const AGENT_ROLES: Record<string, { role: string; description: string }> = {
+  'atlas-hedge-m4': { role: 'Momentum Sniper', description: 'JPY specialist targeting high-velocity pullbacks' },
+  'atlas-hedge-m6': { role: 'Cross-Asset Flow', description: 'Patience trap hunter on #1 Strength currency' },
+  'atlas-hedge-m8': { role: 'Pivot Point Momentum', description: 'Major-pair momentum and pivot breakouts' },
+  'atlas-hedge-m9': { role: 'Matrix Divergence', description: 'Widest rank-gap hunter, double-exposure specialist' },
+};
+
+function generateVerdict(
+  agentId: string,
+  pair: string,
+  direction: string,
+  ranks: Record<string, number>
+): { verdict: string; grade: 'CORRECT' | 'ALIGNED' | 'WARNING' } {
+  const parts = pair.replace('_', '/').split('/');
+  const base = parts[0] || '';
+  const quote = parts[1] || '';
+  const baseRank = ranks[base];
+  const quoteRank = ranks[quote];
+  const role = AGENT_ROLES[agentId];
+  const roleName = role?.role ?? agentId.replace('atlas-hedge-', '');
+
+  if (baseRank == null || quoteRank == null) {
+    return { verdict: `${roleName}: Ranks unavailable for ${base}/${quote}.`, grade: 'ALIGNED' };
+  }
+
+  const gap = Math.abs(baseRank - quoteRank);
+  const isLong = direction === 'long';
+  const strongCur = isLong ? base : quote;
+  const weakCur = isLong ? quote : base;
+  const strongRank = ranks[strongCur];
+  const weakRank = ranks[weakCur];
+
+  // Agent-specific context
+  let agentContext = '';
+  if (agentId === 'atlas-hedge-m4') {
+    const hasJpy = pair.includes('JPY');
+    agentContext = hasJpy
+      ? `m4 is your JPY specialist. ${isLong ? 'Buying' : 'Selling'} the freight-train.`
+      : `m4 operating outside JPY — watch for reduced edge.`;
+  } else if (agentId === 'atlas-hedge-m6') {
+    agentContext = `m6 waits for the Trap to be hit, targeting the current #1 Strength.`;
+  } else if (agentId === 'atlas-hedge-m8') {
+    agentContext = `m8 focuses on major-pair momentum and pivot breakouts.`;
+  } else if (agentId === 'atlas-hedge-m9') {
+    agentContext = `m9 is hunting for the widest rank gap. Double-exposure specialist.`;
+  }
+
+  if (gap >= 5) {
+    return {
+      grade: 'CORRECT',
+      verdict: `CORRECT. ${agentContext} ${strongCur} is #${strongRank} (strong) and ${weakCur} is #${weakRank} (weak) — textbook divergence play.`,
+    };
+  }
+  if (gap >= 3) {
+    return {
+      grade: 'ALIGNED',
+      verdict: `ALIGNED. Gap is narrowing but still valid for ${roleName}. ${base} #${baseRank} vs ${quote} #${quoteRank}.`,
+    };
+  }
+  return {
+    grade: 'WARNING',
+    verdict: `WARNING. Matrix convergence detected. ${base} #${baseRank} vs ${quote} #${quoteRank}. Logic Integrity declining.`,
+  };
+}
+
 function getPipMult(pair: string) {
   return pair.includes('JPY') ? 100 : 10000;
 }
@@ -637,6 +702,40 @@ const TheCitadel = () => {
                         <span>100% Full Edge</span>
                       </div>
                     </div>
+
+                    {/* Trade Methodology Audit Strip */}
+                    {(() => {
+                      const role = AGENT_ROLES[trade.agentId];
+                      const verdict = matrix?.currencyRanks
+                        ? generateVerdict(trade.agentId, trade.pair, trade.direction, matrix.currencyRanks)
+                        : null;
+                      const gradeColor = verdict?.grade === 'CORRECT' ? '#16a34a'
+                        : verdict?.grade === 'WARNING' ? '#dc2626' : '#f59e0b';
+                      return (
+                        <div className="mt-3 pt-3 space-y-1.5" style={{ borderTop: '1px solid #f1f5f9' }}>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="px-1.5 py-0.5 rounded text-[9px] font-bold"
+                              style={{ background: '#dbeafe', color: '#2563eb' }}>
+                              {trade.agentId.replace('atlas-hedge-', '').toUpperCase()}
+                            </span>
+                            <span className="text-[10px] font-bold text-slate-700">
+                              {role?.role ?? 'Unknown'}
+                            </span>
+                            <span className="text-[9px] text-slate-400">|</span>
+                            <span className={`text-[10px] font-bold ${trade.direction === 'long' ? 'text-emerald-600' : 'text-red-600'}`}>
+                              {trade.direction.toUpperCase()}
+                            </span>
+                          </div>
+                          {verdict && (
+                            <div className="flex items-start gap-1.5 text-[10px] leading-snug"
+                              style={{ color: gradeColor }}>
+                              <span className="font-black shrink-0">{verdict.grade}</span>
+                              <span className="text-slate-600">{verdict.verdict.replace(/^(CORRECT|ALIGNED|WARNING)\.\s*/, '')}</span>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </motion.div>
                 );
               })}
@@ -688,47 +787,61 @@ const TheCitadel = () => {
               <table className="w-full text-[11px]">
                 <thead>
                   <tr style={{ background: '#f8fafc', borderBottom: '1px solid #e5e7eb' }}>
-                    <th className="text-left px-4 py-2.5 font-bold text-slate-500 uppercase tracking-wider text-[9px]">Order</th>
-                    <th className="text-left px-4 py-2.5 font-bold text-slate-500 uppercase tracking-wider text-[9px]">Pair</th>
-                    <th className="text-left px-4 py-2.5 font-bold text-slate-500 uppercase tracking-wider text-[9px]">Strategy</th>
-                    <th className="text-left px-4 py-2.5 font-bold text-slate-500 uppercase tracking-wider text-[9px]">Type</th>
-                    <th className="text-right px-4 py-2.5 font-bold text-slate-500 uppercase tracking-wider text-[9px]">Entry</th>
-                    <th className="text-right px-4 py-2.5 font-bold text-slate-500 uppercase tracking-wider text-[9px]">Expiry</th>
+                    <th className="text-left px-3 py-2.5 font-bold text-slate-500 uppercase tracking-wider text-[9px]">Pair</th>
+                    <th className="text-left px-3 py-2.5 font-bold text-slate-500 uppercase tracking-wider text-[9px]">Agent</th>
+                    <th className="text-left px-3 py-2.5 font-bold text-slate-500 uppercase tracking-wider text-[9px]">Role</th>
+                    <th className="text-left px-3 py-2.5 font-bold text-slate-500 uppercase tracking-wider text-[9px]">Type</th>
+                    <th className="text-right px-3 py-2.5 font-bold text-slate-500 uppercase tracking-wider text-[9px]">Entry</th>
+                    <th className="text-left px-3 py-2.5 font-bold text-slate-500 uppercase tracking-wider text-[9px]">Verdict</th>
+                    <th className="text-right px-3 py-2.5 font-bold text-slate-500 uppercase tracking-wider text-[9px]">Expiry</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {limitTraps.map(trap => (
-                    <tr key={trap.id} className="border-b" style={{ borderColor: '#f1f5f9' }}>
-                      <td className="px-4 py-2.5 font-mono text-slate-400">
-                        {trap.oandaOrderId ? `#${trap.oandaOrderId}` : '—'}
-                      </td>
-                      <td className="px-4 py-2.5 font-bold text-slate-800">
-                        {trap.pair.replace('_', '/')}
-                      </td>
-                      <td className="px-4 py-2.5">
-                        <span className="px-1.5 py-0.5 rounded text-[9px] font-bold"
-                          style={{
-                            background: trap.strategy === 'MOM' ? '#dbeafe' : '#ffedd5',
-                            color: trap.strategy === 'MOM' ? '#2563eb' : '#ea580c',
-                          }}>
-                          {trap.agentId.replace('atlas-hedge-', '')} ({trap.strategy})
-                        </span>
-                      </td>
-                      <td className="px-4 py-2.5">
-                        <span className={`font-bold ${trap.direction === 'long' ? 'text-emerald-600' : 'text-red-600'}`}>
-                          {trap.type}
-                        </span>
-                      </td>
-                      <td className="px-4 py-2.5 text-right font-mono font-bold text-slate-700">
-                        {formatPrice(trap.entryPrice, trap.pair)}
-                      </td>
-                      <td className="px-4 py-2.5 text-right">
-                        <span className={`font-bold ${trap.expiryMinutes <= 5 ? 'text-red-500' : trap.expiryMinutes <= 15 ? 'text-amber-500' : 'text-slate-600'}`}>
-                          {trap.expiryMinutes}m
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
+                  {limitTraps.map(trap => {
+                    const role = AGENT_ROLES[trap.agentId];
+                    const verdict = matrix?.currencyRanks
+                      ? generateVerdict(trap.agentId, trap.pair, trap.direction, matrix.currencyRanks)
+                      : null;
+                    const gradeColor = verdict?.grade === 'CORRECT' ? '#16a34a'
+                      : verdict?.grade === 'WARNING' ? '#dc2626' : '#f59e0b';
+                    return (
+                      <tr key={trap.id} className="border-b" style={{ borderColor: '#f1f5f9' }}>
+                        <td className="px-3 py-2.5 font-bold text-slate-800">
+                          {trap.pair.replace('_', '/')}
+                        </td>
+                        <td className="px-3 py-2.5">
+                          <span className="px-1.5 py-0.5 rounded text-[9px] font-bold"
+                            style={{ background: '#dbeafe', color: '#2563eb' }}>
+                            {trap.agentId.replace('atlas-hedge-', '').toUpperCase()}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2.5 text-[10px] font-bold text-slate-700">
+                          {role?.role ?? '—'}
+                        </td>
+                        <td className="px-3 py-2.5">
+                          <span className={`font-bold ${trap.direction === 'long' ? 'text-emerald-600' : 'text-red-600'}`}>
+                            {trap.type}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2.5 text-right font-mono font-bold text-slate-700">
+                          {formatPrice(trap.entryPrice, trap.pair)}
+                        </td>
+                        <td className="px-3 py-2.5 max-w-[280px]">
+                          {verdict && (
+                            <div className="flex items-start gap-1 text-[10px] leading-snug">
+                              <span className="font-black shrink-0" style={{ color: gradeColor }}>{verdict.grade}</span>
+                              <span className="text-slate-500 truncate">{verdict.verdict.replace(/^(CORRECT|ALIGNED|WARNING)\.\s*/, '')}</span>
+                            </div>
+                          )}
+                        </td>
+                        <td className="px-3 py-2.5 text-right">
+                          <span className={`font-bold ${trap.expiryMinutes <= 5 ? 'text-red-500' : trap.expiryMinutes <= 15 ? 'text-amber-500' : 'text-slate-600'}`}>
+                            {trap.expiryMinutes}m
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
