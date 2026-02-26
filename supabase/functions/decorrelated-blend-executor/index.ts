@@ -1091,29 +1091,12 @@ Deno.serve(async (req) => {
         const filledPrice = oandaData.orderFillTransaction?.price ? parseFloat(oandaData.orderFillTransaction.price) : null;
         const wasImmediatelyFilled = filledPrice != null;
 
-        // ═══ SOLUTION #9: FILL LATENCY CAP — Reject fills > 50ms ═══
-        // High-latency fills indicate adverse selection (stale quotes, requotes).
-        // m8 averages 84ms — this filter protects against toxic fills.
+        // ═══ SOLUTION #9 (v2): FILL LATENCY LOGGING ═══
+        // Latency cap removed — limit orders already solve adverse selection by earning the spread.
+        // Post-fill closing was paying 2x spread on rejected fills. Now we log high-latency fills
+        // for monitoring but trust the limit order trap to handle fill quality.
         if (fillLatency > 50 && wasImmediatelyFilled) {
-          console.log(`[BLEND] ⚡ LATENCY CAP: ${instrument} fill took ${fillLatency}ms > 50ms limit — CLOSING position immediately`);
-          // Close the filled trade immediately
-          try {
-            const closeTradeId = oandaData.orderFillTransaction?.tradeOpened?.tradeID;
-            if (closeTradeId) {
-              await fetch(`${oandaHost}/v3/accounts/${accountId}/trades/${closeTradeId}/close`, {
-                method: 'PUT',
-                headers: { Authorization: `Bearer ${apiToken}`, 'Content-Type': 'application/json' },
-                body: JSON.stringify({}),
-              });
-            }
-          } catch (closeErr) {
-            console.warn(`[BLEND] Latency cap close failed:`, (closeErr as Error).message);
-          }
-          await sb.from('oanda_orders').update({
-            status: 'rejected',
-            error_message: `Latency cap exceeded: ${fillLatency}ms > 50ms — adverse selection protection`,
-          }).eq('id', dbOrder.id);
-          return { component: comp.id, label: comp.label, pair: instrument, direction, status: 'rejected', error: `Latency cap: ${fillLatency}ms` };
+          console.warn(`[BLEND] ⚠️ HIGH LATENCY: ${instrument} fill took ${fillLatency}ms > 50ms — logged for monitoring (limit order protects fill quality)`);
         }
 
         const pipMult = instrument.includes('JPY') ? 100 : 10000;
