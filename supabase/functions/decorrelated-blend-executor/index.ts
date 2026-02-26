@@ -790,15 +790,15 @@ Deno.serve(async (req) => {
       // ── SESSION FILTERS (V11 Sovereign Dissection) ──
       const nowUTC = new Date();
       const utcHour = nowUTC.getUTCHours();
-      const sessionLabel = utcHour >= 0 && utcHour < 8 ? 'Asia' : utcHour >= 8 && utcHour < 16 ? 'London' : 'NY';
+      const sessionLabel = utcHour >= 0 && utcHour < 8 ? 'Asia' : utcHour >= 8 && utcHour < 13 ? 'London' : 'NY';
       const isCTR = comp.invertDirection === true;
 
-      // ═══ SOLUTION #6: FIXED SESSION BLACKOUT — NY Afternoon Time-Gate ═══
-      // Previous: 16:00-22:00 UTC. Bug: UTC hour 22-23 (EST 17-18) still leaked through.
-      // Fix: Extend blackout to 16:00-00:00 UTC (full NY afternoon + evening).
-      // No new entries during the volatile, low-liquidity NY chop zone.
-      if (utcHour >= 16) {
-        executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction: '-', status: 'skipped', skipReason: `V13 NY Blackout — no entries ${utcHour}:00 UTC (16:00-00:00 gate)` });
+      // ═══ V14 NY BLACKOUT — shifted to 13:00 UTC (8:00 AM EST) ═══
+      // Blocks the entire London/NY overlap kill zone + NY afternoon.
+      // 13:00 UTC = 8:00 AM EST. No new entries from NY open onwards.
+      // This eliminates the Morning Kill Zone that caused M4 GBP/CAD -42.3p, M8 USD/CAD -41.8p.
+      if (utcHour >= 13) {
+        executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction: '-', status: 'skipped', skipReason: `V14 NY Blackout — no entries ${utcHour}:00 UTC (13:00-00:00 gate)` });
         continue;
       }
 

@@ -222,6 +222,18 @@ Deno.serve(async (req) => {
         );
       }
 
+      // ═══ V14 NY SESSION GATEWAY LOCK — last line of defense ═══
+      // Even if an agent bypasses the blend-executor, this gate rejects
+      // any new execution during the NY blackout window (13:00–00:00 UTC).
+      const gateHour = new Date().getUTCHours();
+      if (gateHour >= 13) {
+        console.warn(`[OANDA] V14 NY Gateway Lock: rejected ${body.currencyPair} at ${gateHour}:00 UTC`);
+        return new Response(
+          JSON.stringify({ error: `V14 NY Session Blackout — no new entries at ${gateHour}:00 UTC (13:00-00:00 gate)` }),
+          { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
       // ═══ AGENT MANDATE LOCKS — prevent execution bypass ═══
       const agentId = body.agentId || '';
       const instrument = toOandaInstrument(body.currencyPair);
