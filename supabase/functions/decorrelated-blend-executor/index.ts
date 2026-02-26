@@ -1025,6 +1025,8 @@ Deno.serve(async (req) => {
         const slippagePips = filledPrice != null ? Math.abs((filledPrice - limitPrice) * pipMult) : null;
 
         // CRITICAL: Update DB with OANDA order ID and session_label immediately
+        // V12.5: Stamp entry rank gap for Matrix-Flip exit logic
+        const entryRankGap = Math.abs(comp.predatorRank - comp.preyRank);
         const { error: updateErr } = await sb.from('oanda_orders').update({
           status: wasImmediatelyFilled ? 'filled' : 'open',
           oanda_order_id: oandaOrderId,
@@ -1035,6 +1037,11 @@ Deno.serve(async (req) => {
           fill_latency_ms: fillLatency,
           session_label: sessionLabel,
           gate_result: gateLabel,
+          governance_payload: {
+            entryRankGap,
+            entryBaseRank: comp.predatorRank,
+            entryQuoteRank: comp.preyRank,
+          },
           gate_reasons: [
             `V12 | ${comp.invertDirection ? 'CTR' : 'MOM'} | ${sessionLabel} | Trap: ${trapPips}p`,
             `Component: ${comp.id} (${(comp.weight * 100).toFixed(0)}% weight) | Scaler: ${scalerMultiplier}x`,

@@ -760,6 +760,69 @@ Deno.serve(async (req) => {
     await Promise.all(indicatorPromises);
     console.log(`[TRADE-MONITOR] Fetched 15m indicators (Supertrend+ATR) for ${indicatorMap.size}/${instrumentsNeeded.size} pairs`);
 
+    // ═══ V12.5 LOGICAL RISK MANAGER — Matrix-Flip + JPY Emergency ═══
+    // Fetch current Sovereign Matrix rankings once per monitor cycle
+    let matrixRanks: Record<string, number> | null = null;
+    let matrixScores: Record<string, number> | null = null;
+    try {
+      const matrixRes = await fetch(`${supabaseUrl}/functions/v1/sovereign-matrix`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${supabaseAnonKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ environment: "practice" }),
+      });
+      if (matrixRes.ok) {
+        const matrixData = await matrixRes.json();
+        if (matrixData.success && matrixData.currencyRanks) {
+          matrixRanks = matrixData.currencyRanks;
+          matrixScores = matrixData.currencyScores || null;
+          console.log(`[V12.5-MATRIX] Ranks loaded: ${matrixData.sortedCurrencies?.map((c: string, i: number) => `${i+1}.${c}`).join(' | ')}`);
+        }
+      } else {
+        await matrixRes.text(); // consume body
+      }
+    } catch (err) {
+      console.warn(`[V12.5-MATRIX] Failed to fetch matrix ranks:`, (err as Error).message);
+    }
+
+    // V12.5 JPY VELOCITY TRACKER — detect JPY rank jumps via sovereign_memory
+    let jpyRankVelocityAlert = false;
+    if (matrixRanks) {
+      const jpyCurrentRank = matrixRanks["JPY"] || 4;
+      try {
+        const { data: jpyMemory } = await supabase
+          .from("sovereign_memory")
+          .select("payload, updated_at")
+          .eq("memory_key", "jpy_rank_tracker")
+          .eq("memory_type", "risk_monitor")
+          .limit(1)
+          .maybeSingle();
+
+        const now = Date.now();
+        const prevPayload = jpyMemory?.payload as Record<string, unknown> | null;
+        const prevRank = (prevPayload?.rank as number) ?? jpyCurrentRank;
+        const prevTs = jpyMemory?.updated_at ? new Date(jpyMemory.updated_at).getTime() : now;
+        const minutesSinceUpdate = (now - prevTs) / 60000;
+        const rankShift = Math.abs(jpyCurrentRank - prevRank);
+
+        // JPY Emergency: rank moved 4+ positions in under 30 minutes
+        if (rankShift >= 4 && minutesSinceUpdate <= 30) {
+          jpyRankVelocityAlert = true;
+          console.log(`[V12.5-JPY-EMERGENCY] 🚨 JPY rank shifted ${rankShift} positions (${prevRank}→${jpyCurrentRank}) in ${minutesSinceUpdate.toFixed(0)}min — EXIT ALL JPY TRADES`);
+        }
+
+        // Upsert tracker
+        await supabase.from("sovereign_memory").upsert({
+          memory_key: "jpy_rank_tracker",
+          memory_type: "risk_monitor",
+          payload: { rank: jpyCurrentRank, previousRank: prevRank, updatedAt: new Date().toISOString() },
+          updated_at: new Date().toISOString(),
+          created_by: "trade-monitor-v12.5",
+        }, { onConflict: "memory_key,memory_type" });
+      } catch (err) {
+        console.warn(`[V12.5-JPY] Tracker error:`, (err as Error).message);
+      }
+    }
+
     // 3. Evaluate each open order
     const results: Array<{
       pair: string; direction: string; action: string; reason: string;
@@ -1030,6 +1093,47 @@ Deno.serve(async (req) => {
           mae_price: updatedMaePrice,
         })
         .eq("id", order.id);
+
+      // ═══ V12.5 LOGICAL RISK MANAGER — Matrix-Flip Exit ═══
+      // If the rank gap between the two currencies in this trade has closed >50%, the edge is dead.
+      if (decision.action === "hold" && matrixRanks) {
+        const pairParts = order.currency_pair.split("_");
+        if (pairParts.length === 2) {
+          const [baseCur, quoteCur] = pairParts;
+          const currentBaseRank = matrixRanks[baseCur] ?? 4;
+          const currentQuoteRank = matrixRanks[quoteCur] ?? 4;
+          const currentGap = Math.abs(currentBaseRank - currentQuoteRank);
+
+          // Retrieve entry-time rank gap from governance_payload
+          const entryGovPayload = (typeof order.governance_payload === 'object' && order.governance_payload)
+            ? order.governance_payload as Record<string, unknown>
+            : {};
+          const entryRankGap = entryGovPayload.entryRankGap as number | undefined;
+
+          if (entryRankGap != null && entryRankGap > 0) {
+            const gapReduction = 1 - (currentGap / entryRankGap);
+            if (gapReduction > 0.50) {
+              console.log(`[V12.5-MATRIX-FLIP] 💀 ${order.currency_pair} ${order.direction}: Rank gap collapsed ${entryRankGap}→${currentGap} (${(gapReduction * 100).toFixed(0)}% closed) — ZOMBIE TRADE, forcing exit`);
+              decision.action = "matrix-flip-exit" as typeof decision.action;
+              decision.reason = `V12.5 Matrix-Flip: rank gap ${entryRankGap}→${currentGap} (${(gapReduction * 100).toFixed(0)}% collapsed) — edge dead`;
+            }
+          } else if (entryRankGap == null) {
+            // First cycle for this trade — stamp the entry rank gap
+            await supabase.from("oanda_orders").update({
+              governance_payload: { ...entryGovPayload, entryRankGap: currentGap, entryBaseRank: currentBaseRank, entryQuoteRank: currentQuoteRank },
+            }).eq("id", order.id);
+            console.log(`[V12.5-MATRIX] ${order.currency_pair}: Entry rank gap stamped = ${currentGap} (${baseCur}#${currentBaseRank} vs ${quoteCur}#${currentQuoteRank})`);
+          }
+        }
+      }
+
+      // ═══ V12.5 JPY VOLATILITY EMERGENCY ═══
+      // If JPY rank jumped 4+ positions in <30 minutes, exit all JPY trades at market
+      if (decision.action === "hold" && jpyRankVelocityAlert && order.currency_pair.includes("JPY")) {
+        console.log(`[V12.5-JPY-EMERGENCY] 🚨 ${order.currency_pair} ${order.direction}: JPY rank velocity alert — EMERGENCY EXIT`);
+        decision.action = "jpy-emergency-exit" as typeof decision.action;
+        decision.reason = `V12.5 JPY Emergency: JPY rank shifted 4+ positions in <30min — institutional squeeze detected`;
+      }
 
       // ═══ V12.4 THRESHOLD TRAILING STOP ═══
       // MOM agents (m4, m8, m9): Activate at +25p, BE+1 first, then trail 15p from high-water mark
