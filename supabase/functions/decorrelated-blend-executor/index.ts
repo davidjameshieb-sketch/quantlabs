@@ -916,13 +916,28 @@ Deno.serve(async (req) => {
       }
 
       // ═══ V12 DIFFERENTIATED TRAP MATH ═══
-      // MOM: 2-pip Retest Trap (behind price) — catch expansions
-      // CTR: 5-pip Exhaustion Trap (ahead of price) — only catch blown-out reversals
-      const trapPips = isCTR ? 5 : 2;
+      // ── LIMIT ORDER PLACEMENT RULES ──
+      // MAKERS (CTR & M6): Demand better price — market must come to them
+      //   Long:  Ask - 5 pips (only buy if market dips into trap)
+      //   Short: Bid + 5 pips (only sell if market bounces into trap)
+      // TAKERS (M4, M8, M9): Willing to pay up to 2 pips worse — instant fill with slippage cap
+      //   Long:  Ask + 2 pips (buy now, cap overpay at 2 pips)
+      //   Short: Bid - 2 pips (sell now, cap underpay at 2 pips)
+      const isMaker = isCTR || comp.id?.includes('-m6');
+      const trapPips = isMaker ? 5 : 2;
       const trapOffset = pv * trapPips;
-      const limitPrice = direction === 'long'
-        ? parseFloat((pricing.ask - trapOffset).toFixed(prec))
-        : parseFloat((pricing.bid + trapOffset).toFixed(prec));
+      let limitPrice: number;
+      if (isMaker) {
+        // Maker: demand better fill — place limit behind current price
+        limitPrice = direction === 'long'
+          ? parseFloat((pricing.ask - trapOffset).toFixed(prec))
+          : parseFloat((pricing.bid + trapOffset).toFixed(prec));
+      } else {
+        // Taker: accept up to 2p worse — place limit beyond current price
+        limitPrice = direction === 'long'
+          ? parseFloat((pricing.ask + trapOffset).toFixed(prec))
+          : parseFloat((pricing.bid - trapOffset).toFixed(prec));
+      }
 
       // SL/TP anchored to limitPrice, NOT current market price
       const slDistance = computeSLDistance(comp, candles, direction, limitPrice, pv);
@@ -1121,10 +1136,10 @@ Deno.serve(async (req) => {
             entryQuoteRank: comp.preyRank,
           },
           gate_reasons: [
-            `V12 | ${comp.invertDirection ? 'CTR' : 'MOM'} | ${sessionLabel} | Trap: ${trapPips}p`,
+            `V12 | ${isMaker ? 'MAKER' : 'TAKER'} | ${sessionLabel} | ${isMaker ? 'Trap' : 'Cap'}: ${trapPips}p`,
             `Component: ${comp.id} (${(comp.weight * 100).toFixed(0)}% weight) | Scaler: ${scalerMultiplier}x`,
             `Rank: ${predCurrency}(#${comp.predatorRank}) vs ${preyCurrency}(#${comp.preyRank})`,
-            `LIMIT @ ${limitPrice.toFixed(prec)} (bid=${pricing.bid.toFixed(prec)} ask=${pricing.ask.toFixed(prec)} ±${trapPips}p trap)`,
+            `LIMIT @ ${limitPrice.toFixed(prec)} (bid=${pricing.bid.toFixed(prec)} ask=${pricing.ask.toFixed(prec)} ${isMaker ? 'maker -' : 'taker +'}${trapPips}p)`,
             `SL: ${slPrice.toFixed(prec)} (${slPips}p) | TP: ${tpPrice.toFixed(prec)} | Expires: ${limitExpiry}`,
           ],
         }).eq('id', dbOrder.id);
