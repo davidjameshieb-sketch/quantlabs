@@ -1104,7 +1104,7 @@ Deno.serve(async (req) => {
           
           if (adjustedR < MAE_KILL_THRESHOLD) {
             console.log(`[STOP-HUNT-SHIELD] ${order.currency_pair} ${order.direction}: SL@${currentSLPrice.toFixed(5)} is ${nearestClusterDist.toFixed(1)}p from retail cluster — moving to ${adjustedSL.toFixed(5)} (deep liquidity)`);
-            const huntResult = await updateTrailingStop(order.oanda_trade_id, adjustedSL, order.environment || "live", order.currency_pair);
+            const huntResult = await updateTrailingStop(order.oanda_trade_id, adjustedSL, order.environment || "practice", order.currency_pair);
             if (huntResult.success) {
               console.log(`[STOP-HUNT-SHIELD] ✅ SL relocated for ${order.currency_pair} — protected from stop hunt`);
             }
@@ -1191,7 +1191,7 @@ Deno.serve(async (req) => {
         // Instead of just tracking trailing stops internally, PATCH them onto the live OANDA trade.
         // This ensures the broker-side SL always reflects the latest governance decisions.
         const oandaTradeId = order.oanda_trade_id;
-        const env = order.environment || "live";
+        const env = order.environment || "practice";
         if (oandaTradeId && healthResult.healthBand !== "healthy") {
           // Compute the effective trailing SL the FloorManager wants to enforce
           const effectiveRPips = rPipsEst;
