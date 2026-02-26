@@ -222,6 +222,76 @@ Deno.serve(async (req) => {
         );
       }
 
+      // ═══ AGENT MANDATE LOCKS — prevent execution bypass ═══
+      const agentId = body.agentId || '';
+      const instrument = toOandaInstrument(body.currencyPair);
+
+      // M4 JPY-only lock
+      if (agentId.includes('-m4') && !instrument.includes('JPY')) {
+        return new Response(
+          JSON.stringify({ error: `M4 JPY-only lock: ${instrument} rejected — agent drift prevention` }),
+          { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      // M8 USD regime gate — need matrix ranks
+      if (agentId.includes('-m8') || agentId.includes('-m9')) {
+        try {
+          const matrixRes = await fetch(
+            `${Deno.env.get('SUPABASE_URL')}/functions/v1/sovereign-matrix`,
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${Deno.env.get('SUPABASE_ANON_KEY')}`,
+                apikey: Deno.env.get('SUPABASE_ANON_KEY')!,
+              },
+              body: JSON.stringify({ environment }),
+            }
+          );
+          if (matrixRes.ok) {
+            const matrixData = await matrixRes.json();
+            const ranks: Record<string, number> = matrixData.currencyRanks || {};
+
+            // M8: block when USD rank <= 3 (strong)
+            if (agentId.includes('-m8') && (ranks['USD'] ?? 4) <= 3) {
+              return new Response(
+                JSON.stringify({ error: `M8 USD regime gate: USD rank #${ranks['USD']} (strong) — m8 blocked` }),
+                { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+              );
+            }
+
+            // M9: rank gap >= 5 + momentum gate
+            if (agentId.includes('-m9')) {
+              const [baseCur, quoteCur] = instrument.split('_');
+              const baseRank = ranks[baseCur] ?? 4;
+              const quoteRank = ranks[quoteCur] ?? 4;
+              const gap = Math.abs(baseRank - quoteRank);
+              if (gap < 5) {
+                return new Response(
+                  JSON.stringify({ error: `M9 rank gap filter: gap=${gap} < 5 minimum` }),
+                  { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+                );
+              }
+              if (body.direction === 'short' && baseRank <= 3) {
+                return new Response(
+                  JSON.stringify({ error: `M9 momentum gate: cannot short ${baseCur} (rank #${baseRank}, top-3)` }),
+                  { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+                );
+              }
+              if (body.direction === 'long' && quoteRank <= 3) {
+                return new Response(
+                  JSON.stringify({ error: `M9 momentum gate: cannot long against ${quoteCur} (rank #${quoteRank}, top-3)` }),
+                  { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+                );
+              }
+            }
+          }
+        } catch (gateErr) {
+          console.warn('[OANDA] Agent gate check failed (allowing trade):', (gateErr as Error).message);
+        }
+      }
+
       // Insert pending order
       const { data: order, error: insertErr } = await supabase
         .from("oanda_orders")
@@ -439,11 +509,66 @@ Deno.serve(async (req) => {
         );
       }
 
+      // ═══ AGENT MANDATE LOCKS — filter barrage orders pre-execution ═══
+      let matrixRanksForBarrage: Record<string, number> | null = null;
+      const needsMatrix = body.barrageOrders.some(o => (o.agentId || '').includes('-m8') || (o.agentId || '').includes('-m9'));
+      if (needsMatrix) {
+        try {
+          const matrixRes = await fetch(
+            `${Deno.env.get('SUPABASE_URL')}/functions/v1/sovereign-matrix`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${Deno.env.get('SUPABASE_ANON_KEY')}`, apikey: Deno.env.get('SUPABASE_ANON_KEY')! },
+              body: JSON.stringify({ environment }),
+            }
+          );
+          if (matrixRes.ok) {
+            const md = await matrixRes.json();
+            matrixRanksForBarrage = md.currencyRanks || null;
+          }
+        } catch { /* non-critical */ }
+      }
+
+      // Filter out mandate-violating orders
+      const filteredBarrage = body.barrageOrders.filter(o => {
+        const aid = o.agentId || '';
+        const inst = toOandaInstrument(o.currencyPair);
+        // M4 JPY-only
+        if (aid.includes('-m4') && !inst.includes('JPY')) {
+          console.log(`[OANDA] BARRAGE FILTER: ${inst} rejected — M4 JPY-only lock`);
+          return false;
+        }
+        if (matrixRanksForBarrage) {
+          // M8 USD regime gate
+          if (aid.includes('-m8') && (matrixRanksForBarrage['USD'] ?? 4) <= 3) {
+            console.log(`[OANDA] BARRAGE FILTER: ${inst} rejected — M8 USD rank #${matrixRanksForBarrage['USD']}`);
+            return false;
+          }
+          // M9 gap + momentum gate
+          if (aid.includes('-m9')) {
+            const [b, q] = inst.split('_');
+            const bR = matrixRanksForBarrage[b] ?? 4;
+            const qR = matrixRanksForBarrage[q] ?? 4;
+            if (Math.abs(bR - qR) < 5) { console.log(`[OANDA] BARRAGE FILTER: ${inst} rejected — M9 gap ${Math.abs(bR - qR)} < 5`); return false; }
+            if (o.direction === 'short' && bR <= 3) { console.log(`[OANDA] BARRAGE FILTER: ${inst} rejected — M9 can't short top-3`); return false; }
+            if (o.direction === 'long' && qR <= 3) { console.log(`[OANDA] BARRAGE FILTER: ${inst} rejected — M9 can't long vs top-3`); return false; }
+          }
+        }
+        return true;
+      });
+
+      if (filteredBarrage.length === 0) {
+        return new Response(
+          JSON.stringify({ success: true, action: "barrage", totalOrders: body.barrageOrders.length, filled: 0, filtered: body.barrageOrders.length, reason: "All orders rejected by agent mandate locks" }),
+          { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
       const barrageTs = Date.now();
-      console.log(`[OANDA] ⚡ BARRAGE: ${body.barrageOrders.length} orders firing atomically`);
+      console.log(`[OANDA] ⚡ BARRAGE: ${filteredBarrage.length}/${body.barrageOrders.length} orders firing (${body.barrageOrders.length - filteredBarrage.length} filtered by mandate locks)`);
 
       // Insert all pending orders first
-      const pendingInserts = body.barrageOrders.map(o => ({
+      const pendingInserts = filteredBarrage.map(o => ({
         user_id: userId,
         signal_id: o.signalId,
         currency_pair: o.currencyPair,
@@ -463,7 +588,7 @@ Deno.serve(async (req) => {
 
       // Fire all OANDA orders simultaneously
       const results = await Promise.allSettled(
-        body.barrageOrders.map(async (o, idx) => {
+        filteredBarrage.map(async (o, idx) => {
           const orderTs = Date.now();
           const result = await executeMarketOrder(o.currencyPair, o.units, o.direction, environment);
           const latency = Date.now() - orderTs;
@@ -498,17 +623,19 @@ Deno.serve(async (req) => {
 
       const totalLatency = Date.now() - barrageTs;
       const filled = results.filter(r => r.status === "fulfilled").length;
-      console.log(`[OANDA] ⚡ BARRAGE COMPLETE: ${filled}/${body.barrageOrders.length} filled in ${totalLatency}ms`);
+      const mandateFiltered = body.barrageOrders!.length - filteredBarrage.length;
+      console.log(`[OANDA] ⚡ BARRAGE COMPLETE: ${filled}/${filteredBarrage.length} filled in ${totalLatency}ms (${mandateFiltered} filtered by mandate locks)`);
 
       return new Response(
         JSON.stringify({
           success: true,
           action: "barrage",
-          totalOrders: body.barrageOrders.length,
+          totalOrders: body.barrageOrders!.length,
           filled,
+          mandateFiltered,
           totalLatencyMs: totalLatency,
           results: results.map((r, i) => ({
-            pair: body.barrageOrders![i].currencyPair,
+            pair: filteredBarrage[i].currencyPair,
             status: r.status,
             ...(r.status === "fulfilled" ? r.value : { error: (r as PromiseRejectedResult).reason?.message }),
           })),

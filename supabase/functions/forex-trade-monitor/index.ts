@@ -465,6 +465,7 @@ function evaluateExit(
   rPips?: number | null,
   mfePriceWatermark?: number | null,
   atr15m?: number | null,
+  skipTrailingPreThreshold = false,  // M6 override: skip all trailing until MFE >= 1.5R
 ): ExitDecision {
   const pipMult = getPipMultiplier(pair);
 
@@ -496,10 +497,12 @@ function evaluateExit(
     };
   }
 
-  // ═══ PRIORITY 2: ATR-trailing stop (R-multiple based, 2 phases) ═══
+  // ═══ PRIORITY 2: ATR-trailing stop (R-multiple based, multi-phase) ═══
+  // skipTrailingPreThreshold: M6 override — skip ALL trailing stops until MFE >= 1.5R.
+  // The raw dynamic SL (Priority 3) still protects against massive adverse moves.
   const entryRegimeDiverging = governancePayload?.regimeEarlyWarning === true;
 
-  if (mfeR >= 2.0 && atr15m != null && atr15m > 0) {
+  if (!skipTrailingPreThreshold && mfeR >= 2.0 && atr15m != null && atr15m > 0) {
     // Phase 2: MFE reached 2R — trail at MFE - 0.75 × ATR(15m)
     const trailDistance = 0.75 * atr15m * healthTrailingFactor;
     const trailingSlPrice = direction === "long"
@@ -517,7 +520,7 @@ function evaluateExit(
         currentPnlPips, progressToTp, tradeAgeMinutes,
       };
     }
-  } else if (mfeR >= 1.7) {
+  } else if (!skipTrailingPreThreshold && mfeR >= 1.7) {
     // ═══ PHASE 1.5 TRAILING GAP — MFE >= 1.7R: lock in 1.2R ═══
     // BUGFIX: Previously placed AFTER the 1.5R block, making it unreachable (else-if chain).
     // Any trade reaching 1.7R was caught by mfeR >= 1.5 first. Moved above 1.5R to fix.
@@ -537,7 +540,7 @@ function evaluateExit(
         currentPnlPips, progressToTp, tradeAgeMinutes,
       };
     }
-  } else if (mfeR >= 1.5) {
+  } else if (!skipTrailingPreThreshold && mfeR >= 1.5) {
     // Phase 1: MFE reached 1.5R — trail at entry + 1R (lock in profit)
     const oneRDistance = effectiveRPips * pipMult;
     let trailingSlPrice: number;
@@ -560,7 +563,7 @@ function evaluateExit(
         currentPnlPips, progressToTp, tradeAgeMinutes,
       };
     }
-  } else if (mfeR >= 1.2) {
+  } else if (!skipTrailingPreThreshold && mfeR >= 1.2) {
     // ═══ ACTIVE HARVEST RULE — MFE >= 1.2R: lock in 0.5R profit ═══
     // Pattern 5 fix: Stop "hoping for home runs" — bank doubles.
     // Prevents healthy trades from round-tripping back to scratch/loss.
@@ -580,7 +583,7 @@ function evaluateExit(
         currentPnlPips, progressToTp, tradeAgeMinutes,
       };
     }
-  } else if (mfeR >= 1.0) {
+  } else if (!skipTrailingPreThreshold && mfeR >= 1.0) {
     // ═══ BREAKEVEN STOP — once MFE reaches 1.0R, move SL to entry ═══
     const breakevenSlPrice = direction === "long"
       ? entryPrice + 0.5 * pipMult
@@ -597,7 +600,7 @@ function evaluateExit(
         currentPnlPips, progressToTp, tradeAgeMinutes,
       };
     }
-  } else if (mfeR >= 0.8) {
+  } else if (!skipTrailingPreThreshold && mfeR >= 0.8) {
     // ═══ EARLY PROFIT LOCK — once MFE reaches 0.8R, lock 0.2R profit ═══
     // ═══ SOLUTION #7: M6 TRAILING STOP DELAY ═══
     // For m6 (Cross-Asset Flow) agents: Do NOT activate trailing until MFE >= 1.5R
@@ -1042,18 +1045,15 @@ Deno.serve(async (req) => {
         prevTimeToMfeBars,
       );
 
-      // ═══ SOLUTION #7: M6 DELAYED TRAILING STOP ═══
+      // ═══ SOLUTION #7 (v2): M6 DELAYED TRAILING STOP ═══
       // m6 (Cross-Asset Flow) has a 71% win rate but inverted R:R.
-      // The trailing stop chokes runners at +6 pips. Fix: suppress ALL trailing
-      // until MFE reaches at least 1.5R (minimum 1.5:1 reward ratio achieved).
-      // This lets m6's winners run to their natural TP instead of being locked at micro-profits.
+      // The trailing stop chokes runners at +6 pips. Fix: use explicit `skipTrailingPreThreshold`
+      // flag in evaluateExit to cleanly bypass all R-based trailing stops until MFE >= 1.5R.
+      // The raw dynamic SL (Supertrend+ATR) still protects against massive adverse moves.
       const agentIdForM6 = order.agent_id || '';
       const isM6Agent = agentIdForM6.includes('-m6') || agentIdForM6.includes('m6');
-      let m6TrailingOverride = healthResult.trailingTightenFactor;
-      if (isM6Agent && currentMfeR < 1.5) {
-        // Suppress trailing by setting factor to infinity (effectively disabling tightening)
-        // The SL stays at the original dynamic SL until 1.5R is achieved
-        m6TrailingOverride = 999; // Very large → no trailing trigger fires
+      const m6ShouldSkipTrailing = isM6Agent && currentMfeR < 1.5;
+      if (m6ShouldSkipTrailing) {
         console.log(`[M6-TRAIL-DELAY] ${order.currency_pair}: MFE=${currentMfeR.toFixed(2)}R < 1.5R — trailing suppressed (letting winner run)`);
       }
 
@@ -1066,10 +1066,11 @@ Deno.serve(async (req) => {
         tradeAgeMinutes,
         dynamicSl,
         govPayload,
-        isM6Agent ? m6TrailingOverride : healthResult.trailingTightenFactor,
-        rPipsReal,           // true risk at entry (R-multiple denominator)
-        isM6Agent && currentMfeR < 1.5 ? entryPrice : updatedMfePrice,  // Suppress MFE watermark for m6 pre-1.5R
-        ind?.atr ?? null,    // 15m ATR for Phase 2 trailing
+        healthResult.trailingTightenFactor,  // Normal factor — no more 999 hack
+        rPipsReal,
+        updatedMfePrice,     // Always pass real MFE watermark
+        ind?.atr ?? null,
+        m6ShouldSkipTrailing,  // Explicit flag to skip trailing pre-1.5R
       );
 
       // ─── THS Expectancy Tracking ───
