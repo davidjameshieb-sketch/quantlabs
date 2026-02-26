@@ -321,7 +321,7 @@ export default function AtlasHedgeLiveFeed() {
       const agentIds = agents.map(a => a.agent_id);
 
       // Fetch recent trades (last 48 hours) — both open and closed
-      const cutoff = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+      const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
       const { data: trades } = await supabase
         .from('oanda_orders')
         .select('*')
@@ -385,7 +385,7 @@ export default function AtlasHedgeLiveFeed() {
           </div>
           <Separator orientation="vertical" className="h-3 bg-slate-700" />
           <span className="text-[10px] font-mono text-slate-400">
-            Last 48h · {totalTrades} executions
+            Last 24h · {totalTrades} executions
           </span>
         </div>
         <div className="flex items-center gap-3">
@@ -413,7 +413,7 @@ export default function AtlasHedgeLiveFeed() {
           ) : batches.length === 0 ? (
             <div className="text-center py-12">
               <Activity className="w-6 h-6 mx-auto text-slate-600 mb-2" />
-              <p className="text-[10px] font-mono text-slate-500">No trade activity in the last 48 hours.</p>
+              <p className="text-[10px] font-mono text-slate-500">No trade activity in the last 24 hours.</p>
               <p className="text-[9px] font-mono text-slate-600 mt-1">The system is monitoring for entry signals.</p>
             </div>
           ) : (
