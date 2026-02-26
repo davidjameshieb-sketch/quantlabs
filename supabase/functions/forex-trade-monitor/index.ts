@@ -1031,6 +1031,35 @@ Deno.serve(async (req) => {
         })
         .eq("id", order.id);
 
+      // ═══ V12.3 BANKER LOGIC — Break-Even at +30 pips ═══
+      // If trade is +30 pips or more, move SL to entry + 1 pip (protect the winner)
+      if (decision.action === "hold" && order.oanda_trade_id) {
+        const bankerPipMult = getPipMultiplier(order.currency_pair);
+        const bankerPnlPips = order.direction === "long"
+          ? (currentPrice - entryPrice) / bankerPipMult
+          : (entryPrice - currentPrice) / bankerPipMult;
+
+        if (bankerPnlPips >= 30) {
+          const breakEvenPrice = order.direction === "long"
+            ? entryPrice + 1 * bankerPipMult
+            : entryPrice - 1 * bankerPipMult;
+
+          // Only move SL if current SL is worse than break-even
+          const currentOandaSL = oandaTrade ? parseFloat((oandaTrade as any).stopLossOrder?.price || '0') : 0;
+          const slNeedsUpdate = order.direction === "long"
+            ? (currentOandaSL < breakEvenPrice || currentOandaSL === 0)
+            : (currentOandaSL > breakEvenPrice || currentOandaSL === 0);
+
+          if (slNeedsUpdate) {
+            console.log(`[BANKER] 🏦 ${order.currency_pair} ${order.direction}: +${bankerPnlPips.toFixed(1)}p ≥ 30p → Moving SL to BE+1p @ ${breakEvenPrice.toFixed(order.currency_pair.includes('JPY') ? 3 : 5)}`);
+            const bankerResult = await updateTrailingStop(order.oanda_trade_id, breakEvenPrice, order.environment || "practice", order.currency_pair);
+            if (bankerResult.success) {
+              console.log(`[BANKER] ✅ SL locked at break-even for ${order.currency_pair} — winner protected`);
+            }
+          }
+        }
+      }
+
       // ═══ MAE-BASED KILL SWITCH (0.65R) ═══
       // NATURAL DEATH: Skip for atlas-hedge agents — let OANDA SL handle it
       const isAtlasHedgeAgent = (order.agent_id || '').startsWith('atlas-hedge-');
