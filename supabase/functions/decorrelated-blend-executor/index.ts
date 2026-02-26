@@ -593,6 +593,16 @@ Deno.serve(async (req) => {
                   status: 'closed',
                   exit_price: exitPrice,
                   closed_at: closeTime,
+                  // ═══ SOLUTION #2: Write-time pip normalization ═══
+                  // Compute and store normalized r_pips at close time, not read-time.
+                  r_pips: (exitPrice != null && dbOrder.entry_price != null)
+                    ? (() => {
+                        const pv2 = dbOrder.currency_pair?.includes('JPY') ? 0.01 : 0.0001;
+                        return dbOrder.direction === 'long'
+                          ? Math.round(((exitPrice - dbOrder.entry_price) / pv2) * 10) / 10
+                          : Math.round(((dbOrder.entry_price - exitPrice) / pv2) * 10) / 10;
+                      })()
+                    : null,
                 }).eq('id', dbOrder.id);
 
                 const pv = dbOrder.currency_pair?.includes('JPY') ? 0.01 : 0.0001;
@@ -783,9 +793,12 @@ Deno.serve(async (req) => {
       const sessionLabel = utcHour >= 0 && utcHour < 8 ? 'Asia' : utcHour >= 8 && utcHour < 16 ? 'London' : 'NY';
       const isCTR = comp.invertDirection === true;
 
-      // V12: NY BLACKOUT — no new entries 16:00–22:00 UTC
-      if (utcHour >= 16 && utcHour < 22) {
-        executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction: '-', status: 'skipped', skipReason: 'V12 NY Blackout — no entries 16:00-22:00 UTC' });
+      // ═══ SOLUTION #6: FIXED SESSION BLACKOUT — NY Afternoon Time-Gate ═══
+      // Previous: 16:00-22:00 UTC. Bug: UTC hour 22-23 (EST 17-18) still leaked through.
+      // Fix: Extend blackout to 16:00-00:00 UTC (full NY afternoon + evening).
+      // No new entries during the volatile, low-liquidity NY chop zone.
+      if (utcHour >= 16) {
+        executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction: '-', status: 'skipped', skipReason: `V13 NY Blackout — no entries ${utcHour}:00 UTC (16:00-00:00 gate)` });
         continue;
       }
 
@@ -823,6 +836,49 @@ Deno.serve(async (req) => {
         const openJpyCount = [...openPairs].filter(p => p.includes('JPY')).length;
         if (openJpyCount >= 2) {
           executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction, status: 'skipped', skipReason: `JPY diversification lock — ${openJpyCount}/2 JPY slots full` });
+          continue;
+        }
+      }
+
+      // ═══ SOLUTION #3: M4 JPY-ONLY LOCK — Agent Drift Prevention ═══
+      // m4 (Momentum Sniper) is restricted to JPY-related instruments ONLY.
+      // Non-JPY pairs (e.g. GBP/CHF, GBP/CAD) cause Agent Drift → net negative.
+      const agentIdForFilter = comp.agentId || '';
+      if (agentIdForFilter.includes('-m4') && !instrument.includes('JPY')) {
+        executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction, status: 'skipped', skipReason: 'M4 JPY-only lock — agent drift prevention' });
+        continue;
+      }
+
+      // ═══ SOLUTION #4: M8 USD REGIME GATE — Regime Mismatch Prevention ═══
+      // m8 (Pivot Point Momentum) is a USD-weakness specialist.
+      // Block m8 when USD rank is #1-#3 (strong) to prevent fading dominant flow.
+      if (agentIdForFilter.includes('-m8')) {
+        const usdRank = currencyRanks['USD'] ?? 4;
+        if (usdRank <= 3) {
+          executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction, status: 'skipped', skipReason: `M8 USD regime gate — USD rank #${usdRank} (strong), m8 blocked` });
+          continue;
+        }
+      }
+
+      // ═══ SOLUTION #5: M9 MATRIX ALIGNMENT — Rank Gap + Momentum Gate ═══
+      // m9 (Matrix Divergence) requires: minimum rank gap >= 5 AND
+      // must NOT short a top-3 ranked currency or long a bottom-3 ranked currency.
+      if (agentIdForFilter.includes('-m9')) {
+        const rankGap = Math.abs(comp.predatorRank - comp.preyRank);
+        if (rankGap < 5) {
+          executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction, status: 'skipped', skipReason: `M9 rank gap filter — gap=${rankGap} < 5 minimum` });
+          continue;
+        }
+        // Absolute momentum gate: forbidden from shorting a top-3 strong currency
+        const [baseCur, quoteCur] = instrument.split('_');
+        const baseRank = currencyRanks[baseCur] ?? 4;
+        const quoteRank = currencyRanks[quoteCur] ?? 4;
+        if (direction === 'short' && baseRank <= 3) {
+          executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction, status: 'skipped', skipReason: `M9 momentum gate — cannot short ${baseCur} (rank #${baseRank}, top-3)` });
+          continue;
+        }
+        if (direction === 'long' && quoteRank <= 3) {
+          executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction, status: 'skipped', skipReason: `M9 momentum gate — cannot long against ${quoteCur} (rank #${quoteRank}, top-3)` });
           continue;
         }
       }
@@ -874,17 +930,25 @@ Deno.serve(async (req) => {
       const slPrice = parseFloat((direction === 'long' ? limitPrice - slDistance : limitPrice + slDistance).toFixed(prec));
       const tpPrice = parseFloat((direction === 'long' ? limitPrice + slDistance * compTpRatio : limitPrice - slDistance * compTpRatio).toFixed(prec));
 
+      // ═══ SOLUTION #10: SLIPPAGE BUDGET — Factor 3.5p into sizing ═══
+      // Subtract expected slippage from effective TP distance so the edge remains valid.
+      // This means we need slightly larger SL or slightly smaller size to account for friction.
+      const SLIPPAGE_BUDGET_PIPS = 3.5;
+      const slippageCost = SLIPPAGE_BUDGET_PIPS * pv;
+      const effectiveSlDistance = slDistance + slippageCost; // SL is effectively wider due to slippage
+
       // Position sizing: use fixedUnits if configured, otherwise dynamic 5% equity risk
       let units: number;
       if (comp.fixedUnits && comp.fixedUnits > 0) {
         units = comp.fixedUnits;
       } else {
         const riskAmount = accountEquity * RISK_FRACTION * comp.weight;
-        units = Math.max(1, Math.round(riskAmount / slDistance));
+        units = Math.max(1, Math.round(riskAmount / effectiveSlDistance));
       }
 
-      // ── V12.3 KELLY CIRCUIT BREAKER (HARD KILL) ──
-      // 3 consecutive losses → DEACTIVATE agent entirely. Manual reactivation only.
+      // ═══ SOLUTION #8: DYNAMIC SIZING + KELLY CIRCUIT BREAKER ═══
+      // 2 consecutive losses → 0.5x position size (regime mismatch detection)
+      // 3 consecutive losses → DEACTIVATE agent entirely (hard kill)
       let scalerMultiplier = 1.0;
       if (comp.agentId) {
         try {
@@ -900,7 +964,7 @@ Deno.serve(async (req) => {
             .order('closed_at', { ascending: false })
             .limit(3);
 
-          if (lastTrades && lastTrades.length >= 3) {
+          if (lastTrades && lastTrades.length >= 2) {
             const pips = lastTrades.map(t => {
               const isJPY = t.currency_pair?.includes('JPY');
               const mult = isJPY ? 100 : 10000;
@@ -908,13 +972,19 @@ Deno.serve(async (req) => {
                 ? ((t.exit_price || 0) - (t.entry_price || 0)) * mult
                 : ((t.entry_price || 0) - (t.exit_price || 0)) * mult;
             });
-            const allNegative = pips.every(p => p < 0);
-            if (allNegative) {
-              // HARD KILL: deactivate agent, skip this trade
+
+            // 3 consecutive losses → HARD KILL
+            if (lastTrades.length >= 3 && pips.every(p => p < 0)) {
               console.log(`[BLEND] 🔴 KELLY KILL: ${comp.agentId} — 3 consecutive losses (${pips.map(p => p.toFixed(1)).join(', ')}p) → DEACTIVATING`);
               await sb.from('agent_configs').update({ is_active: false, updated_at: new Date().toISOString() }).eq('agent_id', comp.agentId);
               executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction, status: 'skipped', skipReason: `Kelly circuit breaker — 3 consecutive losses, agent deactivated` });
               continue;
+            }
+
+            // SOLUTION #8: 2 consecutive losses → 0.5x sizing (regime mismatch)
+            if (pips.slice(0, 2).every(p => p < 0)) {
+              scalerMultiplier = 0.5;
+              console.log(`[BLEND] ⚠️ DYNAMIC SIZING: ${comp.agentId} — 2 consecutive losses (${pips.slice(0, 2).map(p => p.toFixed(1)).join(', ')}p) → 0.5x size`);
             }
           }
         } catch (scalerErr) {
@@ -1020,6 +1090,31 @@ Deno.serve(async (req) => {
         const oandaTradeId = oandaData.orderFillTransaction?.tradeOpened?.tradeID || null;
         const filledPrice = oandaData.orderFillTransaction?.price ? parseFloat(oandaData.orderFillTransaction.price) : null;
         const wasImmediatelyFilled = filledPrice != null;
+
+        // ═══ SOLUTION #9: FILL LATENCY CAP — Reject fills > 50ms ═══
+        // High-latency fills indicate adverse selection (stale quotes, requotes).
+        // m8 averages 84ms — this filter protects against toxic fills.
+        if (fillLatency > 50 && wasImmediatelyFilled) {
+          console.log(`[BLEND] ⚡ LATENCY CAP: ${instrument} fill took ${fillLatency}ms > 50ms limit — CLOSING position immediately`);
+          // Close the filled trade immediately
+          try {
+            const closeTradeId = oandaData.orderFillTransaction?.tradeOpened?.tradeID;
+            if (closeTradeId) {
+              await fetch(`${oandaHost}/v3/accounts/${accountId}/trades/${closeTradeId}/close`, {
+                method: 'PUT',
+                headers: { Authorization: `Bearer ${apiToken}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({}),
+              });
+            }
+          } catch (closeErr) {
+            console.warn(`[BLEND] Latency cap close failed:`, (closeErr as Error).message);
+          }
+          await sb.from('oanda_orders').update({
+            status: 'rejected',
+            error_message: `Latency cap exceeded: ${fillLatency}ms > 50ms — adverse selection protection`,
+          }).eq('id', dbOrder.id);
+          return { component: comp.id, label: comp.label, pair: instrument, direction, status: 'rejected', error: `Latency cap: ${fillLatency}ms` };
+        }
 
         const pipMult = instrument.includes('JPY') ? 100 : 10000;
         const slippagePips = filledPrice != null ? Math.abs((filledPrice - limitPrice) * pipMult) : null;

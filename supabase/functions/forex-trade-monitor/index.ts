@@ -599,6 +599,11 @@ function evaluateExit(
     }
   } else if (mfeR >= 0.8) {
     // ═══ EARLY PROFIT LOCK — once MFE reaches 0.8R, lock 0.2R profit ═══
+    // ═══ SOLUTION #7: M6 TRAILING STOP DELAY ═══
+    // For m6 (Cross-Asset Flow) agents: Do NOT activate trailing until MFE >= 1.5R
+    // This prevents choking massive runners at +6 pips (inverted R:R fix).
+    // The evaluateExit function doesn't have agent context, so the caller
+    // must handle this via healthTrailingFactor override.
     const lockRDistance = 0.2 * effectiveRPips * pipMult;
     const earlyTrailSlPrice = direction === "long"
       ? entryPrice + lockRDistance
@@ -1037,6 +1042,21 @@ Deno.serve(async (req) => {
         prevTimeToMfeBars,
       );
 
+      // ═══ SOLUTION #7: M6 DELAYED TRAILING STOP ═══
+      // m6 (Cross-Asset Flow) has a 71% win rate but inverted R:R.
+      // The trailing stop chokes runners at +6 pips. Fix: suppress ALL trailing
+      // until MFE reaches at least 1.5R (minimum 1.5:1 reward ratio achieved).
+      // This lets m6's winners run to their natural TP instead of being locked at micro-profits.
+      const agentIdForM6 = order.agent_id || '';
+      const isM6Agent = agentIdForM6.includes('-m6') || agentIdForM6.includes('m6');
+      let m6TrailingOverride = healthResult.trailingTightenFactor;
+      if (isM6Agent && currentMfeR < 1.5) {
+        // Suppress trailing by setting factor to infinity (effectively disabling tightening)
+        // The SL stays at the original dynamic SL until 1.5R is achieved
+        m6TrailingOverride = 999; // Very large → no trailing trigger fires
+        console.log(`[M6-TRAIL-DELAY] ${order.currency_pair}: MFE=${currentMfeR.toFixed(2)}R < 1.5R — trailing suppressed (letting winner run)`);
+      }
+
       // Apply health-based trailing tightening to exit evaluation
       const decision = evaluateExit(
         order.direction,
@@ -1046,9 +1066,9 @@ Deno.serve(async (req) => {
         tradeAgeMinutes,
         dynamicSl,
         govPayload,
-        healthResult.trailingTightenFactor,
+        isM6Agent ? m6TrailingOverride : healthResult.trailingTightenFactor,
         rPipsReal,           // true risk at entry (R-multiple denominator)
-        updatedMfePrice,     // MFE watermark price for trailing
+        isM6Agent && currentMfeR < 1.5 ? entryPrice : updatedMfePrice,  // Suppress MFE watermark for m6 pre-1.5R
         ind?.atr ?? null,    // 15m ATR for Phase 2 trailing
       );
 

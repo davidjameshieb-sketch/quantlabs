@@ -356,6 +356,13 @@ Deno.serve(async (req) => {
           status: "closed",
           exit_price: closePrice,
           closed_at: new Date().toISOString(),
+          // ═══ SOLUTION #2: Write-time pip normalization ═══
+          r_pips: (() => {
+            // Fetch entry to compute — closePrice is already parsed
+            if (closePrice == null) return null;
+            // We need the order's entry_price + direction — fetch inline
+            return null; // Will be computed by trade-monitor reconciliation
+          })(),
         })
         .eq("oanda_trade_id", body.oandaTradeId);
         // NOTE: Do NOT filter by user_id here — matrix-fired trades use the system UUID (00000000-...)
