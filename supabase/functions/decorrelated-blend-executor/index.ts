@@ -777,6 +777,34 @@ Deno.serve(async (req) => {
         continue;
       }
 
+      // ── SESSION FILTERS (V11 Sovereign Dissection) ──
+      const nowUTC = new Date();
+      const utcHour = nowUTC.getUTCHours();
+      const sessionLabel = utcHour >= 0 && utcHour < 8 ? 'Asia' : utcHour >= 8 && utcHour < 16 ? 'London' : 'NY';
+      const isCTR = comp.invertDirection === true;
+
+      // OPTION 4: NY SESSION FULL KILL — no new entries 16:00–00:00 UTC
+      if (sessionLabel === 'NY') {
+        executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction: '-', status: 'skipped', skipReason: 'NY session kill — no entries 16:00-00:00 UTC' });
+        continue;
+      }
+
+      // OPTION 1: CTR ASIA BLOCK — no CTR entries during 00:00–08:00 UTC
+      if (isCTR && sessionLabel === 'Asia') {
+        executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction: '-', status: 'skipped', skipReason: 'CTR Asia block — counter-leg disabled in Asia session' });
+        continue;
+      }
+
+      // OPTION 3: JPY REGIME FILTER FOR CTR — block CTR from fading JPY when JPY is #1 or #2
+      if (isCTR) {
+        const jpyRank = currencyRanks['JPY'] ?? 99;
+        const pairIsJPY = instrument.includes('JPY');
+        if (pairIsJPY && jpyRank <= 2) {
+          executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction: '-', status: 'skipped', skipReason: `JPY regime filter — JPY rank #${jpyRank}, CTR blocked from fading` });
+          continue;
+        }
+      }
+
       // Momentum direction (used for gate evaluation)
       const momentumDirection: 'long' | 'short' = inverted ? 'short' : 'long';
       // Actual trade direction: flipped for counter-leg mean-reversion
