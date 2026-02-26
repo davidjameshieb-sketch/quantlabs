@@ -644,6 +644,16 @@ Deno.serve(async (req) => {
     );
     const openPairs = new Set(realOpen.map(p => p.currency_pair));
 
+    // ═══ V15 CORRELATION EXPOSURE CAP — max 2 positions per base currency ═══
+    const baseCurrencyCount = new Map<string, number>();
+    for (const p of realOpen) {
+      const parts = (p.currency_pair || '').split('_');
+      for (const cur of parts) {
+        baseCurrencyCount.set(cur, (baseCurrencyCount.get(cur) || 0) + 1);
+      }
+    }
+    const CORRELATION_CAP = 2; // max positions sharing the same currency
+
     if (openPairs.size >= maxPositions) {
       console.log(`[BLEND] Max positions (${maxPositions}) reached`);
       return new Response(
@@ -775,6 +785,15 @@ Deno.serve(async (req) => {
 
       const { instrument, inverted } = instrInfo;
 
+      // ═══ V15 CORRELATION EXPOSURE CAP CHECK ═══
+      const instrParts = instrument.split('_');
+      const baseExposure = instrParts.map(c => baseCurrencyCount.get(c) || 0);
+      if (baseExposure.some(count => count >= CORRELATION_CAP)) {
+        const blockedCur = instrParts.find(c => (baseCurrencyCount.get(c) || 0) >= CORRELATION_CAP);
+        executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction: '-', status: 'skipped', skipReason: `V15 Correlation cap — ${blockedCur} already has ${baseCurrencyCount.get(blockedCur!)} open positions (max ${CORRELATION_CAP})` });
+        continue;
+      }
+
       // ── MOMENTUM 1v8 SAFEGUARD ──
       // If this is a momentum agent (NOT invertDirection) and the resolved pair lands
       // on the absolute extreme (rank 1 vs rank 8), SKIP to avoid buying peak exhaustion.
@@ -806,6 +825,44 @@ Deno.serve(async (req) => {
       if (isCTR && sessionLabel === 'Asia') {
         executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction: '-', status: 'skipped', skipReason: 'V12 CTR Asia ban — counter-leg disabled in Asia session' });
         continue;
+      }
+
+      // ═══ V15 CTR KILL SWITCH — rolling 10-trade win rate < 25% → auto-suspend ═══
+      if (isCTR && comp.agentId) {
+        try {
+          const { data: ctrLast10 } = await sb
+            .from('oanda_orders')
+            .select('currency_pair, direction, entry_price, exit_price')
+            .eq('agent_id', comp.agentId)
+            .eq('status', 'closed')
+            .not('entry_price', 'is', null)
+            .not('exit_price', 'is', null)
+            .not('oanda_trade_id', 'is', null)
+            .eq('baseline_excluded', false)
+            .order('closed_at', { ascending: false })
+            .limit(10);
+
+          if (ctrLast10 && ctrLast10.length >= 10) {
+            const wins = ctrLast10.filter(t => {
+              const isJPY = t.currency_pair?.includes('JPY');
+              const mult = isJPY ? 100 : 10000;
+              const pips = t.direction === 'long'
+                ? ((t.exit_price || 0) - (t.entry_price || 0)) * mult
+                : ((t.entry_price || 0) - (t.exit_price || 0)) * mult;
+              return pips > 0;
+            }).length;
+            const winRate = wins / ctrLast10.length;
+
+            if (winRate < 0.25) {
+              console.log(`[BLEND] 🔴 CTR KILL SWITCH: ${comp.agentId} — rolling 10-trade WR ${(winRate * 100).toFixed(0)}% < 25% → DEACTIVATING`);
+              await sb.from('agent_configs').update({ is_active: false, updated_at: new Date().toISOString() }).eq('agent_id', comp.agentId);
+              executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction: '-', status: 'skipped', skipReason: `V15 CTR Kill Switch — 10-trade WR ${(winRate * 100).toFixed(0)}% < 25%, agent deactivated` });
+              continue;
+            }
+          }
+        } catch (ctrErr) {
+          console.warn('[BLEND] CTR kill switch check failed:', (ctrErr as Error).message);
+        }
       }
 
       // V12: JPY DIRECTIONAL LOCK — CTR blocked when JPY at extremes (#1, #2, #7, #8)
@@ -1030,6 +1087,11 @@ Deno.serve(async (req) => {
 
       slotsUsed++;
       openPairs.add(instrument);
+      // Update correlation cap tracking for this cycle
+      const newInstrParts = instrument.split('_');
+      for (const cur of newInstrParts) {
+        baseCurrencyCount.set(cur, (baseCurrencyCount.get(cur) || 0) + 1);
+      }
     }
 
     // ── Execute all orders in parallel ──
