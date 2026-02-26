@@ -1397,10 +1397,32 @@ Deno.serve(async (req) => {
       // Trades ONLY close by hitting OANDA-native TP or SL.
       // The monitor may only reconcile/sync status for atlas-hedge agents.
       // V12.4: MOM agents get threshold trailing stop pushed to OANDA. CTR agents keep fixed TP.
+      // V12.5: Matrix-Flip and JPY Emergency override Natural Death by pushing SL to BE+1 (not closing).
       const isAtlasHedge = (order.agent_id || '').startsWith('atlas-hedge-');
       if (isAtlasHedge) {
+        const isLogicalRiskExit = decision.action === ("matrix-flip-exit" as string) || decision.action === ("jpy-emergency-exit" as string);
         console.log(`[NATURAL-DEATH] ${order.currency_pair} ${order.direction} (${order.agent_id}): Exit signal "${decision.action}" SUPPRESSED — atlas-hedge trades close only via OANDA TP/SL`);
         heldCount++;
+
+        // V12.5: If Matrix-Flip or JPY Emergency fired, push SL to BE+1 immediately
+        // This doesn't close the trade — it lets OANDA's native SL protect the position
+        if (isLogicalRiskExit && order.oanda_trade_id && order.entry_price != null) {
+          const bePipMult = getPipMultiplier(order.currency_pair);
+          const bePrice = order.direction === "long"
+            ? entryPrice + 1 * bePipMult
+            : entryPrice - 1 * bePipMult;
+
+          const currentOandaSL = oandaTrade ? parseFloat((oandaTrade as any).stopLossOrder?.price || '0') : 0;
+          const slNeedsBE = order.direction === "long"
+            ? (currentOandaSL < bePrice || currentOandaSL === 0)
+            : (currentOandaSL > bePrice || currentOandaSL === 0);
+
+          if (slNeedsBE) {
+            const pp = order.currency_pair.includes('JPY') ? 3 : 5;
+            console.log(`[V12.5-RISK] 🛡️ ${order.currency_pair} (${order.agent_id}): ${decision.action} → pushing SL to BE+1 @ ${bePrice.toFixed(pp)} (Natural Death preserved, capital protected)`);
+            await updateTrailingStop(order.oanda_trade_id, bePrice, order.environment || "practice", order.currency_pair);
+          }
+        }
 
         // V12.4: Push threshold trailing SL for MOM agents only
         const ndAgentId = order.agent_id || '';
