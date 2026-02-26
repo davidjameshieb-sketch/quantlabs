@@ -8,10 +8,11 @@ import {
   Shield, Swords, Eye, Clock, Zap, Activity,
   TrendingUp, TrendingDown, AlertTriangle, RefreshCw,
   Target, Crosshair, Skull, Crown, Lock, Unlock,
-  ChevronRight, Radio,
+  ChevronRight, Radio, BookOpen,
 } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
+import CitadelOrderBook, { type OrderBookEntry } from '@/components/matrix/CitadelOrderBook';
 
 // ── Constants ──
 const CORE_AGENTS = ['atlas-hedge-m4', 'atlas-hedge-m6', 'atlas-hedge-m8', 'atlas-hedge-m9'];
@@ -185,6 +186,8 @@ const TheCitadel = () => {
   const [leakCount, setLeakCount] = useState(0);
   const [lastRefresh, setLastRefresh] = useState<Date>(new Date());
   const [matrixDuration, setMatrixDuration] = useState('—');
+  const [orderBook, setOrderBook] = useState<OrderBookEntry[]>([]);
+  const [zone2Tab, setZone2Tab] = useState<'shield' | 'orderbook'>('shield');
 
   // JPY slot count from live trades + pending limits
   const jpySlotCount = useMemo(() => {
@@ -196,7 +199,7 @@ const TheCitadel = () => {
   const fetchAll = useCallback(async () => {
     try {
       // Parallel fetches
-      const [accountRes, openTradesRes, agentConfigsRes, closedTodayRes, matrixRes, jpyMemRes] = await Promise.all([
+      const [accountRes, openTradesRes, agentConfigsRes, closedTodayRes, matrixRes, jpyMemRes, orderBookRes] = await Promise.all([
         // Account balance
         fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/oanda-execute`, {
           method: 'POST',
@@ -244,6 +247,15 @@ const TheCitadel = () => {
           .eq('memory_type', 'risk_monitor')
           .limit(1)
           .maybeSingle(),
+
+        // Order book — all orders from last 90 days
+        supabase.from('oanda_orders')
+          .select('id, currency_pair, agent_id, direction, status, entry_price, exit_price, requested_price, slippage_pips, spread_at_entry, fill_latency_ms, sovereign_override_tag, sovereign_override_status, created_at, closed_at, oanda_trade_id, oanda_order_id')
+          .like('agent_id', 'atlas-hedge-%')
+          .eq('baseline_excluded', false)
+          .gte('created_at', new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString())
+          .order('created_at', { ascending: false })
+          .limit(500),
       ]);
 
       // Account
@@ -394,6 +406,40 @@ const TheCitadel = () => {
         };
       });
       setLimitTraps(trapData);
+
+      // Order Book
+      const obData = (orderBookRes.data || []).map((o: any) => {
+        const pair = o.currency_pair;
+        let pnlPips: number | null = null;
+        if (o.entry_price && o.exit_price) {
+          const mult = pair.includes('JPY') ? 100 : 10000;
+          pnlPips = Math.round((o.direction === 'long'
+            ? (o.exit_price - o.entry_price) * mult
+            : (o.entry_price - o.exit_price) * mult) * 10) / 10;
+        }
+        return {
+          id: o.id,
+          pair,
+          agentId: o.agent_id || '',
+          direction: o.direction,
+          status: o.status,
+          entryPrice: o.entry_price,
+          exitPrice: o.exit_price,
+          requestedPrice: o.requested_price,
+          pnlPips,
+          slippage: o.slippage_pips,
+          spread: o.spread_at_entry,
+          fillLatency: o.fill_latency_ms,
+          sovereignTag: o.sovereign_override_tag,
+          sovereignStatus: o.sovereign_override_status,
+          logicIntegrityAtExit: null,
+          createdAt: o.created_at,
+          closedAt: o.closed_at,
+          oandaTradeId: o.oanda_trade_id,
+          oandaOrderId: o.oanda_order_id,
+        } as OrderBookEntry;
+      });
+      setOrderBook(obData);
 
       setLastRefresh(new Date());
     } catch (err) {
@@ -598,148 +644,178 @@ const TheCitadel = () => {
             ZONE 2: THE DEFENSIVE SHIELD — Live Positions
         ═══════════════════════════════════════════════════ */}
         <section>
-          <div className="flex items-center gap-2 mb-3">
-            <Shield className="w-4 h-4 text-slate-700" />
-            <h2 className="text-xs font-black text-slate-900 uppercase tracking-wider">
-              Zone 2 — The Defensive Shield
-            </h2>
-            <span className="text-[9px] text-slate-400">Live Execution</span>
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <Shield className="w-4 h-4 text-slate-700" />
+              <h2 className="text-xs font-black text-slate-900 uppercase tracking-wider">
+                Zone 2 — The Defensive Shield
+              </h2>
+            </div>
+            <div className="flex items-center gap-1 p-0.5 rounded-lg" style={{ background: '#f1f5f9' }}>
+              <button
+                onClick={() => setZone2Tab('shield')}
+                className="px-3 py-1.5 rounded-md text-[10px] font-bold transition-all flex items-center gap-1"
+                style={{
+                  background: zone2Tab === 'shield' ? '#fff' : 'transparent',
+                  color: zone2Tab === 'shield' ? '#1e293b' : '#94a3b8',
+                  boxShadow: zone2Tab === 'shield' ? '0 1px 3px rgba(0,0,0,0.08)' : 'none',
+                }}
+              >
+                <Shield className="w-3 h-3" /> Live Positions
+              </button>
+              <button
+                onClick={() => setZone2Tab('orderbook')}
+                className="px-3 py-1.5 rounded-md text-[10px] font-bold transition-all flex items-center gap-1"
+                style={{
+                  background: zone2Tab === 'orderbook' ? '#fff' : 'transparent',
+                  color: zone2Tab === 'orderbook' ? '#1e293b' : '#94a3b8',
+                  boxShadow: zone2Tab === 'orderbook' ? '0 1px 3px rgba(0,0,0,0.08)' : 'none',
+                }}
+              >
+                <BookOpen className="w-3 h-3" /> Order Book
+                <span className="text-[8px] font-mono opacity-60">{orderBook.length}</span>
+              </button>
+            </div>
           </div>
 
-          {liveTrades.length === 0 ? (
-            <div className="rounded-xl p-8 text-center" style={{ background: '#fff', border: '1px solid #e5e7eb' }}>
-              <Shield className="w-8 h-8 text-slate-300 mx-auto mb-2" />
-              <p className="text-sm text-slate-400">No active positions</p>
-            </div>
-          ) : (
-            <div className="space-y-3">
-              {liveTrades.map(trade => {
-                const integrityColor = trade.logicIntegrity == null ? '#94a3b8'
-                  : trade.logicIntegrity >= 60 ? '#16a34a'
-                  : trade.logicIntegrity >= 40 ? '#f59e0b'
-                  : trade.logicIntegrity >= 20 ? '#ea580c'
-                  : '#dc2626';
+          {zone2Tab === 'shield' ? (
+            <>
+              {liveTrades.length === 0 ? (
+                <div className="rounded-xl p-8 text-center" style={{ background: '#fff', border: '1px solid #e5e7eb' }}>
+                  <Shield className="w-8 h-8 text-slate-300 mx-auto mb-2" />
+                  <p className="text-sm text-slate-400">No active positions</p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {liveTrades.map(trade => {
+                    const integrityColor = trade.logicIntegrity == null ? '#94a3b8'
+                      : trade.logicIntegrity >= 60 ? '#16a34a'
+                      : trade.logicIntegrity >= 40 ? '#f59e0b'
+                      : trade.logicIntegrity >= 20 ? '#ea580c'
+                      : '#dc2626';
 
-                return (
-                  <motion.div
-                    key={trade.id}
-                    initial={{ opacity: 0, x: -10 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    className="rounded-xl p-4"
-                    style={{
-                      background: '#fff',
-                      border: `1px solid ${integrityColor}30`,
-                      boxShadow: `0 2px 12px ${integrityColor}10`,
-                    }}
-                  >
-                    <div className="flex items-start justify-between gap-4 flex-wrap">
-                      {/* Trade Info */}
-                      <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-lg flex items-center justify-center"
-                          style={{ background: `${integrityColor}10`, border: `1px solid ${integrityColor}30` }}>
-                          {trade.direction === 'long'
-                            ? <TrendingUp className="w-5 h-5" style={{ color: integrityColor }} />
-                            : <TrendingDown className="w-5 h-5" style={{ color: integrityColor }} />
-                          }
-                        </div>
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <span className="text-base font-black text-slate-900">
-                              {trade.pair.replace('_', '/')}
-                            </span>
-                            <span className={`text-xs font-bold ${trade.direction === 'long' ? 'text-emerald-600' : 'text-red-600'}`}>
-                              {trade.direction.toUpperCase()}
-                            </span>
-                            <span className="text-[9px] text-slate-400">#{trade.oandaTradeId}</span>
-                          </div>
-                          <div className="flex items-center gap-3 mt-1 text-[10px] text-slate-500">
-                            <span>Entry: <strong className="text-slate-700">{formatPrice(trade.entryPrice, trade.pair)}</strong></span>
-                            <span>Age: <strong className="text-slate-700">{trade.tradeAge}</strong></span>
-                            <span className="text-[9px] text-slate-400">({trade.agentId.replace('atlas-hedge-', '')})</span>
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* P&L */}
-                      <div className="text-right">
-                        <div className="text-lg font-black" style={{ color: trade.pnlPips >= 0 ? '#16a34a' : '#dc2626' }}>
-                          {trade.pnlPips >= 0 ? '+' : ''}{trade.pnlPips.toFixed(1)}p
-                        </div>
-                        <div className="text-[9px] text-slate-400 mt-0.5">Unrealized P&L</div>
-                      </div>
-                    </div>
-
-                    {/* Logic Integrity Bar */}
-                    <div className="mt-3 pt-3" style={{ borderTop: '1px solid #f1f5f9' }}>
-                      <div className="flex items-center justify-between mb-1.5">
-                        <div className="flex items-center gap-2">
-                          <span className="text-[10px] font-bold text-slate-600">Logic Integrity</span>
-                          {trade.entryRankGap != null && (
-                            <span className="text-[9px] text-slate-400">
-                              Gap: {trade.entryRankGap} → {trade.currentRankGap ?? '?'}
-                            </span>
-                          )}
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-black" style={{ color: integrityColor }}>
-                            {trade.logicIntegrity != null ? `${trade.logicIntegrity}%` : '—'}
-                          </span>
-                          <span className="text-[9px]">{trade.shieldStatus}</span>
-                        </div>
-                      </div>
-                      <div className="h-2 rounded-full overflow-hidden" style={{ background: '#f1f5f9' }}>
-                        <motion.div
-                          className="h-full rounded-full"
-                          style={{ background: integrityColor }}
-                          initial={{ width: 0 }}
-                          animate={{ width: `${Math.min(100, trade.logicIntegrity ?? 100)}%` }}
-                          transition={{ duration: 0.8, ease: 'easeOut' }}
-                        />
-                      </div>
-                      <div className="flex justify-between mt-1 text-[8px] text-slate-400">
-                        <span>20% Hard Kill</span>
-                        <span>40% Sovereign Exit</span>
-                        <span>100% Full Edge</span>
-                      </div>
-                    </div>
-
-                    {/* Trade Methodology Audit Strip */}
-                    {(() => {
-                      const role = AGENT_ROLES[trade.agentId];
-                      const verdict = matrix?.currencyRanks
-                        ? generateVerdict(trade.agentId, trade.pair, trade.direction, matrix.currencyRanks)
-                        : null;
-                      const gradeColor = verdict?.grade === 'CORRECT' ? '#16a34a'
-                        : verdict?.grade === 'WARNING' ? '#dc2626' : '#f59e0b';
-                      return (
-                        <div className="mt-3 pt-3 space-y-1.5" style={{ borderTop: '1px solid #f1f5f9' }}>
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <span className="px-1.5 py-0.5 rounded text-[9px] font-bold"
-                              style={{ background: '#dbeafe', color: '#2563eb' }}>
-                              {trade.agentId.replace('atlas-hedge-', '').toUpperCase()}
-                            </span>
-                            <span className="text-[10px] font-bold text-slate-700">
-                              {role?.role ?? 'Unknown'}
-                            </span>
-                            <span className="text-[9px] text-slate-400">|</span>
-                            <span className={`text-[10px] font-bold ${trade.direction === 'long' ? 'text-emerald-600' : 'text-red-600'}`}>
-                              {trade.direction.toUpperCase()}
-                            </span>
-                          </div>
-                          {verdict && (
-                            <div className="flex items-start gap-1.5 text-[10px] leading-snug"
-                              style={{ color: gradeColor }}>
-                              <span className="font-black shrink-0">{verdict.grade}</span>
-                              <span className="text-slate-600">{verdict.verdict.replace(/^(CORRECT|ALIGNED|WARNING)\.\s*/, '')}</span>
+                    return (
+                      <motion.div
+                        key={trade.id}
+                        initial={{ opacity: 0, x: -10 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        className="rounded-xl p-4"
+                        style={{
+                          background: '#fff',
+                          border: `1px solid ${integrityColor}30`,
+                          boxShadow: `0 2px 12px ${integrityColor}10`,
+                        }}
+                      >
+                        <div className="flex items-start justify-between gap-4 flex-wrap">
+                          <div className="flex items-center gap-3">
+                            <div className="w-10 h-10 rounded-lg flex items-center justify-center"
+                              style={{ background: `${integrityColor}10`, border: `1px solid ${integrityColor}30` }}>
+                              {trade.direction === 'long'
+                                ? <TrendingUp className="w-5 h-5" style={{ color: integrityColor }} />
+                                : <TrendingDown className="w-5 h-5" style={{ color: integrityColor }} />
+                              }
                             </div>
-                          )}
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <span className="text-base font-black text-slate-900">
+                                  {trade.pair.replace('_', '/')}
+                                </span>
+                                <span className={`text-xs font-bold ${trade.direction === 'long' ? 'text-emerald-600' : 'text-red-600'}`}>
+                                  {trade.direction.toUpperCase()}
+                                </span>
+                                <span className="text-[9px] text-slate-400">#{trade.oandaTradeId}</span>
+                              </div>
+                              <div className="flex items-center gap-3 mt-1 text-[10px] text-slate-500">
+                                <span>Entry: <strong className="text-slate-700">{formatPrice(trade.entryPrice, trade.pair)}</strong></span>
+                                <span>Age: <strong className="text-slate-700">{trade.tradeAge}</strong></span>
+                                <span className="text-[9px] text-slate-400">({trade.agentId.replace('atlas-hedge-', '')})</span>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="text-right">
+                            <div className="text-lg font-black" style={{ color: trade.pnlPips >= 0 ? '#16a34a' : '#dc2626' }}>
+                              {trade.pnlPips >= 0 ? '+' : ''}{trade.pnlPips.toFixed(1)}p
+                            </div>
+                            <div className="text-[9px] text-slate-400 mt-0.5">Unrealized P&L</div>
+                          </div>
                         </div>
-                      );
-                    })()}
-                  </motion.div>
-                );
-              })}
-            </div>
+
+                        {/* Logic Integrity Bar */}
+                        <div className="mt-3 pt-3" style={{ borderTop: '1px solid #f1f5f9' }}>
+                          <div className="flex items-center justify-between mb-1.5">
+                            <div className="flex items-center gap-2">
+                              <span className="text-[10px] font-bold text-slate-600">Logic Integrity</span>
+                              {trade.entryRankGap != null && (
+                                <span className="text-[9px] text-slate-400">
+                                  Gap: {trade.entryRankGap} → {trade.currentRankGap ?? '?'}
+                                </span>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs font-black" style={{ color: integrityColor }}>
+                                {trade.logicIntegrity != null ? `${trade.logicIntegrity}%` : '—'}
+                              </span>
+                              <span className="text-[9px]">{trade.shieldStatus}</span>
+                            </div>
+                          </div>
+                          <div className="h-2 rounded-full overflow-hidden" style={{ background: '#f1f5f9' }}>
+                            <motion.div
+                              className="h-full rounded-full"
+                              style={{ background: integrityColor }}
+                              initial={{ width: 0 }}
+                              animate={{ width: `${Math.min(100, trade.logicIntegrity ?? 100)}%` }}
+                              transition={{ duration: 0.8, ease: 'easeOut' }}
+                            />
+                          </div>
+                          <div className="flex justify-between mt-1 text-[8px] text-slate-400">
+                            <span>20% Hard Kill</span>
+                            <span>40% Sovereign Exit</span>
+                            <span>100% Full Edge</span>
+                          </div>
+                        </div>
+
+                        {/* Trade Methodology Audit Strip */}
+                        {(() => {
+                          const role = AGENT_ROLES[trade.agentId];
+                          const verdict = matrix?.currencyRanks
+                            ? generateVerdict(trade.agentId, trade.pair, trade.direction, matrix.currencyRanks)
+                            : null;
+                          const gradeColor = verdict?.grade === 'CORRECT' ? '#16a34a'
+                            : verdict?.grade === 'WARNING' ? '#dc2626' : '#f59e0b';
+                          return (
+                            <div className="mt-3 pt-3 space-y-1.5" style={{ borderTop: '1px solid #f1f5f9' }}>
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="px-1.5 py-0.5 rounded text-[9px] font-bold"
+                                  style={{ background: '#dbeafe', color: '#2563eb' }}>
+                                  {trade.agentId.replace('atlas-hedge-', '').toUpperCase()}
+                                </span>
+                                <span className="text-[10px] font-bold text-slate-700">
+                                  {role?.role ?? 'Unknown'}
+                                </span>
+                                <span className="text-[9px] text-slate-400">|</span>
+                                <span className={`text-[10px] font-bold ${trade.direction === 'long' ? 'text-emerald-600' : 'text-red-600'}`}>
+                                  {trade.direction.toUpperCase()}
+                                </span>
+                              </div>
+                              {verdict && (
+                                <div className="flex items-start gap-1.5 text-[10px] leading-snug"
+                                  style={{ color: gradeColor }}>
+                                  <span className="font-black shrink-0">{verdict.grade}</span>
+                                  <span className="text-slate-600">{verdict.verdict.replace(/^(CORRECT|ALIGNED|WARNING)\.\s*/, '')}</span>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
+                      </motion.div>
+                    );
+                  })}
+                </div>
+              )}
+            </>
+          ) : (
+            <CitadelOrderBook orders={orderBook} currencyRanks={matrix?.currencyRanks ?? null} />
           )}
         </section>
 
