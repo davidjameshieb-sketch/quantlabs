@@ -1094,8 +1094,10 @@ Deno.serve(async (req) => {
         })
         .eq("id", order.id);
 
-      // ═══ V12.5 LOGICAL RISK MANAGER — Matrix-Flip Exit ═══
-      // If the rank gap between the two currencies in this trade has closed >50%, the edge is dead.
+      // ═══ V12.5.1 SOVEREIGN EXIT — Logic Decay Protection ═══
+      // Logic_Integrity = currentGap / entryRankGap
+      // < 40%: Sovereign Exit — close at market (override Natural Death)
+      // < 20%: Hard Kill — bypass ALL stops, immediate market close
       if (decision.action === "hold" && matrixRanks) {
         const pairParts = order.currency_pair.split("_");
         if (pairParts.length === 2) {
@@ -1111,28 +1113,38 @@ Deno.serve(async (req) => {
           const entryRankGap = entryGovPayload.entryRankGap as number | undefined;
 
           if (entryRankGap != null && entryRankGap > 0) {
-            const gapReduction = 1 - (currentGap / entryRankGap);
-            if (gapReduction > 0.50) {
-              console.log(`[V12.5-MATRIX-FLIP] 💀 ${order.currency_pair} ${order.direction}: Rank gap collapsed ${entryRankGap}→${currentGap} (${(gapReduction * 100).toFixed(0)}% closed) — ZOMBIE TRADE, forcing exit`);
-              decision.action = "matrix-flip-exit" as typeof decision.action;
-              decision.reason = `V12.5 Matrix-Flip: rank gap ${entryRankGap}→${currentGap} (${(gapReduction * 100).toFixed(0)}% collapsed) — edge dead`;
+            const logicIntegrity = currentGap / entryRankGap;
+            const pnlVsSl = decision.currentPnlPips;
+
+            if (logicIntegrity < 0.20) {
+              // HARD KILL — logic is dead, bypass everything, market close NOW
+              console.log(`[V12.5.1-SOVEREIGN-EXIT] 🔴 ${order.currency_pair} ${order.direction}: Logic_Integrity=${(logicIntegrity * 100).toFixed(0)}% < 20% | Gap ${entryRankGap}→${currentGap} | PnL=${pnlVsSl.toFixed(1)}p — HARD KILL (bypasses Natural Death + all SLs)`);
+              decision.action = "sovereign-exit-hard" as typeof decision.action;
+              decision.reason = `V12.5.1 SOVEREIGN HARD KILL: Logic_Integrity=${(logicIntegrity * 100).toFixed(0)}% (gap ${entryRankGap}→${currentGap}) — fundamental reason VANISHED, immediate market close`;
+            } else if (logicIntegrity < 0.40) {
+              // SOVEREIGN EXIT — logic decaying, close at market
+              console.log(`[V12.5.1-SOVEREIGN-EXIT] 🟠 ${order.currency_pair} ${order.direction}: Logic_Integrity=${(logicIntegrity * 100).toFixed(0)}% < 40% | Gap ${entryRankGap}→${currentGap} | PnL=${pnlVsSl.toFixed(1)}p — SOVEREIGN EXIT (override Natural Death)`);
+              decision.action = "sovereign-exit" as typeof decision.action;
+              decision.reason = `V12.5.1 SOVEREIGN EXIT: Logic_Integrity=${(logicIntegrity * 100).toFixed(0)}% (gap ${entryRankGap}→${currentGap}) — trade edge decayed beyond recovery, PnL=${pnlVsSl.toFixed(1)}p`;
             }
           } else if (entryRankGap == null) {
             // First cycle for this trade — stamp the entry rank gap
             await supabase.from("oanda_orders").update({
               governance_payload: { ...entryGovPayload, entryRankGap: currentGap, entryBaseRank: currentBaseRank, entryQuoteRank: currentQuoteRank },
             }).eq("id", order.id);
-            console.log(`[V12.5-MATRIX] ${order.currency_pair}: Entry rank gap stamped = ${currentGap} (${baseCur}#${currentBaseRank} vs ${quoteCur}#${currentQuoteRank})`);
+            console.log(`[V12.5.1-MATRIX] ${order.currency_pair}: Entry rank gap stamped = ${currentGap} (${baseCur}#${currentBaseRank} vs ${quoteCur}#${currentQuoteRank})`);
           }
         }
       }
 
-      // ═══ V12.5 JPY VOLATILITY EMERGENCY ═══
-      // If JPY rank jumped 4+ positions in <30 minutes, exit all JPY trades at market
+      // ═══ V12.5.1 SQUEEZE KILL — High-Velocity JPY Protection ═══
+      // If JPY rank jumped 4+ positions in <30 minutes, IMMEDIATE MARKET EXIT on all JPY trades.
+      // Bypasses Natural Death, bypasses BE+1 logic. Captures current pips as-is.
+      // Rationale: Institutional squeezes move faster than OANDA limit order updates.
       if (decision.action === "hold" && jpyRankVelocityAlert && order.currency_pair.includes("JPY")) {
-        console.log(`[V12.5-JPY-EMERGENCY] 🚨 ${order.currency_pair} ${order.direction}: JPY rank velocity alert — EMERGENCY EXIT`);
-        decision.action = "jpy-emergency-exit" as typeof decision.action;
-        decision.reason = `V12.5 JPY Emergency: JPY rank shifted 4+ positions in <30min — institutional squeeze detected`;
+        console.log(`[V12.5.1-SQUEEZE-KILL] 🚨 ${order.currency_pair} ${order.direction}: JPY velocity alert — IMMEDIATE MARKET EXIT (bypasses Natural Death + BE+1) | PnL=${decision.currentPnlPips.toFixed(1)}p`);
+        decision.action = "jpy-squeeze-kill" as typeof decision.action;
+        decision.reason = `V12.5.1 SQUEEZE KILL: JPY rank shifted 4+ positions in <30min — institutional squeeze, capturing ${decision.currentPnlPips.toFixed(1)}p NOW`;
       }
 
       // ═══ V12.4 THRESHOLD TRAILING STOP ═══
@@ -1397,33 +1409,23 @@ Deno.serve(async (req) => {
       // Trades ONLY close by hitting OANDA-native TP or SL.
       // The monitor may only reconcile/sync status for atlas-hedge agents.
       // V12.4: MOM agents get threshold trailing stop pushed to OANDA. CTR agents keep fixed TP.
-      // V12.5: Matrix-Flip and JPY Emergency override Natural Death by pushing SL to BE+1 (not closing).
+      // V12.5.1: Sovereign Exit (Hard + Normal) and Squeeze Kill BYPASS Natural Death entirely.
+      //          These are fact-based exits where the fundamental reason has vanished — waiting for SL is wasteful.
       const isAtlasHedge = (order.agent_id || '').startsWith('atlas-hedge-');
-      if (isAtlasHedge) {
-        const isLogicalRiskExit = decision.action === ("matrix-flip-exit" as string) || decision.action === ("jpy-emergency-exit" as string);
+      const isSovereignOverride = decision.action === ("sovereign-exit-hard" as string)
+        || decision.action === ("sovereign-exit" as string)
+        || decision.action === ("jpy-squeeze-kill" as string);
+
+      if (isAtlasHedge && !isSovereignOverride) {
         console.log(`[NATURAL-DEATH] ${order.currency_pair} ${order.direction} (${order.agent_id}): Exit signal "${decision.action}" SUPPRESSED — atlas-hedge trades close only via OANDA TP/SL`);
         heldCount++;
+      } else if (isAtlasHedge && isSovereignOverride) {
+        // V12.5.1: Sovereign overrides bypass Natural Death — proceed to close below
+        console.log(`[V12.5.1-OVERRIDE] ⚡ ${order.currency_pair} ${order.direction} (${order.agent_id}): "${decision.action}" BYPASSES Natural Death — fundamental logic vanished, closing at market`);
+        // Fall through to the close logic below (do NOT continue)
+      }
 
-        // V12.5: If Matrix-Flip or JPY Emergency fired, push SL to BE+1 immediately
-        // This doesn't close the trade — it lets OANDA's native SL protect the position
-        if (isLogicalRiskExit && order.oanda_trade_id && order.entry_price != null) {
-          const bePipMult = getPipMultiplier(order.currency_pair);
-          const bePrice = order.direction === "long"
-            ? entryPrice + 1 * bePipMult
-            : entryPrice - 1 * bePipMult;
-
-          const currentOandaSL = oandaTrade ? parseFloat((oandaTrade as any).stopLossOrder?.price || '0') : 0;
-          const slNeedsBE = order.direction === "long"
-            ? (currentOandaSL < bePrice || currentOandaSL === 0)
-            : (currentOandaSL > bePrice || currentOandaSL === 0);
-
-          if (slNeedsBE) {
-            const pp = order.currency_pair.includes('JPY') ? 3 : 5;
-            console.log(`[V12.5-RISK] 🛡️ ${order.currency_pair} (${order.agent_id}): ${decision.action} → pushing SL to BE+1 @ ${bePrice.toFixed(pp)} (Natural Death preserved, capital protected)`);
-            await updateTrailingStop(order.oanda_trade_id, bePrice, order.environment || "practice", order.currency_pair);
-          }
-        }
-
+      if (isAtlasHedge && !isSovereignOverride) {
         // V12.4: Push threshold trailing SL for MOM agents only
         const ndAgentId = order.agent_id || '';
         const ndIsCtr = ndAgentId.includes('-c') && !ndAgentId.includes('-m');
