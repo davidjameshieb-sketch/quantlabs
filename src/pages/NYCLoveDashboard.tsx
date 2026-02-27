@@ -1,21 +1,23 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Shield, Zap, BarChart3, Activity, ArrowLeft, Radio, AlertTriangle, TrendingUp, TrendingDown } from 'lucide-react';
 import { Link } from 'react-router-dom';
+import { ArrowLeft, Radio, Zap } from 'lucide-react';
+import { supabase } from '@/integrations/supabase/client';
+import ADIRadarHub from '@/components/nexus/ADIRadarHub';
+import SovereignLeaderboard from '@/components/nexus/SovereignLeaderboard';
+import NexusPressureCard from '@/components/nexus/NexusPressureCard';
+import TentacleLog from '@/components/nexus/TentacleLog';
+import LiquidityHeatmap from '@/components/nexus/LiquidityHeatmap';
+import SessionClock from '@/components/nexus/SessionClock';
 
-interface Execution {
-  instrument: string;
-  direction: string;
-  status: string;
-  detail: string;
-}
+const INSTRUMENTS = ['EUR_USD', 'GBP_USD', 'USD_JPY'];
+const USD_CROSSES = ['EUR_USD', 'GBP_USD', 'USD_JPY', 'USD_CHF', 'USD_CAD', 'AUD_USD', 'NZD_USD'];
 
 interface AgentResult {
   success: boolean;
   reason?: string;
   detail?: string;
-  agent?: string;
-  session?: string;
-  executions?: Execution[];
+  engine?: string;
+  executions?: { instrument: string; direction: string; status: string; detail: string; nexusP?: number }[];
   log?: string[];
   timestamp?: string;
   error?: string;
@@ -28,23 +30,64 @@ interface PricingData {
   mid: number;
 }
 
-const INSTRUMENTS = ['EUR_USD', 'GBP_USD', 'USD_JPY'];
+interface CurrencyRank {
+  currency: string;
+  rank: number;
+}
+
+interface OrderBookData {
+  price: number;
+  longPct: number;
+  shortPct: number;
+  buckets: { price: number; longPct: number; shortPct: number }[];
+}
+
+interface ActiveTrade {
+  instrument: string;
+  direction: string;
+  entry_price: number;
+  status: string;
+}
 
 const NYCLoveDashboard = () => {
   const [agentResult, setAgentResult] = useState<AgentResult | null>(null);
   const [pricing, setPricing] = useState<Record<string, PricingData>>({});
+  const [rankings, setRankings] = useState<CurrencyRank[]>([]);
+  const [orderBooks, setOrderBooks] = useState<Record<string, OrderBookData>>({});
+  const [activeTrades, setActiveTrades] = useState<ActiveTrade[]>([]);
   const [loading, setLoading] = useState(false);
   const [autoMode, setAutoMode] = useState(false);
   const [cycleCount, setCycleCount] = useState(0);
   const [logs, setLogs] = useState<string[]>([
-    '[SYSTEM] NYC Love Agent dashboard initialized',
-    '[SYSTEM] Awaiting manual trigger or auto-scan activation...',
+    '[SYSTEM] Sovereign Neural Nexus v2.0 initialized',
+    '[SYSTEM] Pillars: ADI Truth Filter | Neural Volatility Buffer | OBI Sniffer',
+    '[SYSTEM] Awaiting nexus invocation...',
   ]);
+
+  // Nexus state derived from agent result
+  const [nexusData, setNexusData] = useState<Record<string, {
+    probability: number;
+    direction: 'BUY' | 'SELL' | null;
+    adaptiveSL: number;
+    adaptiveTP: number;
+    atrPips: number;
+    avgAtrPips: number;
+    breathRatio: number;
+    wallInfo: string | null;
+  }>>({});
+
+  // ADI state
+  const [adiState, setAdiState] = useState({
+    dollarStrength: 0,
+    confirmedCrosses: 0,
+    totalCrosses: 0,
+    isRetailHunt: false,
+  });
 
   const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
   const apiKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
 
-  // Fetch live pricing for spread shield display
+  // Fetch pricing
   const fetchPricing = useCallback(async () => {
     try {
       const res = await fetch(`${supabaseUrl}/functions/v1/oanda-pricing`, {
@@ -59,26 +102,61 @@ const NYCLoveDashboard = () => {
           if (data.prices[display]) {
             const p = data.prices[display];
             const pv = inst.includes('JPY') ? 100 : 10000;
-            mapped[inst] = {
-              bid: p.bid,
-              ask: p.ask,
-              mid: p.mid,
-              spread: (p.ask - p.bid) * pv,
-            };
+            mapped[inst] = { bid: p.bid, ask: p.ask, mid: p.mid, spread: (p.ask - p.bid) * pv };
           }
         }
         setPricing(mapped);
       }
-    } catch (e) {
-      console.error('[NYC-LOVE] Pricing fetch error:', e);
-    }
+    } catch (e) { console.error('[NEXUS] Pricing error:', e); }
   }, [supabaseUrl, apiKey]);
 
-  // Invoke the NYC Love Agent edge function
+  // Fetch sovereign rankings
+  const fetchRankings = useCallback(async () => {
+    try {
+      const { data } = await supabase
+        .from('sovereign_memory')
+        .select('payload')
+        .eq('memory_key', 'live_strength_index')
+        .eq('memory_type', 'currency_strength')
+        .order('updated_at', { ascending: false })
+        .limit(1)
+        .single();
+
+      if (data?.payload) {
+        const payload = data.payload as { strengths?: { currency: string; rank: number }[] };
+        if (payload.strengths) {
+          setRankings(payload.strengths);
+        }
+      }
+    } catch { /* empty */ }
+  }, []);
+
+  // Fetch active trades
+  const fetchActiveTrades = useCallback(async () => {
+    try {
+      const { data } = await supabase
+        .from('oanda_orders')
+        .select('currency_pair, direction, entry_price, status')
+        .eq('agent_id', 'nyc-love')
+        .in('status', ['filled', 'open', 'submitted'])
+        .eq('environment', 'practice');
+
+      if (data) {
+        setActiveTrades(data.map(d => ({
+          instrument: d.currency_pair,
+          direction: d.direction,
+          entry_price: d.entry_price || 0,
+          status: d.status,
+        })));
+      }
+    } catch { /* empty */ }
+  }, []);
+
+  // Invoke agent
   const runAgent = useCallback(async () => {
     setLoading(true);
     const ts = new Date().toLocaleTimeString();
-    setLogs(prev => [...prev, `[${ts}] Invoking NYC Love Agent...`]);
+    setLogs(prev => [...prev, `[${ts}] 🚀 Invoking Sovereign Neural Nexus...`]);
 
     try {
       const res = await fetch(`${supabaseUrl}/functions/v1/nyc-love-agent`, {
@@ -89,34 +167,92 @@ const NYCLoveDashboard = () => {
       setAgentResult(data);
       setCycleCount(c => c + 1);
 
-      // Append agent logs
       if (data.log) {
         setLogs(prev => [...prev, ...data.log!.map(l => `[${ts}] ${l}`)]);
+
+        // Parse nexus data from logs
+        const nexusMap: Record<string, typeof nexusData[string]> = {};
+        for (const inst of INSTRUMENTS) {
+          const tag = `[${inst}]`;
+          const nexusLine = data.log.find(l => l.includes(tag) && l.includes('NEXUS:'));
+          const breathLine = data.log.find(l => l.includes(tag) && l.includes('BREATH:'));
+          const obiLine = data.log.find(l => l.includes(tag) && l.includes('OBI:'));
+          const sovLine = data.log.find(l => l.includes(tag) && l.includes('SOVEREIGN:'));
+
+          // Parse probability from nexus line
+          const pMatch = nexusLine?.match(/P=(\d+\.?\d*)%/);
+          const probability = pMatch ? parseFloat(pMatch[1]) / 100 : 0;
+
+          // Parse direction from sovereign line
+          let direction: 'BUY' | 'SELL' | null = null;
+          if (sovLine?.includes('→ BUY')) direction = 'BUY';
+          else if (sovLine?.includes('→ SELL')) direction = 'SELL';
+
+          // Parse breath data
+          const slMatch = breathLine?.match(/SL=(\d+\.?\d*)/);
+          const tpMatch = breathLine?.match(/TP=(\d+\.?\d*)/);
+          const atrMatch = breathLine?.match(/ATR=(\d+\.?\d*)/);
+          const avgMatch = breathLine?.match(/avg=(\d+\.?\d*)/);
+          const brMatch = breathLine?.match(/breath=(\d+\.?\d*)/);
+
+          // Parse wall info
+          const wallMatch = obiLine?.includes('BLOCKED') ? obiLine.split('OBI: ')[1] : null;
+
+          nexusMap[inst] = {
+            probability,
+            direction,
+            adaptiveSL: slMatch ? parseFloat(slMatch[1]) : 20,
+            adaptiveTP: tpMatch ? parseFloat(tpMatch[1]) : 60,
+            atrPips: atrMatch ? parseFloat(atrMatch[1]) : 0,
+            avgAtrPips: avgMatch ? parseFloat(avgMatch[1]) : 0,
+            breathRatio: brMatch ? parseFloat(brMatch[1]) : 1,
+            wallInfo: wallMatch || null,
+          };
+        }
+        setNexusData(nexusMap);
+
+        // Parse ADI from logs
+        const adiLine = data.log.find(l => l.includes('ADI:'));
+        if (adiLine) {
+          const adiMatch = adiLine.match(/ADI=(-?\d+\.?\d*)/);
+          const confMatch = adiLine.match(/confirmed=(\d+)\/(\d+)/);
+          const huntMatch = adiLine.includes('hunt=true');
+          setAdiState({
+            dollarStrength: adiMatch ? parseFloat(adiMatch[1]) / 100 : 0,
+            confirmedCrosses: confMatch ? parseInt(confMatch[1]) : 0,
+            totalCrosses: confMatch ? parseInt(confMatch[2]) : 0,
+            isRetailHunt: huntMatch,
+          });
+        }
       }
+
       if (data.reason === 'session_gate') {
         setLogs(prev => [...prev, `[${ts}] ⏳ Session gate: ${data.detail}`]);
       }
-      if (data.executions) {
-        for (const ex of data.executions) {
-          const icon = ex.status === 'filled' ? '✅' : ex.status === 'spread_blocked' ? '🛡️' : '⚠️';
-          setLogs(prev => [...prev, `[${ts}] ${icon} ${ex.instrument} ${ex.direction} → ${ex.status} (${ex.detail})`]);
-        }
-      }
+
+      // Refresh active trades after agent run
+      fetchActiveTrades();
     } catch (e) {
-      setLogs(prev => [...prev, `[${ts}] ❌ Agent error: ${(e as Error).message}`]);
+      setLogs(prev => [...prev, `[${ts}] ❌ Nexus error: ${(e as Error).message}`]);
     } finally {
       setLoading(false);
     }
-  }, [supabaseUrl, apiKey]);
+  }, [supabaseUrl, apiKey, fetchActiveTrades]);
 
-  // Auto-refresh pricing
+  // Data refresh loops
   useEffect(() => {
     fetchPricing();
-    const iv = setInterval(fetchPricing, 10_000);
+    fetchRankings();
+    fetchActiveTrades();
+    const iv = setInterval(() => {
+      fetchPricing();
+      fetchRankings();
+      fetchActiveTrades();
+    }, 15_000);
     return () => clearInterval(iv);
-  }, [fetchPricing]);
+  }, [fetchPricing, fetchRankings, fetchActiveTrades]);
 
-  // Auto-mode: run agent every 5 minutes
+  // Auto-mode
   useEffect(() => {
     if (!autoMode) return;
     runAgent();
@@ -124,224 +260,186 @@ const NYCLoveDashboard = () => {
     return () => clearInterval(iv);
   }, [autoMode, runAgent]);
 
-  // Compute average spread across instruments
-  const avgSpread = INSTRUMENTS.reduce((s, i) => s + (pricing[i]?.spread || 0), 0) / Math.max(Object.keys(pricing).length, 1);
-  const spreadOk = avgSpread <= 3.0;
-
-  // Session status
-  const now = new Date();
-  const utcH = now.getUTCHours();
-  const utcM = now.getUTCMinutes();
-  const utcMinutes = utcH * 60 + utcM;
-  const sessionActive = utcMinutes >= 780 && utcMinutes <= 870;
-
-  const lastExecCount = agentResult?.executions?.filter(e => e.status === 'filled').length || 0;
-
   return (
-    <div className="min-h-screen bg-black text-blue-100 font-mono">
-      {/* Header */}
-      <div className="border-b border-blue-900/60 px-6 py-3 flex justify-between items-center bg-slate-950/80 backdrop-blur-sm sticky top-0 z-50">
-        <div className="flex items-center gap-4">
-          <Link to="/citadel" className="text-blue-500 hover:text-blue-300 transition-colors">
+    <div className="min-h-screen cyber-grid-bg font-mono" style={{ color: 'hsl(var(--nexus-text-primary))' }}>
+      {/* ═══ HEADER ═══ */}
+      <div className="sticky top-0 z-50 px-5 py-3 flex justify-between items-center backdrop-blur-md"
+        style={{ background: 'hsl(var(--nexus-bg) / 0.9)', borderBottom: '1px solid hsl(var(--nexus-border))' }}>
+        <div className="flex items-center gap-3">
+          <Link to="/citadel" className="transition-colors hover:opacity-80" style={{ color: 'hsl(var(--nexus-neon-cyan))' }}>
             <ArrowLeft size={16} />
           </Link>
-          <h1 className="text-lg font-bold tracking-tighter text-blue-400">
-            NYC LOVE <span className="text-blue-600">//</span> LIVE_FEED
+          <h1 className="text-base font-bold tracking-tight" style={{ color: 'hsl(var(--nexus-neon-cyan))' }}>
+            NYC LOVE <span style={{ color: 'hsl(var(--nexus-text-muted))' }}>//</span> SOVEREIGN NEURAL NEXUS
           </h1>
-          <div className="h-4 w-px bg-blue-900" />
-          <span className="text-[10px] text-blue-600">agent_id: nyc-love</span>
+          <span className="text-[9px] px-2 py-0.5 rounded" style={{
+            color: 'hsl(var(--nexus-neon-green))',
+            background: 'hsl(var(--nexus-neon-green) / 0.1)',
+            border: '1px solid hsl(var(--nexus-neon-green) / 0.2)',
+          }}>v2.0</span>
         </div>
-        <div className="flex gap-3 items-center">
-          <span className="bg-blue-950/80 px-3 py-1 rounded text-[10px] border border-blue-800/50">
-            OANDA: {Object.keys(pricing).length > 0 ? 'CONNECTED' : 'WAITING'}
+        <div className="flex items-center gap-3">
+          <span className="text-[9px] px-2 py-1 rounded" style={{
+            background: 'hsl(var(--nexus-surface))',
+            border: '1px solid hsl(var(--nexus-border))',
+            color: Object.keys(pricing).length > 0 ? 'hsl(var(--nexus-neon-green))' : 'hsl(var(--nexus-text-muted))',
+          }}>
+            OANDA: {Object.keys(pricing).length > 0 ? 'LIVE' : '—'}
           </span>
-          <span className={`px-3 py-1 rounded text-[10px] border ${sessionActive
-            ? 'bg-green-950/80 border-green-800/50 text-green-400'
-            : 'bg-yellow-950/80 border-yellow-800/50 text-yellow-400'
-          }`}>
-            {sessionActive ? 'SESSION: ACTIVE' : 'SESSION: DORMANT'}
-          </span>
-          <span className="text-[10px] text-blue-600">
-            {utcH.toString().padStart(2, '0')}:{utcM.toString().padStart(2, '0')} UTC
+          <span className="text-[9px]" style={{ color: 'hsl(var(--nexus-text-muted))' }}>
+            cycles: {cycleCount}
           </span>
         </div>
       </div>
 
-      <div className="p-6 space-y-6">
-        {/* Controls */}
-        <div className="flex gap-3 items-center">
-          <button
-            onClick={runAgent}
-            disabled={loading}
-            className="bg-blue-600 hover:bg-blue-500 disabled:bg-blue-900 disabled:text-blue-600 text-white text-xs px-4 py-2 rounded font-bold tracking-wider transition-colors"
-          >
-            {loading ? 'SCANNING...' : '▶ INVOKE AGENT'}
-          </button>
-          <button
-            onClick={() => setAutoMode(!autoMode)}
-            className={`text-xs px-4 py-2 rounded font-bold tracking-wider transition-colors border ${autoMode
-              ? 'bg-green-900/50 border-green-700 text-green-400 hover:bg-green-900/70'
-              : 'bg-slate-900/50 border-slate-700 text-slate-400 hover:bg-slate-800/50'
-            }`}
-          >
-            <Radio size={12} className="inline mr-1" />
-            {autoMode ? 'AUTO: ON (5min)' : 'AUTO: OFF'}
-          </button>
-          <span className="text-[10px] text-blue-600 ml-auto">cycles: {cycleCount}</span>
+      <div className="p-5 space-y-5">
+        {/* ═══ SESSION CLOCK + CONTROLS ═══ */}
+        <div className="flex flex-col md:flex-row gap-4 items-start md:items-center justify-between">
+          <div className="flex-1 max-w-md p-3 rounded-lg" style={{ background: 'hsl(var(--nexus-surface))', border: '1px solid hsl(var(--nexus-border))' }}>
+            <SessionClock />
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={runAgent}
+              disabled={loading}
+              className="text-xs px-5 py-2.5 rounded font-bold tracking-wider transition-all nexus-glow-cyan"
+              style={{
+                background: loading ? 'hsl(var(--nexus-surface))' : 'hsl(var(--nexus-neon-cyan) / 0.15)',
+                border: '1px solid hsl(var(--nexus-neon-cyan) / 0.4)',
+                color: loading ? 'hsl(var(--nexus-text-muted))' : 'hsl(var(--nexus-neon-cyan))',
+              }}
+            >
+              <Zap size={12} className="inline mr-1" />
+              {loading ? 'SCANNING...' : 'INVOKE NEXUS'}
+            </button>
+            <button
+              onClick={() => setAutoMode(!autoMode)}
+              className="text-xs px-4 py-2.5 rounded font-bold tracking-wider transition-all"
+              style={{
+                background: autoMode ? 'hsl(var(--nexus-neon-green) / 0.1)' : 'hsl(var(--nexus-surface))',
+                border: `1px solid ${autoMode ? 'hsl(var(--nexus-neon-green) / 0.4)' : 'hsl(var(--nexus-border))'}`,
+                color: autoMode ? 'hsl(var(--nexus-neon-green))' : 'hsl(var(--nexus-text-muted))',
+              }}
+            >
+              <Radio size={12} className="inline mr-1" />
+              {autoMode ? 'AUTO: ON' : 'AUTO: OFF'}
+            </button>
+          </div>
         </div>
 
-        {/* 3 Core Gauges */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {/* Spread Shield */}
-          <div className="bg-slate-900/40 p-5 border border-blue-900/30 rounded-lg">
-            <div className="flex items-center gap-2 mb-3 text-blue-400 text-xs font-bold tracking-wider">
-              <Shield size={14} /> SPREAD SHIELD
-            </div>
-            <div className="space-y-2">
-              {INSTRUMENTS.map(inst => {
-                const p = pricing[inst];
-                const spread = p?.spread || 0;
-                const ok = spread <= 3.0;
-                return (
-                  <div key={inst} className="flex justify-between items-center text-xs">
-                    <span className="text-blue-300">{inst.replace('_', '/')}</span>
-                    <div className="flex items-center gap-2">
-                      <span className={`font-bold ${ok ? 'text-green-400' : 'text-red-400'}`}>
-                        {spread.toFixed(1)}
-                      </span>
-                      <span className="text-blue-700">pips</span>
-                      {ok
-                        ? <span className="text-green-500 text-[10px]">✓</span>
-                        : <AlertTriangle size={10} className="text-red-500" />
-                      }
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-            <div className={`text-[10px] mt-3 pt-2 border-t border-blue-900/30 ${spreadOk ? 'text-green-500' : 'text-red-400'}`}>
-              {spreadOk ? '✓ ALL WITHIN LIMIT (3.0)' : '⚠ SPREAD BREACH DETECTED'}
-            </div>
+        {/* ═══ TOP ROW: ADI Hub + Sovereign Matrix + Spread Shield ═══ */}
+        <div className="grid grid-cols-1 md:grid-cols-12 gap-5">
+          {/* ADI Radar Hub */}
+          <div className="md:col-span-4 p-4 rounded-lg" style={{ background: 'hsl(var(--nexus-surface))', border: '1px solid hsl(var(--nexus-border))' }}>
+            <ADIRadarHub {...adiState} />
           </div>
 
-          {/* Velocity Feeler */}
-          <div className="bg-slate-900/40 p-5 border border-purple-900/30 rounded-lg">
-            <div className="flex items-center gap-2 mb-3 text-purple-400 text-xs font-bold tracking-wider">
-              <Zap size={14} /> VELOCITY FEELER
-            </div>
-            {agentResult?.executions ? (
+          {/* Sovereign Leaderboard */}
+          <div className="md:col-span-4 p-4 rounded-lg" style={{ background: 'hsl(var(--nexus-surface))', border: '1px solid hsl(var(--nexus-border))' }}>
+            <SovereignLeaderboard rankings={rankings.length > 0 ? rankings : [
+              { currency: 'USD', rank: 1 }, { currency: 'EUR', rank: 2 },
+              { currency: 'GBP', rank: 3 }, { currency: 'CHF', rank: 4 },
+              { currency: 'JPY', rank: 5 }, { currency: 'CAD', rank: 6 },
+              { currency: 'AUD', rank: 7 }, { currency: 'NZD', rank: 8 },
+            ]} />
+          </div>
+
+          {/* Spread Shield + Liquidity */}
+          <div className="md:col-span-4 space-y-4">
+            {/* Spread Shield */}
+            <div className="p-4 rounded-lg" style={{ background: 'hsl(var(--nexus-surface))', border: '1px solid hsl(var(--nexus-border))' }}>
+              <div className="text-[10px] font-bold tracking-[0.2em] mb-3" style={{ color: 'hsl(var(--nexus-neon-cyan))' }}>
+                SPREAD SHIELD
+              </div>
               <div className="space-y-2">
-                {agentResult.executions.map((ex, i) => {
-                  const isSpike = ex.detail.includes('vel=');
+                {INSTRUMENTS.map(inst => {
+                  const p = pricing[inst];
+                  const spread = p?.spread || 0;
+                  const ok = spread <= 3.0;
                   return (
-                    <div key={i} className="flex justify-between items-center text-xs">
-                      <span className="text-purple-300">{ex.instrument.replace('_', '/')}</span>
-                      <span className={`font-bold ${ex.status === 'filled' ? 'text-green-400' : 'text-purple-500'}`}>
-                        {ex.status.toUpperCase()}
-                      </span>
+                    <div key={inst} className="flex justify-between items-center text-xs">
+                      <span style={{ color: 'hsl(var(--nexus-text-primary))' }}>{inst.replace('_', '/')}</span>
+                      <div className="flex items-center gap-2">
+                        <div className="w-2 h-2 rounded-full" style={{ background: ok ? 'hsl(var(--nexus-neon-green))' : 'hsl(var(--nexus-danger))' }} />
+                        <span className="font-bold" style={{ color: ok ? 'hsl(var(--nexus-neon-green))' : 'hsl(var(--nexus-danger))' }}>
+                          {spread.toFixed(1)}p
+                        </span>
+                      </div>
                     </div>
                   );
                 })}
               </div>
-            ) : (
-              <div className="text-purple-600 text-xs">Awaiting agent invocation...</div>
-            )}
-            <div className="text-[10px] mt-3 pt-2 border-t border-purple-900/30 text-purple-500">
-              THRESHOLD: 1.5x AVG VOLUME
+              <div className="text-[8px] mt-2 pt-2" style={{ borderTop: '1px solid hsl(var(--nexus-border))', color: 'hsl(var(--nexus-text-muted))' }}>
+                THRESHOLD: 3.0 PIPS | BYPASS @ P{'>'}95%
+              </div>
             </div>
-          </div>
 
-          {/* Sovereign Gauge */}
-          <div className="bg-slate-900/40 p-5 border border-orange-900/30 rounded-lg">
-            <div className="flex items-center gap-2 mb-3 text-orange-400 text-xs font-bold tracking-wider">
-              <BarChart3 size={14} /> SOVEREIGN GAUGE
-            </div>
-            <div className="space-y-2">
+            {/* Global Liquidity Mini */}
+            <div className="p-4 rounded-lg" style={{ background: 'hsl(var(--nexus-surface))', border: '1px solid hsl(var(--nexus-border))' }}>
+              <div className="text-[10px] font-bold tracking-[0.2em] mb-2" style={{ color: 'hsl(var(--nexus-neon-cyan))' }}>
+                LIQUIDITY HEATMAP
+              </div>
               {INSTRUMENTS.map(inst => {
+                const ob = orderBooks[inst];
                 const p = pricing[inst];
                 return (
-                  <div key={inst} className="flex justify-between items-center text-xs">
-                    <span className="text-orange-300">{inst.replace('_', '/')}</span>
-                    <span className="text-orange-200 font-bold">
-                      {p ? p.mid.toFixed(inst.includes('JPY') ? 3 : 5) : '—'}
-                    </span>
+                  <div key={inst} className="mb-2">
+                    <div className="text-[8px] mb-1" style={{ color: 'hsl(var(--nexus-text-muted))' }}>{inst.replace('_', '/')}</div>
+                    <LiquidityHeatmap
+                      instrument={inst}
+                      buckets={ob?.buckets || []}
+                      currentPrice={p?.mid || 0}
+                    />
                   </div>
                 );
               })}
             </div>
-            <div className="text-[10px] mt-3 pt-2 border-t border-orange-900/30 text-orange-500">
-              DIRECTION: SOVEREIGN MATRIX RANKS
-            </div>
           </div>
         </div>
 
-        {/* Execution Summary */}
-        {agentResult && (
-          <div className="bg-slate-900/40 border border-blue-900/30 rounded-lg p-4">
-            <div className="flex items-center gap-2 mb-3 text-xs font-bold tracking-wider text-blue-400">
-              <Activity size={14} /> LAST CYCLE RESULT
-              <span className="ml-auto text-[10px] text-blue-600">
-                {agentResult.timestamp ? new Date(agentResult.timestamp).toLocaleTimeString() : '—'}
-              </span>
-            </div>
-            {agentResult.reason === 'session_gate' ? (
-              <div className="text-yellow-400 text-xs flex items-center gap-2">
-                <AlertTriangle size={12} />
-                {agentResult.detail}
-              </div>
-            ) : agentResult.executions && agentResult.executions.length > 0 ? (
-              <div className="space-y-1">
-                {agentResult.executions.map((ex, i) => (
-                  <div key={i} className="flex items-center gap-3 text-xs py-1 border-b border-blue-900/20 last:border-0">
-                    <span className="text-blue-300 w-16">{ex.instrument.replace('_', '/')}</span>
-                    <span className={`w-12 font-bold ${ex.direction === 'BUY' ? 'text-green-400' : ex.direction === 'SELL' ? 'text-red-400' : 'text-slate-500'}`}>
-                      {ex.direction === 'long' ? <TrendingUp size={12} className="inline text-green-400" /> : ex.direction === 'short' ? <TrendingDown size={12} className="inline text-red-400" /> : null}
-                      {' '}{ex.direction}
-                    </span>
-                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                      ex.status === 'filled' ? 'bg-green-900/50 text-green-400' :
-                      ex.status === 'spread_blocked' ? 'bg-red-900/50 text-red-400' :
-                      ex.status === 'skipped' ? 'bg-yellow-900/50 text-yellow-400' :
-                      'bg-slate-800 text-slate-400'
-                    }`}>
-                      {ex.status}
-                    </span>
-                    <span className="text-blue-600 text-[10px] ml-auto truncate max-w-[200px]">{ex.detail}</span>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="text-blue-600 text-xs">No executions this cycle</div>
-            )}
+        {/* ═══ PRESSURE CARDS (NEXUS STRIKE INDICATORS) ═══ */}
+        <div>
+          <div className="text-[10px] font-bold tracking-[0.2em] mb-3" style={{ color: 'hsl(var(--nexus-neon-green))' }}>
+            NEXUS STRIKE INDICATORS
           </div>
-        )}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {INSTRUMENTS.map(inst => {
+              const p = pricing[inst];
+              const nd = nexusData[inst];
+              const ob = orderBooks[inst];
+              const trade = activeTrades.find(t => t.instrument === inst);
 
-        {/* Live Log Feed */}
-        <div className="bg-slate-950/80 border border-blue-900/40 rounded-lg">
-          <div className="flex items-center justify-between px-4 py-2 border-b border-blue-900/30">
-            <span className="text-[10px] font-bold tracking-wider text-blue-500">AGENT LOG FEED</span>
-            <button
-              onClick={() => setLogs(['[SYSTEM] Log cleared'])}
-              className="text-[10px] text-blue-700 hover:text-blue-400 transition-colors"
-            >
-              CLEAR
-            </button>
-          </div>
-          <div className="p-4 h-64 overflow-y-auto space-y-1 scrollbar-thin scrollbar-thumb-blue-900">
-            {logs.map((line, i) => (
-              <div key={i} className={`text-[11px] leading-relaxed ${
-                line.includes('✅') ? 'text-green-400' :
-                line.includes('❌') ? 'text-red-400' :
-                line.includes('🛡️') ? 'text-yellow-400' :
-                line.includes('[SYSTEM]') ? 'text-blue-400' :
-                line.includes('EXECUTING') ? 'text-cyan-400' :
-                'text-blue-300/70'
-              }`}>
-                {line}
-              </div>
-            ))}
+              return (
+                <NexusPressureCard
+                  key={inst}
+                  instrument={inst}
+                  mid={p?.mid || 0}
+                  spread={p?.spread || 0}
+                  nexusProbability={nd?.probability || 0}
+                  direction={nd?.direction || null}
+                  obiLongPct={ob?.longPct || 50}
+                  obiShortPct={ob?.shortPct || 50}
+                  wallInfo={nd?.wallInfo || null}
+                  adaptiveSL={nd?.adaptiveSL || 20}
+                  adaptiveTP={nd?.adaptiveTP || 60}
+                  atrPips={nd?.atrPips || 0}
+                  avgAtrPips={nd?.avgAtrPips || 0}
+                  breathRatio={nd?.breathRatio || 1}
+                  spreadOk={(p?.spread || 0) <= 3.0}
+                  tradeActive={!!trade}
+                  tradeDirection={trade?.direction}
+                  tradeEntry={trade?.entry_price}
+                />
+              );
+            })}
           </div>
         </div>
+
+        {/* ═══ TENTACLE LOG ═══ */}
+        <TentacleLog
+          logs={logs}
+          onClear={() => setLogs(['[SYSTEM] Tentacle log cleared'])}
+        />
       </div>
     </div>
   );
