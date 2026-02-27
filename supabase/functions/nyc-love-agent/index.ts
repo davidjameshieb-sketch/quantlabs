@@ -47,8 +47,7 @@ function isNYCOpenWindow(): { allowed: boolean; reason: string } {
 
 // ── Fetch live bid/ask from OANDA ──
 async function fetchPricing(instrument: string, apiToken: string, accountId: string): Promise<{ bid: number; ask: number; spread: number; mid: number } | null> {
-  const env = Deno.env.get('OANDA_ENV') || 'practice';
-  const host = OANDA_HOSTS[env] || OANDA_HOSTS.practice;
+  const host = OANDA_HOSTS.practice;
   try {
     const res = await fetch(`${host}/v3/accounts/${accountId}/pricing?instruments=${instrument}`, {
       headers: { Authorization: `Bearer ${apiToken}`, Accept: 'application/json' },
@@ -66,8 +65,7 @@ async function fetchPricing(instrument: string, apiToken: string, accountId: str
 
 // ── Fetch M5 candles for velocity detection ──
 async function fetchM5Candles(instrument: string, count: number, apiToken: string, accountId: string): Promise<{ volume: number; close: number; open: number }[]> {
-  const env = Deno.env.get('OANDA_ENV') || 'practice';
-  const host = OANDA_HOSTS[env] || OANDA_HOSTS.practice;
+  const host = OANDA_HOSTS.practice;
   try {
     const res = await fetch(`${host}/v3/instruments/${instrument}/candles?count=${count}&granularity=M5&price=M`, {
       headers: { Authorization: `Bearer ${apiToken}`, Accept: 'application/json' },
@@ -140,8 +138,7 @@ async function placeMarketOrder(
   apiToken: string,
   accountId: string,
 ): Promise<{ success: boolean; tradeId?: string; error?: string }> {
-  const env = Deno.env.get('OANDA_ENV') || 'practice';
-  const host = OANDA_HOSTS[env] || OANDA_HOSTS.practice;
+  const host = OANDA_HOSTS.practice;
   const pv = pipValue(instrument);
   const prec = pricePrecision(instrument);
   const side = direction === 'BUY' ? 1 : -1;
@@ -183,8 +180,7 @@ async function placeMarketOrder(
 
 // ── Get account equity for position sizing ──
 async function getAccountNAV(apiToken: string, accountId: string): Promise<number> {
-  const env = Deno.env.get('OANDA_ENV') || 'practice';
-  const host = OANDA_HOSTS[env] || OANDA_HOSTS.practice;
+  const host = OANDA_HOSTS.practice;
   try {
     const res = await fetch(`${host}/v3/accounts/${accountId}/summary`, {
       headers: { Authorization: `Bearer ${apiToken}`, Accept: 'application/json' },
