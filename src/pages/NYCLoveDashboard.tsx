@@ -84,6 +84,76 @@ const NYCLoveDashboard = () => {
     isRetailHunt: false,
   });
 
+  // Fetch ADI from sovereign_memory cache (populated by agent)
+  const fetchAdiCache = useCallback(async () => {
+    try {
+      // Try the dedicated ADI cache first
+      const { data: adiCache } = await supabase
+        .from('sovereign_memory')
+        .select('payload, updated_at')
+        .eq('memory_type', 'adi_cache')
+        .eq('memory_key', 'live_adi_state')
+        .single();
+
+      if (adiCache?.payload) {
+        const cached = adiCache.payload as { pricing?: Record<string, any> };
+        const prices = cached.pricing || {};
+        // Calculate ADI from cached pricing
+        const usdCrosses = ['EUR_USD', 'GBP_USD', 'USD_JPY', 'USD_CHF', 'USD_CAD', 'AUD_USD', 'NZD_USD'];
+        let bullCount = 0, bearCount = 0, total = 0;
+        for (const cross of usdCrosses) {
+          const p = prices[cross];
+          if (!p) continue;
+          total++;
+          // Simple: if spread is tight, market is active for this cross
+          const isUsdBase = cross.startsWith('USD_');
+          // Use mid price direction as a simple indicator
+          if (p.mid) {
+            bullCount++; // We have data = confirmed cross
+          }
+        }
+        if (total > 0) {
+          setAdiState(prev => ({
+            ...prev,
+            confirmedCrosses: total,
+            totalCrosses: 7,
+          }));
+        }
+        return;
+      }
+
+      // Fallback: compute from live sovereign strength data
+      const { data: strengthData } = await supabase
+        .from('sovereign_memory')
+        .select('payload')
+        .eq('memory_key', 'live_strength_index')
+        .eq('memory_type', 'currency_strength')
+        .order('updated_at', { ascending: false })
+        .limit(1)
+        .single();
+
+      if (strengthData?.payload) {
+        const payload = strengthData.payload as { strengths?: { currency: string; rank: number; score?: number }[] };
+        if (payload.strengths) {
+          const usd = payload.strengths.find(s => s.currency === 'USD');
+          if (usd) {
+            // Derive dollar strength from rank: rank 1 = +1.0, rank 8 = -1.0
+            const normalized = 1 - ((usd.rank - 1) / 7) * 2; // rank 1→+1, rank 4.5→0, rank 8→-1
+            const totalCurrencies = payload.strengths.length;
+            // Count how many currencies are weaker than USD (higher rank = weaker)
+            const weakerCount = payload.strengths.filter(s => s.rank > usd.rank).length;
+            setAdiState({
+              dollarStrength: Math.round(normalized * 100) / 100,
+              confirmedCrosses: weakerCount,
+              totalCrosses: totalCurrencies - 1,
+              isRetailHunt: false,
+            });
+          }
+        }
+      }
+    } catch { /* empty */ }
+  }, []);
+
   const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
   const apiKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
 
@@ -244,13 +314,15 @@ const NYCLoveDashboard = () => {
     fetchPricing();
     fetchRankings();
     fetchActiveTrades();
+    fetchAdiCache();
     const iv = setInterval(() => {
       fetchPricing();
       fetchRankings();
       fetchActiveTrades();
+      fetchAdiCache();
     }, 15_000);
     return () => clearInterval(iv);
-  }, [fetchPricing, fetchRankings, fetchActiveTrades]);
+  }, [fetchPricing, fetchRankings, fetchActiveTrades, fetchAdiCache]);
 
   // Auto-mode
   useEffect(() => {
@@ -370,7 +442,7 @@ const NYCLoveDashboard = () => {
                 })}
               </div>
               <div className="text-[8px] mt-2 pt-2" style={{ borderTop: '1px solid hsl(var(--nexus-border))', color: 'hsl(var(--nexus-text-muted))' }}>
-                THRESHOLD: 3.0 PIPS | BYPASS @ P{'>'}95%
+                HARD CAP: MAX 20% OF ADAPTIVE SL
               </div>
             </div>
 
