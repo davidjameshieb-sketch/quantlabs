@@ -214,9 +214,13 @@ function calculateADI(
 // ══════════════════════════════════════════
 // PILLAR 2: NEURAL VOLATILITY BUFFERS (Adaptive ATR-Gap Anti-MAE)
 // ══════════════════════════════════════════
-// Measures "Market Breath" via instantaneous ATR.
-// Dynamically widens SL when volatility is high so you don't get
-// chopped out by normal market breathing.
+// ATR is a "rearview mirror" — it uses completed candles.
+// During the first 15 minutes of the open (9:30 AM), the market
+// changes in milliseconds. ATR based on the 9:25 candle thinks
+// the market is "walking" when it's actually "sprinting."
+//
+// FIX: Use Real-Time Tick Variance (StdDev of last 50 ticks) during
+// the first 15 minutes of the open. After that, ATR is reliable.
 
 interface VolatilityBuffer {
   adaptiveSL: number;           // dynamic SL in pips
@@ -224,12 +228,57 @@ interface VolatilityBuffer {
   atrPips: number;              // current ATR in pips
   avgAtrPips: number;           // baseline ATR
   breathRatio: number;          // current/avg — >1.5 = "breathing hard"
+  usedTickVariance: boolean;    // true if tick variance was used instead of ATR
   detail: string;
 }
 
-function calculateNeuralVolatilityBuffer(candles: { high: number; low: number }[], instrument: string): VolatilityBuffer {
+// Calculate real-time breath from streaming pricing ticks
+function calculateTickVarianceBreath(
+  currentPricing: { bid: number; ask: number; mid: number },
+  recentCandles: { close: number }[],
+  instrument: string,
+): { breathRatio: number; tickVariancePips: number } {
+  // Use close prices as proxy for tick samples (each M5 candle close = 1 "tick")
+  // In first 15min we only have 0-3 completed candles, so use their closes
+  // plus the current mid as tick data points
+  const scale = pipScale(instrument);
+  const ticks = recentCandles.map(c => c.close);
+  ticks.push(currentPricing.mid); // add current live price
+
+  if (ticks.length < 3) return { breathRatio: 1.0, tickVariancePips: 0 };
+
+  // Calculate StdDev of tick-to-tick changes in pips
+  const changes: number[] = [];
+  for (let i = 1; i < ticks.length; i++) {
+    changes.push((ticks[i] - ticks[i - 1]) * scale);
+  }
+  const mean = changes.reduce((s, c) => s + c, 0) / changes.length;
+  const variance = changes.reduce((s, c) => s + (c - mean) ** 2, 0) / changes.length;
+  const stdDevPips = Math.sqrt(variance);
+
+  // Compare to expected "calm" StdDev (~2 pips for majors)
+  const calmStdDev = instrument.includes('JPY') ? 3.0 : 2.0;
+  const breathRatio = calmStdDev > 0 ? stdDevPips / calmStdDev : 1.0;
+
+  return { breathRatio: Math.max(0.5, breathRatio), tickVariancePips: Math.round(stdDevPips * 10) / 10 };
+}
+
+function isFirstFifteenMinutes(): boolean {
+  const now = new Date();
+  const utcH = now.getUTCHours();
+  const utcM = now.getUTCMinutes();
+  const minutes = utcH * 60 + utcM;
+  // 9:30 AM EST = 13:30 UTC = 810 minutes. First 15min = 810–825
+  return minutes >= 810 && minutes <= 825;
+}
+
+function calculateNeuralVolatilityBuffer(
+  candles: { high: number; low: number; close: number }[],
+  instrument: string,
+  currentPricing?: { bid: number; ask: number; mid: number },
+): VolatilityBuffer {
   if (candles.length < 5) {
-    return { adaptiveSL: BASE_SL_PIPS, adaptiveTP: BASE_SL_PIPS * TP_RATIO, atrPips: 0, avgAtrPips: 0, breathRatio: 1, detail: 'insufficient candles — using base SL' };
+    return { adaptiveSL: BASE_SL_PIPS, adaptiveTP: BASE_SL_PIPS * TP_RATIO, atrPips: 0, avgAtrPips: 0, breathRatio: 1, usedTickVariance: false, detail: 'insufficient candles — using base SL' };
   }
 
   const scale = pipScale(instrument);
@@ -237,17 +286,28 @@ function calculateNeuralVolatilityBuffer(candles: { high: number; low: number }[
   // Calculate ATR for each candle (high - low in pips)
   const atrs = candles.map(c => (c.high - c.low) * scale);
 
-  // Current ATR = average of last 3 candles (instantaneous breath)
-  const recentAtrs = atrs.slice(-3);
-  const currentAtr = recentAtrs.reduce((s, a) => s + a, 0) / recentAtrs.length;
-
-  // Baseline ATR = average of full lookback
+  // Baseline ATR = average of full lookback (this is always reliable)
   const avgAtr = atrs.reduce((s, a) => s + a, 0) / atrs.length;
+
+  // CRITICAL FIX: During first 15 minutes of open, ATR is a "rearview mirror."
+  // Use real-time tick variance instead.
+  let currentAtr: number;
+  let usedTickVariance = false;
+
+  if (isFirstFifteenMinutes() && currentPricing) {
+    // Use tick variance for breath during the sprint
+    const tv = calculateTickVarianceBreath(currentPricing, candles.slice(-5), instrument);
+    currentAtr = avgAtr * tv.breathRatio; // Scale baseline by real-time breath
+    usedTickVariance = true;
+  } else {
+    // Normal: average of last 3 candles (instantaneous breath)
+    const recentAtrs = atrs.slice(-3);
+    currentAtr = recentAtrs.reduce((s, a) => s + a, 0) / recentAtrs.length;
+  }
 
   const breathRatio = avgAtr > 0 ? currentAtr / avgAtr : 1;
 
   // Adaptive SL: base SL * breath multiplier, clamped to 15–30 pips
-  // If market is breathing in 15-pip arcs, SL moves to ~18.5 pips
   const rawAdaptiveSL = BASE_SL_PIPS * Math.max(0.75, Math.min(1.5, breathRatio));
   const adaptiveSL = Math.round(Math.max(15, Math.min(30, rawAdaptiveSL)) * 10) / 10;
   const adaptiveTP = Math.round(adaptiveSL * TP_RATIO * 10) / 10;
@@ -258,22 +318,29 @@ function calculateNeuralVolatilityBuffer(candles: { high: number; low: number }[
     atrPips: Math.round(currentAtr * 10) / 10,
     avgAtrPips: Math.round(avgAtr * 10) / 10,
     breathRatio: Math.round(breathRatio * 100) / 100,
-    detail: `ATR=${currentAtr.toFixed(1)} avg=${avgAtr.toFixed(1)} breath=${breathRatio.toFixed(2)} → SL=${adaptiveSL} TP=${adaptiveTP}`,
+    usedTickVariance,
+    detail: `${usedTickVariance ? 'TICK-VAR' : 'ATR'}=${currentAtr.toFixed(1)} avg=${avgAtr.toFixed(1)} breath=${breathRatio.toFixed(2)} → SL=${adaptiveSL} TP=${adaptiveTP}`,
   };
 }
 
 // ══════════════════════════════════════════
-// PILLAR 3: OBI (Order Book Imbalance) SNIFFER
+// PILLAR 3: OBI (Order Book Imbalance) SNIFFER — MAGNET MODEL
 // ══════════════════════════════════════════
-// Reads OANDA's order book to detect buy/sell walls.
-// Won't strike into a wall — waits for it to be pulled or smashed.
+// OANDA's order book = RETAIL positions only.
+// Retail walls are NOT barriers — they are MAGNETS.
+// Banks drive price THROUGH retail clusters to trigger stops and fill.
+// If sovereign says BUY and there's a retail Sell Wall above → CONFIRMATION.
+// The wall is liquidity the big fish will eat.
 
 interface OBIResult {
   imbalanceRatio: number;       // >1 = more longs, <1 = more shorts
   nearbyWall: 'BUY_WALL' | 'SELL_WALL' | null;
   wallPrice: number | null;
   wallStrength: number;         // 0-1, how thick the wall is
-  pathClear: boolean;           // true if no wall blocking our direction
+  pathClear: boolean;           // always true in magnet model (walls = confirmation)
+  wallIsMagnet: boolean;        // true if wall aligns as magnet for our direction
+  longPct: number;              // total long percentage for UI
+  shortPct: number;             // total short percentage for UI
   detail: string;
 }
 
@@ -282,7 +349,7 @@ function analyzeOrderBookImbalance(
   direction: 'BUY' | 'SELL',
   instrument: string,
 ): OBIResult {
-  const neutral: OBIResult = { imbalanceRatio: 1, nearbyWall: null, wallPrice: null, wallStrength: 0, pathClear: true, detail: 'no order book data — path assumed clear' };
+  const neutral: OBIResult = { imbalanceRatio: 1, nearbyWall: null, wallPrice: null, wallStrength: 0, pathClear: true, wallIsMagnet: false, longPct: 50, shortPct: 50, detail: 'no order book data — path assumed clear' };
   if (!orderBook || !orderBook.buckets.length) return neutral;
 
   const currentPrice = orderBook.price;
@@ -295,14 +362,14 @@ function analyzeOrderBookImbalance(
     return b.price < currentPrice && b.price > currentPrice - scanRange;
   });
 
-  // Find the thickest wall blocking us
+  // Find the thickest wall in our path
   let maxWallStrength = 0;
   let wallPrice: number | null = null;
   let wallType: 'BUY_WALL' | 'SELL_WALL' | null = null;
 
   for (const b of relevantBuckets) {
-    // If we're buying, a SELL wall (heavy sell orders) blocks us
-    // If we're selling, a BUY wall (heavy buy orders) blocks us
+    // If we're buying, a cluster of retail SELL orders above = Sell Wall
+    // If we're selling, a cluster of retail BUY orders below = Buy Wall
     const blockingPct = direction === 'BUY' ? b.shortPct : b.longPct;
     if (blockingPct > maxWallStrength) {
       maxWallStrength = blockingPct;
@@ -311,18 +378,25 @@ function analyzeOrderBookImbalance(
     }
   }
 
-  // Wall is significant if it's >2% of total book at a single price level
   const wallSignificant = maxWallStrength > 2.0;
   const imbalanceRatio = orderBook.shortPct > 0 ? orderBook.longPct / orderBook.shortPct : 1;
+
+  // MAGNET MODEL: A retail wall in our path is CONFIRMATION, not a blocker.
+  // If BUY and Sell Wall above → retail is shorting there → banks will drive through to eat stops → MAGNET
+  // If SELL and Buy Wall below → retail is long there → banks will drive through → MAGNET
+  const wallIsMagnet = wallSignificant; // Any significant wall in our path = magnet
 
   return {
     imbalanceRatio: Math.round(imbalanceRatio * 100) / 100,
     nearbyWall: wallSignificant ? wallType : null,
     wallPrice: wallSignificant ? wallPrice : null,
     wallStrength: maxWallStrength,
-    pathClear: !wallSignificant,
+    pathClear: true, // ALWAYS true — walls are magnets, never blockers
+    wallIsMagnet,
+    longPct: orderBook.longPct,
+    shortPct: orderBook.shortPct,
     detail: wallSignificant
-      ? `${wallType} @ ${wallPrice?.toFixed(pricePrecision(instrument))} (${maxWallStrength.toFixed(1)}%) — path BLOCKED`
+      ? `🧲 MAGNET: ${wallType} @ ${wallPrice?.toFixed(pricePrecision(instrument))} (${maxWallStrength.toFixed(1)}%) — retail liquidity = fuel for institutional move`
       : `path clear, imbalance=${imbalanceRatio.toFixed(2)} (L/S ratio)`,
   };
 }
@@ -362,11 +436,11 @@ function calculateNexusProbability(
     score += confirmBonus;
   }
 
-  // OBI Sniffer: +15% if path clear, -20% if wall blocking
-  if (obi.pathClear) {
-    score += 0.15;
-  } else {
-    score -= 0.20;
+  // OBI Magnet Model: +15% if wall confirms (magnet), +5% if clear, 0 if no data
+  if (obi.wallIsMagnet) {
+    score += 0.15; // Retail wall in our path = institutional fuel = CONFIRMATION
+  } else if (obi.pathClear) {
+    score += 0.05;
   }
 
   // Nerve Tension: +10% for clean flow, -5% for noise
@@ -387,7 +461,10 @@ function calculateNexusProbability(
   }
 
   const probability = Math.max(0, Math.min(1, score));
-  const spreadBypass = probability > 0.95;
+  // HARD CAP: Never bypass spread that exceeds 20% of adaptive SL
+  // Even at 95%+ conviction, a 5-pip spread on a 20-pip SL = dead trade
+  const maxBypassSpread = volBuffer.adaptiveSL * 0.20;
+  const spreadBypass = false; // REMOVED — hard cap enforced at execution level
 
   let tier: NexusScore['tier'];
   if (probability >= NEXUS_CONFIDENCE_THRESHOLD) tier = 'NEXUS_STRIKE';
@@ -572,18 +649,50 @@ Deno.serve(async (req) => {
       });
     }
 
-    // ── 4. PILLAR 1: Fetch all USD crosses for ADI in one batch ──
-    log.push('🔺 PILLAR 1: Synthetic Dollar Triangulation — fetching ADI crosses...');
-    const allCrossInstruments = [...new Set([...INSTRUMENTS, ...USD_CROSSES])];
-    const [allPricing, ...crossCandleResults] = await Promise.all([
-      fetchBatchPricing(allCrossInstruments, apiToken, accountId),
-      ...allCrossInstruments.map(inst => fetchM5Candles(inst, 24, apiToken, accountId)),
-    ]);
+    // ── 4. PILLAR 1: ADI — Read pre-cached state first, fetch fresh only if stale ──
+    // The "Latency Tax" fix: execution loop READS state, doesn't FETCH it.
+    // A background invocation or cron should update this every 30s.
+    let allPricing: Record<string, { bid: number; ask: number; spread: number; mid: number }> = {};
+    let allCandles: Record<string, { volume: number; close: number; open: number; high: number; low: number }[]> = {};
 
-    const allCandles: Record<string, { volume: number; close: number; open: number; high: number; low: number }[]> = {};
-    allCrossInstruments.forEach((inst, i) => { allCandles[inst] = crossCandleResults[i]; });
+    const { data: cachedAdi } = await sb
+      .from('sovereign_memory')
+      .select('payload, updated_at')
+      .eq('memory_type', 'adi_cache')
+      .eq('memory_key', 'live_adi_state')
+      .single();
 
-    log.push(`ADI data: ${Object.keys(allPricing).length} priced, ${Object.keys(allCandles).filter(k => allCandles[k].length > 0).length} with candles`);
+    const cacheAgeMs = cachedAdi?.updated_at ? Date.now() - new Date(cachedAdi.updated_at).getTime() : Infinity;
+    const ADI_CACHE_TTL_MS = 60_000; // 60s stale threshold
+
+    if (cachedAdi?.payload && cacheAgeMs < ADI_CACHE_TTL_MS) {
+      // Use cached pricing + candles to avoid the Latency Tax
+      const cached = cachedAdi.payload as { pricing?: Record<string, any>; candles?: Record<string, any[]> };
+      allPricing = (cached.pricing || {}) as typeof allPricing;
+      allCandles = (cached.candles || {}) as typeof allCandles;
+      log.push(`🔺 PILLAR 1: ADI from cache (${Math.round(cacheAgeMs / 1000)}s old) — zero latency tax`);
+    } else {
+      // Cache miss or stale — fetch fresh and update cache
+      log.push('🔺 PILLAR 1: ADI cache stale — fetching fresh (latency tax incurred)...');
+      const allCrossInstruments = [...new Set([...INSTRUMENTS, ...USD_CROSSES])];
+      const [freshPricing, ...crossCandleResults] = await Promise.all([
+        fetchBatchPricing(allCrossInstruments, apiToken, accountId),
+        ...allCrossInstruments.map(inst => fetchM5Candles(inst, 24, apiToken, accountId)),
+      ]);
+      allPricing = freshPricing;
+      allCrossInstruments.forEach((inst, i) => { allCandles[inst] = crossCandleResults[i]; });
+
+      // Persist to cache for next invocation
+      await sb.from('sovereign_memory').upsert({
+        memory_type: 'adi_cache',
+        memory_key: 'live_adi_state',
+        payload: { pricing: allPricing, candles: allCandles, updatedAt: new Date().toISOString() },
+        relevance_score: 1.0,
+        created_by: 'nyc-love-agent',
+      }, { onConflict: 'memory_type,memory_key' });
+    }
+
+    log.push(`ADI data: ${Object.keys(allPricing).length} priced, ${Object.keys(allCandles).filter(k => (allCandles[k]?.length || 0) > 0).length} with candles`);
 
     // ── 5. PILLAR 3: Fetch Order Books for all instruments ──
     log.push('🔺 PILLAR 3: OBI Sniffer — fetching order books...');
@@ -624,9 +733,9 @@ Deno.serve(async (req) => {
         log.push(`${tag} ⚠️ RETAIL HUNT DETECTED — sovereign says ${sovereignDir} but only ${adi.confirmedCrosses}/${adi.totalCrosses} crosses confirm. Preparing FADE to ${adi.fadeDirection} when gravity kicks in.`);
       }
 
-      // ── PILLAR 2: Neural Volatility Buffer ──
+      // ── PILLAR 2: Neural Volatility Buffer (with tick variance for first 15min) ──
       const candles = allCandles[instrument] || [];
-      const volBuffer = calculateNeuralVolatilityBuffer(candles, instrument);
+      const volBuffer = calculateNeuralVolatilityBuffer(candles, instrument, pricing);
       log.push(`${tag} 🧠 BREATH: ${volBuffer.detail}`);
 
       // ── PILLAR 3: OBI Sniffer ──
@@ -647,21 +756,17 @@ Deno.serve(async (req) => {
         continue;
       }
 
-      // ── Spread Shield (bypassed if P > 95%) ──
-      if (pricing.spread > SPREAD_LIMIT_PIPS && !nexus.spreadBypass) {
-        log.push(`${tag} Spread Shield ACTIVE: ${pricing.spread.toFixed(1)} pips > ${SPREAD_LIMIT_PIPS} (no bypass at ${(nexus.probability * 100).toFixed(1)}%)`);
-        executions.push({ instrument, direction: sovereignDir, status: 'spread_blocked', detail: `spread=${pricing.spread.toFixed(1)}` });
+      // ── Spread Shield: HARD CAP — max spread = 20% of adaptive SL. Period. ──
+      const maxSpread = volBuffer.adaptiveSL * 0.20;
+      if (pricing.spread > maxSpread) {
+        log.push(`${tag} Spread Shield HARD CAP: ${pricing.spread.toFixed(1)} pips > ${maxSpread.toFixed(1)} (20% of ${volBuffer.adaptiveSL}p SL) — NO bypass allowed`);
+        executions.push({ instrument, direction: sovereignDir, status: 'spread_blocked', detail: `spread=${pricing.spread.toFixed(1)} > cap=${maxSpread.toFixed(1)}` });
         continue;
-      }
-      if (nexus.spreadBypass && pricing.spread > SPREAD_LIMIT_PIPS) {
-        log.push(`${tag} ⚡ SPREAD BYPASS: P=${(nexus.probability * 100).toFixed(1)}% > 95% — overriding ${pricing.spread.toFixed(1)} pip spread`);
       }
 
-      // ── OBI Wall Gate: hold fire if wall blocks us ──
-      if (!obi.pathClear && nexus.tier !== 'NEXUS_STRIKE') {
-        log.push(`${tag} 🧱 OBI HOLD FIRE: ${obi.detail} — waiting for wall to clear`);
-        executions.push({ instrument, direction: sovereignDir, status: 'obi_wall_block', detail: obi.detail, nexusP: nexus.probability });
-        continue;
+      // ── OBI Magnet Logging (no longer blocks — walls are confirmation) ──
+      if (obi.wallIsMagnet) {
+        log.push(`${tag} 🧲 OBI MAGNET: Retail ${obi.nearbyWall} @ ${obi.wallPrice?.toFixed(pricePrecision(instrument))} is FUEL — institutional move will eat through`);
       }
 
       // ── Position Sizing: Standard forex formula ──
