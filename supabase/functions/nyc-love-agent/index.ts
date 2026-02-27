@@ -108,14 +108,19 @@ async function fetchOrderBook(instrument: string, _apiToken: string, sb: any): P
   } catch { return null; }
 }
 
-async function getAccountNAV(apiToken: string, accountId: string): Promise<number> {
+async function getAccountSummary(apiToken: string, accountId: string): Promise<{ nav: number; marginAvailable: number; leverage: number }> {
   try {
     const res = await fetch(`${OANDA_HOST}/v3/accounts/${accountId}/summary`, {
       headers: { Authorization: `Bearer ${apiToken}`, Accept: 'application/json' },
     });
     const data = await res.json();
-    return parseFloat(data.account?.NAV || '0');
-  } catch { return 0; }
+    const acct = data.account || {};
+    return {
+      nav: parseFloat(acct.NAV || '0'),
+      marginAvailable: parseFloat(acct.marginAvailable || '0'),
+      leverage: parseFloat(acct.marginRate || '0.02') > 0 ? 1 / parseFloat(acct.marginRate || '0.02') : 50,
+    };
+  } catch { return { nav: 0, marginAvailable: 0, leverage: 50 }; }
 }
 
 async function hasOpenPosition(instrument: string, sb: ReturnType<typeof createClient>): Promise<boolean> {
@@ -896,12 +901,15 @@ Deno.serve(async (req) => {
     const sb = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
 
     // ── 3. NAV + Admin + Pain Memory (all parallel) ──
-    const [nav, adminResult, painMemory] = await Promise.all([
-      getAccountNAV(apiToken, accountId),
+    const [acctSummary, adminResult, painMemory] = await Promise.all([
+      getAccountSummary(apiToken, accountId),
       sb.from('user_roles').select('user_id').eq('role', 'admin').limit(1).single(),
       loadPainWeight(sb),
     ]);
-    log.push(`Account NAV: $${nav.toFixed(2)}`);
+    const nav = acctSummary.nav;
+    const marginAvailable = acctSummary.marginAvailable;
+    const accountLeverage = acctSummary.leverage;
+    log.push(`Account NAV: $${nav.toFixed(2)} | Margin Available: $${marginAvailable.toFixed(2)} | Leverage: ${accountLeverage}:1`);
     log.push(`🧠 PAIN MEMORY: ${painMemory.detail}`);
     if (nav < 50) {
       return new Response(JSON.stringify({ success: false, reason: 'low_nav', nav, log }), {
@@ -1162,7 +1170,19 @@ Deno.serve(async (req) => {
           ? 0.01 / (pricing.mid > 1 ? pricing.mid : 1)
           : 0.0001;
         const rawUnits = Math.floor(riskDollars / (volBuffer.adaptiveSL * pipValueUSD));
-        const units = Math.max(100, Math.floor(rawUnits * combinedMultiplier));
+        
+        // ── MARGIN CAP: Prevent INSUFFICIENT_MARGIN rejections ──
+        // Max units = marginAvailable * leverage / notional cost per unit
+        // For XXX/USD pairs, 1 unit ≈ $1 notional; for USD/XXX, 1 unit = $1 notional
+        // Use 80% of available margin as safety buffer for spread/slippage
+        const safeMargin = marginAvailable * 0.80;
+        const maxUnitsByMargin = Math.floor(safeMargin * accountLeverage);
+        const scaledUnits = Math.floor(rawUnits * combinedMultiplier);
+        const units = Math.max(100, Math.min(scaledUnits, maxUnitsByMargin));
+        
+        if (scaledUnits > maxUnitsByMargin) {
+          log.push(`${tag} ⚠️ MARGIN CAP: ${scaledUnits} → ${units} units (avail margin $${marginAvailable.toFixed(0)} × ${accountLeverage}:1 × 80%)`);
+        }
 
         const execDir = nexus.executionDir;
         const isApex = target === apex;
