@@ -631,12 +631,29 @@ Deno.serve(async (req) => {
     }
 
     // ── Step 2b: Check open positions (only count orders that actually reached OANDA) ──
-    const { data: openPositions } = await sb
-      .from('oanda_orders')
-      .select('currency_pair, agent_id, status, oanda_order_id')
-      .in('status', ['filled', 'open', 'submitted'])
-      .eq('environment', ENVIRONMENT)
-      .in('agent_id', portfolioAgentIds);
+    const [{ data: openPositions }, { data: corrMemory }] = await Promise.all([
+      sb
+        .from('oanda_orders')
+        .select('currency_pair, agent_id, status, oanda_order_id, direction')
+        .in('status', ['filled', 'open', 'submitted'])
+        .eq('environment', ENVIRONMENT)
+        .in('agent_id', portfolioAgentIds),
+      // V12.6: Fetch rolling correlation matrix from sovereign_memory (written by correlation-matrix function)
+      sb
+        .from('sovereign_memory')
+        .select('payload')
+        .eq('memory_type', 'correlation_matrix')
+        .eq('memory_key', 'live_pearson_heatmap')
+        .single(),
+    ]);
+
+    // V12.6: Extract correlation matrix entries
+    const correlationMatrix: any[] = (corrMemory?.payload as any)?.matrix || [];
+    if (correlationMatrix.length > 0) {
+      console.log(`[BLEND] V12.6 Correlation matrix loaded: ${correlationMatrix.length} pair correlations`);
+    } else {
+      console.warn('[BLEND] V12.6 No correlation matrix available — gate disabled this cycle');
+    }
 
     // Only count as "open" if filled/open, OR submitted WITH an oanda_order_id
     const realOpen = (openPositions || []).filter(p =>
@@ -763,7 +780,16 @@ Deno.serve(async (req) => {
 
     const executionTasks: Array<any> = [];
 
-    for (const comp of activeComponents) {
+    // ═══ V12.6 TIE-BREAKER: Sort components by rank gap descending ═══
+    // When two agents signal correlated pairs in the same cycle, the first one processed wins.
+    // By sorting widest rank gap first, we ensure the strongest divergence signal takes priority.
+    const sortedComponents = [...activeComponents].sort((a, b) => {
+      const gapA = Math.abs(a.predatorRank - a.preyRank);
+      const gapB = Math.abs(b.predatorRank - b.preyRank);
+      return gapB - gapA; // widest gap first
+    });
+
+    for (const comp of sortedComponents) {
       if (slotsUsed >= slotsAvailable) {
         executionResults.push({ component: comp.id, label: comp.label, pair: '-', direction: '-', status: 'skipped', skipReason: 'No slots available' });
         continue;
@@ -886,6 +912,42 @@ Deno.serve(async (req) => {
       if (openPairs.has(instrument)) {
         executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction, status: 'skipped', skipReason: 'Already open' });
         continue;
+      }
+
+      // ═══ V12.6 CORRELATION AUDIT GATE ═══
+      // Block entry if a highly-correlated pair is already open in the same direction,
+      // or if a highly-inverse-correlated pair is open in the opposite direction.
+      // Threshold: |r| > 0.70. Tie-break: prefer wider rank gap.
+      if (correlationMatrix && correlationMatrix.length > 0) {
+        let correlationBlocked = false;
+        for (const openPair of openPairs) {
+          // Find correlation between requested instrument and this open pair
+          const corrEntry = correlationMatrix.find((c: any) =>
+            (c.pair1 === instrument && c.pair2 === openPair) ||
+            (c.pair1 === openPair && c.pair2 === instrument)
+          );
+          if (!corrEntry) continue;
+          const r = corrEntry.rolling20 ?? corrEntry.pearson ?? 0;
+
+          // Find direction of the open position
+          const openOrder = realOpen.find(p => p.currency_pair === openPair);
+          if (!openOrder) continue;
+          const openDir = (openOrder as any).direction as string;
+
+          // Same direction + positive correlation > 0.70 → same trade, BLOCK
+          if (r > 0.70 && direction === openDir) {
+            executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction, status: 'skipped', skipReason: `V12.6 Correlation gate — ${openPair} (r=${r.toFixed(2)}) same direction ${openDir}, duplicate exposure` });
+            correlationBlocked = true;
+            break;
+          }
+          // Opposite direction + negative correlation < -0.70 → inverse of same trade, BLOCK
+          if (r < -0.70 && direction !== openDir) {
+            executionResults.push({ component: comp.id, label: comp.label, pair: instrument, direction, status: 'skipped', skipReason: `V12.6 Correlation gate — ${openPair} (r=${r.toFixed(2)}) opposite dir = same bet, blocked` });
+            correlationBlocked = true;
+            break;
+          }
+        }
+        if (correlationBlocked) continue;
       }
 
       // V12.3: JPY DIVERSIFICATION LOCK — max 2 concurrent JPY positions
