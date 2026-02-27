@@ -11,45 +11,46 @@ const corsHeaders = {
     'authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version',
 };
 
-const OANDA_HOSTS: Record<string, string> = {
-  practice: 'https://api-fxpractice.oanda.com',
-  live: 'https://api-fxtrade.oanda.com',
-};
-
+const OANDA_HOST = 'https://api-fxpractice.oanda.com';
 const INSTRUMENTS = ['EUR_USD', 'GBP_USD', 'USD_JPY'];
-const SPREAD_LIMIT_PIPS = 3.0;
-const SL_PIPS = 20;
-const TP_PIPS = 60; // 3:1 R:R
 const AGENT_ID = 'nyc-love';
 const ENVIRONMENT = 'practice';
 
-function pipValue(instrument: string): number {
-  return instrument.includes('JPY') ? 0.01 : 0.0001;
-}
+// ── Fixed risk parameters ──
+const BASE_SL_PIPS = 20;
+const TP_RATIO = 3; // 3:1 R:R always
+const SPREAD_LIMIT_PIPS = 3.0;
+const NEXUS_CONFIDENCE_THRESHOLD = 0.88;
 
-function pricePrecision(instrument: string): number {
-  return instrument.includes('JPY') ? 3 : 5;
-}
+// ── ADI crosses for dollar triangulation ──
+const USD_CROSSES = ['EUR_USD', 'GBP_USD', 'USD_JPY', 'USD_CHF', 'USD_CAD', 'AUD_USD', 'NZD_USD'];
 
-// ── Session Gate: Only trade during NYC Open surge window ──
+function pipValue(inst: string): number { return inst.includes('JPY') ? 0.01 : 0.0001; }
+function pricePrecision(inst: string): number { return inst.includes('JPY') ? 3 : 5; }
+function pipScale(inst: string): number { return inst.includes('JPY') ? 100 : 10000; }
+
+// ══════════════════════════════════════════
+// SESSION GATE
+// ══════════════════════════════════════════
+
 function isNYCOpenWindow(): { allowed: boolean; reason: string } {
   const now = new Date();
   const utcH = now.getUTCHours();
   const utcM = now.getUTCMinutes();
   const minutes = utcH * 60 + utcM;
-
-  // Full NYC session: 13:30–21:30 UTC (8:30 AM – 4:30 PM EST)
   if (minutes >= 810 && minutes <= 1290) {
     return { allowed: true, reason: `NYC session active (${utcH}:${String(utcM).padStart(2, '0')} UTC)` };
   }
-  return { allowed: false, reason: `Outside NYC session (${utcH}:${String(utcM).padStart(2, '0')} UTC). Window: 13:30–21:30 UTC (8:30AM–4:30PM EST)` };
+  return { allowed: false, reason: `Outside NYC session (${utcH}:${String(utcM).padStart(2, '0')} UTC). Window: 13:30–21:30 UTC` };
 }
 
-// ── Fetch live bid/ask from OANDA ──
+// ══════════════════════════════════════════
+// OANDA DATA LAYER
+// ══════════════════════════════════════════
+
 async function fetchPricing(instrument: string, apiToken: string, accountId: string): Promise<{ bid: number; ask: number; spread: number; mid: number } | null> {
-  const host = OANDA_HOSTS.practice;
   try {
-    const res = await fetch(`${host}/v3/accounts/${accountId}/pricing?instruments=${instrument}`, {
+    const res = await fetch(`${OANDA_HOST}/v3/accounts/${accountId}/pricing?instruments=${instrument}`, {
       headers: { Authorization: `Bearer ${apiToken}`, Accept: 'application/json' },
     });
     if (!res.ok) return null;
@@ -58,85 +59,365 @@ async function fetchPricing(instrument: string, apiToken: string, accountId: str
     if (!p?.bids?.length || !p?.asks?.length) return null;
     const bid = parseFloat(p.bids[0].price);
     const ask = parseFloat(p.asks[0].price);
-    const pv = instrument.includes('JPY') ? 100 : 10000;
-    return { bid, ask, spread: (ask - bid) * pv, mid: (bid + ask) / 2 };
+    return { bid, ask, spread: (ask - bid) * pipScale(instrument), mid: (bid + ask) / 2 };
   } catch { return null; }
 }
 
-// ── Fetch M5 candles for velocity detection ──
-async function fetchM5Candles(instrument: string, count: number, apiToken: string, accountId: string): Promise<{ volume: number; close: number; open: number }[]> {
-  const host = OANDA_HOSTS.practice;
+async function fetchBatchPricing(instruments: string[], apiToken: string, accountId: string): Promise<Record<string, { bid: number; ask: number; spread: number; mid: number }>> {
+  const result: Record<string, { bid: number; ask: number; spread: number; mid: number }> = {};
   try {
-    const res = await fetch(`${host}/v3/instruments/${instrument}/candles?count=${count}&granularity=M5&price=M`, {
+    const joined = instruments.join(',');
+    const res = await fetch(`${OANDA_HOST}/v3/accounts/${accountId}/pricing?instruments=${joined}`, {
+      headers: { Authorization: `Bearer ${apiToken}`, Accept: 'application/json' },
+    });
+    if (!res.ok) return result;
+    const data = await res.json();
+    for (const p of (data.prices || [])) {
+      if (!p?.bids?.length || !p?.asks?.length) continue;
+      const bid = parseFloat(p.bids[0].price);
+      const ask = parseFloat(p.asks[0].price);
+      const inst = p.instrument as string;
+      result[inst] = { bid, ask, spread: (ask - bid) * pipScale(inst), mid: (bid + ask) / 2 };
+    }
+  } catch { /* empty */ }
+  return result;
+}
+
+async function fetchM5Candles(instrument: string, count: number, apiToken: string, accountId: string): Promise<{ volume: number; close: number; open: number; high: number; low: number }[]> {
+  try {
+    const res = await fetch(`${OANDA_HOST}/v3/instruments/${instrument}/candles?count=${count}&granularity=M5&price=M`, {
       headers: { Authorization: `Bearer ${apiToken}`, Accept: 'application/json' },
     });
     if (!res.ok) return [];
     const data = await res.json();
     return (data.candles || [])
       .filter((c: { complete?: boolean }) => c.complete !== false)
-      .map((c: { volume: number; mid: { o: string; c: string } }) => ({
+      .map((c: { volume: number; mid: { o: string; c: string; h: string; l: string } }) => ({
         volume: c.volume,
         open: parseFloat(c.mid.o),
         close: parseFloat(c.mid.c),
+        high: parseFloat(c.mid.h),
+        low: parseFloat(c.mid.l),
       }));
   } catch { return []; }
 }
 
-// ── Velocity detector: volume spike vs 20-period avg ──
-function detectVelocitySpike(candles: { volume: number; close: number; open: number }[], threshold = 1.5): { spike: boolean; ratio: number; direction: 'BUY' | 'SELL' | null } {
-  if (candles.length < 5) return { spike: false, ratio: 0, direction: null };
-  const current = candles[candles.length - 1];
-  const lookback = candles.slice(0, -1);
-  const avgVol = lookback.reduce((s, c) => s + c.volume, 0) / lookback.length;
-  const ratio = avgVol > 0 ? current.volume / avgVol : 0;
+// ── Fetch OANDA Order Book (OBI Sniffer data) ──
+async function fetchOrderBook(instrument: string, apiToken: string): Promise<{ price: number; longPct: number; shortPct: number; buckets: { price: number; longPct: number; shortPct: number }[] } | null> {
+  try {
+    const res = await fetch(`${OANDA_HOST}/v3/instruments/${instrument}/orderBook`, {
+      headers: { Authorization: `Bearer ${apiToken}`, Accept: 'application/json' },
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const ob = data.orderBook;
+    if (!ob) return null;
+    const price = parseFloat(ob.price);
+    const buckets = (ob.buckets || []).map((b: { price: string; longCountPercent: string; shortCountPercent: string }) => ({
+      price: parseFloat(b.price),
+      longPct: parseFloat(b.longCountPercent),
+      shortPct: parseFloat(b.shortCountPercent),
+    }));
+    // Global imbalance
+    let totalLong = 0, totalShort = 0;
+    for (const b of buckets) { totalLong += b.longPct; totalShort += b.shortPct; }
+    return { price, longPct: totalLong, shortPct: totalShort, buckets };
+  } catch { return null; }
+}
 
-  if (ratio < threshold) return { spike: false, ratio, direction: null };
+async function getAccountNAV(apiToken: string, accountId: string): Promise<number> {
+  try {
+    const res = await fetch(`${OANDA_HOST}/v3/accounts/${accountId}/summary`, {
+      headers: { Authorization: `Bearer ${apiToken}`, Accept: 'application/json' },
+    });
+    const data = await res.json();
+    return parseFloat(data.account?.NAV || '0');
+  } catch { return 0; }
+}
 
-  // Direction from candle body
-  const direction = current.close > current.open ? 'BUY' : 'SELL';
-  return { spike: true, ratio, direction };
+async function hasOpenPosition(instrument: string, sb: ReturnType<typeof createClient>): Promise<boolean> {
+  const { data } = await sb
+    .from('oanda_orders')
+    .select('id')
+    .eq('currency_pair', instrument)
+    .eq('agent_id', AGENT_ID)
+    .in('status', ['submitted', 'filled', 'open'])
+    .eq('environment', ENVIRONMENT)
+    .limit(1);
+  return (data?.length || 0) > 0;
 }
 
 // ══════════════════════════════════════════
-// MARKET TENTACLE — Liquidity Gap + Nerve Tension
+// PILLAR 1: SYNTHETIC DOLLAR TRIANGULATION (ADI Truth Filter)
+// ══════════════════════════════════════════
+// Calculates Absolute Dollar Index across 7 USD crosses.
+// If a tick spike on one pair isn't confirmed across the board,
+// it's flagged as a Retail Liquidity Hunt → prepare to FADE.
+
+interface ADIResult {
+  dollarStrength: number;       // -1.0 (weak) to +1.0 (strong)
+  confirmedCrosses: number;     // how many crosses agree
+  totalCrosses: number;
+  isRetailHunt: boolean;        // spike isolated = trap
+  fadeDirection: 'BUY' | 'SELL' | null; // direction to fade if hunt detected
+  detail: string;
+}
+
+function calculateADI(
+  targetInstrument: string,
+  targetDirection: 'BUY' | 'SELL',
+  allPricing: Record<string, { mid: number; spread: number }>,
+  allCandles: Record<string, { close: number; open: number }[]>,
+): ADIResult {
+  let dollarBullCount = 0;
+  let dollarBearCount = 0;
+  let totalChecked = 0;
+
+  for (const cross of USD_CROSSES) {
+    const candles = allCandles[cross];
+    if (!candles || candles.length < 2) continue;
+    totalChecked++;
+
+    const latest = candles[candles.length - 1];
+    const prev = candles[candles.length - 2];
+    const move = latest.close - prev.close;
+
+    // For USD_XXX pairs, price up = USD strengthening
+    // For XXX_USD pairs, price up = USD weakening
+    const isUsdBase = cross.startsWith('USD_');
+    const usdStrengthening = isUsdBase ? move > 0 : move < 0;
+
+    if (usdStrengthening) dollarBullCount++;
+    else dollarBearCount++;
+  }
+
+  const dollarStrength = totalChecked > 0 ? (dollarBullCount - dollarBearCount) / totalChecked : 0;
+
+  // Check if target pair's move is confirmed
+  const [base, quote] = targetInstrument.split('_');
+  const isUsdInPair = base === 'USD' || quote === 'USD';
+
+  let confirmedCrosses = 0;
+  if (isUsdInPair) {
+    // For USD pairs, the target direction should align with dollar index
+    const targetImpliesUsdStrong = (base === 'USD' && targetDirection === 'BUY') || (quote === 'USD' && targetDirection === 'SELL');
+    confirmedCrosses = targetImpliesUsdStrong ? dollarBullCount : dollarBearCount;
+  } else {
+    confirmedCrosses = totalChecked; // non-USD pair, ADI is informational
+  }
+
+  // Retail Hunt detection: spike on target but <40% of crosses agree
+  const confirmRatio = totalChecked > 0 ? confirmedCrosses / totalChecked : 0;
+  const isRetailHunt = isUsdInPair && confirmRatio < 0.40;
+  const fadeDirection = isRetailHunt ? (targetDirection === 'BUY' ? 'SELL' as const : 'BUY' as const) : null;
+
+  return {
+    dollarStrength,
+    confirmedCrosses,
+    totalCrosses: totalChecked,
+    isRetailHunt,
+    fadeDirection,
+    detail: `ADI=${dollarStrength.toFixed(2)} confirmed=${confirmedCrosses}/${totalChecked} hunt=${isRetailHunt}`,
+  };
+}
+
+// ══════════════════════════════════════════
+// PILLAR 2: NEURAL VOLATILITY BUFFERS (Adaptive ATR-Gap Anti-MAE)
+// ══════════════════════════════════════════
+// Measures "Market Breath" via instantaneous ATR.
+// Dynamically widens SL when volatility is high so you don't get
+// chopped out by normal market breathing.
+
+interface VolatilityBuffer {
+  adaptiveSL: number;           // dynamic SL in pips
+  adaptiveTP: number;           // maintains 3:1 ratio
+  atrPips: number;              // current ATR in pips
+  avgAtrPips: number;           // baseline ATR
+  breathRatio: number;          // current/avg — >1.5 = "breathing hard"
+  detail: string;
+}
+
+function calculateNeuralVolatilityBuffer(candles: { high: number; low: number }[], instrument: string): VolatilityBuffer {
+  if (candles.length < 5) {
+    return { adaptiveSL: BASE_SL_PIPS, adaptiveTP: BASE_SL_PIPS * TP_RATIO, atrPips: 0, avgAtrPips: 0, breathRatio: 1, detail: 'insufficient candles — using base SL' };
+  }
+
+  const scale = pipScale(instrument);
+
+  // Calculate ATR for each candle (high - low in pips)
+  const atrs = candles.map(c => (c.high - c.low) * scale);
+
+  // Current ATR = average of last 3 candles (instantaneous breath)
+  const recentAtrs = atrs.slice(-3);
+  const currentAtr = recentAtrs.reduce((s, a) => s + a, 0) / recentAtrs.length;
+
+  // Baseline ATR = average of full lookback
+  const avgAtr = atrs.reduce((s, a) => s + a, 0) / atrs.length;
+
+  const breathRatio = avgAtr > 0 ? currentAtr / avgAtr : 1;
+
+  // Adaptive SL: base SL * breath multiplier, clamped to 15–30 pips
+  // If market is breathing in 15-pip arcs, SL moves to ~18.5 pips
+  const rawAdaptiveSL = BASE_SL_PIPS * Math.max(0.75, Math.min(1.5, breathRatio));
+  const adaptiveSL = Math.round(Math.max(15, Math.min(30, rawAdaptiveSL)) * 10) / 10;
+  const adaptiveTP = Math.round(adaptiveSL * TP_RATIO * 10) / 10;
+
+  return {
+    adaptiveSL,
+    adaptiveTP,
+    atrPips: Math.round(currentAtr * 10) / 10,
+    avgAtrPips: Math.round(avgAtr * 10) / 10,
+    breathRatio: Math.round(breathRatio * 100) / 100,
+    detail: `ATR=${currentAtr.toFixed(1)} avg=${avgAtr.toFixed(1)} breath=${breathRatio.toFixed(2)} → SL=${adaptiveSL} TP=${adaptiveTP}`,
+  };
+}
+
+// ══════════════════════════════════════════
+// PILLAR 3: OBI (Order Book Imbalance) SNIFFER
+// ══════════════════════════════════════════
+// Reads OANDA's order book to detect buy/sell walls.
+// Won't strike into a wall — waits for it to be pulled or smashed.
+
+interface OBIResult {
+  imbalanceRatio: number;       // >1 = more longs, <1 = more shorts
+  nearbyWall: 'BUY_WALL' | 'SELL_WALL' | null;
+  wallPrice: number | null;
+  wallStrength: number;         // 0-1, how thick the wall is
+  pathClear: boolean;           // true if no wall blocking our direction
+  detail: string;
+}
+
+function analyzeOrderBookImbalance(
+  orderBook: { price: number; longPct: number; shortPct: number; buckets: { price: number; longPct: number; shortPct: number }[] } | null,
+  direction: 'BUY' | 'SELL',
+  instrument: string,
+): OBIResult {
+  const neutral: OBIResult = { imbalanceRatio: 1, nearbyWall: null, wallPrice: null, wallStrength: 0, pathClear: true, detail: 'no order book data — path assumed clear' };
+  if (!orderBook || !orderBook.buckets.length) return neutral;
+
+  const currentPrice = orderBook.price;
+  const pv = pipValue(instrument);
+  const scanRange = 30 * pv; // scan 30 pips in our direction
+
+  // Filter buckets in the direction of trade (where price needs to go for TP)
+  const relevantBuckets = orderBook.buckets.filter(b => {
+    if (direction === 'BUY') return b.price > currentPrice && b.price < currentPrice + scanRange;
+    return b.price < currentPrice && b.price > currentPrice - scanRange;
+  });
+
+  // Find the thickest wall blocking us
+  let maxWallStrength = 0;
+  let wallPrice: number | null = null;
+  let wallType: 'BUY_WALL' | 'SELL_WALL' | null = null;
+
+  for (const b of relevantBuckets) {
+    // If we're buying, a SELL wall (heavy sell orders) blocks us
+    // If we're selling, a BUY wall (heavy buy orders) blocks us
+    const blockingPct = direction === 'BUY' ? b.shortPct : b.longPct;
+    if (blockingPct > maxWallStrength) {
+      maxWallStrength = blockingPct;
+      wallPrice = b.price;
+      wallType = direction === 'BUY' ? 'SELL_WALL' : 'BUY_WALL';
+    }
+  }
+
+  // Wall is significant if it's >2% of total book at a single price level
+  const wallSignificant = maxWallStrength > 2.0;
+  const imbalanceRatio = orderBook.shortPct > 0 ? orderBook.longPct / orderBook.shortPct : 1;
+
+  return {
+    imbalanceRatio: Math.round(imbalanceRatio * 100) / 100,
+    nearbyWall: wallSignificant ? wallType : null,
+    wallPrice: wallSignificant ? wallPrice : null,
+    wallStrength: maxWallStrength,
+    pathClear: !wallSignificant,
+    detail: wallSignificant
+      ? `${wallType} @ ${wallPrice?.toFixed(pricePrecision(instrument))} (${maxWallStrength.toFixed(1)}%) — path BLOCKED`
+      : `path clear, imbalance=${imbalanceRatio.toFixed(2)} (L/S ratio)`,
+  };
+}
+
+// ══════════════════════════════════════════
+// NEXUS PROBABILITY ENGINE
+// ══════════════════════════════════════════
+// Fuses all three pillars + sovereign direction into a single
+// probabilistic conviction score.
+
+interface NexusScore {
+  probability: number;          // 0.0 to 1.0
+  tier: 'NEXUS_STRIKE' | 'PROBE' | 'SOVEREIGN_ONLY' | 'BLOCKED';
+  spreadBypass: boolean;        // >95% bypasses spread shield
+  detail: string;
+}
+
+function calculateNexusProbability(
+  sovereignDir: 'BUY' | 'SELL' | null,
+  adi: ADIResult,
+  obi: OBIResult,
+  volBuffer: VolatilityBuffer,
+  nerve: { signal: 'NOISE' | 'CLEAN_FLOW'; variance: number },
+  velocityRatio: number,
+): NexusScore {
+  if (!sovereignDir) {
+    return { probability: 0, tier: 'BLOCKED', spreadBypass: false, detail: 'no sovereign direction' };
+  }
+
+  let score = 0.40; // Sovereign baseline = 40%
+
+  // ADI Truth Filter: +25% if confirmed, -30% if retail hunt
+  if (adi.isRetailHunt) {
+    score -= 0.30;
+  } else {
+    const confirmBonus = adi.totalCrosses > 0 ? (adi.confirmedCrosses / adi.totalCrosses) * 0.25 : 0.10;
+    score += confirmBonus;
+  }
+
+  // OBI Sniffer: +15% if path clear, -20% if wall blocking
+  if (obi.pathClear) {
+    score += 0.15;
+  } else {
+    score -= 0.20;
+  }
+
+  // Nerve Tension: +10% for clean flow, -5% for noise
+  if (nerve.signal === 'CLEAN_FLOW') {
+    score += 0.10;
+  } else {
+    score -= 0.05;
+  }
+
+  // Velocity confirmation: +10% if volume spike aligns
+  if (velocityRatio > 1.5) {
+    score += 0.10;
+  }
+
+  // Volatility buffer alignment: slight bonus if breath is normal
+  if (volBuffer.breathRatio >= 0.8 && volBuffer.breathRatio <= 1.3) {
+    score += 0.05;
+  }
+
+  const probability = Math.max(0, Math.min(1, score));
+  const spreadBypass = probability > 0.95;
+
+  let tier: NexusScore['tier'];
+  if (probability >= NEXUS_CONFIDENCE_THRESHOLD) tier = 'NEXUS_STRIKE';
+  else if (probability >= 0.65) tier = 'PROBE';
+  else if (probability >= 0.45) tier = 'SOVEREIGN_ONLY';
+  else tier = 'BLOCKED';
+
+  return {
+    probability: Math.round(probability * 1000) / 1000,
+    tier,
+    spreadBypass,
+    detail: `P=${(probability * 100).toFixed(1)}% tier=${tier} bypass=${spreadBypass}`,
+  };
+}
+
+// ══════════════════════════════════════════
+// SOVEREIGN DIRECTION (unchanged)
 // ══════════════════════════════════════════
 
-const TENTACLE_SENSITIVITY = 0.85;
-const LIQUIDITY_GAP_THRESHOLD = 2.5; // pips — spread expanding while price stagnant = danger
-
-// ── Liquidity Gap: feel for "holes" where agents die ──
-function feelLiquidityGap(spread: number): { signal: 'RETRACT' | 'PROBE'; detail: string } {
-  if (spread > LIQUIDITY_GAP_THRESHOLD) {
-    return { signal: 'RETRACT', detail: `spread=${spread.toFixed(2)} > ${LIQUIDITY_GAP_THRESHOLD} — liquidity gap detected` };
-  }
-  return { signal: 'PROBE', detail: `spread=${spread.toFixed(2)} — liquidity OK` };
-}
-
-// ── Nerve Tension: tick variance separates retail panic from bank flow ──
-function calculateNerveTension(candles: { close: number }[]): { signal: 'NOISE' | 'CLEAN_FLOW'; variance: number; detail: string } {
-  if (candles.length < 3) return { signal: 'CLEAN_FLOW', variance: 0, detail: 'insufficient data — defaulting CLEAN' };
-
-  // Calculate tick-to-tick returns variance
-  const returns: number[] = [];
-  for (let i = 1; i < candles.length; i++) {
-    const ret = (candles[i].close - candles[i - 1].close) / candles[i - 1].close;
-    returns.push(ret);
-  }
-
-  const mean = returns.reduce((s, r) => s + r, 0) / returns.length;
-  const variance = returns.reduce((s, r) => s + (r - mean) ** 2, 0) / returns.length;
-
-  // Normalize: multiply by 1e8 to get readable scale for forex
-  const scaledVariance = variance * 1e8;
-
-  if (scaledVariance > TENTACLE_SENSITIVITY) {
-    return { signal: 'NOISE', variance: scaledVariance, detail: `variance=${scaledVariance.toFixed(3)} > ${TENTACLE_SENSITIVITY} — retail panic / jitter detected` };
-  }
-  return { signal: 'CLEAN_FLOW', variance: scaledVariance, detail: `variance=${scaledVariance.toFixed(3)} — clean institutional flow` };
-}
-
-// ── Sovereign Matrix direction: use live_strength_index from sovereign_memory ──
-async function getSovereignDirectionDebug(instrument: string, sb: ReturnType<typeof createClient>): Promise<{ direction: 'BUY' | 'SELL' | null; debug: string }> {
+async function getSovereignDirection(instrument: string, sb: ReturnType<typeof createClient>): Promise<{ direction: 'BUY' | 'SELL' | null; debug: string }> {
   try {
     const { data, error } = await sb
       .from('sovereign_memory')
@@ -147,55 +428,41 @@ async function getSovereignDirectionDebug(instrument: string, sb: ReturnType<typ
       .limit(1)
       .single();
 
-    if (error) {
-      return { direction: null, debug: `query_error: ${error.message} (${error.code})` };
-    }
-    if (!data?.payload) {
-      return { direction: null, debug: 'no_payload_returned' };
-    }
-    
-    const payload = data.payload as { strengths?: { currency: string; rank: number }[] };
-    if (!payload.strengths || !Array.isArray(payload.strengths)) {
-      return { direction: null, debug: `bad_structure: keys=${Object.keys(payload).join(',')}` };
-    }
+    if (error) return { direction: null, debug: `query_error: ${error.message}` };
+    if (!data?.payload) return { direction: null, debug: 'no_payload' };
 
-    // Build rank map: { EUR: 1, USD: 4, ... }
+    const payload = data.payload as { strengths?: { currency: string; rank: number }[] };
+    if (!payload.strengths?.length) return { direction: null, debug: 'no_strengths' };
+
     const ranks: Record<string, number> = {};
-    for (const s of payload.strengths) {
-      ranks[s.currency] = s.rank;
-    }
+    for (const s of payload.strengths) ranks[s.currency] = s.rank;
 
     const [base, quote] = instrument.split('_');
-    const baseRank = ranks[base];
-    const quoteRank = ranks[quote];
+    const bR = ranks[base], qR = ranks[quote];
+    if (bR == null || qR == null) return { direction: null, debug: `missing: ${base}=${bR} ${quote}=${qR}` };
 
-    if (baseRank == null || quoteRank == null) {
-      return { direction: null, debug: `missing_rank: ${base}=${baseRank} ${quote}=${quoteRank} available=${Object.keys(ranks).join(',')}` };
-    }
-
-    const dir = baseRank < quoteRank ? 'BUY' as const : quoteRank < baseRank ? 'SELL' as const : null;
-    return { direction: dir, debug: `${base}=#${baseRank} ${quote}=#${quoteRank} → ${dir || 'EQUAL'}` };
+    const dir = bR < qR ? 'BUY' as const : qR < bR ? 'SELL' as const : null;
+    return { direction: dir, debug: `${base}=#${bR} ${quote}=#${qR} → ${dir || 'EQUAL'}` };
   } catch (e) {
     return { direction: null, debug: `exception: ${(e as Error).message}` };
   }
 }
 
-// ── OANDA Market Order with SL/TP ──
+// ══════════════════════════════════════════
+// ORDER EXECUTION
+// ══════════════════════════════════════════
+
 async function placeMarketOrder(
-  instrument: string,
-  units: number,
-  direction: 'BUY' | 'SELL',
-  mid: number,
-  apiToken: string,
-  accountId: string,
+  instrument: string, units: number, direction: 'BUY' | 'SELL',
+  mid: number, slPips: number, tpPips: number,
+  apiToken: string, accountId: string,
 ): Promise<{ success: boolean; tradeId?: string; error?: string }> {
-  const host = OANDA_HOSTS.practice;
   const pv = pipValue(instrument);
   const prec = pricePrecision(instrument);
   const side = direction === 'BUY' ? 1 : -1;
 
-  const slPrice = (mid - side * SL_PIPS * pv).toFixed(prec);
-  const tpPrice = (mid + side * TP_PIPS * pv).toFixed(prec);
+  const slPrice = (mid - side * slPips * pv).toFixed(prec);
+  const tpPrice = (mid + side * tpPips * pv).toFixed(prec);
 
   const orderBody = {
     order: {
@@ -209,16 +476,11 @@ async function placeMarketOrder(
   };
 
   try {
-    const res = await fetch(`${host}/v3/accounts/${accountId}/orders`, {
+    const res = await fetch(`${OANDA_HOST}/v3/accounts/${accountId}/orders`, {
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiToken}`,
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-      },
+      headers: { Authorization: `Bearer ${apiToken}`, 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify(orderBody),
     });
-
     const data = await res.json();
     if (data.orderFillTransaction) {
       return { success: true, tradeId: data.orderFillTransaction.tradeOpened?.tradeID || data.orderFillTransaction.id };
@@ -229,33 +491,34 @@ async function placeMarketOrder(
   }
 }
 
-// ── Get account equity for position sizing ──
-async function getAccountNAV(apiToken: string, accountId: string): Promise<number> {
-  const host = OANDA_HOSTS.practice;
-  try {
-    const res = await fetch(`${host}/v3/accounts/${accountId}/summary`, {
-      headers: { Authorization: `Bearer ${apiToken}`, Accept: 'application/json' },
-    });
-    const data = await res.json();
-    return parseFloat(data.account?.NAV || '0');
-  } catch { return 0; }
+// ══════════════════════════════════════════
+// VELOCITY DETECTION (retained)
+// ══════════════════════════════════════════
+
+function detectVelocitySpike(candles: { volume: number; close: number; open: number }[]): { spike: boolean; ratio: number; direction: 'BUY' | 'SELL' | null } {
+  if (candles.length < 5) return { spike: false, ratio: 0, direction: null };
+  const current = candles[candles.length - 1];
+  const lookback = candles.slice(0, -1);
+  const avgVol = lookback.reduce((s, c) => s + c.volume, 0) / lookback.length;
+  const ratio = avgVol > 0 ? current.volume / avgVol : 0;
+  if (ratio < 1.5) return { spike: false, ratio, direction: null };
+  return { spike: true, ratio, direction: current.close > current.open ? 'BUY' : 'SELL' };
 }
 
-// ── Check for existing open position on instrument ──
-async function hasOpenPosition(instrument: string, sb: ReturnType<typeof createClient>, userId: string): Promise<boolean> {
-  const { data } = await sb
-    .from('oanda_orders')
-    .select('id')
-    .eq('currency_pair', instrument)
-    .eq('agent_id', AGENT_ID)
-    .in('status', ['submitted', 'filled', 'open'])
-    .eq('environment', ENVIRONMENT)
-    .limit(1);
-  return (data?.length || 0) > 0;
+// ── Nerve tension (retained) ──
+function calculateNerveTension(candles: { close: number }[]): { signal: 'NOISE' | 'CLEAN_FLOW'; variance: number } {
+  if (candles.length < 3) return { signal: 'CLEAN_FLOW', variance: 0 };
+  const returns: number[] = [];
+  for (let i = 1; i < candles.length; i++) {
+    returns.push((candles[i].close - candles[i - 1].close) / candles[i - 1].close);
+  }
+  const mean = returns.reduce((s, r) => s + r, 0) / returns.length;
+  const variance = returns.reduce((s, r) => s + (r - mean) ** 2, 0) / returns.length * 1e8;
+  return { signal: variance > 0.85 ? 'NOISE' : 'CLEAN_FLOW', variance };
 }
 
 // ══════════════════════════════════════════
-// MAIN HANDLER
+// MAIN HANDLER — SOVEREIGN NEURAL NEXUS
 // ══════════════════════════════════════════
 
 Deno.serve(async (req) => {
@@ -264,7 +527,7 @@ Deno.serve(async (req) => {
   }
 
   const log: string[] = [];
-  const executions: { instrument: string; direction: string; status: string; detail: string }[] = [];
+  const executions: { instrument: string; direction: string; status: string; detail: string; nexusP?: number }[] = [];
 
   try {
     // ── 1. Session Gate ──
@@ -276,170 +539,175 @@ Deno.serve(async (req) => {
       });
     }
 
-    // ── 2. Credentials (ALWAYS demo/practice account) ──
-    const env = 'practice';
+    // ── 2. Credentials ──
     const apiToken = Deno.env.get('OANDA_API_TOKEN')!;
     const accountId = Deno.env.get('OANDA_ACCOUNT_ID')!;
+    const sb = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
 
-    const sbUrl = Deno.env.get('SUPABASE_URL')!;
-    const sbKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-    const sb = createClient(sbUrl, sbKey);
-
-    // ── 3. Get NAV for position sizing ──
-    const nav = await getAccountNAV(apiToken, accountId);
+    // ── 3. NAV + Admin User ──
+    const [nav, adminResult] = await Promise.all([
+      getAccountNAV(apiToken, accountId),
+      sb.from('user_roles').select('user_id').eq('role', 'admin').limit(1).single(),
+    ]);
     log.push(`Account NAV: $${nav.toFixed(2)}`);
     if (nav < 50) {
       return new Response(JSON.stringify({ success: false, reason: 'low_nav', nav, log }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
     }
+    const userId = adminResult.data?.user_id;
+    if (!userId) {
+      return new Response(JSON.stringify({ success: false, reason: 'no_admin_user', log }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
 
-    // Risk 2% per trade, SL = 20 pips → units = (NAV * 0.02) / (20 * pipValue in $)
-    // Simplified: ~1000 units per $100 NAV for standard pairs
     const riskDollars = nav * 0.02;
 
-    // ── 4. Scan each instrument ──
+    // ── 4. PILLAR 1: Fetch all USD crosses for ADI in one batch ──
+    log.push('🔺 PILLAR 1: Synthetic Dollar Triangulation — fetching ADI crosses...');
+    const allCrossInstruments = [...new Set([...INSTRUMENTS, ...USD_CROSSES])];
+    const [allPricing, ...crossCandleResults] = await Promise.all([
+      fetchBatchPricing(allCrossInstruments, apiToken, accountId),
+      ...allCrossInstruments.map(inst => fetchM5Candles(inst, 24, apiToken, accountId)),
+    ]);
+
+    const allCandles: Record<string, { volume: number; close: number; open: number; high: number; low: number }[]> = {};
+    allCrossInstruments.forEach((inst, i) => { allCandles[inst] = crossCandleResults[i]; });
+
+    log.push(`ADI data: ${Object.keys(allPricing).length} priced, ${Object.keys(allCandles).filter(k => allCandles[k].length > 0).length} with candles`);
+
+    // ── 5. PILLAR 3: Fetch Order Books for all instruments ──
+    log.push('🔺 PILLAR 3: OBI Sniffer — fetching order books...');
+    const orderBooks = await Promise.all(INSTRUMENTS.map(inst => fetchOrderBook(inst, apiToken)));
+    const obiMap: Record<string, Awaited<ReturnType<typeof fetchOrderBook>>> = {};
+    INSTRUMENTS.forEach((inst, i) => { obiMap[inst] = orderBooks[i]; });
+
+    // ── 6. Scan each instrument through NEXUS ──
     for (const instrument of INSTRUMENTS) {
       const tag = `[${instrument}]`;
 
       // Check existing position
-      // Get a user_id — use the first admin or any user
-      const { data: adminData } = await sb.from('user_roles').select('user_id').eq('role', 'admin').limit(1).single();
-      const userId = adminData?.user_id;
-      if (!userId) { log.push(`${tag} No user found, skipping`); continue; }
-
-      if (await hasOpenPosition(instrument, sb, userId)) {
+      if (await hasOpenPosition(instrument, sb)) {
         log.push(`${tag} Already has open position, skipping`);
         executions.push({ instrument, direction: '-', status: 'skipped', detail: 'existing_position' });
         continue;
       }
 
-      // ── 4a. Spread Shield ──
-      const pricing = await fetchPricing(instrument, apiToken, accountId);
+      // Pricing
+      const pricing = allPricing[instrument];
       if (!pricing) {
-        log.push(`${tag} Failed to fetch pricing`);
+        log.push(`${tag} No pricing data`);
         continue;
       }
 
-      if (pricing.spread > SPREAD_LIMIT_PIPS) {
-        log.push(`${tag} Spread Shield ACTIVE: ${pricing.spread.toFixed(1)} pips > ${SPREAD_LIMIT_PIPS} limit`);
-        executions.push({ instrument, direction: '-', status: 'spread_blocked', detail: `spread=${pricing.spread.toFixed(1)}` });
-        continue;
-      }
-      log.push(`${tag} Spread OK: ${pricing.spread.toFixed(2)} pips`);
-
-      // ── 4b. Velocity Detection ──
-      const candles = await fetchM5Candles(instrument, 24, apiToken, accountId);
-      const velocity = detectVelocitySpike(candles, 1.5);
-
-      // ── 4c. MARKET TENTACLE — Liquidity Gap ──
-      const liquidity = feelLiquidityGap(pricing.spread);
-      log.push(`${tag} TENTACLE liquidity: ${liquidity.signal} — ${liquidity.detail}`);
-      if (liquidity.signal === 'RETRACT') {
-        executions.push({ instrument, direction: '-', status: 'tentacle_retract', detail: liquidity.detail });
+      // ── Sovereign Direction ──
+      const { direction: sovereignDir, debug: sovDebug } = await getSovereignDirection(instrument, sb);
+      log.push(`${tag} SOVEREIGN: ${sovDebug}`);
+      if (!sovereignDir) {
+        executions.push({ instrument, direction: '-', status: 'no_direction', detail: sovDebug });
         continue;
       }
 
-      // ── 4d. MARKET TENTACLE — Nerve Tension ──
+      // ── PILLAR 1: ADI Truth Filter ──
+      const adi = calculateADI(instrument, sovereignDir, allPricing, allCandles);
+      log.push(`${tag} 🔺 ADI: ${adi.detail}`);
+      if (adi.isRetailHunt && adi.fadeDirection) {
+        log.push(`${tag} ⚠️ RETAIL HUNT DETECTED — sovereign says ${sovereignDir} but only ${adi.confirmedCrosses}/${adi.totalCrosses} crosses confirm. Preparing FADE to ${adi.fadeDirection} when gravity kicks in.`);
+      }
+
+      // ── PILLAR 2: Neural Volatility Buffer ──
+      const candles = allCandles[instrument] || [];
+      const volBuffer = calculateNeuralVolatilityBuffer(candles, instrument);
+      log.push(`${tag} 🧠 BREATH: ${volBuffer.detail}`);
+
+      // ── PILLAR 3: OBI Sniffer ──
+      const obi = analyzeOrderBookImbalance(obiMap[instrument], sovereignDir, instrument);
+      log.push(`${tag} 📊 OBI: ${obi.detail}`);
+
+      // ── Nerve + Velocity (supporting signals) ──
       const nerve = calculateNerveTension(candles);
-      log.push(`${tag} TENTACLE nerve: ${nerve.signal} — ${nerve.detail}`);
+      const velocity = detectVelocitySpike(candles);
 
-      // ── 4e. Direction: Sovereign Matrix as primary, velocity + nerve as confirmation ──
-      const { direction: sovereignDir, debug: sovDebug } = await getSovereignDirectionDebug(instrument, sb);
-      if (sovDebug) log.push(`${tag} SOV_DEBUG: ${sovDebug}`);
-      let finalDirection: 'BUY' | 'SELL' | null = null;
-      let signalStrength: 'STRIKE' | 'PROBE' | 'SOVEREIGN_ONLY' = 'SOVEREIGN_ONLY';
+      // ── NEXUS PROBABILITY ──
+      const nexus = calculateNexusProbability(sovereignDir, adi, obi, volBuffer, nerve, velocity.ratio);
+      log.push(`${tag} 🎯 NEXUS: ${nexus.detail}`);
 
-      if (sovereignDir && velocity.spike && velocity.direction === sovereignDir && nerve.signal === 'CLEAN_FLOW') {
-        // FULL STRIKE: Sovereign + Velocity + Clean Flow all agree
-        finalDirection = sovereignDir;
-        signalStrength = 'STRIKE';
-        log.push(`${tag} 🐙 STRIKE: Sovereign=${sovereignDir} + Velocity(${velocity.ratio.toFixed(1)}x) + CLEAN_FLOW — full tentacle convergence`);
-      } else if (sovereignDir && velocity.spike && velocity.direction === sovereignDir) {
-        // Velocity agrees but nerve is noisy — downgrade to PROBE
-        finalDirection = sovereignDir;
-        signalStrength = 'PROBE';
-        log.push(`${tag} 🐙 PROBE: Sovereign=${sovereignDir} + Velocity agree but nerve=NOISE(${nerve.variance.toFixed(3)}) — reduced conviction`);
-      } else if (sovereignDir && nerve.signal === 'CLEAN_FLOW') {
-        // Clean flow + sovereign direction — no velocity but institutional flow detected
-        finalDirection = sovereignDir;
-        signalStrength = 'PROBE';
-        log.push(`${tag} 🐙 PROBE: Sovereign=${sovereignDir} + CLEAN_FLOW (no velocity spike, ratio=${velocity.ratio.toFixed(1)}x)`);
-      } else if (sovereignDir && nerve.signal === 'NOISE') {
-        // Sovereign only, noisy market — trade with lowest conviction
-        finalDirection = sovereignDir;
-        signalStrength = 'SOVEREIGN_ONLY';
-        log.push(`${tag} 🐙 SOVEREIGN_ONLY: ${sovereignDir} — nerve=NOISE(${nerve.variance.toFixed(3)}), no velocity. Minimal conviction.`);
-      } else if (sovereignDir) {
-        finalDirection = sovereignDir;
-        signalStrength = 'SOVEREIGN_ONLY';
-        log.push(`${tag} Sovereign direction: ${sovereignDir} (fallback)`);
-      } else {
-        log.push(`${tag} No sovereign direction available, skipping`);
-        executions.push({ instrument, direction: '-', status: 'no_direction', detail: 'no sovereign data' });
+      if (nexus.tier === 'BLOCKED') {
+        log.push(`${tag} ❌ NEXUS BLOCKED — conviction too low (${(nexus.probability * 100).toFixed(1)}%)`);
+        executions.push({ instrument, direction: sovereignDir, status: 'nexus_blocked', detail: nexus.detail, nexusP: nexus.probability });
         continue;
       }
 
-      // ── 4f. Position Sizing — scale by signal strength ──
-      const sizingMultiplier = signalStrength === 'STRIKE' ? 1.0 : signalStrength === 'PROBE' ? 0.7 : 0.5;
-      // units = riskDollars / (SL pips * pip value in account currency)
+      // ── Spread Shield (bypassed if P > 95%) ──
+      if (pricing.spread > SPREAD_LIMIT_PIPS && !nexus.spreadBypass) {
+        log.push(`${tag} Spread Shield ACTIVE: ${pricing.spread.toFixed(1)} pips > ${SPREAD_LIMIT_PIPS} (no bypass at ${(nexus.probability * 100).toFixed(1)}%)`);
+        executions.push({ instrument, direction: sovereignDir, status: 'spread_blocked', detail: `spread=${pricing.spread.toFixed(1)}` });
+        continue;
+      }
+      if (nexus.spreadBypass && pricing.spread > SPREAD_LIMIT_PIPS) {
+        log.push(`${tag} ⚡ SPREAD BYPASS: P=${(nexus.probability * 100).toFixed(1)}% > 95% — overriding ${pricing.spread.toFixed(1)} pip spread`);
+      }
+
+      // ── OBI Wall Gate: hold fire if wall blocks us ──
+      if (!obi.pathClear && nexus.tier !== 'NEXUS_STRIKE') {
+        log.push(`${tag} 🧱 OBI HOLD FIRE: ${obi.detail} — waiting for wall to clear`);
+        executions.push({ instrument, direction: sovereignDir, status: 'obi_wall_block', detail: obi.detail, nexusP: nexus.probability });
+        continue;
+      }
+
+      // ── Position Sizing: scale by nexus tier ──
+      const sizingMultiplier = nexus.tier === 'NEXUS_STRIKE' ? 1.0 : nexus.tier === 'PROBE' ? 0.7 : 0.5;
       const pipDollar = instrument.includes('JPY') ? 0.0085 : 0.0001;
-      const rawUnits = Math.floor(riskDollars / (SL_PIPS * pipDollar * 10));
+      const rawUnits = Math.floor(riskDollars / (volBuffer.adaptiveSL * pipDollar * 10));
       const units = Math.max(100, Math.floor(rawUnits * sizingMultiplier));
 
-      // ── 4g. Execute ──
-      log.push(`${tag} EXECUTING: ${finalDirection} ${units} units (${signalStrength} @ ${sizingMultiplier}x) @ ${pricing.mid.toFixed(pricePrecision(instrument))}`);
+      // ── Execute with adaptive SL/TP ──
+      log.push(`${tag} 🚀 EXECUTING: ${sovereignDir} ${units} units (${nexus.tier} P=${(nexus.probability * 100).toFixed(1)}%) SL=${volBuffer.adaptiveSL} TP=${volBuffer.adaptiveTP}`);
 
-      const signalId = `nyc-love-${instrument}-${Date.now()}`;
-
-      // Record in DB first
+      const signalId = `nexus-${instrument}-${Date.now()}`;
       const { data: slotResult } = await sb.rpc('try_acquire_blend_slot', {
         p_agent_id: AGENT_ID,
         p_currency_pair: instrument,
         p_user_id: userId,
         p_signal_id: signalId,
-        p_direction: finalDirection === 'BUY' ? 'long' : 'short',
+        p_direction: sovereignDir === 'BUY' ? 'long' : 'short',
         p_units: units,
         p_environment: ENVIRONMENT,
-        p_confidence_score: velocity.spike ? velocity.ratio : 0.5,
+        p_confidence_score: nexus.probability,
         p_requested_price: pricing.mid,
       });
 
       if (!slotResult) {
         log.push(`${tag} Slot occupied (blend lock), skipping`);
-        executions.push({ instrument, direction: finalDirection, status: 'slot_blocked', detail: 'blend slot occupied' });
+        executions.push({ instrument, direction: sovereignDir, status: 'slot_blocked', detail: 'blend slot occupied' });
         continue;
       }
 
       const orderId = slotResult as string;
-
-      // Place on OANDA
-      const result = await placeMarketOrder(instrument, units, finalDirection, pricing.mid, apiToken, accountId);
+      const result = await placeMarketOrder(instrument, units, sovereignDir, pricing.mid, volBuffer.adaptiveSL, volBuffer.adaptiveTP, apiToken, accountId);
 
       if (result.success) {
-        log.push(`${tag} ✅ FILLED — Trade ID: ${result.tradeId}`);
+        log.push(`${tag} ✅ NEXUS FILLED — Trade ID: ${result.tradeId} | SL=${volBuffer.adaptiveSL} TP=${volBuffer.adaptiveTP}`);
         await sb.from('oanda_orders').update({
           status: 'filled',
           oanda_trade_id: result.tradeId || null,
           entry_price: pricing.mid,
           session_label: 'newyork',
+          spread_at_entry: pricing.spread,
         }).eq('id', orderId);
-
-        executions.push({ instrument, direction: finalDirection, status: 'filled', detail: `tradeId=${result.tradeId}` });
+        executions.push({ instrument, direction: sovereignDir, status: 'filled', detail: `tradeId=${result.tradeId} P=${(nexus.probability * 100).toFixed(1)}%`, nexusP: nexus.probability });
       } else {
         log.push(`${tag} ❌ REJECTED — ${result.error}`);
-        await sb.from('oanda_orders').update({
-          status: 'rejected',
-          error_message: result.error?.slice(0, 500),
-        }).eq('id', orderId);
-
-        executions.push({ instrument, direction: finalDirection, status: 'rejected', detail: result.error || 'unknown' });
+        await sb.from('oanda_orders').update({ status: 'rejected', error_message: result.error?.slice(0, 500) }).eq('id', orderId);
+        executions.push({ instrument, direction: sovereignDir, status: 'rejected', detail: result.error || 'unknown' });
       }
     }
 
     return new Response(JSON.stringify({
       success: true,
       agent: AGENT_ID,
+      engine: 'sovereign-neural-nexus-v2',
       session: 'newyork',
       executions,
       log,
@@ -448,12 +716,8 @@ Deno.serve(async (req) => {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
   } catch (err) {
-    console.error('[NYC-LOVE] Fatal:', err);
-    return new Response(JSON.stringify({
-      success: false,
-      error: (err as Error).message,
-      log,
-    }), {
+    console.error('[NYC-LOVE NEXUS] Fatal:', err);
+    return new Response(JSON.stringify({ success: false, error: (err as Error).message, log }), {
       status: 500,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
