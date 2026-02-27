@@ -201,6 +201,40 @@ const NYCLoveDashboard = () => {
     } catch { /* empty */ }
   }, []);
 
+  // Fetch order book / liquidity heatmap data
+  const fetchOrderBooks = useCallback(async () => {
+    try {
+      const { data } = await supabase
+        .from('market_liquidity_map')
+        .select('currency_pair, long_clusters, short_clusters, current_price')
+        .in('currency_pair', INSTRUMENTS);
+
+      if (data && data.length > 0) {
+        const mapped: Record<string, OrderBookData> = {};
+        for (const row of data) {
+          const longs = (row.long_clusters || []) as { price: number; pct: number }[];
+          const shorts = (row.short_clusters || []) as { price: number; pct: number }[];
+          // Merge into unified bucket list
+          const priceSet = new Set<number>();
+          longs.forEach(l => priceSet.add(l.price));
+          shorts.forEach(s => priceSet.add(s.price));
+          const buckets = Array.from(priceSet).map(price => ({
+            price,
+            longPct: longs.find(l => l.price === price)?.pct || 0,
+            shortPct: shorts.find(s => s.price === price)?.pct || 0,
+          }));
+          mapped[row.currency_pair] = {
+            price: row.current_price || 0,
+            longPct: 0,
+            shortPct: 0,
+            buckets,
+          };
+        }
+        setOrderBooks(mapped);
+      }
+    } catch { /* empty */ }
+  }, []);
+
   // Fetch active trades
   const fetchActiveTrades = useCallback(async () => {
     try {
@@ -315,14 +349,16 @@ const NYCLoveDashboard = () => {
     fetchRankings();
     fetchActiveTrades();
     fetchAdiCache();
+    fetchOrderBooks();
     const iv = setInterval(() => {
       fetchPricing();
       fetchRankings();
       fetchActiveTrades();
       fetchAdiCache();
+      fetchOrderBooks();
     }, 15_000);
     return () => clearInterval(iv);
-  }, [fetchPricing, fetchRankings, fetchActiveTrades, fetchAdiCache]);
+  }, [fetchPricing, fetchRankings, fetchActiveTrades, fetchAdiCache, fetchOrderBooks]);
 
   // Auto-mode
   useEffect(() => {
