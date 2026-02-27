@@ -68,6 +68,21 @@
     --neural-red: 0 100% 60%;
     --neural-orange: 30 100% 55%;
 
+    /* Nexus Cyber-Grid tokens */
+    --nexus-bg: 228 30% 4%;
+    --nexus-surface: 225 28% 8%;
+    --nexus-surface-raised: 224 26% 12%;
+    --nexus-border: 220 25% 16%;
+    --nexus-border-glow: 160 100% 45%;
+    --nexus-neon-green: 150 100% 50%;
+    --nexus-neon-amber: 38 100% 55%;
+    --nexus-neon-cyan: 185 100% 55%;
+    --nexus-deep-blue: 225 60% 20%;
+    --nexus-text-primary: 210 20% 92%;
+    --nexus-text-muted: 215 15% 55%;
+    --nexus-danger: 0 85% 55%;
+    --nexus-probability: 160 100% 45%;
+
     /* Gradients */
     --gradient-neural: linear-gradient(135deg, hsl(185 100% 50%), hsl(270 60% 50%));
     --gradient-glow: linear-gradient(180deg, hsl(185 100% 50% / 0.2), transparent);
@@ -291,6 +306,39 @@
       radial-gradient(circle at 25% 25%, hsl(185 100% 50% / 0.05) 0%, transparent 50%),
       radial-gradient(circle at 75% 75%, hsl(270 60% 50% / 0.05) 0%, transparent 50%),
       linear-gradient(hsl(230 25% 8% / 0.8), hsl(230 25% 5%));
+  }
+
+  /* Nexus Cyber-Grid pattern */
+  .cyber-grid-bg {
+    background-color: hsl(var(--nexus-bg));
+    background-image:
+      linear-gradient(hsl(var(--nexus-border) / 0.15) 1px, transparent 1px),
+      linear-gradient(90deg, hsl(var(--nexus-border) / 0.15) 1px, transparent 1px);
+    background-size: 40px 40px;
+  }
+
+  @keyframes nexus-pulse {
+    0%, 100% { opacity: 0.6; }
+    50% { opacity: 1; }
+  }
+  .nexus-pulse { animation: nexus-pulse 2s ease-in-out infinite; }
+
+  @keyframes nexus-scan {
+    0% { transform: translateY(-100%); }
+    100% { transform: translateY(100%); }
+  }
+  .nexus-scan-line {
+    animation: nexus-scan 3s linear infinite;
+  }
+
+  .nexus-glow-green {
+    box-shadow: 0 0 15px hsl(var(--nexus-neon-green) / 0.4), 0 0 30px hsl(var(--nexus-neon-green) / 0.15);
+  }
+  .nexus-glow-amber {
+    box-shadow: 0 0 15px hsl(var(--nexus-neon-amber) / 0.4), 0 0 30px hsl(var(--nexus-neon-amber) / 0.15);
+  }
+  .nexus-glow-cyan {
+    box-shadow: 0 0 15px hsl(var(--nexus-neon-cyan) / 0.4), 0 0 30px hsl(var(--nexus-neon-cyan) / 0.15);
   }
 
   /* Scrollbar styling */
