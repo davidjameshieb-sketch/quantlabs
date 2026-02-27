@@ -229,14 +229,10 @@ Deno.serve(async (req) => {
       });
     }
 
-    // ── 2. Credentials ──
-    const env = Deno.env.get('OANDA_ENV') || 'practice';
-    const apiToken = env === 'live'
-      ? (Deno.env.get('OANDA_LIVE_API_TOKEN') || Deno.env.get('OANDA_API_TOKEN')!)
-      : Deno.env.get('OANDA_API_TOKEN')!;
-    const accountId = env === 'live'
-      ? (Deno.env.get('OANDA_LIVE_ACCOUNT_ID') || Deno.env.get('OANDA_ACCOUNT_ID')!)
-      : Deno.env.get('OANDA_ACCOUNT_ID')!;
+    // ── 2. Credentials (ALWAYS demo/practice account) ──
+    const env = 'practice';
+    const apiToken = Deno.env.get('OANDA_API_TOKEN')!;
+    const accountId = Deno.env.get('OANDA_ACCOUNT_ID')!;
 
     const sbUrl = Deno.env.get('SUPABASE_URL')!;
     const sbKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
