@@ -97,35 +97,48 @@ function detectVelocitySpike(candles: { volume: number; close: number; open: num
   return { spike: true, ratio, direction };
 }
 
-// ── Sovereign Matrix direction: use currency rankings from sovereign_memory ──
-async function getSovereignDirection(instrument: string, sb: ReturnType<typeof createClient>): Promise<'BUY' | 'SELL' | null> {
+// ── Sovereign Matrix direction: use live_strength_index from sovereign_memory ──
+async function getSovereignDirectionDebug(instrument: string, sb: ReturnType<typeof createClient>): Promise<{ direction: 'BUY' | 'SELL' | null; debug: string }> {
   try {
-    const { data } = await sb
+    const { data, error } = await sb
       .from('sovereign_memory')
       .select('payload')
-      .eq('memory_key', 'currency_ranks')
-      .eq('memory_type', 'matrix_state')
+      .eq('memory_key', 'live_strength_index')
+      .eq('memory_type', 'currency_strength')
       .order('updated_at', { ascending: false })
       .limit(1)
       .single();
 
-    if (!data?.payload) return null;
-    const ranks = data.payload as Record<string, number>;
+    if (error) {
+      return { direction: null, debug: `query_error: ${error.message} (${error.code})` };
+    }
+    if (!data?.payload) {
+      return { direction: null, debug: 'no_payload_returned' };
+    }
+    
+    const payload = data.payload as { strengths?: { currency: string; rank: number }[] };
+    if (!payload.strengths || !Array.isArray(payload.strengths)) {
+      return { direction: null, debug: `bad_structure: keys=${Object.keys(payload).join(',')}` };
+    }
 
-    // Parse instrument: EUR_USD → base=EUR, quote=USD
+    // Build rank map: { EUR: 1, USD: 4, ... }
+    const ranks: Record<string, number> = {};
+    for (const s of payload.strengths) {
+      ranks[s.currency] = s.rank;
+    }
+
     const [base, quote] = instrument.split('_');
     const baseRank = ranks[base];
     const quoteRank = ranks[quote];
 
-    if (baseRank == null || quoteRank == null) return null;
+    if (baseRank == null || quoteRank == null) {
+      return { direction: null, debug: `missing_rank: ${base}=${baseRank} ${quote}=${quoteRank} available=${Object.keys(ranks).join(',')}` };
+    }
 
-    // Lower rank = stronger currency (rank 1 = predator)
-    // If base is stronger (lower rank), BUY. If quote stronger, SELL.
-    if (baseRank < quoteRank) return 'BUY';
-    if (quoteRank < baseRank) return 'SELL';
-    return null;
-  } catch {
-    return null;
+    const dir = baseRank < quoteRank ? 'BUY' as const : quoteRank < baseRank ? 'SELL' as const : null;
+    return { direction: dir, debug: `${base}=#${baseRank} ${quote}=#${quoteRank} → ${dir || 'EQUAL'}` };
+  } catch (e) {
+    return { direction: null, debug: `exception: ${(e as Error).message}` };
   }
 }
 
@@ -282,7 +295,8 @@ Deno.serve(async (req) => {
       const velocity = detectVelocitySpike(candles, 1.5);
 
       // ── 4c. Direction: Sovereign Matrix as primary, velocity as confirmation ──
-      const sovereignDir = await getSovereignDirection(instrument, sb);
+      const { direction: sovereignDir, debug: sovDebug } = await getSovereignDirectionDebug(instrument, sb);
+      if (sovDebug) log.push(`${tag} SOV_DEBUG: ${sovDebug}`);
       let finalDirection: 'BUY' | 'SELL' | null = null;
 
       if (sovereignDir && velocity.spike && velocity.direction === sovereignDir) {
