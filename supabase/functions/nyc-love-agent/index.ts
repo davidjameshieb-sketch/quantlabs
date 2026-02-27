@@ -38,12 +38,11 @@ function isNYCOpenWindow(): { allowed: boolean; reason: string } {
   const utcM = now.getUTCMinutes();
   const minutes = utcH * 60 + utcM;
 
-  // NYC Open window: 13:00–14:30 UTC (8:00–9:30 AM EST)
-  // This captures the 8:30 AM economic data surge
-  if (minutes >= 780 && minutes <= 870) {
-    return { allowed: true, reason: `NYC Open window active (${utcH}:${String(utcM).padStart(2, '0')} UTC)` };
+  // Full NYC session: 13:30–21:30 UTC (8:30 AM – 4:30 PM EST)
+  if (minutes >= 810 && minutes <= 1290) {
+    return { allowed: true, reason: `NYC session active (${utcH}:${String(utcM).padStart(2, '0')} UTC)` };
   }
-  return { allowed: false, reason: `Outside NYC Open window (${utcH}:${String(utcM).padStart(2, '0')} UTC). Window: 13:00–14:30 UTC` };
+  return { allowed: false, reason: `Outside NYC session (${utcH}:${String(utcM).padStart(2, '0')} UTC). Window: 13:30–21:30 UTC (8:30AM–4:30PM EST)` };
 }
 
 // ── Fetch live bid/ask from OANDA ──
