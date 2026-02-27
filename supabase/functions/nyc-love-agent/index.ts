@@ -87,22 +87,20 @@ async function fetchM5Candles(instrument: string, count: number, apiToken: strin
   } catch { return []; }
 }
 
-// ── Fetch OANDA Order Book (OBI Sniffer data) ──
-async function fetchOrderBook(instrument: string, apiToken: string): Promise<{ price: number; longPct: number; shortPct: number; buckets: { price: number; longPct: number; shortPct: number }[] } | null> {
+// ── Fetch Order Book from market_liquidity_map (pre-populated by wall-of-pain-injector) ──
+async function fetchOrderBook(instrument: string, _apiToken: string, sb: any): Promise<{ price: number; longPct: number; shortPct: number; buckets: { price: number; longPct: number; shortPct: number }[] } | null> {
   try {
-    const res = await fetch(`${OANDA_HOST}/v3/instruments/${instrument}/orderBook`, {
-      headers: { Authorization: `Bearer ${apiToken}`, Accept: 'application/json' },
-    });
-    if (!res.ok) return null;
-    const data = await res.json();
-    const ob = data.orderBook;
-    if (!ob) return null;
-    const price = parseFloat(ob.price);
-    const buckets = (ob.buckets || []).map((b: { price: string; longCountPercent: string; shortCountPercent: string }) => ({
-      price: parseFloat(b.price),
-      longPct: parseFloat(b.longCountPercent),
-      shortPct: parseFloat(b.shortCountPercent),
-    }));
+    const { data } = await sb
+      .from('market_liquidity_map')
+      .select('current_price, all_buckets')
+      .eq('currency_pair', instrument)
+      .single();
+
+    if (!data || !data.all_buckets) return null;
+
+    const price = data.current_price || 0;
+    const buckets = (data.all_buckets || []) as { price: number; longPct: number; shortPct: number }[];
+
     // Global imbalance
     let totalLong = 0, totalShort = 0;
     for (const b of buckets) { totalLong += b.longPct; totalShort += b.shortPct; }
@@ -695,8 +693,8 @@ Deno.serve(async (req) => {
     log.push(`ADI data: ${Object.keys(allPricing).length} priced, ${Object.keys(allCandles).filter(k => (allCandles[k]?.length || 0) > 0).length} with candles`);
 
     // ── 5. PILLAR 3: Fetch Order Books for all instruments ──
-    log.push('🔺 PILLAR 3: OBI Sniffer — fetching order books...');
-    const orderBooks = await Promise.all(INSTRUMENTS.map(inst => fetchOrderBook(inst, apiToken)));
+    log.push('🔺 PILLAR 3: OBI Sniffer — reading order book from liquidity map...');
+    const orderBooks = await Promise.all(INSTRUMENTS.map(inst => fetchOrderBook(inst, apiToken, sb)));
     const obiMap: Record<string, Awaited<ReturnType<typeof fetchOrderBook>>> = {};
     INSTRUMENTS.forEach((inst, i) => { obiMap[inst] = orderBooks[i]; });
 
