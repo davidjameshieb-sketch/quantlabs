@@ -435,83 +435,247 @@ function computeTradeHealthScore(
 }
 
 // ═══════════════════════════════════════════════════════════
-// SURVIVAL PROTOCOL: LIQUIDITY-AWARE BAILOUT (THE VOID SCANNER)
-// Scans order book while trade is live. If price is rejected by
-// an Elephant and next friendly wall is below SL → instant market close.
+// SURVIVAL PROTOCOL: LIQUIDITY-AWARE BAILOUT (THE VOID SCANNER v2)
+// Phase 1: Structural scan — detect if price is in a liquidity void
+// Phase 2: Time-in-Void filter — require 60s+ candle-close confirmation
+// Phase 3: Recoil Velocity — suppress bailout on violent spike-downs (fake-outs)
 // ═══════════════════════════════════════════════════════════
+
+interface VoidStructure {
+  inVoid: boolean;
+  voidType: string;
+  ceiling: number | null;
+  floor: number | null;
+  detail: string;
+}
 
 interface VoidScanResult {
   shouldBail: boolean;
   bailReason: string;
 }
 
-function checkLiquidityBailout(
+// Phase 1: Pure structural analysis — is price currently in a void?
+function analyzeVoidStructure(
   instrument: string,
   direction: string,
   entryPrice: number,
   currentPrice: number,
   slPrice: number,
   buckets: Array<{ price: number; longPct: number; shortPct: number }>,
-): VoidScanResult {
+): VoidStructure {
   const pv = instrument.includes('JPY') ? 0.01 : 0.0001;
   const isLosing = direction === 'long' ? currentPrice < entryPrice : currentPrice > entryPrice;
 
   if (!isLosing || buckets.length === 0) {
-    return { shouldBail: false, bailReason: '' };
+    return { inVoid: false, voidType: 'none', ceiling: null, floor: null, detail: '' };
   }
 
   // Filter to ±80 pip range around current price for relevance
   const range = 80 * pv;
   const nearby = buckets.filter(b => Math.abs(b.price - currentPrice) < range);
   if (nearby.length === 0) {
-    return { shouldBail: false, bailReason: '' };
+    return { inVoid: false, voidType: 'none', ceiling: null, floor: null, detail: 'no_buckets_nearby' };
   }
 
   // Adaptive elephant threshold: top 15% of values in this pair's order book
   const allPcts = nearby.flatMap(b => [b.longPct, b.shortPct]).filter(v => v > 0).sort((a, b) => a - b);
   const p85 = allPcts.length > 0 ? allPcts[Math.floor(allPcts.length * 0.85)] : 0;
-  const elephantThreshold = Math.max(p85, 0.05); // minimum 0.05% for very sparse books
+  const elephantThreshold = Math.max(p85, 0.05);
 
-  // Identify elephants (adaptive to each pair's density)
   const elephants = nearby.filter(b => b.longPct >= elephantThreshold || b.shortPct >= elephantThreshold);
-
-  // Find ceiling (resistance above) and floor (support below)
   const ceilingElephants = elephants.filter(b => b.price > currentPrice).sort((a, b) => a.price - b.price);
   const floorElephants = elephants.filter(b => b.price < currentPrice).sort((a, b) => b.price - a.price);
-
   const ceiling = ceilingElephants[0]?.price ?? null;
   const floor = floorElephants[0]?.price ?? null;
 
   const priceFmt = instrument.includes('JPY') ? 3 : 5;
-  let shouldBail = false;
-  let bailReason = '';
 
-  // Void logic for LONGS
+  // Void detection for LONGS
   if (direction === 'long') {
     if (!floor) {
-      shouldBail = true;
-      bailReason = `🚨 VOID-BAIL: Infinite void below ${currentPrice.toFixed(priceFmt)}. No support elephants found within 80p range.`;
-    } else if (floor <= slPrice) {
-      shouldBail = true;
-      bailReason = `🚨 VOID-BAIL: Sinking into void. Next support @ ${floor.toFixed(priceFmt)} is below SL (${slPrice.toFixed(priceFmt)}). Cutting cord.`;
-    } else if (ceiling && floor && (ceiling - currentPrice) > (currentPrice - floor) * 2) {
-      shouldBail = true;
-      bailReason = `🚨 VOID-BAIL: Heavy rejection from ceiling @ ${ceiling.toFixed(priceFmt)}. Floor @ ${floor.toFixed(priceFmt)} too far to absorb momentum.`;
+      return { inVoid: true, voidType: 'infinite_void', ceiling, floor, detail: `Infinite void below ${currentPrice.toFixed(priceFmt)}. No support elephants within 80p.` };
+    }
+    if (floor <= slPrice) {
+      return { inVoid: true, voidType: 'floor_below_sl', ceiling, floor, detail: `Next support @ ${floor.toFixed(priceFmt)} is below SL (${slPrice.toFixed(priceFmt)}).` };
+    }
+    if (ceiling && (ceiling - currentPrice) > (currentPrice - floor) * 2) {
+      return { inVoid: true, voidType: 'heavy_rejection', ceiling, floor, detail: `Heavy rejection from ceiling @ ${ceiling.toFixed(priceFmt)}. Floor @ ${floor.toFixed(priceFmt)} too far.` };
     }
   }
 
-  // Void logic for SHORTS
+  // Void detection for SHORTS
   if (direction === 'short') {
     if (!ceiling) {
-      shouldBail = true;
-      bailReason = `🚨 VOID-BAIL: Infinite void above ${currentPrice.toFixed(priceFmt)}. No resistance elephants found within 80p range.`;
-    } else if (ceiling >= slPrice) {
-      shouldBail = true;
-      bailReason = `🚨 VOID-BAIL: Launching into void. Next resistance @ ${ceiling.toFixed(priceFmt)} is above SL (${slPrice.toFixed(priceFmt)}). Cutting cord.`;
+      return { inVoid: true, voidType: 'infinite_void', ceiling, floor, detail: `Infinite void above ${currentPrice.toFixed(priceFmt)}. No resistance elephants within 80p.` };
+    }
+    if (ceiling >= slPrice) {
+      return { inVoid: true, voidType: 'ceiling_above_sl', ceiling, floor, detail: `Next resistance @ ${ceiling.toFixed(priceFmt)} is above SL (${slPrice.toFixed(priceFmt)}).` };
     }
   }
 
-  return { shouldBail, bailReason };
+  return { inVoid: false, voidType: 'none', ceiling, floor, detail: '' };
+}
+
+// Phase 3: Recoil Velocity — detect fake-out spikes vs true collapses
+// Uses the last two 1m candles to measure velocity of the adverse move.
+// Violent spike (>5 pips in 1 candle) with immediate reversal = fake-out → suppress bail
+function checkRecoilVelocity(
+  instrument: string,
+  direction: string,
+  candles: Array<{ open: number; close: number; high: number; low: number; volume: number }> | null,
+): { isFakeout: boolean; velocityPipsPerMin: number; isDecelerating: boolean } {
+  if (!candles || candles.length < 2) {
+    return { isFakeout: false, velocityPipsPerMin: 0, isDecelerating: true };
+  }
+
+  const pipMult = instrument.includes('JPY') ? 0.01 : 0.0001;
+  const latest = candles[candles.length - 1];
+  const prev = candles[candles.length - 2];
+
+  // Adverse move per candle (positive = moving against us)
+  let latestAdverse: number, prevAdverse: number;
+  if (direction === 'long') {
+    latestAdverse = (latest.open - latest.close) / pipMult; // positive when dropping
+    prevAdverse = (prev.open - prev.close) / pipMult;
+  } else {
+    latestAdverse = (latest.close - latest.open) / pipMult; // positive when rising (bad for shorts)
+    prevAdverse = (prev.close - prev.open) / pipMult;
+  }
+
+  // Wick ratio: how much of the candle body is wick vs real move?
+  // A fake-out has a long wick (touched low but closed back up)
+  const latestRange = (latest.high - latest.low) / pipMult;
+  const latestBody = Math.abs(latest.close - latest.open) / pipMult;
+  const wickRatio = latestRange > 0 ? (latestRange - latestBody) / latestRange : 0;
+
+  const velocityPipsPerMin = Math.abs(latestAdverse);
+
+  // Fake-out detection:
+  // 1. Violent spike (>5 pips adverse in one candle) AND
+  // 2. Large wick (>60% of range is wick — price snapped back) AND
+  // 3. Candle closed near its open (body < 2 pips)
+  const isViolentSpike = velocityPipsPerMin > 5;
+  const hasLargeWick = wickRatio > 0.60;
+  const closedNearOpen = latestBody < 2.0;
+  const isFakeout = isViolentSpike && hasLargeWick && closedNearOpen;
+
+  // Deceleration: current adverse move is smaller than previous
+  const isDecelerating = latestAdverse < prevAdverse * 0.7;
+
+  return { isFakeout, velocityPipsPerMin, isDecelerating };
+}
+
+// Phase 2+3 Combined: Full Void Scanner with Time-in-Void + Recoil
+// Returns final bail decision after applying elasticity filters
+const VOID_TOLERANCE_SECONDS = 60; // Must stay in void for 60s before bail triggers
+
+async function evaluateVoidBailout(
+  orderId: string,
+  instrument: string,
+  direction: string,
+  entryPrice: number,
+  currentPrice: number,
+  slPrice: number,
+  buckets: Array<{ price: number; longPct: number; shortPct: number }>,
+  candles1m: Array<{ open: number; close: number; high: number; low: number; volume: number }> | null,
+  sb: ReturnType<typeof createClient>,
+): Promise<VoidScanResult> {
+  // Phase 1: Structural analysis
+  const structure = analyzeVoidStructure(instrument, direction, entryPrice, currentPrice, slPrice, buckets);
+
+  if (!structure.inVoid) {
+    // Not in void — clear any existing void timer
+    await sb.from("sovereign_memory").upsert({
+      memory_key: `void_timer_${orderId}`,
+      memory_type: "void_scanner",
+      payload: { inVoid: false, clearedAt: new Date().toISOString() },
+      updated_at: new Date().toISOString(),
+      created_by: "void-scanner-v2",
+    }, { onConflict: "memory_key,memory_type" }).then(() => {});
+    return { shouldBail: false, bailReason: '' };
+  }
+
+  // Phase 3: Recoil velocity check — is this a fake-out spike?
+  const recoil = checkRecoilVelocity(instrument, direction, candles1m);
+
+  if (recoil.isFakeout) {
+    console.log(`[VOID-SCANNER] ${instrument} ${direction}: RECOIL DETECTED — violent spike (${recoil.velocityPipsPerMin.toFixed(1)}p/min) with snapback wick. Suppressing bailout (fake-out immunity).`);
+    return { shouldBail: false, bailReason: '' };
+  }
+
+  // Phase 2: Time-in-Void persistence — has price stayed in void for 60+ seconds?
+  const memoryKey = `void_timer_${orderId}`;
+  let voidEnteredAt: number;
+
+  try {
+    const { data: voidMem } = await sb
+      .from("sovereign_memory")
+      .select("payload, updated_at")
+      .eq("memory_key", memoryKey)
+      .eq("memory_type", "void_scanner")
+      .maybeSingle();
+
+    const prevPayload = voidMem?.payload as Record<string, unknown> | null;
+    const wasInVoid = prevPayload?.inVoid === true;
+    const prevEnteredAt = prevPayload?.enteredAt as string | undefined;
+
+    if (wasInVoid && prevEnteredAt) {
+      voidEnteredAt = new Date(prevEnteredAt).getTime();
+    } else {
+      // First detection — stamp the void entry time
+      voidEnteredAt = Date.now();
+      await sb.from("sovereign_memory").upsert({
+        memory_key: memoryKey,
+        memory_type: "void_scanner",
+        payload: {
+          inVoid: true,
+          enteredAt: new Date(voidEnteredAt).toISOString(),
+          voidType: structure.voidType,
+          instrument,
+          direction,
+        },
+        updated_at: new Date().toISOString(),
+        created_by: "void-scanner-v2",
+      }, { onConflict: "memory_key,memory_type" });
+    }
+  } catch {
+    voidEnteredAt = Date.now(); // fail-safe: treat as fresh detection
+  }
+
+  const secondsInVoid = (Date.now() - voidEnteredAt) / 1000;
+
+  if (secondsInVoid < VOID_TOLERANCE_SECONDS) {
+    console.log(`[VOID-SCANNER] ${instrument} ${direction}: In void for ${secondsInVoid.toFixed(0)}s / ${VOID_TOLERANCE_SECONDS}s — HOLDING (wick test). Type: ${structure.voidType}`);
+    return { shouldBail: false, bailReason: '' };
+  }
+
+  // Candle-close confirmation: check if the latest 1m candle CLOSED in the void
+  // If it wicked down but closed back up, it's a failed fake-out — hold
+  if (candles1m && candles1m.length > 0) {
+    const latestCandle = candles1m[candles1m.length - 1];
+    const candleClose = latestCandle.close;
+    const isLosing = direction === 'long' ? candleClose < entryPrice : candleClose > entryPrice;
+
+    if (!isLosing) {
+      console.log(`[VOID-SCANNER] ${instrument} ${direction}: 1m candle CLOSED at ${candleClose.toFixed(instrument.includes('JPY') ? 3 : 5)} — ABOVE entry. Wick test PASSED — holding.`);
+      return { shouldBail: false, bailReason: '' };
+    }
+  }
+
+  // Deceleration check: if adverse velocity is slowing, the collapse may be stalling
+  if (!recoil.isDecelerating && recoil.velocityPipsPerMin > 3) {
+    // Still accelerating downward — true collapse, bail immediately
+    return {
+      shouldBail: true,
+      bailReason: `🚨 VOID-BAIL [CONFIRMED]: ${structure.detail} | ${secondsInVoid.toFixed(0)}s in void, accelerating (${recoil.velocityPipsPerMin.toFixed(1)}p/min). Structure broken.`,
+    };
+  }
+
+  // Sustained void + decelerating = slow bleed, not a fake-out. Bail.
+  return {
+    shouldBail: true,
+    bailReason: `🚨 VOID-BAIL [CONFIRMED]: ${structure.detail} | ${secondsInVoid.toFixed(0)}s in void, decelerating drift. Cutting cord.`,
+  };
 }
 
 // ─── Exit Decision Engine ───
@@ -867,6 +1031,38 @@ Deno.serve(async (req) => {
       console.log(`[VOID-SCANNER] Loaded liquidity maps for ${liquidityMap.size}/${instrumentsNeeded.size} pairs`);
     } catch (liqErr) {
       console.warn(`[VOID-SCANNER] Failed to load liquidity maps:`, (liqErr as Error).message);
+    }
+
+    // ═══ VOID SCANNER v2: Fetch latest 1m candles for recoil velocity analysis ═══
+    const candles1mMap = new Map<string, Array<{ open: number; close: number; high: number; low: number; volume: number }>>();
+    // Only fetch for nyc-love instruments that have liquidity data
+    const nycLoveInstruments = [...instrumentsNeeded].filter(i => liquidityMap.has(i));
+    if (nycLoveInstruments.length > 0) {
+      const candlePromises = nycLoveInstruments.map(async (pair) => {
+        try {
+          const candleRes = await oandaRequest(
+            `/v3/instruments/${pair}/candles?granularity=M1&count=3&price=M`,
+            "GET", undefined, "practice"
+          ) as { candles?: Array<{ mid: { o: string; h: string; l: string; c: string }; volume: number; complete: boolean }> };
+
+          const candles = (candleRes.candles || [])
+            .filter(c => c.complete) // Only use CLOSED candles (wick test)
+            .map(c => ({
+              open: parseFloat(c.mid.o),
+              high: parseFloat(c.mid.h),
+              low: parseFloat(c.mid.l),
+              close: parseFloat(c.mid.c),
+              volume: c.volume,
+            }));
+          if (candles.length > 0) {
+            candles1mMap.set(pair, candles);
+          }
+        } catch (err) {
+          console.warn(`[VOID-SCANNER] Failed to fetch 1m candles for ${pair}:`, (err as Error).message);
+        }
+      });
+      await Promise.all(candlePromises);
+      console.log(`[VOID-SCANNER] Fetched 1m candles for ${candles1mMap.size}/${nycLoveInstruments.length} pairs`);
     }
 
     // ═══ V12.5 LOGICAL RISK MANAGER — Matrix-Flip + JPY Emergency ═══
@@ -1259,20 +1455,25 @@ Deno.serve(async (req) => {
         }
       }
 
-      // ═══ VOID SCANNER — Liquidity-Aware Bailout ═══
-      // Scans order book elephants while trade is live. If price is sinking into a void
-      // where next support/resistance is beyond the SL, bail early to save capital.
-      // Only fires for nyc-love agent and when trade is actively losing.
+      // ═══ VOID SCANNER v2 — Liquidity-Aware Bailout with Elasticity ═══
+      // Phase 1: Structural scan (elephants, floor, ceiling)
+      // Phase 2: Time-in-Void filter (60s candle-close confirmation)
+      // Phase 3: Recoil Velocity check (suppress fake-out spikes)
+      // Only fires for nyc-love agent and when trade is past MAE holdoff.
       if (decision.action === "hold" && isNycLoveAgent && !maeHoldoffActive) {
         const liqBuckets = liquidityMap.get(order.currency_pair);
         if (liqBuckets && liqBuckets.length > 0) {
-          const voidResult = checkLiquidityBailout(
+          const candles1m = candles1mMap.get(order.currency_pair) || null;
+          const voidResult = await evaluateVoidBailout(
+            order.id,
             order.currency_pair,
             order.direction,
             entryPrice,
             currentPrice,
             dynamicSl.slPrice,
             liqBuckets,
+            candles1m,
+            supabase,
           );
           if (voidResult.shouldBail) {
             console.log(`[VOID-SCANNER] ${order.currency_pair} ${order.direction}: ${voidResult.bailReason} | PnL=${decision.currentPnlPips.toFixed(1)}p`);
