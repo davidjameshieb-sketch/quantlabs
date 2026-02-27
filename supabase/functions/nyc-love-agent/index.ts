@@ -1026,11 +1026,22 @@ Deno.serve(async (req) => {
     const liquidityOverrides = applySympathicLiquidityRouting(states, log);
 
     // ══════════════════════════════════════════
-    // PHASE 3: NEURO-MATRIX EXECUTION
+    // PHASE 3: APEX ALLOCATION — Score, Rank, Strike the Best
     // ══════════════════════════════════════════
-    // Each instrument gets its conviction score enhanced by cross-pair signals,
-    // then executed with sympathetic sizing.
-    log.push('🧬 NEURO-MATRIX: Phase 3 — Conviction scoring + execution...');
+    // Instead of executing each instrument independently, we score ALL of them,
+    // rank by conviction, and route capital to the single best setup (Apex Target).
+    // Secondary targets only fire if conviction delta > 15% (truly independent setups).
+    log.push('🧬 NEURO-MATRIX: Phase 3 — Apex Allocation...');
+
+    // Score every instrument through the full Nexus pipeline
+    interface ScoredTarget {
+      state: InstrumentState;
+      nexus: NexusScore;
+      gateStatus: 'executable' | 'spread_blocked' | 'elephant_blocked' | 'nexus_blocked' | 'no_direction' | 'has_position';
+      gateDetail: string;
+    }
+
+    const scoredTargets: ScoredTarget[] = [];
 
     for (const state of states) {
       const { instrument, pricing, sovereignDir, sovDebug, adi, volBuffer, velocity, obi, nerve, hasPosition } = state;
@@ -1041,22 +1052,23 @@ Deno.serve(async (req) => {
       if (hasPosition) {
         log.push(`${tag} Already has open position, skipping`);
         executions.push({ instrument, direction: '-', status: 'skipped', detail: 'existing_position' });
+        scoredTargets.push({ state, nexus: { probability: 0, tier: 'BLOCKED', executionDir: 'BUY', spreadBypass: false, detail: 'has_position' }, gateStatus: 'has_position', gateDetail: 'existing_position' });
         continue;
       }
 
       if (!sovereignDir) {
         executions.push({ instrument, direction: '-', status: 'no_direction', detail: sovDebug });
+        scoredTargets.push({ state, nexus: { probability: 0, tier: 'BLOCKED', executionDir: 'BUY', spreadBypass: false, detail: sovDebug }, gateStatus: 'no_direction', gateDetail: sovDebug });
         continue;
       }
 
       log.push(`${tag} 🔺 ADI: ${adi.detail}`);
       if (adi.isRetailHunt && adi.fadeDirection) {
-        log.push(`${tag} ⚠️ RETAIL HUNT DETECTED — sovereign says ${sovereignDir} but only ${adi.confirmedCrosses}/${adi.totalCrosses} crosses confirm. Preparing FADE to ${adi.fadeDirection}.`);
+        log.push(`${tag} ⚠️ RETAIL HUNT — FADE to ${adi.fadeDirection}`);
       }
       log.push(`${tag} 🧠 BREATH: ${volBuffer.detail}`);
       log.push(`${tag} 📊 OBI: ${obi.detail}`);
 
-      // ── NEXUS PROBABILITY (with Pain Memory + Synapse Boost) ──
       const nexus = calculateNexusProbability(
         sovereignDir, adi, obi, volBuffer, nerve, velocity.ratio,
         painMemory.weight,
@@ -1064,89 +1076,139 @@ Deno.serve(async (req) => {
       );
       log.push(`${tag} 🎯 NEXUS: ${nexus.detail}`);
 
+      // Gate checks (don't execute yet — just classify)
+      let gateStatus: ScoredTarget['gateStatus'] = 'executable';
+      let gateDetail = '';
+
       if (nexus.tier === 'BLOCKED') {
-        log.push(`${tag} ❌ NEXUS BLOCKED — conviction too low (${(nexus.probability * 100).toFixed(1)}%)`);
-        executions.push({ instrument, direction: sovereignDir, status: 'nexus_blocked', detail: nexus.detail, nexusP: nexus.probability });
-        continue;
+        gateStatus = 'nexus_blocked';
+        gateDetail = nexus.detail;
+        log.push(`${tag} ❌ NEXUS BLOCKED (${(nexus.probability * 100).toFixed(1)}%)`);
+      } else {
+        const maxSpread = volBuffer.adaptiveSL * 0.20;
+        if (pricing.spread > maxSpread) {
+          gateStatus = 'spread_blocked';
+          gateDetail = `spread=${pricing.spread.toFixed(1)} > cap=${maxSpread.toFixed(1)}`;
+          log.push(`${tag} Spread Shield: ${gateDetail}`);
+        } else if (obi.elephantAction === 'ELEPHANT_REJECTION' || obi.elephantAction === 'WAIT_FOR_ABSORPTION') {
+          gateStatus = 'elephant_blocked';
+          gateDetail = obi.absorptionDetail;
+          log.push(`${tag} 🐘 ${obi.elephantAction}: ${obi.absorptionDetail}`);
+        }
       }
 
-      // ── Spread Shield: HARD CAP ──
-      const maxSpread = volBuffer.adaptiveSL * 0.20;
-      if (pricing.spread > maxSpread) {
-        log.push(`${tag} Spread Shield HARD CAP: ${pricing.spread.toFixed(1)} pips > ${maxSpread.toFixed(1)} — NO bypass`);
-        executions.push({ instrument, direction: sovereignDir, status: 'spread_blocked', detail: `spread=${pricing.spread.toFixed(1)} > cap=${maxSpread.toFixed(1)}` });
-        continue;
-      }
-
-      // ── ELEPHANT GATE ──
-      if (obi.elephantAction === 'ELEPHANT_REJECTION') {
-        log.push(`${tag} 🐘 ELEPHANT REJECTION — holding fire.`);
-        executions.push({ instrument, direction: sovereignDir, status: 'elephant_rejection', detail: obi.absorptionDetail, nexusP: nexus.probability });
-        continue;
-      }
-      if (obi.elephantAction === 'WAIT_FOR_ABSORPTION') {
-        log.push(`${tag} 🐘 ABSORPTION ZONE — waiting for resolution.`);
-        executions.push({ instrument, direction: sovereignDir, status: 'absorption_wait', detail: obi.absorptionDetail, nexusP: nexus.probability });
-        continue;
-      }
-      if (obi.elephantAction === 'STOP_RUN_CAPTURE') {
-        log.push(`${tag} 🎯 STOP-RUN CAPTURE MODE — liquidity pocket @ ${obi.stopRunTarget?.toFixed(pricePrecision(instrument))}`);
-      } else if (obi.elephantAction === 'STRIKE_THROUGH') {
+      if (obi.elephantAction === 'STOP_RUN_CAPTURE' && gateStatus === 'executable') {
+        log.push(`${tag} 🎯 STOP-RUN CAPTURE — liquidity pocket @ ${obi.stopRunTarget?.toFixed(pricePrecision(instrument))}`);
+      } else if (obi.elephantAction === 'STRIKE_THROUGH' && gateStatus === 'executable') {
         log.push(`${tag} 🐘 STRIKE THROUGH — ${obi.absorptionDetail}`);
       }
 
-      // ── Predatory Sizing: tier + sympathetic liquidity override ──
-      const tierMultiplier = nexus.tier === 'OMNI_STRIKE' ? 1.0 : 0.5;
-      const sympatheticMultiplier = liquidityOverrides[instrument] || 1.0;
-      const combinedMultiplier = tierMultiplier * sympatheticMultiplier;
-      const pipValueUSD = instrument.includes('JPY')
-        ? 0.01 / (pricing.mid > 1 ? pricing.mid : 1)
-        : 0.0001;
-      const rawUnits = Math.floor(riskDollars / (volBuffer.adaptiveSL * pipValueUSD));
-      const units = Math.max(100, Math.floor(rawUnits * combinedMultiplier));
+      scoredTargets.push({ state, nexus, gateStatus, gateDetail });
+    }
 
-      // ── Execute using NEXUS DIRECTION ──
-      const execDir = nexus.executionDir;
-      const sizingLabel = sympatheticMultiplier !== 1.0 ? ` [SYMPATHETIC ${sympatheticMultiplier}x]` : '';
-      log.push(`${tag} 🚀 EXECUTING: ${execDir} ${units} units (${nexus.tier} P=${(nexus.probability * 100).toFixed(1)}%) SL=${volBuffer.adaptiveSL} TP=${volBuffer.adaptiveTP}${execDir !== sovereignDir ? ` [FADED from ${sovereignDir}]` : ''}${sizingLabel}`);
+    // ── APEX RANKING: Sort executable targets by conviction ──
+    const executableTargets = scoredTargets
+      .filter(t => t.gateStatus === 'executable')
+      .sort((a, b) => b.nexus.probability - a.nexus.probability);
 
-      const signalId = `nexus-${instrument}-${Date.now()}`;
-      const { data: slotResult } = await sb.rpc('try_acquire_blend_slot', {
-        p_agent_id: AGENT_ID,
-        p_currency_pair: instrument,
-        p_user_id: userId,
-        p_signal_id: signalId,
-        p_direction: execDir === 'BUY' ? 'long' : 'short',
-        p_units: units,
-        p_environment: ENVIRONMENT,
-        p_confidence_score: nexus.probability,
-        p_requested_price: pricing.mid,
-      });
+    // Log blocked targets
+    for (const t of scoredTargets) {
+      if (t.gateStatus !== 'executable' && t.gateStatus !== 'has_position' && t.gateStatus !== 'no_direction') {
+        executions.push({
+          instrument: t.state.instrument,
+          direction: t.state.sovereignDir || '-',
+          status: t.gateStatus,
+          detail: t.gateDetail,
+          nexusP: t.nexus.probability,
+        });
+      }
+    }
 
-      if (!slotResult) {
-        log.push(`${tag} Slot occupied (blend lock), skipping`);
-        executions.push({ instrument, direction: sovereignDir, status: 'slot_blocked', detail: 'blend slot occupied' });
-        continue;
+    if (executableTargets.length === 0) {
+      log.push('🛑 NEURO-MATRIX: All tentacles blocked. Waiting for clearer global divergence.');
+    } else {
+      // ── APEX TARGET: The single best setup gets primary capital ──
+      const apex = executableTargets[0];
+      const apexTag = `[${apex.state.instrument}]`;
+
+      // Determine if secondary targets are truly independent (conviction delta > 15%)
+      const secondaryTargets = executableTargets.slice(1).filter(t =>
+        apex.nexus.probability - t.nexus.probability < 0.15
+      );
+
+      // Total capital pool: apex gets 1.0x or 1.5x if no secondaries
+      const apexSizingBoost = secondaryTargets.length === 0 ? 1.5 : 1.0;
+
+      log.push(`⚡ APEX TARGET: ${apex.state.instrument} (P=${(apex.nexus.probability * 100).toFixed(1)}%) — ${apexSizingBoost}x capital allocation`);
+      if (secondaryTargets.length > 0) {
+        log.push(`⚡ SECONDARY: ${secondaryTargets.map(t => `${t.state.instrument}(${(t.nexus.probability * 100).toFixed(0)}%)`).join(', ')} — 0.5x allocation`);
       }
 
-      const orderId = slotResult as string;
-      const result = await placeMarketOrder(instrument, units, execDir, pricing.bid, pricing.ask, volBuffer.adaptiveSL, volBuffer.adaptiveTP, apiToken, accountId);
+      // Execute targets in priority order
+      const allTargetsToExecute = [
+        { target: apex, sizeMultiplier: apexSizingBoost },
+        ...secondaryTargets.map(t => ({ target: t, sizeMultiplier: 0.5 })),
+      ];
 
-      if (result.success) {
-        const entryPrice = result.fillPrice || (execDir === 'BUY' ? pricing.ask : pricing.bid);
-        log.push(`${tag} ✅ NEXUS FILLED — Trade ID: ${result.tradeId} @ ${entryPrice.toFixed(pricePrecision(instrument))} | SL=${volBuffer.adaptiveSL} TP=${volBuffer.adaptiveTP}${execDir !== sovereignDir ? ' [FADE]' : ''}${sizingLabel}`);
-        await sb.from('oanda_orders').update({
-          status: 'filled',
-          oanda_trade_id: result.tradeId || null,
-          entry_price: entryPrice,
-          session_label: 'newyork',
-          spread_at_entry: pricing.spread,
-        }).eq('id', orderId);
-        executions.push({ instrument, direction: execDir, status: 'filled', detail: `tradeId=${result.tradeId} P=${(nexus.probability * 100).toFixed(1)}%${execDir !== sovereignDir ? ' FADED' : ''}${sizingLabel}`, nexusP: nexus.probability });
-      } else {
-        log.push(`${tag} ❌ REJECTED — ${result.error}`);
-        await sb.from('oanda_orders').update({ status: 'rejected', error_message: result.error?.slice(0, 500) }).eq('id', orderId);
-        executions.push({ instrument, direction: sovereignDir, status: 'rejected', detail: result.error || 'unknown' });
+      for (const { target, sizeMultiplier } of allTargetsToExecute) {
+        const { state, nexus } = target;
+        const { instrument, pricing, sovereignDir, volBuffer, obi } = state;
+        const tag = `[${instrument}]`;
+
+        const tierMultiplier = nexus.tier === 'OMNI_STRIKE' ? 1.0 : 0.5;
+        const sympatheticMultiplier = liquidityOverrides[instrument] || 1.0;
+        const combinedMultiplier = tierMultiplier * sympatheticMultiplier * sizeMultiplier;
+        const pipValueUSD = instrument.includes('JPY')
+          ? 0.01 / (pricing.mid > 1 ? pricing.mid : 1)
+          : 0.0001;
+        const rawUnits = Math.floor(riskDollars / (volBuffer.adaptiveSL * pipValueUSD));
+        const units = Math.max(100, Math.floor(rawUnits * combinedMultiplier));
+
+        const execDir = nexus.executionDir;
+        const isApex = target === apex;
+        const roleLabel = isApex ? 'APEX' : 'SECONDARY';
+        const sizingLabel = `[${roleLabel} ${sizeMultiplier}x${sympatheticMultiplier !== 1.0 ? ` SYMPATH ${sympatheticMultiplier}x` : ''}]`;
+
+        log.push(`${tag} 🚀 EXECUTING: ${execDir} ${units} units (${nexus.tier} P=${(nexus.probability * 100).toFixed(1)}%) SL=${volBuffer.adaptiveSL} TP=${volBuffer.adaptiveTP} ${sizingLabel}${execDir !== sovereignDir ? ` [FADED from ${sovereignDir}]` : ''}`);
+
+        const signalId = `nexus-${instrument}-${Date.now()}`;
+        const { data: slotResult } = await sb.rpc('try_acquire_blend_slot', {
+          p_agent_id: AGENT_ID,
+          p_currency_pair: instrument,
+          p_user_id: userId,
+          p_signal_id: signalId,
+          p_direction: execDir === 'BUY' ? 'long' : 'short',
+          p_units: units,
+          p_environment: ENVIRONMENT,
+          p_confidence_score: nexus.probability,
+          p_requested_price: pricing.mid,
+        });
+
+        if (!slotResult) {
+          log.push(`${tag} Slot occupied (blend lock), skipping`);
+          executions.push({ instrument, direction: sovereignDir || '-', status: 'slot_blocked', detail: 'blend slot occupied' });
+          continue;
+        }
+
+        const orderId = slotResult as string;
+        const result = await placeMarketOrder(instrument, units, execDir, pricing.bid, pricing.ask, volBuffer.adaptiveSL, volBuffer.adaptiveTP, apiToken, accountId);
+
+        if (result.success) {
+          const entryPrice = result.fillPrice || (execDir === 'BUY' ? pricing.ask : pricing.bid);
+          log.push(`${tag} ✅ FILLED — Trade ID: ${result.tradeId} @ ${entryPrice.toFixed(pricePrecision(instrument))} ${sizingLabel}`);
+          await sb.from('oanda_orders').update({
+            status: 'filled',
+            oanda_trade_id: result.tradeId || null,
+            entry_price: entryPrice,
+            session_label: 'newyork',
+            spread_at_entry: pricing.spread,
+          }).eq('id', orderId);
+          executions.push({ instrument, direction: execDir, status: 'filled', detail: `tradeId=${result.tradeId} P=${(nexus.probability * 100).toFixed(1)}% ${roleLabel}${execDir !== sovereignDir ? ' FADED' : ''}`, nexusP: nexus.probability });
+        } else {
+          log.push(`${tag} ❌ REJECTED — ${result.error}`);
+          await sb.from('oanda_orders').update({ status: 'rejected', error_message: result.error?.slice(0, 500) }).eq('id', orderId);
+          executions.push({ instrument, direction: sovereignDir || '-', status: 'rejected', detail: result.error || 'unknown' });
+        }
       }
     }
 
