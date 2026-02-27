@@ -13,6 +13,7 @@ import {
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
 import CitadelOrderBook, { type OrderBookEntry } from '@/components/matrix/CitadelOrderBook';
+import PredatorPreyRubberband from '@/components/matrix/PredatorPreyRubberband';
 
 // ── Constants ──
 const CORE_AGENTS = ['atlas-hedge-m4', 'atlas-hedge-m6', 'atlas-hedge-m8', 'atlas-hedge-m9'];
@@ -1029,17 +1030,16 @@ const TheCitadel = () => {
                       );
                     })}
                   </div>
-                  <div className="flex items-center gap-3 text-[10px] text-slate-500">
-                    <span>
-                      <Crown className="w-3 h-3 inline text-emerald-500 mr-1" />
-                      Predator: <strong className="text-slate-700">{FLAGS[matrix.predator]} {matrix.predator}</strong>
-                    </span>
-                    <span>vs</span>
-                    <span>
-                      <Skull className="w-3 h-3 inline text-red-500 mr-1" />
-                      Prey: <strong className="text-slate-700">{FLAGS[matrix.prey]} {matrix.prey}</strong>
-                    </span>
-                  </div>
+                  <PredatorPreyRubberband
+                    predator={matrix.predator}
+                    prey={matrix.prey}
+                    predatorScore={matrix.currencyScores[matrix.predator] ?? 0}
+                    preyScore={matrix.currencyScores[matrix.prey] ?? 0}
+                    rankGap={Math.abs(
+                      (matrix.currencyRanks[matrix.predator] ?? 1) -
+                      (matrix.currencyRanks[matrix.prey] ?? 8)
+                    )}
+                  />
                 </div>
               ) : (
                 <div className="text-sm text-slate-300">Loading matrix…</div>
