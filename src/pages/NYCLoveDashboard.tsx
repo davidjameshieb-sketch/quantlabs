@@ -206,23 +206,13 @@ const NYCLoveDashboard = () => {
     try {
       const { data } = await supabase
         .from('market_liquidity_map')
-        .select('currency_pair, long_clusters, short_clusters, current_price')
+        .select('currency_pair, all_buckets, current_price')
         .in('currency_pair', INSTRUMENTS);
 
       if (data && data.length > 0) {
         const mapped: Record<string, OrderBookData> = {};
         for (const row of data) {
-          const longs = (row.long_clusters || []) as { price: number; pct: number }[];
-          const shorts = (row.short_clusters || []) as { price: number; pct: number }[];
-          // Merge into unified bucket list
-          const priceSet = new Set<number>();
-          longs.forEach(l => priceSet.add(l.price));
-          shorts.forEach(s => priceSet.add(s.price));
-          const buckets = Array.from(priceSet).map(price => ({
-            price,
-            longPct: longs.find(l => l.price === price)?.pct || 0,
-            shortPct: shorts.find(s => s.price === price)?.pct || 0,
-          }));
+          const buckets = ((row as any).all_buckets || []) as { price: number; longPct: number; shortPct: number }[];
           mapped[row.currency_pair] = {
             price: row.current_price || 0,
             longPct: 0,

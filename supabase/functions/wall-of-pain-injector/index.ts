@@ -126,6 +126,7 @@ Deno.serve(async (req) => {
             top_stop_clusters: allClusters,
             long_clusters: longClusters,
             short_clusters: shortClusters,
+            all_buckets: buckets,
             bucket_width: ob.bucketWidth,
             wall_of_pain_price: wallOfPain?.price || null,
             wall_of_pain_type: wallOfPain?.type || null,

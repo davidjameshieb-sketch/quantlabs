@@ -1,0 +1,1 @@
+ALTER TABLE public.market_liquidity_map ADD COLUMN IF NOT EXISTS all_buckets jsonb DEFAULT '[]'::jsonb;

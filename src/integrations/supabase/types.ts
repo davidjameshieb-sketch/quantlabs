@@ -316,6 +316,7 @@ export type Database = {
       }
       market_liquidity_map: {
         Row: {
+          all_buckets: Json | null
           bucket_width: string | null
           created_at: string
           currency_pair: string
@@ -330,6 +331,7 @@ export type Database = {
           wall_of_pain_type: string | null
         }
         Insert: {
+          all_buckets?: Json | null
           bucket_width?: string | null
           created_at?: string
           currency_pair: string
@@ -344,6 +346,7 @@ export type Database = {
           wall_of_pain_type?: string | null
         }
         Update: {
+          all_buckets?: Json | null
           bucket_width?: string | null
           created_at?: string
           currency_pair?: string
