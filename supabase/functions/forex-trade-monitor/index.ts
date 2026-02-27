@@ -1217,9 +1217,16 @@ Deno.serve(async (req) => {
 
       // ═══ MAE-BASED KILL SWITCH (0.65R) ═══
       // NATURAL DEATH: Skip for atlas-hedge agents — let OANDA SL handle it
+      // NYC-LOVE HOLDOFF: 15-minute grace period — NYC session needs time to decide direction
       const isAtlasHedgeAgent = (order.agent_id || '').startsWith('atlas-hedge-');
+      const isNycLoveAgent = order.agent_id === 'nyc-love';
       const MAE_KILL_THRESHOLD = 0.65;
-      if (!isAtlasHedgeAgent && maeRValue >= MAE_KILL_THRESHOLD && decision.action === "hold" && currentMfeR < 0.15) {
+      const MAE_KILL_MIN_HOLD_MINUTES = isNycLoveAgent ? 15 : 0;
+      const maeHoldoffActive = tradeAgeMinutes < MAE_KILL_MIN_HOLD_MINUTES;
+      
+      if (maeHoldoffActive && maeRValue >= MAE_KILL_THRESHOLD && decision.action === "hold") {
+        console.log(`[MAE-KILL] ${order.currency_pair} ${order.direction}: MAE=${maeRValue}R but HOLDOFF active (${tradeAgeMinutes.toFixed(1)}min < ${MAE_KILL_MIN_HOLD_MINUTES}min) — letting NYC session breathe`);
+      } else if (!isAtlasHedgeAgent && !maeHoldoffActive && maeRValue >= MAE_KILL_THRESHOLD && decision.action === "hold" && currentMfeR < 0.15) {
         console.log(`[MAE-KILL] ${order.currency_pair} ${order.direction}: MAE=${maeRValue}R >= ${MAE_KILL_THRESHOLD}R AND MFE=${currentMfeR.toFixed(2)}R < 0.15R — KILLING trade (no edge shown, pure adverse)`);
         decision.action = "mae-kill" as typeof decision.action;
         decision.reason = `MAE kill switch: ${maeRValue}R adverse + MFE=${currentMfeR.toFixed(2)}R < 0.15R — edge never materialised`;

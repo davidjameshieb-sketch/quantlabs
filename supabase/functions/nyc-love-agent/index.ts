@@ -304,10 +304,9 @@ Deno.serve(async (req) => {
         finalDirection = sovereignDir;
         log.push(`${tag} STRONG SIGNAL: Sovereign=${sovereignDir} + Velocity spike (${velocity.ratio.toFixed(1)}x) AGREE`);
       } else if (sovereignDir && velocity.spike) {
-        // Divergence — skip
-        log.push(`${tag} Direction conflict: Sovereign=${sovereignDir} vs Velocity=${velocity.direction}. Skipping.`);
-        executions.push({ instrument, direction: '-', status: 'direction_conflict', detail: `sov=${sovereignDir} vel=${velocity.direction}` });
-        continue;
+        // Divergence — downgrade to sovereign-only (NYC session needs time to decide)
+        finalDirection = sovereignDir;
+        log.push(`${tag} Velocity conflict: Sovereign=${sovereignDir} vs Velocity=${velocity.direction}. Using sovereign-only (NYC breathe mode).`);
       } else if (sovereignDir && !velocity.spike) {
         // No velocity confirmation — still trade if sovereign is clear
         finalDirection = sovereignDir;
