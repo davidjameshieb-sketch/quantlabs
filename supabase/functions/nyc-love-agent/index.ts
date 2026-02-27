@@ -507,12 +507,13 @@ function analyzeNexusLiquidity(
 // ══════════════════════════════════════════
 // Fuses all three pillars + sovereign direction into a single
 // probabilistic conviction score.
+// NOW accepts painWeight for adaptive synaptic weighting.
 
 interface NexusScore {
   probability: number;          // 0.0 to 1.0
   tier: 'OMNI_STRIKE' | 'PROBE' | 'SOVEREIGN_ONLY' | 'BLOCKED';
   executionDir: 'BUY' | 'SELL'; // May differ from sovereignDir (FADE)
-  spreadBypass: boolean;        // >95% bypasses spread shield
+  spreadBypass: boolean;
   detail: string;
 }
 
@@ -523,6 +524,8 @@ function calculateNexusProbability(
   volBuffer: VolatilityBuffer,
   nerve: { signal: 'NOISE' | 'CLEAN_FLOW'; variance: number },
   velocityRatio: number,
+  painWeight: number = 1.0, // 0.0–1.0, lower = system is hurting → more conservative
+  synapseBoost: number = 0, // cross-pair leading synapse bonus
 ): NexusScore {
   if (!sovereignDir) {
     return { probability: 0, tier: 'BLOCKED', executionDir: 'BUY', spreadBypass: false, detail: 'no sovereign direction' };
@@ -534,19 +537,15 @@ function calculateNexusProbability(
   let score = 0.40; // Sovereign baseline = 40%
 
   // ADI Truth Filter: +25% if confirmed, -30% if retail hunt
+  // Pain Memory: scale the hunt penalty by painWeight (hurting = bigger penalty)
   if (adi.isRetailHunt) {
-    score -= 0.30;
+    score -= 0.30 * (2.0 - painWeight); // painWeight=1.0 → -0.30, painWeight=0.5 → -0.45
   } else {
     const confirmBonus = adi.totalCrosses > 0 ? (adi.confirmedCrosses / adi.totalCrosses) * 0.25 : 0.10;
-    score += confirmBonus;
+    score += confirmBonus * painWeight; // hurting = less trust in confirmations
   }
 
-  // OBI Elephant Absorption Model:
-  // STOP_RUN_CAPTURE = +20% (highest conviction — liquidity vacuum incoming)
-  // STRIKE_THROUGH = +15% (elephant being consumed or friendly)
-  // PATH_CLEAR = +5% (no obstacles)
-  // WAIT_FOR_ABSORPTION = -5% (uncertain — velocity ambiguous)
-  // ELEPHANT_REJECTION = -15% (elephant winning — fade or hold)
+  // OBI Elephant Absorption Model
   if (obi.elephantAction === 'STOP_RUN_CAPTURE') {
     score += 0.20;
   } else if (obi.elephantAction === 'STRIKE_THROUGH') {
@@ -559,28 +558,31 @@ function calculateNexusProbability(
     score -= 0.15;
   }
 
-  // Nerve Tension: +10% for clean flow, -5% for noise
+  // Nerve Tension
   if (nerve.signal === 'CLEAN_FLOW') {
     score += 0.10;
   } else {
     score -= 0.05;
   }
 
-  // Velocity confirmation: +10% if volume spike aligns
-  if (velocityRatio > 1.5) {
+  // Velocity confirmation: scaled by painWeight (hurting = need MORE velocity)
+  const velocityThreshold = 1.5 + (1.0 - painWeight) * 0.5; // painWeight=0.5 → need 1.75x
+  if (velocityRatio > velocityThreshold) {
     score += 0.10;
   }
 
-  // Volatility buffer alignment: slight bonus if breath is normal
+  // Volatility buffer alignment
   if (volBuffer.breathRatio >= 0.8 && volBuffer.breathRatio <= 1.3) {
     score += 0.05;
   }
 
+  // Cross-pair Leading Synapse boost
+  if (synapseBoost > 0) {
+    score += synapseBoost;
+  }
+
   const probability = Math.max(0, Math.min(1, score));
-  // HARD CAP: Never bypass spread that exceeds 20% of adaptive SL
-  // Even at 95%+ conviction, a 5-pip spread on a 20-pip SL = dead trade
-  const maxBypassSpread = volBuffer.adaptiveSL * 0.20;
-  const spreadBypass = false; // REMOVED — hard cap enforced at execution level
+  const spreadBypass = false;
 
   let tier: NexusScore['tier'];
   if (probability >= NEXUS_CONFIDENCE_THRESHOLD) tier = 'OMNI_STRIKE';
@@ -589,14 +591,171 @@ function calculateNexusProbability(
   else tier = 'BLOCKED';
 
   const fadedLabel = executionDir !== sovereignDir ? ` FADED→${executionDir}` : '';
+  const painLabel = painWeight < 0.9 ? ` pain=${painWeight.toFixed(2)}` : '';
+  const synapseLabel = synapseBoost > 0 ? ` synapse=+${(synapseBoost * 100).toFixed(0)}%` : '';
 
   return {
     probability: Math.round(probability * 1000) / 1000,
     tier,
     executionDir,
     spreadBypass,
-    detail: `P=${(probability * 100).toFixed(1)}% tier=${tier}${fadedLabel} bypass=${spreadBypass}`,
+    detail: `P=${(probability * 100).toFixed(1)}% tier=${tier}${fadedLabel}${painLabel}${synapseLabel}`,
   };
+}
+
+// ══════════════════════════════════════════
+// PAIN AVOIDANCE MEMORY (Adaptive Synaptic Weighting)
+// ══════════════════════════════════════════
+// Reads recent losses from oanda_orders. If the system has been
+// taking hits, it "turtles up" — lower painWeight = more conservative.
+// Recovers over time as wins return.
+
+async function loadPainWeight(sb: ReturnType<typeof createClient>): Promise<{ weight: number; recentLosses: number; recentWins: number; detail: string }> {
+  try {
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+    const { data: recentTrades } = await sb
+      .from('oanda_orders')
+      .select('entry_price, exit_price, direction, currency_pair')
+      .eq('agent_id', AGENT_ID)
+      .eq('environment', ENVIRONMENT)
+      .in('status', ['filled', 'closed'])
+      .not('exit_price', 'is', null)
+      .not('entry_price', 'is', null)
+      .gt('closed_at', twoHoursAgo)
+      .order('closed_at', { ascending: false })
+      .limit(10);
+
+    if (!recentTrades || recentTrades.length === 0) {
+      return { weight: 1.0, recentLosses: 0, recentWins: 0, detail: 'No recent trades — full confidence' };
+    }
+
+    let wins = 0, losses = 0, consecutiveLosses = 0, maxConsecutive = 0;
+    for (const t of recentTrades) {
+      const isJPY = t.currency_pair?.includes('JPY');
+      const scale = isJPY ? 100 : 10000;
+      const pips = t.direction === 'long'
+        ? (Number(t.exit_price) - Number(t.entry_price)) * scale
+        : (Number(t.entry_price) - Number(t.exit_price)) * scale;
+      if (pips > 0) {
+        wins++;
+        consecutiveLosses = 0;
+      } else {
+        losses++;
+        consecutiveLosses++;
+        maxConsecutive = Math.max(maxConsecutive, consecutiveLosses);
+      }
+    }
+
+    // Pain formula: each consecutive loss reduces weight by 0.15
+    // 0 losses = 1.0, 1 = 0.85, 2 = 0.70, 3+ = 0.55 (floor)
+    const weight = Math.max(0.55, 1.0 - maxConsecutive * 0.15);
+
+    return {
+      weight,
+      recentLosses: losses,
+      recentWins: wins,
+      detail: `W=${wins} L=${losses} maxConsecL=${maxConsecutive} → painWeight=${weight.toFixed(2)}`,
+    };
+  } catch {
+    return { weight: 1.0, recentLosses: 0, recentWins: 0, detail: 'Pain memory unavailable — full confidence' };
+  }
+}
+
+// ══════════════════════════════════════════
+// NEURO-MATRIX: Cross-Pair Synapse + Sympathetic Liquidity
+// ══════════════════════════════════════════
+
+interface InstrumentState {
+  instrument: string;
+  pricing: { bid: number; ask: number; spread: number; mid: number };
+  sovereignDir: 'BUY' | 'SELL' | null;
+  sovDebug: string;
+  adi: ADIResult;
+  volBuffer: VolatilityBuffer;
+  velocity: { spike: boolean; ratio: number; direction: 'BUY' | 'SELL' | null };
+  obi: OBIResult;
+  nerve: { signal: 'NOISE' | 'CLEAN_FLOW'; variance: number };
+  hasPosition: boolean;
+  candles: { volume: number; close: number; open: number; high: number; low: number }[];
+}
+
+// Leading Synapse: If one pair has a velocity spike, other pairs get a probe bonus
+function calculateSynapseBoosts(
+  states: InstrumentState[],
+  log: string[],
+): Record<string, number> {
+  const boosts: Record<string, number> = {};
+  for (const s of states) boosts[s.instrument] = 0;
+
+  // Find the pair with the highest velocity spike
+  const leader = states
+    .filter(s => s.velocity.spike && s.velocity.ratio >= 2.0)
+    .sort((a, b) => b.velocity.ratio - a.velocity.ratio)[0];
+
+  if (!leader) return boosts;
+
+  log.push(`🧬 LEADING SYNAPSE: ${leader.instrument} velocity=${leader.velocity.ratio.toFixed(1)}x — shockwave detected`);
+
+  // All OTHER pairs in the SAME USD direction get a probe boost
+  // If USD/JPY spikes BUY (USD strong), then EUR/USD should get SELL boost, GBP/USD SELL boost
+  const leaderImpliesUsdStrong = (
+    (leader.instrument.startsWith('USD_') && leader.velocity.direction === 'BUY') ||
+    (!leader.instrument.startsWith('USD_') && leader.velocity.direction === 'SELL')
+  );
+
+  for (const s of states) {
+    if (s.instrument === leader.instrument) continue;
+    if (!s.sovereignDir) continue;
+
+    // Check if this pair's sovereign direction aligns with the leader's USD implication
+    const pairNeedsUsdStrong =
+      (s.instrument.startsWith('USD_') && s.sovereignDir === 'BUY') ||
+      (!s.instrument.startsWith('USD_') && s.sovereignDir === 'SELL');
+
+    if (pairNeedsUsdStrong === leaderImpliesUsdStrong) {
+      // Aligned — leader confirms this pair's direction → PROBE boost
+      const boost = Math.min(0.15, (leader.velocity.ratio - 2.0) * 0.10);
+      boosts[s.instrument] = boost;
+      log.push(`🧬 SYNAPSE → ${s.instrument}: +${(boost * 100).toFixed(0)}% probe boost from ${leader.instrument} shockwave`);
+    }
+  }
+
+  return boosts;
+}
+
+// Sympathetic Liquidity: Compare elephant thickness across pairs, concentrate on weakest wall
+function applySympathicLiquidityRouting(
+  states: InstrumentState[],
+  log: string[],
+): Record<string, number> {
+  // Returns sizing multiplier overrides: >1.0 = concentrate, <1.0 = reduce
+  const overrides: Record<string, number> = {};
+  for (const s of states) overrides[s.instrument] = 1.0;
+
+  // Only applies when multiple pairs have elephants in path
+  const pairsWithElephants = states.filter(s =>
+    s.sovereignDir && !s.hasPosition && s.obi.elephantPrice !== null &&
+    s.obi.elephantAction !== 'ELEPHANT_REJECTION' &&
+    s.obi.elephantAction !== 'WAIT_FOR_ABSORPTION'
+  );
+
+  if (pairsWithElephants.length < 2) return overrides;
+
+  // Find the pair with the THINNEST wall (path of least resistance)
+  const sorted = [...pairsWithElephants].sort((a, b) => a.obi.wallStrength - b.obi.wallStrength);
+  const weakest = sorted[0];
+  const strongest = sorted[sorted.length - 1];
+
+  // Only apply if there's a meaningful difference (>1.5% gap)
+  if (strongest.obi.wallStrength - weakest.obi.wallStrength < 1.5) return overrides;
+
+  log.push(`💧 SYMPATHETIC LIQUIDITY: ${weakest.instrument} wall=${weakest.obi.wallStrength.toFixed(1)}% (weak) vs ${strongest.instrument} wall=${strongest.obi.wallStrength.toFixed(1)}% (thick)`);
+  log.push(`💧 Routing capital: ${weakest.instrument} → 1.5x size, ${strongest.instrument} → 0.5x size`);
+
+  overrides[weakest.instrument] = 1.5;   // Pour through the crack
+  overrides[strongest.instrument] = 0.5;  // Don't fight the thick wall
+
+  return overrides;
 }
 
 // ══════════════════════════════════════════
@@ -707,8 +866,11 @@ function calculateNerveTension(candles: { close: number }[]): { signal: 'NOISE' 
 }
 
 // ══════════════════════════════════════════
-// MAIN HANDLER — SOVEREIGN NEURAL NEXUS
+// MAIN HANDLER — NEURO-MATRIX STATE MACHINE v3
 // ══════════════════════════════════════════
+// Architecture shift: Parallel state aggregation → cross-pair intelligence → execution.
+// No more sequential for-loop. All instruments processed simultaneously,
+// then a single Neuro-Matrix decision engine routes capital.
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
@@ -733,12 +895,14 @@ Deno.serve(async (req) => {
     const accountId = Deno.env.get('OANDA_ACCOUNT_ID')!;
     const sb = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
 
-    // ── 3. NAV + Admin User ──
-    const [nav, adminResult] = await Promise.all([
+    // ── 3. NAV + Admin + Pain Memory (all parallel) ──
+    const [nav, adminResult, painMemory] = await Promise.all([
       getAccountNAV(apiToken, accountId),
       sb.from('user_roles').select('user_id').eq('role', 'admin').limit(1).single(),
+      loadPainWeight(sb),
     ]);
     log.push(`Account NAV: $${nav.toFixed(2)}`);
+    log.push(`🧠 PAIN MEMORY: ${painMemory.detail}`);
     if (nav < 50) {
       return new Response(JSON.stringify({ success: false, reason: 'low_nav', nav, log }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -769,8 +933,6 @@ Deno.serve(async (req) => {
     }
 
     // ── 4. PILLAR 1: ADI — Read pre-cached state first, fetch fresh only if stale ──
-    // The "Latency Tax" fix: execution loop READS state, doesn't FETCH it.
-    // A background invocation or cron should update this every 30s.
     let allPricing: Record<string, { bid: number; ask: number; spread: number; mid: number }> = {};
     let allCandles: Record<string, { volume: number; close: number; open: number; high: number; low: number }[]> = {};
 
@@ -782,16 +944,14 @@ Deno.serve(async (req) => {
       .single();
 
     const cacheAgeMs = cachedAdi?.updated_at ? Date.now() - new Date(cachedAdi.updated_at).getTime() : Infinity;
-    const ADI_CACHE_TTL_MS = 60_000; // 60s stale threshold
+    const ADI_CACHE_TTL_MS = 60_000;
 
     if (cachedAdi?.payload && cacheAgeMs < ADI_CACHE_TTL_MS) {
-      // Use cached pricing + candles to avoid the Latency Tax
       const cached = cachedAdi.payload as { pricing?: Record<string, any>; candles?: Record<string, any[]> };
       allPricing = (cached.pricing || {}) as typeof allPricing;
       allCandles = (cached.candles || {}) as typeof allCandles;
       log.push(`🔺 PILLAR 1: ADI from cache (${Math.round(cacheAgeMs / 1000)}s old) — zero latency tax`);
     } else {
-      // Cache miss or stale — fetch fresh and update cache
       log.push('🔺 PILLAR 1: ADI cache stale — fetching fresh (latency tax incurred)...');
       const allCrossInstruments = [...new Set([...INSTRUMENTS, ...USD_CROSSES])];
       const [freshPricing, ...crossCandleResults] = await Promise.all([
@@ -801,7 +961,6 @@ Deno.serve(async (req) => {
       allPricing = freshPricing;
       allCrossInstruments.forEach((inst, i) => { allCandles[inst] = crossCandleResults[i]; });
 
-      // Persist to cache for next invocation
       await sb.from('sovereign_memory').upsert({
         memory_type: 'adi_cache',
         memory_key: 'live_adi_state',
@@ -813,60 +972,96 @@ Deno.serve(async (req) => {
 
     log.push(`ADI data: ${Object.keys(allPricing).length} priced, ${Object.keys(allCandles).filter(k => (allCandles[k]?.length || 0) > 0).length} with candles`);
 
-    // ── 5. PILLAR 3: Fetch Order Books for all instruments ──
-    log.push('🔺 PILLAR 3: OBI Sniffer — reading order book from liquidity map...');
+    // ══════════════════════════════════════════
+    // PHASE 1: PARALLEL STATE AGGREGATION
+    // ══════════════════════════════════════════
+    // All instruments processed SIMULTANEOUSLY — no sequential loop.
+    // This builds a complete 3D state block for the Neuro-Matrix.
+    log.push('🧬 NEURO-MATRIX: Phase 1 — Parallel state aggregation...');
+
     const orderBooks = await Promise.all(INSTRUMENTS.map(inst => fetchOrderBook(inst, apiToken, sb)));
     const obiMap: Record<string, Awaited<ReturnType<typeof fetchOrderBook>>> = {};
     INSTRUMENTS.forEach((inst, i) => { obiMap[inst] = orderBooks[i]; });
 
-    // ── 6. Scan each instrument through NEXUS ──
-    for (const instrument of INSTRUMENTS) {
+    // Parallel: sovereign direction + position check for ALL instruments
+    const [sovResults, posResults] = await Promise.all([
+      Promise.all(INSTRUMENTS.map(inst => getSovereignDirection(inst, sb))),
+      Promise.all(INSTRUMENTS.map(inst => hasOpenPosition(inst, sb))),
+    ]);
+
+    // Build complete state for each instrument
+    const states: InstrumentState[] = [];
+    for (let i = 0; i < INSTRUMENTS.length; i++) {
+      const instrument = INSTRUMENTS[i];
+      const pricing = allPricing[instrument];
+      if (!pricing) continue;
+
+      const candles = allCandles[instrument] || [];
+      const velocity = detectVelocitySpike(candles);
+      const { direction: sovereignDir, debug: sovDebug } = sovResults[i];
+
+      const adi = sovereignDir ? calculateADI(instrument, sovereignDir, allPricing, allCandles) : {
+        dollarStrength: 0, confirmedCrosses: 0, totalCrosses: 0, isRetailHunt: false, fadeDirection: null, detail: 'no direction',
+      } as ADIResult;
+
+      const volBuffer = calculateNeuralVolatilityBuffer(candles, instrument, pricing);
+      const obi = analyzeNexusLiquidity(obiMap[instrument], sovereignDir || 'BUY', instrument, velocity.ratio);
+      const nerve = calculateNerveTension(candles);
+
+      states.push({
+        instrument, pricing, sovereignDir, sovDebug: sovDebug,
+        adi, volBuffer, velocity, obi, nerve,
+        hasPosition: posResults[i],
+        candles,
+      });
+    }
+
+    // ══════════════════════════════════════════
+    // PHASE 2: CROSS-PAIR INTELLIGENCE
+    // ══════════════════════════════════════════
+    // Leading Synapse detection + Sympathetic Liquidity routing.
+    log.push('🧬 NEURO-MATRIX: Phase 2 — Cross-pair intelligence...');
+
+    const synapseBoosts = calculateSynapseBoosts(states, log);
+    const liquidityOverrides = applySympathicLiquidityRouting(states, log);
+
+    // ══════════════════════════════════════════
+    // PHASE 3: NEURO-MATRIX EXECUTION
+    // ══════════════════════════════════════════
+    // Each instrument gets its conviction score enhanced by cross-pair signals,
+    // then executed with sympathetic sizing.
+    log.push('🧬 NEURO-MATRIX: Phase 3 — Conviction scoring + execution...');
+
+    for (const state of states) {
+      const { instrument, pricing, sovereignDir, sovDebug, adi, volBuffer, velocity, obi, nerve, hasPosition } = state;
       const tag = `[${instrument}]`;
 
-      // Check existing position
-      if (await hasOpenPosition(instrument, sb)) {
+      log.push(`${tag} SOVEREIGN: ${sovDebug}`);
+
+      if (hasPosition) {
         log.push(`${tag} Already has open position, skipping`);
         executions.push({ instrument, direction: '-', status: 'skipped', detail: 'existing_position' });
         continue;
       }
 
-      // Pricing
-      const pricing = allPricing[instrument];
-      if (!pricing) {
-        log.push(`${tag} No pricing data`);
-        continue;
-      }
-
-      // ── Sovereign Direction ──
-      const { direction: sovereignDir, debug: sovDebug } = await getSovereignDirection(instrument, sb);
-      log.push(`${tag} SOVEREIGN: ${sovDebug}`);
       if (!sovereignDir) {
         executions.push({ instrument, direction: '-', status: 'no_direction', detail: sovDebug });
         continue;
       }
 
-      // ── PILLAR 1: ADI Truth Filter ──
-      const adi = calculateADI(instrument, sovereignDir, allPricing, allCandles);
       log.push(`${tag} 🔺 ADI: ${adi.detail}`);
       if (adi.isRetailHunt && adi.fadeDirection) {
-        log.push(`${tag} ⚠️ RETAIL HUNT DETECTED — sovereign says ${sovereignDir} but only ${adi.confirmedCrosses}/${adi.totalCrosses} crosses confirm. Preparing FADE to ${adi.fadeDirection} when gravity kicks in.`);
+        log.push(`${tag} ⚠️ RETAIL HUNT DETECTED — sovereign says ${sovereignDir} but only ${adi.confirmedCrosses}/${adi.totalCrosses} crosses confirm. Preparing FADE to ${adi.fadeDirection}.`);
       }
-
-      // ── PILLAR 2: Neural Volatility Buffer (with tick variance for first 15min) ──
-      const candles = allCandles[instrument] || [];
-      const volBuffer = calculateNeuralVolatilityBuffer(candles, instrument, pricing);
       log.push(`${tag} 🧠 BREATH: ${volBuffer.detail}`);
-
-      // ── PILLAR 3: OBI — Nexus-Grade Liquidity Probe (needs velocity) ──
-      const velocity = detectVelocitySpike(candles);
-      const obi = analyzeNexusLiquidity(obiMap[instrument], sovereignDir, instrument, velocity.ratio);
       log.push(`${tag} 📊 OBI: ${obi.detail}`);
 
-      // ── Nerve (supporting signal — velocity already computed above) ──
-      const nerve = calculateNerveTension(candles);
-
-      // ── NEXUS PROBABILITY ──
-      const nexus = calculateNexusProbability(sovereignDir, adi, obi, volBuffer, nerve, velocity.ratio);
+      // ── NEXUS PROBABILITY (with Pain Memory + Synapse Boost) ──
+      const nexus = calculateNexusProbability(
+        sovereignDir, adi, obi, volBuffer, nerve, velocity.ratio,
+        painMemory.weight,
+        synapseBoosts[instrument] || 0,
+      );
       log.push(`${tag} 🎯 NEXUS: ${nexus.detail}`);
 
       if (nexus.tier === 'BLOCKED') {
@@ -875,42 +1070,45 @@ Deno.serve(async (req) => {
         continue;
       }
 
-      // ── Spread Shield: HARD CAP — max spread = 20% of adaptive SL. Period. ──
+      // ── Spread Shield: HARD CAP ──
       const maxSpread = volBuffer.adaptiveSL * 0.20;
       if (pricing.spread > maxSpread) {
-        log.push(`${tag} Spread Shield HARD CAP: ${pricing.spread.toFixed(1)} pips > ${maxSpread.toFixed(1)} (20% of ${volBuffer.adaptiveSL}p SL) — NO bypass allowed`);
+        log.push(`${tag} Spread Shield HARD CAP: ${pricing.spread.toFixed(1)} pips > ${maxSpread.toFixed(1)} — NO bypass`);
         executions.push({ instrument, direction: sovereignDir, status: 'spread_blocked', detail: `spread=${pricing.spread.toFixed(1)} > cap=${maxSpread.toFixed(1)}` });
         continue;
       }
 
-      // ── ELEPHANT GATE: Absorption logic determines entry timing ──
+      // ── ELEPHANT GATE ──
       if (obi.elephantAction === 'ELEPHANT_REJECTION') {
-        log.push(`${tag} 🐘 ELEPHANT REJECTION — price being pushed back. Holding fire.`);
+        log.push(`${tag} 🐘 ELEPHANT REJECTION — holding fire.`);
         executions.push({ instrument, direction: sovereignDir, status: 'elephant_rejection', detail: obi.absorptionDetail, nexusP: nexus.probability });
         continue;
       }
       if (obi.elephantAction === 'WAIT_FOR_ABSORPTION') {
-        log.push(`${tag} 🐘 ABSORPTION ZONE — velocity ambiguous. Waiting for resolution.`);
+        log.push(`${tag} 🐘 ABSORPTION ZONE — waiting for resolution.`);
         executions.push({ instrument, direction: sovereignDir, status: 'absorption_wait', detail: obi.absorptionDetail, nexusP: nexus.probability });
         continue;
       }
       if (obi.elephantAction === 'STOP_RUN_CAPTURE') {
-        log.push(`${tag} 🎯 STOP-RUN CAPTURE MODE — liquidity pocket @ ${obi.stopRunTarget?.toFixed(pricePrecision(instrument))}. Striking for vacuum.`);
+        log.push(`${tag} 🎯 STOP-RUN CAPTURE MODE — liquidity pocket @ ${obi.stopRunTarget?.toFixed(pricePrecision(instrument))}`);
       } else if (obi.elephantAction === 'STRIKE_THROUGH') {
         log.push(`${tag} 🐘 STRIKE THROUGH — ${obi.absorptionDetail}`);
       }
 
-      // ── Predatory Position Sizing: OMNI_STRIKE = full size, PROBE = half size ──
-      const sizingMultiplier = nexus.tier === 'OMNI_STRIKE' ? 1.0 : 0.5;
+      // ── Predatory Sizing: tier + sympathetic liquidity override ──
+      const tierMultiplier = nexus.tier === 'OMNI_STRIKE' ? 1.0 : 0.5;
+      const sympatheticMultiplier = liquidityOverrides[instrument] || 1.0;
+      const combinedMultiplier = tierMultiplier * sympatheticMultiplier;
       const pipValueUSD = instrument.includes('JPY')
         ? 0.01 / (pricing.mid > 1 ? pricing.mid : 1)
         : 0.0001;
       const rawUnits = Math.floor(riskDollars / (volBuffer.adaptiveSL * pipValueUSD));
-      const units = Math.max(100, Math.floor(rawUnits * sizingMultiplier));
+      const units = Math.max(100, Math.floor(rawUnits * combinedMultiplier));
 
-      // ── Execute using NEXUS DIRECTION (allows Fade override) ──
+      // ── Execute using NEXUS DIRECTION ──
       const execDir = nexus.executionDir;
-      log.push(`${tag} 🚀 EXECUTING: ${execDir} ${units} units (${nexus.tier} P=${(nexus.probability * 100).toFixed(1)}%) SL=${volBuffer.adaptiveSL} TP=${volBuffer.adaptiveTP}${execDir !== sovereignDir ? ` [FADED from ${sovereignDir}]` : ''}`);
+      const sizingLabel = sympatheticMultiplier !== 1.0 ? ` [SYMPATHETIC ${sympatheticMultiplier}x]` : '';
+      log.push(`${tag} 🚀 EXECUTING: ${execDir} ${units} units (${nexus.tier} P=${(nexus.probability * 100).toFixed(1)}%) SL=${volBuffer.adaptiveSL} TP=${volBuffer.adaptiveTP}${execDir !== sovereignDir ? ` [FADED from ${sovereignDir}]` : ''}${sizingLabel}`);
 
       const signalId = `nexus-${instrument}-${Date.now()}`;
       const { data: slotResult } = await sb.rpc('try_acquire_blend_slot', {
@@ -935,8 +1133,8 @@ Deno.serve(async (req) => {
       const result = await placeMarketOrder(instrument, units, execDir, pricing.bid, pricing.ask, volBuffer.adaptiveSL, volBuffer.adaptiveTP, apiToken, accountId);
 
       if (result.success) {
-        const entryPrice = result.fillPrice || (sovereignDir === 'BUY' ? pricing.ask : pricing.bid);
-        log.push(`${tag} ✅ NEXUS FILLED — Trade ID: ${result.tradeId} @ ${entryPrice.toFixed(pricePrecision(instrument))} | SL=${volBuffer.adaptiveSL} TP=${volBuffer.adaptiveTP}${execDir !== sovereignDir ? ` [FADE TRADE]` : ''}`);
+        const entryPrice = result.fillPrice || (execDir === 'BUY' ? pricing.ask : pricing.bid);
+        log.push(`${tag} ✅ NEXUS FILLED — Trade ID: ${result.tradeId} @ ${entryPrice.toFixed(pricePrecision(instrument))} | SL=${volBuffer.adaptiveSL} TP=${volBuffer.adaptiveTP}${execDir !== sovereignDir ? ' [FADE]' : ''}${sizingLabel}`);
         await sb.from('oanda_orders').update({
           status: 'filled',
           oanda_trade_id: result.tradeId || null,
@@ -944,7 +1142,7 @@ Deno.serve(async (req) => {
           session_label: 'newyork',
           spread_at_entry: pricing.spread,
         }).eq('id', orderId);
-        executions.push({ instrument, direction: execDir, status: 'filled', detail: `tradeId=${result.tradeId} P=${(nexus.probability * 100).toFixed(1)}%${execDir !== sovereignDir ? ' FADED' : ''}`, nexusP: nexus.probability });
+        executions.push({ instrument, direction: execDir, status: 'filled', detail: `tradeId=${result.tradeId} P=${(nexus.probability * 100).toFixed(1)}%${execDir !== sovereignDir ? ' FADED' : ''}${sizingLabel}`, nexusP: nexus.probability });
       } else {
         log.push(`${tag} ❌ REJECTED — ${result.error}`);
         await sb.from('oanda_orders').update({ status: 'rejected', error_message: result.error?.slice(0, 500) }).eq('id', orderId);
@@ -955,8 +1153,9 @@ Deno.serve(async (req) => {
     return new Response(JSON.stringify({
       success: true,
       agent: AGENT_ID,
-      engine: 'sovereign-neural-nexus-v2',
+      engine: 'neuro-matrix-v3',
       session: 'newyork',
+      painWeight: painMemory.weight,
       executions,
       log,
       timestamp: new Date().toISOString(),
@@ -964,7 +1163,7 @@ Deno.serve(async (req) => {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
   } catch (err) {
-    console.error('[NYC-LOVE NEXUS] Fatal:', err);
+    console.error('[NYC-LOVE NEURO-MATRIX] Fatal:', err);
     return new Response(JSON.stringify({ success: false, error: (err as Error).message, log }), {
       status: 500,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
