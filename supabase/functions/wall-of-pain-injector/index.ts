@@ -31,12 +31,15 @@ function getOandaCreds(env: string) {
   return { apiToken, accountId, host };
 }
 
-async function oandaGet(url: string, apiToken: string) {
+async function oandaGet(url: string, apiToken: string): Promise<{ data: any; status: number; error?: string }> {
   const res = await fetch(url, {
     headers: { Authorization: `Bearer ${apiToken}`, Accept: "application/json" },
   });
-  if (!res.ok) return null;
-  return res.json();
+  if (!res.ok) {
+    const body = await res.text();
+    return { data: null, status: res.status, error: body };
+  }
+  return { data: await res.json(), status: res.status };
 }
 
 Deno.serve(async (req) => {
@@ -45,8 +48,14 @@ Deno.serve(async (req) => {
   }
 
   try {
-    const env = Deno.env.get("OANDA_ENV") || "live";
-    const { apiToken, accountId, host } = getOandaCreds(env);
+    // Order book is non-account-specific market data — always use practice credentials
+    // (live token may not have order book access; data is identical across environments)
+    const apiToken = Deno.env.get("OANDA_API_TOKEN");
+    const accountId = Deno.env.get("OANDA_ACCOUNT_ID");
+    const host = OANDA_HOSTS.practice;
+    const env = "practice";
+
+    console.log(`[WALL-OF-PAIN] Using env=${env}, host=${host}, hasToken=${!!apiToken}, hasAccount=${!!accountId}`);
 
     if (!apiToken || !accountId) {
       return new Response(
@@ -61,11 +70,18 @@ Deno.serve(async (req) => {
 
     let pairsProcessed = 0;
     let errors = 0;
+    const errorDetails: string[] = [];
 
     for (const instrument of CORE_PAIRS) {
       try {
-        const data = await oandaGet(`${host}/v3/instruments/${instrument}/orderBook`, apiToken);
+        const { data, status, error: fetchErr } = await oandaGet(
+          `${host}/v3/instruments/${instrument}/orderBook`,
+          apiToken
+        );
+
         if (!data?.orderBook) {
+          console.error(`[WALL-OF-PAIN] ${instrument} failed: HTTP ${status} — ${fetchErr?.slice(0, 200)}`);
+          errorDetails.push(`${instrument}: HTTP ${status}`);
           errors++;
           continue;
         }
@@ -101,13 +117,11 @@ Deno.serve(async (req) => {
         // Wall of Pain = the single densest cluster
         const wallOfPain = allClusters[0] || null;
 
-        const pair = instrument.replace("_", "/");
-
-        // Upsert into market_liquidity_map
+        // Store with underscore format (EUR_USD) to match dashboard queries
         const { error: upsertError } = await sb
           .from("market_liquidity_map")
           .upsert({
-            currency_pair: pair,
+            currency_pair: instrument,
             current_price: parseFloat(ob.price),
             top_stop_clusters: allClusters,
             long_clusters: longClusters,
@@ -119,18 +133,21 @@ Deno.serve(async (req) => {
           }, { onConflict: "currency_pair" });
 
         if (upsertError) {
-          console.error(`[WALL-OF-PAIN] Upsert error for ${pair}:`, upsertError);
+          console.error(`[WALL-OF-PAIN] Upsert error for ${instrument}:`, upsertError);
+          errorDetails.push(`${instrument}: upsert failed`);
           errors++;
         } else {
+          console.log(`[WALL-OF-PAIN] ✅ ${instrument}: ${buckets.length} buckets, ${longClusters.length} long clusters, ${shortClusters.length} short clusters`);
           pairsProcessed++;
         }
       } catch (pairErr) {
         console.error(`[WALL-OF-PAIN] Error processing ${instrument}:`, pairErr);
+        errorDetails.push(`${instrument}: ${(pairErr as Error).message}`);
         errors++;
       }
     }
 
-    console.log(`[WALL-OF-PAIN] Processed ${pairsProcessed}/${CORE_PAIRS.length} pairs, ${errors} errors`);
+    console.log(`[WALL-OF-PAIN] Done: ${pairsProcessed}/${CORE_PAIRS.length} pairs, ${errors} errors`);
 
     return new Response(
       JSON.stringify({
@@ -138,6 +155,8 @@ Deno.serve(async (req) => {
         pairsProcessed,
         totalPairs: CORE_PAIRS.length,
         errors,
+        errorDetails: errorDetails.length ? errorDetails : undefined,
+        env,
         timestamp: new Date().toISOString(),
       }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
