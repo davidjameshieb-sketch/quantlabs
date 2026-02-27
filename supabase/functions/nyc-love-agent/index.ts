@@ -510,7 +510,8 @@ function analyzeNexusLiquidity(
 
 interface NexusScore {
   probability: number;          // 0.0 to 1.0
-  tier: 'NEXUS_STRIKE' | 'PROBE' | 'SOVEREIGN_ONLY' | 'BLOCKED';
+  tier: 'OMNI_STRIKE' | 'PROBE' | 'SOVEREIGN_ONLY' | 'BLOCKED';
+  executionDir: 'BUY' | 'SELL'; // May differ from sovereignDir (FADE)
   spreadBypass: boolean;        // >95% bypasses spread shield
   detail: string;
 }
@@ -524,8 +525,11 @@ function calculateNexusProbability(
   velocityRatio: number,
 ): NexusScore {
   if (!sovereignDir) {
-    return { probability: 0, tier: 'BLOCKED', spreadBypass: false, detail: 'no sovereign direction' };
+    return { probability: 0, tier: 'BLOCKED', executionDir: 'BUY', spreadBypass: false, detail: 'no sovereign direction' };
   }
+
+  // Determine execution direction: ADI fade overrides sovereign when hunt detected
+  const executionDir: 'BUY' | 'SELL' = (adi.isRetailHunt && adi.fadeDirection) ? adi.fadeDirection : sovereignDir;
 
   let score = 0.40; // Sovereign baseline = 40%
 
@@ -579,16 +583,19 @@ function calculateNexusProbability(
   const spreadBypass = false; // REMOVED — hard cap enforced at execution level
 
   let tier: NexusScore['tier'];
-  if (probability >= NEXUS_CONFIDENCE_THRESHOLD) tier = 'NEXUS_STRIKE';
+  if (probability >= NEXUS_CONFIDENCE_THRESHOLD) tier = 'OMNI_STRIKE';
   else if (probability >= 0.65) tier = 'PROBE';
   else if (probability >= 0.45) tier = 'SOVEREIGN_ONLY';
   else tier = 'BLOCKED';
 
+  const fadedLabel = executionDir !== sovereignDir ? ` FADED→${executionDir}` : '';
+
   return {
     probability: Math.round(probability * 1000) / 1000,
     tier,
+    executionDir,
     spreadBypass,
-    detail: `P=${(probability * 100).toFixed(1)}% tier=${tier} bypass=${spreadBypass}`,
+    detail: `P=${(probability * 100).toFixed(1)}% tier=${tier}${fadedLabel} bypass=${spreadBypass}`,
   };
 }
 
@@ -893,19 +900,17 @@ Deno.serve(async (req) => {
         log.push(`${tag} 🐘 STRIKE THROUGH — ${obi.absorptionDetail}`);
       }
 
-      // ── Position Sizing: Standard forex formula ──
-      // For standard pairs: 1 pip = 0.0001 price move. 1 unit of EUR/USD: 1 pip = $0.0001
-      // For 10,000 units: 1 pip = $1.00. Formula: units = riskDollars / (SL_pips * pip_value_per_unit)
-      // For JPY pairs: 1 pip = 0.01. At ~155 JPY/USD, pip value in USD = 0.01/155 ≈ 0.0000645
-      const sizingMultiplier = nexus.tier === 'NEXUS_STRIKE' ? 1.0 : nexus.tier === 'PROBE' ? 0.7 : 0.5;
+      // ── Predatory Position Sizing: OMNI_STRIKE = full size, PROBE = half size ──
+      const sizingMultiplier = nexus.tier === 'OMNI_STRIKE' ? 1.0 : 0.5;
       const pipValueUSD = instrument.includes('JPY')
-        ? 0.01 / (pricing.mid > 1 ? pricing.mid : 1) // JPY: convert yen pip to USD using current rate
-        : 0.0001; // Standard: $0.0001 per unit per pip
+        ? 0.01 / (pricing.mid > 1 ? pricing.mid : 1)
+        : 0.0001;
       const rawUnits = Math.floor(riskDollars / (volBuffer.adaptiveSL * pipValueUSD));
       const units = Math.max(100, Math.floor(rawUnits * sizingMultiplier));
 
-      // ── Execute with adaptive SL/TP ──
-      log.push(`${tag} 🚀 EXECUTING: ${sovereignDir} ${units} units (${nexus.tier} P=${(nexus.probability * 100).toFixed(1)}%) SL=${volBuffer.adaptiveSL} TP=${volBuffer.adaptiveTP}`);
+      // ── Execute using NEXUS DIRECTION (allows Fade override) ──
+      const execDir = nexus.executionDir;
+      log.push(`${tag} 🚀 EXECUTING: ${execDir} ${units} units (${nexus.tier} P=${(nexus.probability * 100).toFixed(1)}%) SL=${volBuffer.adaptiveSL} TP=${volBuffer.adaptiveTP}${execDir !== sovereignDir ? ` [FADED from ${sovereignDir}]` : ''}`);
 
       const signalId = `nexus-${instrument}-${Date.now()}`;
       const { data: slotResult } = await sb.rpc('try_acquire_blend_slot', {
@@ -913,7 +918,7 @@ Deno.serve(async (req) => {
         p_currency_pair: instrument,
         p_user_id: userId,
         p_signal_id: signalId,
-        p_direction: sovereignDir === 'BUY' ? 'long' : 'short',
+        p_direction: execDir === 'BUY' ? 'long' : 'short',
         p_units: units,
         p_environment: ENVIRONMENT,
         p_confidence_score: nexus.probability,
@@ -927,11 +932,11 @@ Deno.serve(async (req) => {
       }
 
       const orderId = slotResult as string;
-      const result = await placeMarketOrder(instrument, units, sovereignDir, pricing.bid, pricing.ask, volBuffer.adaptiveSL, volBuffer.adaptiveTP, apiToken, accountId);
+      const result = await placeMarketOrder(instrument, units, execDir, pricing.bid, pricing.ask, volBuffer.adaptiveSL, volBuffer.adaptiveTP, apiToken, accountId);
 
       if (result.success) {
         const entryPrice = result.fillPrice || (sovereignDir === 'BUY' ? pricing.ask : pricing.bid);
-        log.push(`${tag} ✅ NEXUS FILLED — Trade ID: ${result.tradeId} @ ${entryPrice.toFixed(pricePrecision(instrument))} | SL=${volBuffer.adaptiveSL} TP=${volBuffer.adaptiveTP}`);
+        log.push(`${tag} ✅ NEXUS FILLED — Trade ID: ${result.tradeId} @ ${entryPrice.toFixed(pricePrecision(instrument))} | SL=${volBuffer.adaptiveSL} TP=${volBuffer.adaptiveTP}${execDir !== sovereignDir ? ` [FADE TRADE]` : ''}`);
         await sb.from('oanda_orders').update({
           status: 'filled',
           oanda_trade_id: result.tradeId || null,
@@ -939,7 +944,7 @@ Deno.serve(async (req) => {
           session_label: 'newyork',
           spread_at_entry: pricing.spread,
         }).eq('id', orderId);
-        executions.push({ instrument, direction: sovereignDir, status: 'filled', detail: `tradeId=${result.tradeId} P=${(nexus.probability * 100).toFixed(1)}%`, nexusP: nexus.probability });
+        executions.push({ instrument, direction: execDir, status: 'filled', detail: `tradeId=${result.tradeId} P=${(nexus.probability * 100).toFixed(1)}%${execDir !== sovereignDir ? ' FADED' : ''}`, nexusP: nexus.probability });
       } else {
         log.push(`${tag} ❌ REJECTED — ${result.error}`);
         await sb.from('oanda_orders').update({ status: 'rejected', error_message: result.error?.slice(0, 500) }).eq('id', orderId);
