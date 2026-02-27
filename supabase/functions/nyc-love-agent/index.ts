@@ -48,21 +48,6 @@ function isNYCOpenWindow(): { allowed: boolean; reason: string } {
 // OANDA DATA LAYER
 // ══════════════════════════════════════════
 
-async function fetchPricing(instrument: string, apiToken: string, accountId: string): Promise<{ bid: number; ask: number; spread: number; mid: number } | null> {
-  try {
-    const res = await fetch(`${OANDA_HOST}/v3/accounts/${accountId}/pricing?instruments=${instrument}`, {
-      headers: { Authorization: `Bearer ${apiToken}`, Accept: 'application/json' },
-    });
-    if (!res.ok) return null;
-    const data = await res.json();
-    const p = data.prices?.[0];
-    if (!p?.bids?.length || !p?.asks?.length) return null;
-    const bid = parseFloat(p.bids[0].price);
-    const ask = parseFloat(p.asks[0].price);
-    return { bid, ask, spread: (ask - bid) * pipScale(instrument), mid: (bid + ask) / 2 };
-  } catch { return null; }
-}
-
 async function fetchBatchPricing(instruments: string[], apiToken: string, accountId: string): Promise<Record<string, { bid: number; ask: number; spread: number; mid: number }>> {
   const result: Record<string, { bid: number; ask: number; spread: number; mid: number }> = {};
   try {
@@ -182,8 +167,8 @@ function calculateADI(
     const prev = candles[candles.length - 2];
     const move = latest.close - prev.close;
 
-    // For USD_XXX pairs, price up = USD strengthening
-    // For XXX_USD pairs, price up = USD weakening
+    // For USD_XXX pairs (USD is base): price UP = base(USD) strong = USD bull
+    // For XXX_USD pairs (USD is quote): price UP = base strong / USD weak = USD bear
     const isUsdBase = cross.startsWith('USD_');
     const usdStrengthening = isUsdBase ? move > 0 : move < 0;
 
@@ -193,15 +178,20 @@ function calculateADI(
 
   const dollarStrength = totalChecked > 0 ? (dollarBullCount - dollarBearCount) / totalChecked : 0;
 
-  // Check if target pair's move is confirmed
+  // Check if target pair's move is confirmed by dollar flow
   const [base, quote] = targetInstrument.split('_');
   const isUsdInPair = base === 'USD' || quote === 'USD';
 
   let confirmedCrosses = 0;
   if (isUsdInPair) {
-    // For USD pairs, the target direction should align with dollar index
-    const targetImpliesUsdStrong = (base === 'USD' && targetDirection === 'BUY') || (quote === 'USD' && targetDirection === 'SELL');
-    confirmedCrosses = targetImpliesUsdStrong ? dollarBullCount : dollarBearCount;
+    // BUY EUR/USD = EUR strong + USD weak → dollarBearCount confirms
+    // SELL EUR/USD = EUR weak + USD strong → dollarBullCount confirms
+    // BUY USD/JPY = USD strong + JPY weak → dollarBullCount confirms
+    // SELL USD/JPY = USD weak + JPY strong → dollarBearCount confirms
+    const tradeImpliesUsdStrong =
+      (base === 'USD' && targetDirection === 'BUY') ||
+      (quote === 'USD' && targetDirection === 'SELL');
+    confirmedCrosses = tradeImpliesUsdStrong ? dollarBullCount : dollarBearCount;
   } else {
     confirmedCrosses = totalChecked; // non-USD pair, ADI is informational
   }
@@ -454,15 +444,17 @@ async function getSovereignDirection(instrument: string, sb: ReturnType<typeof c
 
 async function placeMarketOrder(
   instrument: string, units: number, direction: 'BUY' | 'SELL',
-  mid: number, slPips: number, tpPips: number,
+  bid: number, ask: number, slPips: number, tpPips: number,
   apiToken: string, accountId: string,
-): Promise<{ success: boolean; tradeId?: string; error?: string }> {
+): Promise<{ success: boolean; tradeId?: string; error?: string; fillPrice?: number }> {
   const pv = pipValue(instrument);
   const prec = pricePrecision(instrument);
   const side = direction === 'BUY' ? 1 : -1;
 
-  const slPrice = (mid - side * slPips * pv).toFixed(prec);
-  const tpPrice = (mid + side * tpPips * pv).toFixed(prec);
+  // BUY fills at ask, SELL fills at bid — use correct reference for SL/TP
+  const refPrice = direction === 'BUY' ? ask : bid;
+  const slPrice = (refPrice - side * slPips * pv).toFixed(prec);
+  const tpPrice = (refPrice + side * tpPips * pv).toFixed(prec);
 
   const orderBody = {
     order: {
@@ -483,7 +475,8 @@ async function placeMarketOrder(
     });
     const data = await res.json();
     if (data.orderFillTransaction) {
-      return { success: true, tradeId: data.orderFillTransaction.tradeOpened?.tradeID || data.orderFillTransaction.id };
+      const fillPrice = parseFloat(data.orderFillTransaction.price || '0');
+      return { success: true, tradeId: data.orderFillTransaction.tradeOpened?.tradeID || data.orderFillTransaction.id, fillPrice };
     }
     return { success: false, error: JSON.stringify(data.orderRejectTransaction || data).slice(0, 300) };
   } catch (e) {
@@ -513,7 +506,7 @@ function calculateNerveTension(candles: { close: number }[]): { signal: 'NOISE' 
     returns.push((candles[i].close - candles[i - 1].close) / candles[i - 1].close);
   }
   const mean = returns.reduce((s, r) => s + r, 0) / returns.length;
-  const variance = returns.reduce((s, r) => s + (r - mean) ** 2, 0) / returns.length * 1e8;
+  const variance = (returns.reduce((s, r) => s + (r - mean) ** 2, 0) / returns.length) * 1e8;
   return { signal: variance > 0.85 ? 'NOISE' : 'CLEAN_FLOW', variance };
 }
 
@@ -563,6 +556,21 @@ Deno.serve(async (req) => {
     }
 
     const riskDollars = nav * 0.02;
+
+    // ── Circuit Breaker Check ──
+    const { data: breakerData } = await sb
+      .from('gate_bypasses')
+      .select('id')
+      .like('gate_id', 'CIRCUIT_BREAKER:%')
+      .eq('revoked', false)
+      .gt('expires_at', new Date().toISOString())
+      .limit(1);
+    if (breakerData && breakerData.length > 0) {
+      log.push('🚨 CIRCUIT BREAKER ACTIVE — all trading halted');
+      return new Response(JSON.stringify({ success: false, reason: 'circuit_breaker', log }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
 
     // ── 4. PILLAR 1: Fetch all USD crosses for ADI in one batch ──
     log.push('🔺 PILLAR 1: Synthetic Dollar Triangulation — fetching ADI crosses...');
@@ -656,10 +664,15 @@ Deno.serve(async (req) => {
         continue;
       }
 
-      // ── Position Sizing: scale by nexus tier ──
+      // ── Position Sizing: Standard forex formula ──
+      // For standard pairs: 1 pip = 0.0001 price move. 1 unit of EUR/USD: 1 pip = $0.0001
+      // For 10,000 units: 1 pip = $1.00. Formula: units = riskDollars / (SL_pips * pip_value_per_unit)
+      // For JPY pairs: 1 pip = 0.01. At ~155 JPY/USD, pip value in USD = 0.01/155 ≈ 0.0000645
       const sizingMultiplier = nexus.tier === 'NEXUS_STRIKE' ? 1.0 : nexus.tier === 'PROBE' ? 0.7 : 0.5;
-      const pipDollar = instrument.includes('JPY') ? 0.0085 : 0.0001;
-      const rawUnits = Math.floor(riskDollars / (volBuffer.adaptiveSL * pipDollar * 10));
+      const pipValueUSD = instrument.includes('JPY')
+        ? 0.01 / (pricing.mid > 1 ? pricing.mid : 1) // JPY: convert yen pip to USD using current rate
+        : 0.0001; // Standard: $0.0001 per unit per pip
+      const rawUnits = Math.floor(riskDollars / (volBuffer.adaptiveSL * pipValueUSD));
       const units = Math.max(100, Math.floor(rawUnits * sizingMultiplier));
 
       // ── Execute with adaptive SL/TP ──
@@ -685,14 +698,15 @@ Deno.serve(async (req) => {
       }
 
       const orderId = slotResult as string;
-      const result = await placeMarketOrder(instrument, units, sovereignDir, pricing.mid, volBuffer.adaptiveSL, volBuffer.adaptiveTP, apiToken, accountId);
+      const result = await placeMarketOrder(instrument, units, sovereignDir, pricing.bid, pricing.ask, volBuffer.adaptiveSL, volBuffer.adaptiveTP, apiToken, accountId);
 
       if (result.success) {
-        log.push(`${tag} ✅ NEXUS FILLED — Trade ID: ${result.tradeId} | SL=${volBuffer.adaptiveSL} TP=${volBuffer.adaptiveTP}`);
+        const entryPrice = result.fillPrice || (sovereignDir === 'BUY' ? pricing.ask : pricing.bid);
+        log.push(`${tag} ✅ NEXUS FILLED — Trade ID: ${result.tradeId} @ ${entryPrice.toFixed(pricePrecision(instrument))} | SL=${volBuffer.adaptiveSL} TP=${volBuffer.adaptiveTP}`);
         await sb.from('oanda_orders').update({
           status: 'filled',
           oanda_trade_id: result.tradeId || null,
-          entry_price: pricing.mid,
+          entry_price: entryPrice,
           session_label: 'newyork',
           spread_at_entry: pricing.spread,
         }).eq('id', orderId);
