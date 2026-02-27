@@ -1,7 +1,9 @@
 // NYC Love Agent — Edge Function
-// Strategy: Spread Shield + 3:1 R:R (20 pip SL / 60 pip TP)
-// Session: NYC Open 13:00–14:30 UTC (8:30–9:30 AM EST window + buffer)
-// Direction: Sovereign Matrix rankings (Predator vs Prey)
+// Strategy: Sovereign VolStop Triple-Lock
+// 3 Volatility Stop shields on M1 candles — Macro(100,3.5), Meso(50,2.5), Micro(20,1.5)
+// Entry: First M1 close above/below all 3 shields (max 3 candle chase)
+// Exit: Micro shield break closes trade immediately
+// Session: ALL SESSIONS — 6 major pairs only
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
@@ -12,49 +14,58 @@ const corsHeaders = {
 };
 
 const OANDA_HOST = 'https://api-fxpractice.oanda.com';
-const INSTRUMENTS = ['EUR_USD', 'GBP_USD', 'USD_JPY'];
+const INSTRUMENTS = ['EUR_USD', 'GBP_USD', 'USD_JPY', 'USD_CHF', 'USD_CAD', 'AUD_USD'];
 const AGENT_ID = 'nyc-love';
 const ENVIRONMENT = 'practice';
 
-// ── Fixed risk parameters ──
-const BASE_SL_PIPS = 20;
-const TP_RATIO = 3; // 3:1 R:R always
-const SPREAD_LIMIT_PIPS = 3.0;
-const NEXUS_CONFIDENCE_THRESHOLD = 0.88;
+// ── VolStop Shield Configuration ──
+const MACRO = { period: 100, mult: 3.5 };
+const MESO  = { period: 50,  mult: 2.5 };
+const MICRO = { period: 20,  mult: 1.5 };
 
-// ── ADI crosses for dollar triangulation ──
-const USD_CROSSES = ['EUR_USD', 'GBP_USD', 'USD_JPY', 'USD_CHF', 'USD_CAD', 'AUD_USD', 'NZD_USD'];
+const MAX_CHASE_CANDLES = 3; // Don't chase if alignment started >3 candles ago
+const ACCOUNT_RISK_PCT = 0.05; // 5% account risk per trade
 
 function pipValue(inst: string): number { return inst.includes('JPY') ? 0.01 : 0.0001; }
 function pricePrecision(inst: string): number { return inst.includes('JPY') ? 3 : 5; }
 function pipScale(inst: string): number { return inst.includes('JPY') ? 100 : 10000; }
 
 // ══════════════════════════════════════════
-// SESSION GATE
-// ══════════════════════════════════════════
-
-function isNYCOpenWindow(): { allowed: boolean; reason: string } {
-  const now = new Date();
-  const utcH = now.getUTCHours();
-  const utcM = now.getUTCMinutes();
-  const minutes = utcH * 60 + utcM;
-  if (minutes >= 810 && minutes <= 1290) {
-    return { allowed: true, reason: `NYC session active (${utcH}:${String(utcM).padStart(2, '0')} UTC)` };
-  }
-  return { allowed: false, reason: `Outside NYC session (${utcH}:${String(utcM).padStart(2, '0')} UTC). Window: 13:30–21:30 UTC` };
-}
-
-// ══════════════════════════════════════════
 // OANDA DATA LAYER
 // ══════════════════════════════════════════
 
-async function fetchBatchPricing(instruments: string[], apiToken: string, accountId: string): Promise<Record<string, { bid: number; ask: number; spread: number; mid: number }>> {
+async function fetchM1Candles(
+  instrument: string, count: number, apiToken: string, accountId: string,
+): Promise<{ close: number; high: number; low: number; open: number; time: string }[]> {
+  try {
+    const res = await fetch(
+      `${OANDA_HOST}/v3/instruments/${instrument}/candles?count=${count}&granularity=M1&price=M`,
+      { headers: { Authorization: `Bearer ${apiToken}`, Accept: 'application/json' } },
+    );
+    if (!res.ok) return [];
+    const data = await res.json();
+    return (data.candles || [])
+      .filter((c: any) => c.complete !== false)
+      .map((c: any) => ({
+        close: parseFloat(c.mid.c),
+        high: parseFloat(c.mid.h),
+        low: parseFloat(c.mid.l),
+        open: parseFloat(c.mid.o),
+        time: c.time,
+      }));
+  } catch { return []; }
+}
+
+async function fetchBatchPricing(
+  instruments: string[], apiToken: string, accountId: string,
+): Promise<Record<string, { bid: number; ask: number; spread: number; mid: number }>> {
   const result: Record<string, { bid: number; ask: number; spread: number; mid: number }> = {};
   try {
     const joined = instruments.join(',');
-    const res = await fetch(`${OANDA_HOST}/v3/accounts/${accountId}/pricing?instruments=${joined}`, {
-      headers: { Authorization: `Bearer ${apiToken}`, Accept: 'application/json' },
-    });
+    const res = await fetch(
+      `${OANDA_HOST}/v3/accounts/${accountId}/pricing?instruments=${joined}`,
+      { headers: { Authorization: `Bearer ${apiToken}`, Accept: 'application/json' } },
+    );
     if (!res.ok) return result;
     const data = await res.json();
     for (const p of (data.prices || [])) {
@@ -68,47 +79,9 @@ async function fetchBatchPricing(instruments: string[], apiToken: string, accoun
   return result;
 }
 
-async function fetchM5Candles(instrument: string, count: number, apiToken: string, accountId: string): Promise<{ volume: number; close: number; open: number; high: number; low: number }[]> {
-  try {
-    const res = await fetch(`${OANDA_HOST}/v3/instruments/${instrument}/candles?count=${count}&granularity=M5&price=M`, {
-      headers: { Authorization: `Bearer ${apiToken}`, Accept: 'application/json' },
-    });
-    if (!res.ok) return [];
-    const data = await res.json();
-    return (data.candles || [])
-      .filter((c: { complete?: boolean }) => c.complete !== false)
-      .map((c: { volume: number; mid: { o: string; c: string; h: string; l: string } }) => ({
-        volume: c.volume,
-        open: parseFloat(c.mid.o),
-        close: parseFloat(c.mid.c),
-        high: parseFloat(c.mid.h),
-        low: parseFloat(c.mid.l),
-      }));
-  } catch { return []; }
-}
-
-// ── Fetch Order Book from market_liquidity_map (pre-populated by wall-of-pain-injector) ──
-async function fetchOrderBook(instrument: string, _apiToken: string, sb: any): Promise<{ price: number; longPct: number; shortPct: number; buckets: { price: number; longPct: number; shortPct: number }[] } | null> {
-  try {
-    const { data } = await sb
-      .from('market_liquidity_map')
-      .select('current_price, all_buckets')
-      .eq('currency_pair', instrument)
-      .single();
-
-    if (!data || !data.all_buckets) return null;
-
-    const price = data.current_price || 0;
-    const buckets = (data.all_buckets || []) as { price: number; longPct: number; shortPct: number }[];
-
-    // Global imbalance
-    let totalLong = 0, totalShort = 0;
-    for (const b of buckets) { totalLong += b.longPct; totalShort += b.shortPct; }
-    return { price, longPct: totalLong, shortPct: totalShort, buckets };
-  } catch { return null; }
-}
-
-async function getAccountSummary(apiToken: string, accountId: string): Promise<{ nav: number; marginAvailable: number; leverage: number }> {
+async function getAccountSummary(
+  apiToken: string, accountId: string,
+): Promise<{ nav: number; marginAvailable: number; leverage: number }> {
   try {
     const res = await fetch(`${OANDA_HOST}/v3/accounts/${accountId}/summary`, {
       headers: { Authorization: `Bearer ${apiToken}`, Accept: 'application/json' },
@@ -136,734 +109,278 @@ async function hasOpenPosition(instrument: string, sb: ReturnType<typeof createC
 }
 
 // ══════════════════════════════════════════
-// PILLAR 1: SYNTHETIC DOLLAR TRIANGULATION (ADI Truth Filter)
+// VOLSTOP CALCULATION
 // ══════════════════════════════════════════
-// Calculates Absolute Dollar Index across 7 USD crosses.
-// If a tick spike on one pair isn't confirmed across the board,
-// it's flagged as a Retail Liquidity Hunt → prepare to FADE.
+// Volatility Stop = trailing stop based on ATR.
+// When price is above the stop → bullish; below → bearish.
+// The stop flips direction when price crosses it.
 
-interface ADIResult {
-  dollarStrength: number;       // -1.0 (weak) to +1.0 (strong)
-  confirmedCrosses: number;     // how many crosses agree
-  totalCrosses: number;
-  isRetailHunt: boolean;        // spike isolated = trap
-  fadeDirection: 'BUY' | 'SELL' | null; // direction to fade if hunt detected
+interface VolStopResult {
+  value: number;       // current stop level (price)
+  trend: 'bull' | 'bear';
+  slope: number;       // rate of change (0 = flat)
+}
+
+function calculateATR(candles: { high: number; low: number; close: number }[], period: number): number[] {
+  const atrs: number[] = [];
+  if (candles.length < 2) return atrs;
+
+  // First TR
+  let prevClose = candles[0].close;
+  let atr = candles[0].high - candles[0].low;
+  atrs.push(atr);
+
+  for (let i = 1; i < candles.length; i++) {
+    const c = candles[i];
+    const tr = Math.max(
+      c.high - c.low,
+      Math.abs(c.high - prevClose),
+      Math.abs(c.low - prevClose),
+    );
+    // Wilder smoothing
+    atr = (atr * (period - 1) + tr) / period;
+    atrs.push(atr);
+    prevClose = c.close;
+  }
+  return atrs;
+}
+
+function calculateVolStop(
+  candles: { close: number; high: number; low: number }[],
+  period: number,
+  multiplier: number,
+): VolStopResult {
+  if (candles.length < period + 5) {
+    return { value: candles[candles.length - 1]?.close || 0, trend: 'bull', slope: 0 };
+  }
+
+  const atrs = calculateATR(candles, period);
+
+  // Walk through candles maintaining VolStop state
+  let trend: 'bull' | 'bear' = 'bull';
+  let stop = candles[0].close - atrs[0] * multiplier; // initial bullish stop
+  let prevStop = stop;
+
+  for (let i = 1; i < candles.length; i++) {
+    const atr = atrs[i] * multiplier;
+    const close = candles[i].close;
+
+    if (trend === 'bull') {
+      // In bull trend, stop trails below price
+      const newStop = close - atr;
+      stop = Math.max(stop, newStop); // stop can only go UP in bull
+      if (close < stop) {
+        // Flip to bear
+        trend = 'bear';
+        stop = close + atr;
+      }
+    } else {
+      // In bear trend, stop trails above price
+      const newStop = close + atr;
+      stop = Math.min(stop, newStop); // stop can only go DOWN in bear
+      if (close > stop) {
+        // Flip to bull
+        trend = 'bull';
+        stop = close - atr;
+      }
+    }
+
+    if (i === candles.length - 2) prevStop = stop;
+  }
+
+  // Slope = change in stop over last candle (normalized)
+  const slope = candles.length >= 2 ? stop - prevStop : 0;
+
+  return { value: stop, trend, slope };
+}
+
+// ══════════════════════════════════════════
+// TRIPLE-LOCK ALIGNMENT CHECK
+// ══════════════════════════════════════════
+
+interface TripleLockSignal {
+  direction: 'long' | 'short' | null;
+  macro: VolStopResult;
+  meso: VolStopResult;
+  micro: VolStopResult;
+  macroFlat: boolean;
+  candlesSinceAlignment: number; // how many candles ago alignment started
+  mesoDistance: number;          // pips from entry to meso shield (for SL)
   detail: string;
 }
 
-function calculateADI(
-  targetInstrument: string,
-  targetDirection: 'BUY' | 'SELL',
-  allPricing: Record<string, { mid: number; spread: number }>,
-  allCandles: Record<string, { close: number; open: number }[]>,
-): ADIResult {
-  let dollarBullCount = 0;
-  let dollarBearCount = 0;
-  let totalChecked = 0;
-
-  for (const cross of USD_CROSSES) {
-    const candles = allCandles[cross];
-    if (!candles || candles.length < 2) continue;
-    totalChecked++;
-
-    const latest = candles[candles.length - 1];
-    const prev = candles[candles.length - 2];
-    const move = latest.close - prev.close;
-
-    // For USD_XXX pairs (USD is base): price UP = base(USD) strong = USD bull
-    // For XXX_USD pairs (USD is quote): price UP = base strong / USD weak = USD bear
-    const isUsdBase = cross.startsWith('USD_');
-    const usdStrengthening = isUsdBase ? move > 0 : move < 0;
-
-    if (usdStrengthening) dollarBullCount++;
-    else dollarBearCount++;
-  }
-
-  const dollarStrength = totalChecked > 0 ? (dollarBullCount - dollarBearCount) / totalChecked : 0;
-
-  // Check if target pair's move is confirmed by dollar flow
-  const [base, quote] = targetInstrument.split('_');
-  const isUsdInPair = base === 'USD' || quote === 'USD';
-
-  let confirmedCrosses = 0;
-  if (isUsdInPair) {
-    // BUY EUR/USD = EUR strong + USD weak → dollarBearCount confirms
-    // SELL EUR/USD = EUR weak + USD strong → dollarBullCount confirms
-    // BUY USD/JPY = USD strong + JPY weak → dollarBullCount confirms
-    // SELL USD/JPY = USD weak + JPY strong → dollarBearCount confirms
-    const tradeImpliesUsdStrong =
-      (base === 'USD' && targetDirection === 'BUY') ||
-      (quote === 'USD' && targetDirection === 'SELL');
-    confirmedCrosses = tradeImpliesUsdStrong ? dollarBullCount : dollarBearCount;
-  } else {
-    confirmedCrosses = totalChecked; // non-USD pair, ADI is informational
-  }
-
-  // Retail Hunt detection: spike on target but <40% of crosses agree
-  const confirmRatio = totalChecked > 0 ? confirmedCrosses / totalChecked : 0;
-  const isRetailHunt = isUsdInPair && confirmRatio < 0.40;
-  const fadeDirection = isRetailHunt ? (targetDirection === 'BUY' ? 'SELL' as const : 'BUY' as const) : null;
-
-  return {
-    dollarStrength,
-    confirmedCrosses,
-    totalCrosses: totalChecked,
-    isRetailHunt,
-    fadeDirection,
-    detail: `ADI=${dollarStrength.toFixed(2)} confirmed=${confirmedCrosses}/${totalChecked} hunt=${isRetailHunt}`,
-  };
-}
-
-// ══════════════════════════════════════════
-// PILLAR 2: NEURAL VOLATILITY BUFFERS (Adaptive ATR-Gap Anti-MAE)
-// ══════════════════════════════════════════
-// ATR is a "rearview mirror" — it uses completed candles.
-// During the first 15 minutes of the open (9:30 AM), the market
-// changes in milliseconds. ATR based on the 9:25 candle thinks
-// the market is "walking" when it's actually "sprinting."
-//
-// FIX: Use Real-Time Tick Variance (StdDev of last 50 ticks) during
-// the first 15 minutes of the open. After that, ATR is reliable.
-
-interface VolatilityBuffer {
-  adaptiveSL: number;           // dynamic SL in pips
-  adaptiveTP: number;           // maintains 3:1 ratio
-  atrPips: number;              // current ATR in pips
-  avgAtrPips: number;           // baseline ATR
-  breathRatio: number;          // current/avg — >1.5 = "breathing hard"
-  usedTickVariance: boolean;    // true if tick variance was used instead of ATR
-  detail: string;
-}
-
-// Calculate real-time breath from streaming pricing ticks
-function calculateTickVarianceBreath(
-  currentPricing: { bid: number; ask: number; mid: number },
-  recentCandles: { close: number }[],
+function analyzeTripleLock(
+  candles: { close: number; high: number; low: number; open: number }[],
   instrument: string,
-): { breathRatio: number; tickVariancePips: number } {
-  // Use close prices as proxy for tick samples (each M5 candle close = 1 "tick")
-  // In first 15min we only have 0-3 completed candles, so use their closes
-  // plus the current mid as tick data points
-  const scale = pipScale(instrument);
-  const ticks = recentCandles.map(c => c.close);
-  ticks.push(currentPricing.mid); // add current live price
+): TripleLockSignal {
+  const noSignal = (msg: string, macro: VolStopResult, meso: VolStopResult, micro: VolStopResult, flat: boolean): TripleLockSignal => ({
+    direction: null, macro, meso, micro, macroFlat: flat, candlesSinceAlignment: 999, mesoDistance: 0, detail: msg,
+  });
 
-  if (ticks.length < 3) return { breathRatio: 1.0, tickVariancePips: 0 };
-
-  // Calculate StdDev of tick-to-tick changes in pips
-  const changes: number[] = [];
-  for (let i = 1; i < ticks.length; i++) {
-    changes.push((ticks[i] - ticks[i - 1]) * scale);
-  }
-  const mean = changes.reduce((s, c) => s + c, 0) / changes.length;
-  const variance = changes.reduce((s, c) => s + (c - mean) ** 2, 0) / changes.length;
-  const stdDevPips = Math.sqrt(variance);
-
-  // Compare to expected "calm" StdDev (~2 pips for majors)
-  const calmStdDev = instrument.includes('JPY') ? 3.0 : 2.0;
-  const breathRatio = calmStdDev > 0 ? stdDevPips / calmStdDev : 1.0;
-
-  return { breathRatio: Math.max(0.5, breathRatio), tickVariancePips: Math.round(stdDevPips * 10) / 10 };
-}
-
-function isFirstFifteenMinutes(): boolean {
-  const now = new Date();
-  const utcH = now.getUTCHours();
-  const utcM = now.getUTCMinutes();
-  const minutes = utcH * 60 + utcM;
-  // 9:30 AM EST = 13:30 UTC = 810 minutes. First 15min = 810–825
-  return minutes >= 810 && minutes <= 825;
-}
-
-function calculateNeuralVolatilityBuffer(
-  candles: { high: number; low: number; close: number }[],
-  instrument: string,
-  currentPricing?: { bid: number; ask: number; mid: number },
-): VolatilityBuffer {
-  if (candles.length < 5) {
-    return { adaptiveSL: BASE_SL_PIPS, adaptiveTP: BASE_SL_PIPS * TP_RATIO, atrPips: 0, avgAtrPips: 0, breathRatio: 1, usedTickVariance: false, detail: 'insufficient candles — using base SL' };
+  if (candles.length < MACRO.period + 10) {
+    const def: VolStopResult = { value: 0, trend: 'bull', slope: 0 };
+    return noSignal('Insufficient candles for VolStop calculation', def, def, def, true);
   }
 
-  const scale = pipScale(instrument);
+  const macro = calculateVolStop(candles, MACRO.period, MACRO.mult);
+  const meso  = calculateVolStop(candles, MESO.period, MESO.mult);
+  const micro = calculateVolStop(candles, MICRO.period, MICRO.mult);
 
-  // Calculate ATR for each candle (high - low in pips)
-  const atrs = candles.map(c => (c.high - c.low) * scale);
-
-  // Baseline ATR = average of full lookback (this is always reliable)
-  const avgAtr = atrs.reduce((s, a) => s + a, 0) / atrs.length;
-
-  // CRITICAL FIX: During first 15 minutes of open, ATR is a "rearview mirror."
-  // Use real-time tick variance instead.
-  let currentAtr: number;
-  let usedTickVariance = false;
-
-  if (isFirstFifteenMinutes() && currentPricing) {
-    // Use tick variance for breath during the sprint
-    const tv = calculateTickVarianceBreath(currentPricing, candles.slice(-5), instrument);
-    currentAtr = avgAtr * tv.breathRatio; // Scale baseline by real-time breath
-    usedTickVariance = true;
-  } else {
-    // Normal: average of last 3 candles (instantaneous breath)
-    const recentAtrs = atrs.slice(-3);
-    currentAtr = recentAtrs.reduce((s, a) => s + a, 0) / recentAtrs.length;
-  }
-
-  const breathRatio = avgAtr > 0 ? currentAtr / avgAtr : 1;
-
-  // Adaptive SL: base SL * breath multiplier, clamped to 15–30 pips
-  const rawAdaptiveSL = BASE_SL_PIPS * Math.max(0.75, Math.min(1.5, breathRatio));
-  const adaptiveSL = Math.round(Math.max(15, Math.min(30, rawAdaptiveSL)) * 10) / 10;
-  const adaptiveTP = Math.round(adaptiveSL * TP_RATIO * 10) / 10;
-
-  return {
-    adaptiveSL,
-    adaptiveTP,
-    atrPips: Math.round(currentAtr * 10) / 10,
-    avgAtrPips: Math.round(avgAtr * 10) / 10,
-    breathRatio: Math.round(breathRatio * 100) / 100,
-    usedTickVariance,
-    detail: `${usedTickVariance ? 'TICK-VAR' : 'ATR'}=${currentAtr.toFixed(1)} avg=${avgAtr.toFixed(1)} breath=${breathRatio.toFixed(2)} → SL=${adaptiveSL} TP=${adaptiveTP}`,
-  };
-}
-
-// ══════════════════════════════════════════
-// PILLAR 3: RECURSIVE LIQUIDITY PROBING — ELEPHANT ABSORPTION + STOP-RUN CAPTURE
-// ══════════════════════════════════════════
-// Evolution beyond simple magnet model:
-// 1. ELEPHANT DETECTION: Clusters >2.0% are "Elephants" — institutional-grade walls
-// 2. ABSORPTION FILTER: Velocity Delta determines if Elephant is being eaten or rejecting
-//    - Velocity > 1.8x → Elephant is being consumed → STRIKE through it
-//    - Velocity < 1.1x → Elephant is absorbing/rejecting → HOLD or FADE
-// 3. STOP-RUN CAPTURE: Detect retail stop clusters just beyond Elephants.
-//    If we spot a liquidity pocket (cluster of stops), we strike the millisecond
-//    price touches the pocket boundary — the cascade creates a price vacuum.
-
-interface OBIResult {
-  imbalanceRatio: number;
-  nearbyWall: 'BUY_WALL' | 'SELL_WALL' | null;
-  wallPrice: number | null;
-  wallStrength: number;
-  pathClear: boolean;
-  wallIsMagnet: boolean;
-  longPct: number;
-  shortPct: number;
-  // New Elephant fields
-  elephantAction: 'STRIKE_THROUGH' | 'WAIT_FOR_ABSORPTION' | 'STOP_RUN_CAPTURE' | 'PATH_CLEAR' | 'ELEPHANT_REJECTION';
-  elephantPrice: number | null;
-  elephantDistance: number;      // pips to nearest elephant
-  stopRunTarget: number | null;  // price where stop-run liquidity pocket exists
-  absorptionDetail: string;
-  detail: string;
-}
-
-function analyzeNexusLiquidity(
-  orderBook: { price: number; longPct: number; shortPct: number; buckets: { price: number; longPct: number; shortPct: number }[] } | null,
-  sovereignDir: 'BUY' | 'SELL',
-  instrument: string,
-  velocityRatio: number,
-): OBIResult {
-  const neutral: OBIResult = {
-    imbalanceRatio: 1, nearbyWall: null, wallPrice: null, wallStrength: 0,
-    pathClear: true, wallIsMagnet: false, longPct: 50, shortPct: 50,
-    elephantAction: 'PATH_CLEAR', elephantPrice: null, elephantDistance: 0,
-    stopRunTarget: null, absorptionDetail: 'no order book data',
-    detail: 'no order book data — path assumed clear',
-  };
-  if (!orderBook || !orderBook.buckets.length) return neutral;
-
-  const currentPrice = orderBook.price;
-  const pv = pipValue(instrument);
   const ps = pipScale(instrument);
-  const prec = pricePrecision(instrument);
-  const scanRange = 50 * pv; // scan 50 pips in our direction
 
-  // ── 1. ELEPHANT DETECTION ──
-  // Elephants = buckets with >2.0% concentration (institutional-grade clusters)
-  const elephants = orderBook.buckets.filter(b => b.longPct > 2.0 || b.shortPct > 2.0);
+  // ── PRIMARY FILTER: Macro slope must be non-zero ──
+  const macroSlopePips = Math.abs(macro.slope) * ps;
+  const macroFlat = macroSlopePips < 0.1; // less than 0.1 pip movement = flat
 
-  // Filter to elephants in our trade direction path
-  const directionalElephants = elephants.filter(b => {
-    if (sovereignDir === 'BUY') return b.price > currentPrice && b.price < currentPrice + scanRange;
-    return b.price < currentPrice && b.price > currentPrice - scanRange;
-  }).sort((a, b) => {
-    // Sort by distance from current price (closest first)
-    return Math.abs(a.price - currentPrice) - Math.abs(b.price - currentPrice);
-  });
-
-  // Find the closest Elephant in our direction
-  const targetElephant = directionalElephants[0] || null;
-
-  // Global imbalance
-  let totalLong = 0, totalShort = 0;
-  for (const b of orderBook.buckets) { totalLong += b.longPct; totalShort += b.shortPct; }
-  const imbalanceRatio = totalShort > 0 ? totalLong / totalShort : 1;
-
-  // Find the thickest wall in scan range for legacy fields
-  let maxWallStrength = 0;
-  let wallPrice: number | null = null;
-  let wallType: 'BUY_WALL' | 'SELL_WALL' | null = null;
-  const relevantBuckets = orderBook.buckets.filter(b => {
-    if (sovereignDir === 'BUY') return b.price > currentPrice && b.price < currentPrice + scanRange;
-    return b.price < currentPrice && b.price > currentPrice - scanRange;
-  });
-  for (const b of relevantBuckets) {
-    const blockingPct = sovereignDir === 'BUY' ? b.shortPct : b.longPct;
-    if (blockingPct > maxWallStrength) {
-      maxWallStrength = blockingPct;
-      wallPrice = b.price;
-      wallType = sovereignDir === 'BUY' ? 'SELL_WALL' : 'BUY_WALL';
-    }
-  }
-  const wallSignificant = maxWallStrength > 2.0;
-
-  // ── 2. ELEPHANT ABSORPTION FILTER ──
-  let elephantAction: OBIResult['elephantAction'] = 'PATH_CLEAR';
-  let elephantPrice: number | null = null;
-  let elephantDistance = 0;
-  let stopRunTarget: number | null = null;
-  let absorptionDetail = 'No elephants in path.';
-
-  if (targetElephant) {
-    elephantPrice = targetElephant.price;
-    elephantDistance = Math.abs(targetElephant.price - currentPrice) * ps;
-
-    const isOpposingWall =
-      (sovereignDir === 'BUY' && targetElephant.shortPct > 2.0) ||
-      (sovereignDir === 'SELL' && targetElephant.longPct > 2.0);
-
-    // ── WITHIN 5 PIPS: Absorption zone — Velocity Delta decides ──
-    if (elephantDistance < 5.0) {
-      if (isOpposingWall) {
-        if (velocityRatio > 1.8) {
-          // HIGH VELOCITY + OPPOSING WALL = The Elephant is being eaten
-          elephantAction = 'STRIKE_THROUGH';
-          absorptionDetail = `🐘 ELEPHANT CONSUMED @ ${elephantPrice.toFixed(prec)} — V=${velocityRatio.toFixed(1)}x > 1.8x threshold. Wall is crumbling.`;
-        } else if (velocityRatio < 1.1) {
-          // LOW VELOCITY + OPPOSING WALL = Elephant rejecting price
-          elephantAction = 'ELEPHANT_REJECTION';
-          absorptionDetail = `🐘 ELEPHANT REJECTING @ ${elephantPrice.toFixed(prec)} — V=${velocityRatio.toFixed(1)}x < 1.1x. Price being pushed back.`;
-        } else {
-          // MEDIUM VELOCITY = Wait for resolution
-          elephantAction = 'WAIT_FOR_ABSORPTION';
-          absorptionDetail = `🐘 ABSORPTION ZONE @ ${elephantPrice.toFixed(prec)} — V=${velocityRatio.toFixed(1)}x. Waiting for Velocity Delta to resolve.`;
-        }
-      } else {
-        // Wall is NOT opposing (same-direction cluster = fuel)
-        elephantAction = 'STRIKE_THROUGH';
-        absorptionDetail = `🐘 FRIENDLY ELEPHANT @ ${elephantPrice.toFixed(prec)} — same-direction cluster is fuel. Strike.`;
-      }
-    }
-    // ── 5-15 PIPS: Approach zone — check for Stop-Run opportunity ──
-    else if (elephantDistance < 15.0) {
-      // Look for a cluster of retail stops just BEYOND the elephant (within 5 pips past it)
-      const beyondElephant = orderBook.buckets.filter(b => {
-        const pastElephant = sovereignDir === 'BUY'
-          ? b.price > elephantPrice! && b.price < elephantPrice! + 5 * pv
-          : b.price < elephantPrice! && b.price > elephantPrice! - 5 * pv;
-        // Stop clusters: for BUY, retail shorts above elephant = stop-losses that will fire
-        const stopPct = sovereignDir === 'BUY' ? b.shortPct : b.longPct;
-        return pastElephant && stopPct > 1.5;
-      });
-
-      if (beyondElephant.length > 0 && velocityRatio > 1.5) {
-        // STOP-RUN CAPTURE: There's a liquidity pocket just past the Elephant
-        const bestStop = beyondElephant.reduce((best, b) => {
-          const pct = sovereignDir === 'BUY' ? b.shortPct : b.longPct;
-          return pct > (sovereignDir === 'BUY' ? best.shortPct : best.longPct) ? b : best;
-        });
-        stopRunTarget = bestStop.price;
-        elephantAction = 'STOP_RUN_CAPTURE';
-        absorptionDetail = `🎯 STOP-RUN DETECTED: Elephant @ ${elephantPrice.toFixed(prec)}, liquidity pocket @ ${stopRunTarget.toFixed(prec)} (${elephantDistance.toFixed(1)}p away). V=${velocityRatio.toFixed(1)}x confirms momentum.`;
-      } else {
-        // Approaching elephant but no stop-run — treat as magnet
-        elephantAction = 'STRIKE_THROUGH';
-        absorptionDetail = `🧲 ELEPHANT MAGNET @ ${elephantPrice.toFixed(prec)} (${elephantDistance.toFixed(1)}p). V=${velocityRatio.toFixed(1)}x. Retail wall = institutional fuel.`;
-      }
-    }
-    // ── 15+ PIPS: Far elephant — note but don't modify behavior ──
-    else {
-      elephantAction = 'PATH_CLEAR';
-      absorptionDetail = `🐘 Distant elephant @ ${elephantPrice.toFixed(prec)} (${elephantDistance.toFixed(1)}p). Will re-evaluate on approach.`;
-    }
+  if (macroFlat) {
+    return noSignal(
+      `Macro shield FLAT (slope=${macroSlopePips.toFixed(2)}p) — all signals void`,
+      macro, meso, micro, true,
+    );
   }
 
-  return {
-    imbalanceRatio: Math.round(imbalanceRatio * 100) / 100,
-    nearbyWall: wallSignificant ? wallType : null,
-    wallPrice: wallSignificant ? wallPrice : null,
-    wallStrength: maxWallStrength,
-    pathClear: elephantAction !== 'ELEPHANT_REJECTION' && elephantAction !== 'WAIT_FOR_ABSORPTION',
-    wallIsMagnet: wallSignificant && elephantAction !== 'ELEPHANT_REJECTION',
-    longPct: totalLong,
-    shortPct: totalShort,
-    elephantAction,
-    elephantPrice,
-    elephantDistance,
-    stopRunTarget,
-    absorptionDetail,
-    detail: wallSignificant
-      ? `🐘 ${elephantAction}: ${absorptionDetail}`
-      : `path clear, imbalance=${imbalanceRatio.toFixed(2)} (L/S ratio)`,
-  };
-}
+  const latestClose = candles[candles.length - 1].close;
 
-// ══════════════════════════════════════════
-// NEXUS PROBABILITY ENGINE
-// ══════════════════════════════════════════
-// Fuses all three pillars + sovereign direction into a single
-// probabilistic conviction score.
-// NOW accepts painWeight for adaptive synaptic weighting.
+  // Check current alignment
+  const allBull = latestClose > macro.value && latestClose > meso.value && latestClose > micro.value;
+  const allBear = latestClose < macro.value && latestClose < meso.value && latestClose < micro.value;
 
-interface NexusScore {
-  probability: number;          // 0.0 to 1.0
-  tier: 'OMNI_STRIKE' | 'PROBE' | 'SOVEREIGN_ONLY' | 'BLOCKED';
-  executionDir: 'BUY' | 'SELL'; // May differ from sovereignDir (FADE)
-  spreadBypass: boolean;
-  detail: string;
-}
-
-function calculateNexusProbability(
-  sovereignDir: 'BUY' | 'SELL' | null,
-  adi: ADIResult,
-  obi: OBIResult,
-  volBuffer: VolatilityBuffer,
-  nerve: { signal: 'NOISE' | 'CLEAN_FLOW'; variance: number },
-  velocityRatio: number,
-  painWeight: number = 1.0, // 0.0–1.0, lower = system is hurting → more conservative
-  synapseBoost: number = 0, // cross-pair leading synapse bonus
-): NexusScore {
-  if (!sovereignDir) {
-    return { probability: 0, tier: 'BLOCKED', executionDir: 'BUY', spreadBypass: false, detail: 'no sovereign direction' };
+  if (!allBull && !allBear) {
+    return noSignal(
+      `No Triple-Lock: close=${latestClose.toFixed(pricePrecision(instrument))} ` +
+      `macro=${macro.value.toFixed(pricePrecision(instrument))}(${macro.trend}) ` +
+      `meso=${meso.value.toFixed(pricePrecision(instrument))}(${meso.trend}) ` +
+      `micro=${micro.value.toFixed(pricePrecision(instrument))}(${micro.trend})`,
+      macro, meso, micro, false,
+    );
   }
 
-  // Determine execution direction: ADI fade overrides sovereign when hunt detected
-  const executionDir: 'BUY' | 'SELL' = (adi.isRetailHunt && adi.fadeDirection) ? adi.fadeDirection : sovereignDir;
+  const direction = allBull ? 'long' as const : 'short' as const;
 
-  let score = 0.40; // Sovereign baseline = 40%
-
-  // ADI Truth Filter: +25% if confirmed, -30% if retail hunt
-  // Pain Memory: scale the hunt penalty by painWeight (hurting = bigger penalty)
-  if (adi.isRetailHunt) {
-    score -= 0.30 * (2.0 - painWeight); // painWeight=1.0 → -0.30, painWeight=0.5 → -0.45
-  } else {
-    const confirmBonus = adi.totalCrosses > 0 ? (adi.confirmedCrosses / adi.totalCrosses) * 0.25 : 0.10;
-    score += confirmBonus * painWeight; // hurting = less trust in confirmations
+  // ── STRIKE CONDITION: Count how many candles the alignment has persisted ──
+  // Walk backwards to find when alignment first started
+  let candlesSinceAlignment = 0;
+  for (let i = candles.length - 1; i >= MACRO.period + 5; i--) {
+    // Recalculate VolStops at candle i (approximate: use same final values)
+    // For efficiency, just check if close was on the same side of shields
+    // This is an approximation — the shields shift, but for chase detection it works
+    const c = candles[i].close;
+    const aligned = direction === 'long'
+      ? c > macro.value && c > meso.value && c > micro.value
+      : c < macro.value && c < meso.value && c < micro.value;
+    if (!aligned) break;
+    candlesSinceAlignment++;
   }
 
-  // OBI Elephant Absorption Model
-  if (obi.elephantAction === 'STOP_RUN_CAPTURE') {
-    score += 0.20;
-  } else if (obi.elephantAction === 'STRIKE_THROUGH') {
-    score += 0.15;
-  } else if (obi.elephantAction === 'PATH_CLEAR') {
-    score += 0.05;
-  } else if (obi.elephantAction === 'WAIT_FOR_ABSORPTION') {
-    score -= 0.05;
-  } else if (obi.elephantAction === 'ELEPHANT_REJECTION') {
-    score -= 0.15;
-  }
+  // Meso distance for SL calculation
+  const mesoDistance = Math.abs(latestClose - meso.value) * ps;
 
-  // Nerve Tension
-  if (nerve.signal === 'CLEAN_FLOW') {
-    score += 0.10;
-  } else {
-    score -= 0.05;
-  }
+  const chaseBlocked = candlesSinceAlignment > MAX_CHASE_CANDLES;
 
-  // Velocity confirmation: scaled by painWeight (hurting = need MORE velocity)
-  const velocityThreshold = 1.5 + (1.0 - painWeight) * 0.5; // painWeight=0.5 → need 1.75x
-  if (velocityRatio > velocityThreshold) {
-    score += 0.10;
-  }
-
-  // Volatility buffer alignment
-  if (volBuffer.breathRatio >= 0.8 && volBuffer.breathRatio <= 1.3) {
-    score += 0.05;
-  }
-
-  // Cross-pair Leading Synapse boost
-  if (synapseBoost > 0) {
-    score += synapseBoost;
-  }
-
-  const probability = Math.max(0, Math.min(1, score));
-  const spreadBypass = false;
-
-  let tier: NexusScore['tier'];
-  if (probability >= NEXUS_CONFIDENCE_THRESHOLD) tier = 'OMNI_STRIKE';
-  else if (probability >= 0.65) tier = 'PROBE';
-  else if (probability >= 0.45) tier = 'SOVEREIGN_ONLY';
-  else tier = 'BLOCKED';
-
-  const fadedLabel = executionDir !== sovereignDir ? ` FADED→${executionDir}` : '';
-  const painLabel = painWeight < 0.9 ? ` pain=${painWeight.toFixed(2)}` : '';
-  const synapseLabel = synapseBoost > 0 ? ` synapse=+${(synapseBoost * 100).toFixed(0)}%` : '';
-
-  return {
-    probability: Math.round(probability * 1000) / 1000,
-    tier,
-    executionDir,
-    spreadBypass,
-    detail: `P=${(probability * 100).toFixed(1)}% tier=${tier}${fadedLabel}${painLabel}${synapseLabel}`,
-  };
-}
-
-// ══════════════════════════════════════════
-// PAIN AVOIDANCE MEMORY (Adaptive Synaptic Weighting)
-// ══════════════════════════════════════════
-// Reads recent losses from oanda_orders. If the system has been
-// taking hits, it "turtles up" — lower painWeight = more conservative.
-// Recovers over time as wins return.
-
-async function loadPainWeight(sb: ReturnType<typeof createClient>): Promise<{ weight: number; recentLosses: number; recentWins: number; detail: string }> {
-  try {
-    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
-    const { data: recentTrades } = await sb
-      .from('oanda_orders')
-      .select('entry_price, exit_price, direction, currency_pair')
-      .eq('agent_id', AGENT_ID)
-      .eq('environment', ENVIRONMENT)
-      .in('status', ['filled', 'closed'])
-      .not('exit_price', 'is', null)
-      .not('entry_price', 'is', null)
-      .gt('closed_at', twoHoursAgo)
-      .order('closed_at', { ascending: false })
-      .limit(10);
-
-    if (!recentTrades || recentTrades.length === 0) {
-      return { weight: 1.0, recentLosses: 0, recentWins: 0, detail: 'No recent trades — full confidence' };
-    }
-
-    let wins = 0, losses = 0, consecutiveLosses = 0, maxConsecutive = 0;
-    for (const t of recentTrades) {
-      const isJPY = t.currency_pair?.includes('JPY');
-      const scale = isJPY ? 100 : 10000;
-      const pips = t.direction === 'long'
-        ? (Number(t.exit_price) - Number(t.entry_price)) * scale
-        : (Number(t.entry_price) - Number(t.exit_price)) * scale;
-      if (pips > 0) {
-        wins++;
-        consecutiveLosses = 0;
-      } else {
-        losses++;
-        consecutiveLosses++;
-        maxConsecutive = Math.max(maxConsecutive, consecutiveLosses);
-      }
-    }
-
-    // Pain formula: each consecutive loss reduces weight by 0.15
-    // 0 losses = 1.0, 1 = 0.85, 2 = 0.70, 3+ = 0.55 (floor)
-    const weight = Math.max(0.55, 1.0 - maxConsecutive * 0.15);
-
+  if (chaseBlocked) {
     return {
-      weight,
-      recentLosses: losses,
-      recentWins: wins,
-      detail: `W=${wins} L=${losses} maxConsecL=${maxConsecutive} → painWeight=${weight.toFixed(2)}`,
+      direction: null, macro, meso, micro, macroFlat: false,
+      candlesSinceAlignment, mesoDistance,
+      detail: `Triple-Lock ${direction.toUpperCase()} but CHASE BLOCKED (${candlesSinceAlignment} candles > ${MAX_CHASE_CANDLES} max)`,
     };
-  } catch {
-    return { weight: 1.0, recentLosses: 0, recentWins: 0, detail: 'Pain memory unavailable — full confidence' };
   }
+
+  return {
+    direction, macro, meso, micro, macroFlat: false,
+    candlesSinceAlignment, mesoDistance,
+    detail: `✅ TRIPLE-LOCK ${direction.toUpperCase()} — candle ${candlesSinceAlignment} of alignment. Meso SL=${mesoDistance.toFixed(1)}p`,
+  };
 }
 
 // ══════════════════════════════════════════
-// NEURO-MATRIX: Cross-Pair Synapse + Sympathetic Liquidity
+// MICRO-KILL EXIT CHECK
 // ══════════════════════════════════════════
+// Check if any open trade should be closed because M1 close crossed the Micro shield
 
-// ── Regime Composite data from forex-indicators ──
-interface RegimeComposite {
-  label: string;              // 'flat' | 'momentum' | 'expansion' | 'breakdown' | 'transition'
-  regimeDirection: string;    // 'bullish' | 'bearish'
-  familyLabel: string;        // 'bullish' | 'bearish' | 'neutral'
-  directionalPersistence: number; // 0-100
-  regimeConfirmed: boolean;
-  regimeFamilyConfirmed: boolean;
-  strength: number;
+async function checkMicroKillExits(
+  sb: ReturnType<typeof createClient>,
+  apiToken: string,
+  accountId: string,
+  log: string[],
+): Promise<{ instrument: string; tradeId: string; reason: string }[]> {
+  const exits: { instrument: string; tradeId: string; reason: string }[] = [];
+
+  // Get all open trades for this agent
+  const { data: openTrades } = await sb
+    .from('oanda_orders')
+    .select('id, currency_pair, direction, oanda_trade_id')
+    .eq('agent_id', AGENT_ID)
+    .eq('environment', ENVIRONMENT)
+    .in('status', ['filled', 'open'])
+    .not('oanda_trade_id', 'is', null);
+
+  if (!openTrades || openTrades.length === 0) return exits;
+
+  for (const trade of openTrades) {
+    const instrument = trade.currency_pair;
+    const candles = await fetchM1Candles(instrument, MICRO.period + 10, apiToken, accountId);
+    if (candles.length < MICRO.period + 5) continue;
+
+    const candleData = candles.map(c => ({ close: c.close, high: c.high, low: c.low, open: c.open }));
+    const micro = calculateVolStop(candleData, MICRO.period, MICRO.mult);
+    const latestClose = candles[candles.length - 1].close;
+    const prec = pricePrecision(instrument);
+
+    // MICRO-KILL: Long closed below micro | Short closed above micro
+    if (trade.direction === 'long' && latestClose < micro.value) {
+      log.push(`[${instrument}] 💀 MICRO-KILL EXIT: Long trade — close ${latestClose.toFixed(prec)} < micro ${micro.value.toFixed(prec)}`);
+      exits.push({ instrument, tradeId: trade.oanda_trade_id!, reason: 'micro_kill_long' });
+    } else if (trade.direction === 'short' && latestClose > micro.value) {
+      log.push(`[${instrument}] 💀 MICRO-KILL EXIT: Short trade — close ${latestClose.toFixed(prec)} > micro ${micro.value.toFixed(prec)}`);
+      exits.push({ instrument, tradeId: trade.oanda_trade_id!, reason: 'micro_kill_short' });
+    }
+  }
+
+  return exits;
 }
 
-async function fetchRegimeComposite(instrument: string, apiToken: string, accountId: string): Promise<RegimeComposite | null> {
+async function closeOandaTrade(
+  tradeId: string, apiToken: string, accountId: string,
+): Promise<{ success: boolean; price?: number; error?: string }> {
   try {
-    const url = Deno.env.get('SUPABASE_URL')!;
-    const key = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-    const res = await fetch(`${url}/functions/v1/forex-indicators`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${key}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ instrument, timeframe: '15m', mode: 'live' }),
+    const res = await fetch(`${OANDA_HOST}/v3/accounts/${accountId}/trades/${tradeId}/close`, {
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${apiToken}`, 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ units: 'ALL' }),
     });
-    if (!res.ok) return null;
     const data = await res.json();
-    const r = data?.regime;
-    if (!r) return null;
-    return {
-      label: r.label || 'flat',
-      regimeDirection: r.regimeDirection || 'neutral',
-      familyLabel: r.familyLabel || 'neutral',
-      directionalPersistence: r.directionalPersistence ?? 0,
-      regimeConfirmed: r.regimeConfirmed ?? false,
-      regimeFamilyConfirmed: r.regimeFamilyConfirmed ?? false,
-      strength: r.strength ?? 0,
-    };
-  } catch { return null; }
-}
-
-interface InstrumentState {
-  instrument: string;
-  pricing: { bid: number; ask: number; spread: number; mid: number };
-  sovereignDir: 'BUY' | 'SELL' | null;
-  sovDebug: string;
-  adi: ADIResult;
-  volBuffer: VolatilityBuffer;
-  velocity: { spike: boolean; ratio: number; direction: 'BUY' | 'SELL' | null };
-  obi: OBIResult;
-  nerve: { signal: 'NOISE' | 'CLEAN_FLOW'; variance: number };
-  hasPosition: boolean;
-  candles: { volume: number; close: number; open: number; high: number; low: number }[];
-  regime: RegimeComposite | null;
-}
-
-// Leading Synapse: If one pair has a velocity spike, other pairs get a probe bonus
-function calculateSynapseBoosts(
-  states: InstrumentState[],
-  log: string[],
-): Record<string, number> {
-  const boosts: Record<string, number> = {};
-  for (const s of states) boosts[s.instrument] = 0;
-
-  // Find the pair with the highest velocity spike
-  const leader = states
-    .filter(s => s.velocity.spike && s.velocity.ratio >= 2.0)
-    .sort((a, b) => b.velocity.ratio - a.velocity.ratio)[0];
-
-  if (!leader) return boosts;
-
-  log.push(`🧬 LEADING SYNAPSE: ${leader.instrument} velocity=${leader.velocity.ratio.toFixed(1)}x — shockwave detected`);
-
-  // All OTHER pairs in the SAME USD direction get a probe boost
-  // If USD/JPY spikes BUY (USD strong), then EUR/USD should get SELL boost, GBP/USD SELL boost
-  const leaderImpliesUsdStrong = (
-    (leader.instrument.startsWith('USD_') && leader.velocity.direction === 'BUY') ||
-    (!leader.instrument.startsWith('USD_') && leader.velocity.direction === 'SELL')
-  );
-
-  for (const s of states) {
-    if (s.instrument === leader.instrument) continue;
-    if (!s.sovereignDir) continue;
-
-    // Check if this pair's sovereign direction aligns with the leader's USD implication
-    const pairNeedsUsdStrong =
-      (s.instrument.startsWith('USD_') && s.sovereignDir === 'BUY') ||
-      (!s.instrument.startsWith('USD_') && s.sovereignDir === 'SELL');
-
-    if (pairNeedsUsdStrong === leaderImpliesUsdStrong) {
-      // Aligned — leader confirms this pair's direction → PROBE boost
-      const boost = Math.min(0.15, (leader.velocity.ratio - 2.0) * 0.10);
-      boosts[s.instrument] = boost;
-      log.push(`🧬 SYNAPSE → ${s.instrument}: +${(boost * 100).toFixed(0)}% probe boost from ${leader.instrument} shockwave`);
+    if (data.orderFillTransaction) {
+      return { success: true, price: parseFloat(data.orderFillTransaction.price || '0') };
     }
-  }
-
-  return boosts;
-}
-
-// Sympathetic Liquidity: Compare elephant thickness across pairs, concentrate on weakest wall
-function applySympathicLiquidityRouting(
-  states: InstrumentState[],
-  log: string[],
-): Record<string, number> {
-  // Returns sizing multiplier overrides: >1.0 = concentrate, <1.0 = reduce
-  const overrides: Record<string, number> = {};
-  for (const s of states) overrides[s.instrument] = 1.0;
-
-  // Only applies when multiple pairs have elephants in path
-  const pairsWithElephants = states.filter(s =>
-    s.sovereignDir && !s.hasPosition && s.obi.elephantPrice !== null &&
-    s.obi.elephantAction !== 'ELEPHANT_REJECTION' &&
-    s.obi.elephantAction !== 'WAIT_FOR_ABSORPTION'
-  );
-
-  if (pairsWithElephants.length < 2) return overrides;
-
-  // Find the pair with the THINNEST wall (path of least resistance)
-  const sorted = [...pairsWithElephants].sort((a, b) => a.obi.wallStrength - b.obi.wallStrength);
-  const weakest = sorted[0];
-  const strongest = sorted[sorted.length - 1];
-
-  // Only apply if there's a meaningful difference (>1.5% gap)
-  if (strongest.obi.wallStrength - weakest.obi.wallStrength < 1.5) return overrides;
-
-  log.push(`💧 SYMPATHETIC LIQUIDITY: ${weakest.instrument} wall=${weakest.obi.wallStrength.toFixed(1)}% (weak) vs ${strongest.instrument} wall=${strongest.obi.wallStrength.toFixed(1)}% (thick)`);
-  log.push(`💧 Routing capital: ${weakest.instrument} → 1.5x size, ${strongest.instrument} → 0.5x size`);
-
-  overrides[weakest.instrument] = 1.5;   // Pour through the crack
-  overrides[strongest.instrument] = 0.5;  // Don't fight the thick wall
-
-  return overrides;
-}
-
-// ══════════════════════════════════════════
-// SOVEREIGN DIRECTION (unchanged)
-// ══════════════════════════════════════════
-
-async function getSovereignDirection(instrument: string, sb: ReturnType<typeof createClient>): Promise<{ direction: 'BUY' | 'SELL' | null; debug: string }> {
-  try {
-    const { data, error } = await sb
-      .from('sovereign_memory')
-      .select('payload')
-      .eq('memory_key', 'live_strength_index')
-      .eq('memory_type', 'currency_strength')
-      .order('updated_at', { ascending: false })
-      .limit(1)
-      .single();
-
-    if (error) return { direction: null, debug: `query_error: ${error.message}` };
-    if (!data?.payload) return { direction: null, debug: 'no_payload' };
-
-    const payload = data.payload as { strengths?: { currency: string; rank: number }[] };
-    if (!payload.strengths?.length) return { direction: null, debug: 'no_strengths' };
-
-    const ranks: Record<string, number> = {};
-    for (const s of payload.strengths) ranks[s.currency] = s.rank;
-
-    const [base, quote] = instrument.split('_');
-    const bR = ranks[base], qR = ranks[quote];
-    if (bR == null || qR == null) return { direction: null, debug: `missing: ${base}=${bR} ${quote}=${qR}` };
-
-    const dir = bR < qR ? 'BUY' as const : qR < bR ? 'SELL' as const : null;
-    return { direction: dir, debug: `${base}=#${bR} ${quote}=#${qR} → ${dir || 'EQUAL'}` };
+    return { success: false, error: JSON.stringify(data).slice(0, 300) };
   } catch (e) {
-    return { direction: null, debug: `exception: ${(e as Error).message}` };
+    return { success: false, error: (e as Error).message };
   }
 }
 
 // ══════════════════════════════════════════
-// ORDER EXECUTION
+// ORDER EXECUTION (Market Order with Meso-based SL, no TP — Micro-Kill handles exit)
 // ══════════════════════════════════════════
 
 async function placeMarketOrder(
-  instrument: string, units: number, direction: 'BUY' | 'SELL',
-  bid: number, ask: number, slPips: number, tpPips: number,
+  instrument: string, units: number, direction: 'long' | 'short',
+  bid: number, ask: number, slPips: number,
   apiToken: string, accountId: string,
 ): Promise<{ success: boolean; tradeId?: string; error?: string; fillPrice?: number }> {
   const pv = pipValue(instrument);
   const prec = pricePrecision(instrument);
-  const side = direction === 'BUY' ? 1 : -1;
-
-  // BUY fills at ask, SELL fills at bid — use correct reference for SL/TP
-  const refPrice = direction === 'BUY' ? ask : bid;
+  const side = direction === 'long' ? 1 : -1;
+  const refPrice = direction === 'long' ? ask : bid;
   const slPrice = (refPrice - side * slPips * pv).toFixed(prec);
-  const tpPrice = (refPrice + side * tpPips * pv).toFixed(prec);
 
   const orderBody = {
     order: {
       type: 'MARKET',
       instrument,
-      units: String(direction === 'BUY' ? units : -units),
+      units: String(direction === 'long' ? units : -units),
       timeInForce: 'FOK',
       stopLossOnFill: { price: slPrice, timeInForce: 'GTC' },
-      takeProfitOnFill: { price: tpPrice, timeInForce: 'GTC' },
+      // No TP — Micro-Kill exit handles it
     },
   };
 
@@ -885,37 +402,8 @@ async function placeMarketOrder(
 }
 
 // ══════════════════════════════════════════
-// VELOCITY DETECTION (retained)
+// MAIN HANDLER — Sovereign VolStop Triple-Lock
 // ══════════════════════════════════════════
-
-function detectVelocitySpike(candles: { volume: number; close: number; open: number }[]): { spike: boolean; ratio: number; direction: 'BUY' | 'SELL' | null } {
-  if (candles.length < 5) return { spike: false, ratio: 0, direction: null };
-  const current = candles[candles.length - 1];
-  const lookback = candles.slice(0, -1);
-  const avgVol = lookback.reduce((s, c) => s + c.volume, 0) / lookback.length;
-  const ratio = avgVol > 0 ? current.volume / avgVol : 0;
-  if (ratio < 1.5) return { spike: false, ratio, direction: null };
-  return { spike: true, ratio, direction: current.close > current.open ? 'BUY' : 'SELL' };
-}
-
-// ── Nerve tension (retained) ──
-function calculateNerveTension(candles: { close: number }[]): { signal: 'NOISE' | 'CLEAN_FLOW'; variance: number } {
-  if (candles.length < 3) return { signal: 'CLEAN_FLOW', variance: 0 };
-  const returns: number[] = [];
-  for (let i = 1; i < candles.length; i++) {
-    returns.push((candles[i].close - candles[i - 1].close) / candles[i - 1].close);
-  }
-  const mean = returns.reduce((s, r) => s + r, 0) / returns.length;
-  const variance = (returns.reduce((s, r) => s + (r - mean) ** 2, 0) / returns.length) * 1e8;
-  return { signal: variance > 0.85 ? 'NOISE' : 'CLEAN_FLOW', variance };
-}
-
-// ══════════════════════════════════════════
-// MAIN HANDLER — NEURO-MATRIX STATE MACHINE v3
-// ══════════════════════════════════════════
-// Architecture shift: Parallel state aggregation → cross-pair intelligence → execution.
-// No more sequential for-loop. All instruments processed simultaneously,
-// then a single Neuro-Matrix decision engine routes capital.
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
@@ -923,34 +411,27 @@ Deno.serve(async (req) => {
   }
 
   const log: string[] = [];
-  const executions: { instrument: string; direction: string; status: string; detail: string; nexusP?: number }[] = [];
+  const executions: { instrument: string; direction: string; status: string; detail: string }[] = [];
 
   try {
-    // ── 1. Session Gate ──
-    const session = isNYCOpenWindow();
-    log.push(session.reason);
-    if (!session.allowed) {
-      return new Response(JSON.stringify({ success: true, reason: 'session_gate', detail: session.reason, log }), {
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
-    }
+    log.push(`⚡ Sovereign VolStop Triple-Lock | ${new Date().toISOString()}`);
+    log.push(`Instruments: ${INSTRUMENTS.join(', ')} | All sessions active`);
 
-    // ── 2. Credentials ──
+    // ── 1. Credentials ──
     const apiToken = Deno.env.get('OANDA_API_TOKEN')!;
     const accountId = Deno.env.get('OANDA_ACCOUNT_ID')!;
     const sb = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
 
-    // ── 3. NAV + Admin + Pain Memory (all parallel) ──
-    const [acctSummary, adminResult, painMemory] = await Promise.all([
+    // ── 2. Account + Admin (parallel) ──
+    const [acctSummary, adminResult] = await Promise.all([
       getAccountSummary(apiToken, accountId),
       sb.from('user_roles').select('user_id').eq('role', 'admin').limit(1).single(),
-      loadPainWeight(sb),
     ]);
     const nav = acctSummary.nav;
     const marginAvailable = acctSummary.marginAvailable;
     const accountLeverage = acctSummary.leverage;
-    log.push(`Account NAV: $${nav.toFixed(2)} | Margin Available: $${marginAvailable.toFixed(2)} | Leverage: ${accountLeverage}:1`);
-    log.push(`🧠 PAIN MEMORY: ${painMemory.detail}`);
+    log.push(`NAV: $${nav.toFixed(2)} | Margin: $${marginAvailable.toFixed(2)} | Leverage: ${accountLeverage}:1`);
+
     if (nav < 50) {
       return new Response(JSON.stringify({ success: false, reason: 'low_nav', nav, log }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -963,9 +444,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    const riskDollars = nav * 0.02;
-
-    // ── Circuit Breaker Check ──
+    // ── 3. Circuit Breaker ──
     const { data: breakerData } = await sb
       .from('gate_bypasses')
       .select('id')
@@ -980,304 +459,154 @@ Deno.serve(async (req) => {
       });
     }
 
-    // ── 4. PILLAR 1: ADI — Read pre-cached state first, fetch fresh only if stale ──
-    let allPricing: Record<string, { bid: number; ask: number; spread: number; mid: number }> = {};
-    let allCandles: Record<string, { volume: number; close: number; open: number; high: number; low: number }[]> = {};
+    // ── 4. MICRO-KILL EXIT CHECK (before entries) ──
+    log.push('💀 Checking Micro-Kill exits on open trades...');
+    const microKills = await checkMicroKillExits(sb, apiToken, accountId, log);
 
-    const { data: cachedAdi } = await sb
-      .from('sovereign_memory')
-      .select('payload, updated_at')
-      .eq('memory_type', 'adi_cache')
-      .eq('memory_key', 'live_adi_state')
-      .single();
-
-    const cacheAgeMs = cachedAdi?.updated_at ? Date.now() - new Date(cachedAdi.updated_at).getTime() : Infinity;
-    const ADI_CACHE_TTL_MS = 60_000;
-
-    if (cachedAdi?.payload && cacheAgeMs < ADI_CACHE_TTL_MS) {
-      const cached = cachedAdi.payload as { pricing?: Record<string, any>; candles?: Record<string, any[]> };
-      allPricing = (cached.pricing || {}) as typeof allPricing;
-      allCandles = (cached.candles || {}) as typeof allCandles;
-      log.push(`🔺 PILLAR 1: ADI from cache (${Math.round(cacheAgeMs / 1000)}s old) — zero latency tax`);
-    } else {
-      log.push('🔺 PILLAR 1: ADI cache stale — fetching fresh (latency tax incurred)...');
-      const allCrossInstruments = [...new Set([...INSTRUMENTS, ...USD_CROSSES])];
-      const [freshPricing, ...crossCandleResults] = await Promise.all([
-        fetchBatchPricing(allCrossInstruments, apiToken, accountId),
-        ...allCrossInstruments.map(inst => fetchM5Candles(inst, 24, apiToken, accountId)),
-      ]);
-      allPricing = freshPricing;
-      allCrossInstruments.forEach((inst, i) => { allCandles[inst] = crossCandleResults[i]; });
-
-      await sb.from('sovereign_memory').upsert({
-        memory_type: 'adi_cache',
-        memory_key: 'live_adi_state',
-        payload: { pricing: allPricing, candles: allCandles, updatedAt: new Date().toISOString() },
-        relevance_score: 1.0,
-        created_by: 'nyc-love-agent',
-      }, { onConflict: 'memory_type,memory_key' });
+    for (const kill of microKills) {
+      const result = await closeOandaTrade(kill.tradeId, apiToken, accountId);
+      if (result.success) {
+        log.push(`[${kill.instrument}] ✅ MICRO-KILL CLOSED @ ${result.price?.toFixed(pricePrecision(kill.instrument))}`);
+        await sb.from('oanda_orders')
+          .update({
+            status: 'closed',
+            exit_price: result.price,
+            closed_at: new Date().toISOString(),
+          })
+          .eq('oanda_trade_id', kill.tradeId)
+          .eq('agent_id', AGENT_ID);
+        executions.push({ instrument: kill.instrument, direction: '-', status: 'micro_kill_closed', detail: `tradeId=${kill.tradeId}` });
+      } else {
+        log.push(`[${kill.instrument}] ❌ MICRO-KILL CLOSE FAILED: ${result.error}`);
+      }
     }
 
-    log.push(`ADI data: ${Object.keys(allPricing).length} priced, ${Object.keys(allCandles).filter(k => (allCandles[k]?.length || 0) > 0).length} with candles`);
-
-    // ══════════════════════════════════════════
-    // PHASE 1: PARALLEL STATE AGGREGATION
-    // ══════════════════════════════════════════
-    // All instruments processed SIMULTANEOUSLY — no sequential loop.
-    // This builds a complete 3D state block for the Neuro-Matrix.
-    log.push('🧬 NEURO-MATRIX: Phase 1 — Parallel state aggregation...');
-
-    const orderBooks = await Promise.all(INSTRUMENTS.map(inst => fetchOrderBook(inst, apiToken, sb)));
-    const obiMap: Record<string, Awaited<ReturnType<typeof fetchOrderBook>>> = {};
-    INSTRUMENTS.forEach((inst, i) => { obiMap[inst] = orderBooks[i]; });
-
-    // Parallel: sovereign direction + position check for ALL instruments
-    const [sovResults, posResults] = await Promise.all([
-      Promise.all(INSTRUMENTS.map(inst => getSovereignDirection(inst, sb))),
-      Promise.all(INSTRUMENTS.map(inst => hasOpenPosition(inst, sb))),
+    // ── 5. Fetch M1 candles + pricing + position check (parallel per instrument) ──
+    const candleCount = MACRO.period + 20; // Need enough for Macro(100) ATR warmup
+    const [allPricing, ...candleAndPosResults] = await Promise.all([
+      fetchBatchPricing(INSTRUMENTS, apiToken, accountId),
+      ...INSTRUMENTS.map(async (inst) => {
+        const [candles, hasPos] = await Promise.all([
+          fetchM1Candles(inst, candleCount, apiToken, accountId),
+          hasOpenPosition(inst, sb),
+        ]);
+        return { instrument: inst, candles, hasPosition: hasPos };
+      }),
     ]);
 
-    // Build complete state for each instrument
-    const states: InstrumentState[] = [];
-    for (let i = 0; i < INSTRUMENTS.length; i++) {
-      const instrument = INSTRUMENTS[i];
-      const pricing = allPricing[instrument];
-      if (!pricing) continue;
+    // ── 6. Triple-Lock Analysis + Execution ──
+    const riskDollars = nav * ACCOUNT_RISK_PCT;
+    log.push(`Risk budget: $${riskDollars.toFixed(2)} (${(ACCOUNT_RISK_PCT * 100).toFixed(0)}% of NAV)`);
 
-      const candles = allCandles[instrument] || [];
-      const velocity = detectVelocitySpike(candles);
-      const { direction: sovereignDir, debug: sovDebug } = sovResults[i];
-
-      const adi = sovereignDir ? calculateADI(instrument, sovereignDir, allPricing, allCandles) : {
-        dollarStrength: 0, confirmedCrosses: 0, totalCrosses: 0, isRetailHunt: false, fadeDirection: null, detail: 'no direction',
-      } as ADIResult;
-
-      const volBuffer = calculateNeuralVolatilityBuffer(candles, instrument, pricing);
-      const obi = analyzeNexusLiquidity(obiMap[instrument], sovereignDir || 'BUY', instrument, velocity.ratio);
-      const nerve = calculateNerveTension(candles);
-
-      states.push({
-        instrument, pricing, sovereignDir, sovDebug: sovDebug,
-        adi, volBuffer, velocity, obi, nerve,
-        hasPosition: posResults[i],
-        candles,
-      });
-    }
-
-    // ══════════════════════════════════════════
-    // PHASE 2: CROSS-PAIR INTELLIGENCE
-    // ══════════════════════════════════════════
-    // Leading Synapse detection + Sympathetic Liquidity routing.
-    log.push('🧬 NEURO-MATRIX: Phase 2 — Cross-pair intelligence...');
-
-    const synapseBoosts = calculateSynapseBoosts(states, log);
-    const liquidityOverrides = applySympathicLiquidityRouting(states, log);
-
-    // ══════════════════════════════════════════
-    // PHASE 3: APEX ALLOCATION — Score, Rank, Strike the Best
-    // ══════════════════════════════════════════
-    // Instead of executing each instrument independently, we score ALL of them,
-    // rank by conviction, and route capital to the single best setup (Apex Target).
-    // Secondary targets only fire if conviction delta > 15% (truly independent setups).
-    log.push('🧬 NEURO-MATRIX: Phase 3 — Apex Allocation...');
-
-    // Score every instrument through the full Nexus pipeline
-    interface ScoredTarget {
-      state: InstrumentState;
-      nexus: NexusScore;
-      gateStatus: 'executable' | 'spread_blocked' | 'elephant_blocked' | 'nexus_blocked' | 'no_direction' | 'has_position';
-      gateDetail: string;
-    }
-
-    const scoredTargets: ScoredTarget[] = [];
-
-    for (const state of states) {
-      const { instrument, pricing, sovereignDir, sovDebug, adi, volBuffer, velocity, obi, nerve, hasPosition } = state;
+    for (const { instrument, candles, hasPosition } of candleAndPosResults) {
       const tag = `[${instrument}]`;
+      const pricing = allPricing[instrument];
 
-      log.push(`${tag} SOVEREIGN: ${sovDebug}`);
+      if (!pricing) {
+        log.push(`${tag} No pricing data, skipping`);
+        continue;
+      }
 
       if (hasPosition) {
-        log.push(`${tag} Already has open position, skipping`);
-        executions.push({ instrument, direction: '-', status: 'skipped', detail: 'existing_position' });
-        scoredTargets.push({ state, nexus: { probability: 0, tier: 'BLOCKED', executionDir: 'BUY', spreadBypass: false, detail: 'has_position' }, gateStatus: 'has_position', gateDetail: 'existing_position' });
+        log.push(`${tag} Has open position, skipping entry`);
+        executions.push({ instrument, direction: '-', status: 'has_position', detail: 'existing position' });
         continue;
       }
 
-      if (!sovereignDir) {
-        executions.push({ instrument, direction: '-', status: 'no_direction', detail: sovDebug });
-        scoredTargets.push({ state, nexus: { probability: 0, tier: 'BLOCKED', executionDir: 'BUY', spreadBypass: false, detail: sovDebug }, gateStatus: 'no_direction', gateDetail: sovDebug });
+      if (candles.length < MACRO.period + 10) {
+        log.push(`${tag} Insufficient candles (${candles.length}/${candleCount}), skipping`);
         continue;
       }
 
-      log.push(`${tag} 🔺 ADI: ${adi.detail}`);
-      if (adi.isRetailHunt && adi.fadeDirection) {
-        log.push(`${tag} ⚠️ RETAIL HUNT — FADE to ${adi.fadeDirection}`);
-      }
-      log.push(`${tag} 🧠 BREATH: ${volBuffer.detail}`);
-      log.push(`${tag} 📊 OBI: ${obi.detail}`);
+      // Analyze Triple-Lock
+      const candleData = candles.map(c => ({ close: c.close, high: c.high, low: c.low, open: c.open }));
+      const signal = analyzeTripleLock(candleData, instrument);
 
-      const nexus = calculateNexusProbability(
-        sovereignDir, adi, obi, volBuffer, nerve, velocity.ratio,
-        painMemory.weight,
-        synapseBoosts[instrument] || 0,
+      log.push(`${tag} Macro: ${signal.macro.trend} slope=${(signal.macro.slope * pipScale(instrument)).toFixed(2)}p | Meso: ${signal.meso.trend} | Micro: ${signal.micro.trend}`);
+      log.push(`${tag} ${signal.detail}`);
+
+      if (!signal.direction) {
+        executions.push({ instrument, direction: '-', status: 'no_signal', detail: signal.detail });
+        continue;
+      }
+
+      // ── SPREAD CHECK: Spread must be reasonable (<20% of Meso SL) ──
+      const maxSpread = signal.mesoDistance * 0.20;
+      if (pricing.spread > maxSpread && maxSpread > 0) {
+        log.push(`${tag} Spread Shield: ${pricing.spread.toFixed(1)}p > ${maxSpread.toFixed(1)}p cap`);
+        executions.push({ instrument, direction: signal.direction, status: 'spread_blocked', detail: `spread=${pricing.spread.toFixed(1)}` });
+        continue;
+      }
+
+      // ── POSITION SIZING: Risk / (Distance to Meso in $) ──
+      const slPips = Math.max(5, signal.mesoDistance); // Floor of 5 pips SL
+      const pipValueUSD = instrument.includes('JPY') ? 0.01 / (pricing.mid > 1 ? pricing.mid : 1) : 0.0001;
+      const rawUnits = Math.floor(riskDollars / (slPips * pipValueUSD));
+
+      // Margin cap
+      const safeMargin = marginAvailable * 0.80;
+      const maxUnitsByMargin = Math.floor(safeMargin * accountLeverage);
+      const units = Math.max(100, Math.min(rawUnits, maxUnitsByMargin));
+
+      if (rawUnits > maxUnitsByMargin) {
+        log.push(`${tag} ⚠️ MARGIN CAP: ${rawUnits} → ${units} units`);
+      }
+
+      log.push(`${tag} 🚀 EXECUTING: ${signal.direction.toUpperCase()} ${units} units | SL=${slPips.toFixed(1)}p (Meso distance) | Spread=${pricing.spread.toFixed(1)}p`);
+
+      // Acquire slot
+      const signalId = `volstop-${instrument}-${Date.now()}`;
+      const { data: slotResult } = await sb.rpc('try_acquire_blend_slot', {
+        p_agent_id: AGENT_ID,
+        p_currency_pair: instrument,
+        p_user_id: userId,
+        p_signal_id: signalId,
+        p_direction: signal.direction,
+        p_units: units,
+        p_environment: ENVIRONMENT,
+        p_confidence_score: 0.90,
+        p_requested_price: pricing.mid,
+      });
+
+      if (!slotResult) {
+        log.push(`${tag} Slot occupied (blend lock), skipping`);
+        executions.push({ instrument, direction: signal.direction, status: 'slot_blocked', detail: 'blend slot occupied' });
+        continue;
+      }
+
+      const orderId = slotResult as string;
+      const result = await placeMarketOrder(
+        instrument, units, signal.direction,
+        pricing.bid, pricing.ask, slPips,
+        apiToken, accountId,
       );
-      log.push(`${tag} 🎯 NEXUS: ${nexus.detail}`);
 
-      // Gate checks (don't execute yet — just classify)
-      let gateStatus: ScoredTarget['gateStatus'] = 'executable';
-      let gateDetail = '';
-
-      if (nexus.tier === 'BLOCKED') {
-        gateStatus = 'nexus_blocked';
-        gateDetail = nexus.detail;
-        log.push(`${tag} ❌ NEXUS BLOCKED (${(nexus.probability * 100).toFixed(1)}%)`);
-      } else {
-        const maxSpread = volBuffer.adaptiveSL * 0.20;
-        if (pricing.spread > maxSpread) {
-          gateStatus = 'spread_blocked';
-          gateDetail = `spread=${pricing.spread.toFixed(1)} > cap=${maxSpread.toFixed(1)}`;
-          log.push(`${tag} Spread Shield: ${gateDetail}`);
-        } else if (obi.elephantAction === 'ELEPHANT_REJECTION' || obi.elephantAction === 'WAIT_FOR_ABSORPTION') {
-          gateStatus = 'elephant_blocked';
-          gateDetail = obi.absorptionDetail;
-          log.push(`${tag} 🐘 ${obi.elephantAction}: ${obi.absorptionDetail}`);
-        }
-      }
-
-      if (obi.elephantAction === 'STOP_RUN_CAPTURE' && gateStatus === 'executable') {
-        log.push(`${tag} 🎯 STOP-RUN CAPTURE — liquidity pocket @ ${obi.stopRunTarget?.toFixed(pricePrecision(instrument))}`);
-      } else if (obi.elephantAction === 'STRIKE_THROUGH' && gateStatus === 'executable') {
-        log.push(`${tag} 🐘 STRIKE THROUGH — ${obi.absorptionDetail}`);
-      }
-
-      scoredTargets.push({ state, nexus, gateStatus, gateDetail });
-    }
-
-    // ── APEX RANKING: Sort executable targets by conviction ──
-    const executableTargets = scoredTargets
-      .filter(t => t.gateStatus === 'executable')
-      .sort((a, b) => b.nexus.probability - a.nexus.probability);
-
-    // Log blocked targets
-    for (const t of scoredTargets) {
-      if (t.gateStatus !== 'executable' && t.gateStatus !== 'has_position' && t.gateStatus !== 'no_direction') {
+      if (result.success) {
+        const entryPrice = result.fillPrice || (signal.direction === 'long' ? pricing.ask : pricing.bid);
+        log.push(`${tag} ✅ FILLED — Trade ID: ${result.tradeId} @ ${entryPrice.toFixed(pricePrecision(instrument))}`);
+        await sb.from('oanda_orders').update({
+          status: 'filled',
+          oanda_trade_id: result.tradeId || null,
+          entry_price: entryPrice,
+          spread_at_entry: pricing.spread,
+        }).eq('id', orderId);
         executions.push({
-          instrument: t.state.instrument,
-          direction: t.state.sovereignDir || '-',
-          status: t.gateStatus,
-          detail: t.gateDetail,
-          nexusP: t.nexus.probability,
+          instrument, direction: signal.direction, status: 'filled',
+          detail: `tradeId=${result.tradeId} SL=${slPips.toFixed(1)}p`,
         });
-      }
-    }
-
-    if (executableTargets.length === 0) {
-      log.push('🛑 NEURO-MATRIX: All tentacles blocked. Waiting for clearer global divergence.');
-    } else {
-      // ── APEX TARGET: The single best setup gets primary capital ──
-      const apex = executableTargets[0];
-      const apexTag = `[${apex.state.instrument}]`;
-
-      // Determine if secondary targets are truly independent (conviction delta > 15%)
-      const secondaryTargets = executableTargets.slice(1).filter(t =>
-        apex.nexus.probability - t.nexus.probability < 0.15
-      );
-
-      // Total capital pool: apex gets 1.0x or 1.5x if no secondaries
-      const apexSizingBoost = secondaryTargets.length === 0 ? 1.5 : 1.0;
-
-      log.push(`⚡ APEX TARGET: ${apex.state.instrument} (P=${(apex.nexus.probability * 100).toFixed(1)}%) — ${apexSizingBoost}x capital allocation`);
-      if (secondaryTargets.length > 0) {
-        log.push(`⚡ SECONDARY: ${secondaryTargets.map(t => `${t.state.instrument}(${(t.nexus.probability * 100).toFixed(0)}%)`).join(', ')} — 0.5x allocation`);
-      }
-
-      // Execute targets in priority order
-      const allTargetsToExecute = [
-        { target: apex, sizeMultiplier: apexSizingBoost },
-        ...secondaryTargets.map(t => ({ target: t, sizeMultiplier: 0.5 })),
-      ];
-
-      for (const { target, sizeMultiplier } of allTargetsToExecute) {
-        const { state, nexus } = target;
-        const { instrument, pricing, sovereignDir, volBuffer, obi } = state;
-        const tag = `[${instrument}]`;
-
-        const tierMultiplier = nexus.tier === 'OMNI_STRIKE' ? 1.0 : 0.5;
-        const sympatheticMultiplier = liquidityOverrides[instrument] || 1.0;
-        const combinedMultiplier = tierMultiplier * sympatheticMultiplier * sizeMultiplier;
-        const pipValueUSD = instrument.includes('JPY')
-          ? 0.01 / (pricing.mid > 1 ? pricing.mid : 1)
-          : 0.0001;
-        const rawUnits = Math.floor(riskDollars / (volBuffer.adaptiveSL * pipValueUSD));
-        
-        // ── MARGIN CAP: Prevent INSUFFICIENT_MARGIN rejections ──
-        // Max units = marginAvailable * leverage / notional cost per unit
-        // For XXX/USD pairs, 1 unit ≈ $1 notional; for USD/XXX, 1 unit = $1 notional
-        // Use 80% of available margin as safety buffer for spread/slippage
-        const safeMargin = marginAvailable * 0.80;
-        const maxUnitsByMargin = Math.floor(safeMargin * accountLeverage);
-        const scaledUnits = Math.floor(rawUnits * combinedMultiplier);
-        const units = Math.max(100, Math.min(scaledUnits, maxUnitsByMargin));
-        
-        if (scaledUnits > maxUnitsByMargin) {
-          log.push(`${tag} ⚠️ MARGIN CAP: ${scaledUnits} → ${units} units (avail margin $${marginAvailable.toFixed(0)} × ${accountLeverage}:1 × 80%)`);
-        }
-
-        const execDir = nexus.executionDir;
-        const isApex = target === apex;
-        const roleLabel = isApex ? 'APEX' : 'SECONDARY';
-        const sizingLabel = `[${roleLabel} ${sizeMultiplier}x${sympatheticMultiplier !== 1.0 ? ` SYMPATH ${sympatheticMultiplier}x` : ''}]`;
-
-        log.push(`${tag} 🚀 EXECUTING: ${execDir} ${units} units (${nexus.tier} P=${(nexus.probability * 100).toFixed(1)}%) SL=${volBuffer.adaptiveSL} TP=${volBuffer.adaptiveTP} ${sizingLabel}${execDir !== sovereignDir ? ` [FADED from ${sovereignDir}]` : ''}`);
-
-        const signalId = `nexus-${instrument}-${Date.now()}`;
-        const { data: slotResult } = await sb.rpc('try_acquire_blend_slot', {
-          p_agent_id: AGENT_ID,
-          p_currency_pair: instrument,
-          p_user_id: userId,
-          p_signal_id: signalId,
-          p_direction: execDir === 'BUY' ? 'long' : 'short',
-          p_units: units,
-          p_environment: ENVIRONMENT,
-          p_confidence_score: nexus.probability,
-          p_requested_price: pricing.mid,
-        });
-
-        if (!slotResult) {
-          log.push(`${tag} Slot occupied (blend lock), skipping`);
-          executions.push({ instrument, direction: sovereignDir || '-', status: 'slot_blocked', detail: 'blend slot occupied' });
-          continue;
-        }
-
-        const orderId = slotResult as string;
-        const result = await placeMarketOrder(instrument, units, execDir, pricing.bid, pricing.ask, volBuffer.adaptiveSL, volBuffer.adaptiveTP, apiToken, accountId);
-
-        if (result.success) {
-          const entryPrice = result.fillPrice || (execDir === 'BUY' ? pricing.ask : pricing.bid);
-          log.push(`${tag} ✅ FILLED — Trade ID: ${result.tradeId} @ ${entryPrice.toFixed(pricePrecision(instrument))} ${sizingLabel}`);
-          await sb.from('oanda_orders').update({
-            status: 'filled',
-            oanda_trade_id: result.tradeId || null,
-            entry_price: entryPrice,
-            session_label: 'newyork',
-            spread_at_entry: pricing.spread,
-          }).eq('id', orderId);
-          executions.push({ instrument, direction: execDir, status: 'filled', detail: `tradeId=${result.tradeId} P=${(nexus.probability * 100).toFixed(1)}% ${roleLabel}${execDir !== sovereignDir ? ' FADED' : ''}`, nexusP: nexus.probability });
-        } else {
-          log.push(`${tag} ❌ REJECTED — ${result.error}`);
-          await sb.from('oanda_orders').update({ status: 'rejected', error_message: result.error?.slice(0, 500) }).eq('id', orderId);
-          executions.push({ instrument, direction: sovereignDir || '-', status: 'rejected', detail: result.error || 'unknown' });
-        }
+      } else {
+        log.push(`${tag} ❌ REJECTED — ${result.error}`);
+        await sb.from('oanda_orders').update({
+          status: 'rejected', error_message: result.error?.slice(0, 500),
+        }).eq('id', orderId);
+        executions.push({ instrument, direction: signal.direction, status: 'rejected', detail: result.error || 'unknown' });
       }
     }
 
     return new Response(JSON.stringify({
       success: true,
       agent: AGENT_ID,
-      engine: 'neuro-matrix-v3',
-      session: 'newyork',
-      painWeight: painMemory.weight,
+      engine: 'volstop-triple-lock-v1',
       executions,
       log,
       timestamp: new Date().toISOString(),
@@ -1285,7 +614,7 @@ Deno.serve(async (req) => {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
   } catch (err) {
-    console.error('[NYC-LOVE NEURO-MATRIX] Fatal:', err);
+    console.error('[VOLSTOP-TRIPLE-LOCK] Fatal:', err);
     return new Response(JSON.stringify({ success: false, error: (err as Error).message, log }), {
       status: 500,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
