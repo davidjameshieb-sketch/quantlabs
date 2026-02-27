@@ -1522,6 +1522,13 @@ Deno.serve(async (req) => {
         }
       }
 
+      // ═══ Early agent classification (needed by Void Scanner + MAE Kill + Natural Death) ═══
+      const isAtlasHedgeAgent = (order.agent_id || '').startsWith('atlas-hedge-');
+      const isNycLoveAgent = order.agent_id === 'nyc-love';
+      const MAE_KILL_THRESHOLD = 0.65;
+      const MAE_KILL_MIN_HOLD_MINUTES = isNycLoveAgent ? 15 : 0;
+      const maeHoldoffActive = tradeAgeMinutes < MAE_KILL_MIN_HOLD_MINUTES;
+
       // ═══ VOID SCANNER v2 — Liquidity-Aware Bailout with Elasticity ═══
       // Phase 1: Structural scan (elephants, floor, ceiling)
       // Phase 2: Time-in-Void filter (60s candle-close confirmation)
@@ -1703,11 +1710,7 @@ Deno.serve(async (req) => {
       // ═══ MAE-BASED KILL SWITCH (0.65R) ═══
       // NATURAL DEATH: Skip for atlas-hedge agents — let OANDA SL handle it
       // NYC-LOVE HOLDOFF: 15-minute grace period — NYC session needs time to decide direction
-      const isAtlasHedgeAgent = (order.agent_id || '').startsWith('atlas-hedge-');
-      const isNycLoveAgent = order.agent_id === 'nyc-love';
-      const MAE_KILL_THRESHOLD = 0.65;
-      const MAE_KILL_MIN_HOLD_MINUTES = isNycLoveAgent ? 15 : 0;
-      const maeHoldoffActive = tradeAgeMinutes < MAE_KILL_MIN_HOLD_MINUTES;
+      // (isAtlasHedgeAgent, isNycLoveAgent, MAE_KILL_THRESHOLD, maeHoldoffActive declared above)
       
       if (maeHoldoffActive && maeRValue >= MAE_KILL_THRESHOLD && decision.action === "hold") {
         console.log(`[MAE-KILL] ${order.currency_pair} ${order.direction}: MAE=${maeRValue}R but HOLDOFF active (${tradeAgeMinutes.toFixed(1)}min < ${MAE_KILL_MIN_HOLD_MINUTES}min) — letting NYC session breathe`);
