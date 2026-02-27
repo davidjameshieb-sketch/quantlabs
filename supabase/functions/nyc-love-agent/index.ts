@@ -670,6 +670,45 @@ async function loadPainWeight(sb: ReturnType<typeof createClient>): Promise<{ we
 // NEURO-MATRIX: Cross-Pair Synapse + Sympathetic Liquidity
 // ══════════════════════════════════════════
 
+// ── Regime Composite data from forex-indicators ──
+interface RegimeComposite {
+  label: string;              // 'flat' | 'momentum' | 'expansion' | 'breakdown' | 'transition'
+  regimeDirection: string;    // 'bullish' | 'bearish'
+  familyLabel: string;        // 'bullish' | 'bearish' | 'neutral'
+  directionalPersistence: number; // 0-100
+  regimeConfirmed: boolean;
+  regimeFamilyConfirmed: boolean;
+  strength: number;
+}
+
+async function fetchRegimeComposite(instrument: string, apiToken: string, accountId: string): Promise<RegimeComposite | null> {
+  try {
+    const url = Deno.env.get('SUPABASE_URL')!;
+    const key = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+    const res = await fetch(`${url}/functions/v1/forex-indicators`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${key}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ instrument, timeframe: '15m', mode: 'live' }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const r = data?.regime;
+    if (!r) return null;
+    return {
+      label: r.label || 'flat',
+      regimeDirection: r.regimeDirection || 'neutral',
+      familyLabel: r.familyLabel || 'neutral',
+      directionalPersistence: r.directionalPersistence ?? 0,
+      regimeConfirmed: r.regimeConfirmed ?? false,
+      regimeFamilyConfirmed: r.regimeFamilyConfirmed ?? false,
+      strength: r.strength ?? 0,
+    };
+  } catch { return null; }
+}
+
 interface InstrumentState {
   instrument: string;
   pricing: { bid: number; ask: number; spread: number; mid: number };
@@ -682,6 +721,7 @@ interface InstrumentState {
   nerve: { signal: 'NOISE' | 'CLEAN_FLOW'; variance: number };
   hasPosition: boolean;
   candles: { volume: number; close: number; open: number; high: number; low: number }[];
+  regime: RegimeComposite | null;
 }
 
 // Leading Synapse: If one pair has a velocity spike, other pairs get a probe bonus
