@@ -17,7 +17,7 @@ const OANDA_HOSTS: Record<string, string> = {
 };
 
 const INSTRUMENTS = ['EUR_USD', 'GBP_USD', 'USD_JPY'];
-const SPREAD_LIMIT_PIPS = 1.2;
+const SPREAD_LIMIT_PIPS = 3.0;
 const SL_PIPS = 20;
 const TP_PIPS = 60; // 3:1 R:R
 const AGENT_ID = 'nyc-love';
