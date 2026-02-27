@@ -499,6 +499,59 @@ Deno.serve(async (req) => {
       }
     }
 
+    // ── Step 2b2: ORPHAN RECOVERY — match live OANDA trades to expired/submitted DB rows ──
+    try {
+      const orphanTradesRes = await fetch(`${oandaHost}/v3/accounts/${accountId}/openTrades`, {
+        headers: { Authorization: `Bearer ${apiToken}`, Accept: 'application/json' },
+      });
+      if (orphanTradesRes.ok) {
+        const allOpenTrades = (await orphanTradesRes.json()).trades || [];
+
+        // Get all DB orders that are already 'filled' with a trade_id
+        const { data: filledRows } = await sb
+          .from('oanda_orders')
+          .select('oanda_trade_id')
+          .eq('status', 'filled')
+          .eq('environment', ENVIRONMENT);
+        const filledTradeIds = new Set((filledRows || []).map(r => r.oanda_trade_id));
+
+        for (const trade of allOpenTrades) {
+          if (filledTradeIds.has(trade.id)) continue; // Already tracked
+
+          // This OANDA trade has NO matching 'filled' DB row — orphan!
+          // Try to find a matching expired/submitted order for same pair
+          const { data: candidates } = await sb
+            .from('oanda_orders')
+            .select('id, agent_id, direction, requested_price')
+            .eq('currency_pair', trade.instrument)
+            .in('status', ['expired', 'submitted'])
+            .eq('environment', ENVIRONMENT)
+            .in('agent_id', portfolioAgentIds)
+            .order('created_at', { ascending: false })
+            .limit(1);
+
+          if (candidates && candidates.length > 0) {
+            const candidate = candidates[0];
+            const fillPrice = parseFloat(trade.price);
+            const units = Math.abs(parseInt(trade.currentUnits || trade.initialUnits));
+            await sb.from('oanda_orders').update({
+              status: 'filled',
+              oanda_trade_id: trade.id,
+              entry_price: fillPrice,
+              units,
+              fill_latency_ms: 0,
+              error_message: null,
+            }).eq('id', candidate.id);
+            console.log(`[BLEND] 🔄 ORPHAN RECOVERY: ${trade.instrument} trade ${trade.id} → DB row ${candidate.id.slice(0, 8)} (was expired/submitted)`);
+          } else {
+            console.log(`[BLEND] ⚠️ Untracked OANDA trade: ${trade.instrument} trade ${trade.id} — no DB candidate found`);
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[BLEND] Orphan recovery error:', (e as Error).message);
+    }
+
     // ── Step 2c: Add SL/TP to any existing OANDA trades that are missing them ──
     try {
       const tradesCheckRes = await fetch(`${oandaHost}/v3/accounts/${accountId}/openTrades`, {
