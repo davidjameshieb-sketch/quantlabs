@@ -188,6 +188,7 @@ const TheCitadel = () => {
   const [matrixDuration, setMatrixDuration] = useState('—');
   const [orderBook, setOrderBook] = useState<OrderBookEntry[]>([]);
   const [zone2Tab, setZone2Tab] = useState<'shield' | 'orderbook'>('shield');
+  const [shadowBlocks, setShadowBlocks] = useState<Array<{ pair: string; agent: string; direction: string; reason: string; timestamp: string }>>([]);
 
   // JPY slot count from live trades + pending limits
   const jpySlotCount = useMemo(() => {
@@ -199,7 +200,7 @@ const TheCitadel = () => {
   const fetchAll = useCallback(async () => {
     try {
       // Parallel fetches
-      const [accountRes, openTradesRes, agentConfigsRes, closedTodayRes, matrixRes, jpyMemRes, orderBookRes] = await Promise.all([
+      const [accountRes, openTradesRes, agentConfigsRes, closedTodayRes, matrixRes, jpyMemRes, orderBookRes, shadowRes] = await Promise.all([
         // Account balance
         fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/oanda-execute`, {
           method: 'POST',
@@ -256,6 +257,13 @@ const TheCitadel = () => {
           .gte('created_at', new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString())
           .order('created_at', { ascending: false })
           .limit(500),
+
+        // V12.6 Shadow list — correlation-blocked signals
+        supabase.from('sovereign_memory')
+          .select('payload, updated_at')
+          .eq('memory_type', 'correlation_shadow')
+          .eq('memory_key', 'latest_blocked_signals')
+          .maybeSingle(),
       ]);
 
       // Account
@@ -440,6 +448,15 @@ const TheCitadel = () => {
         } as OrderBookEntry;
       });
       setOrderBook(obData);
+
+      // V12.6 Shadow List — correlation-blocked signals
+      if (shadowRes.data?.payload) {
+        const sp = shadowRes.data.payload as Record<string, unknown>;
+        const blocks = (sp.blocks as any[]) || [];
+        setShadowBlocks(blocks);
+      } else {
+        setShadowBlocks([]);
+      }
 
       setLastRefresh(new Date());
     } catch (err) {
@@ -920,6 +937,50 @@ const TheCitadel = () => {
                   })}
                 </tbody>
               </table>
+            </div>
+          )}
+
+          {/* ═══ V12.6 SHADOW LIST — Correlation-Blocked Signals ═══ */}
+          {shadowBlocks.length > 0 && (
+            <div className="mt-4 rounded-xl overflow-hidden"
+              style={{ background: '#fffbeb', border: '1px solid #fde68a' }}>
+              <div className="px-4 py-2.5 flex items-center gap-2"
+                style={{ background: '#fef3c7', borderBottom: '1px solid #fde68a' }}>
+                <Lock className="w-3.5 h-3.5 text-amber-600" />
+                <span className="text-[10px] font-black text-amber-800 uppercase tracking-wider">
+                  V12.6 Shadow List — Correlated Blocks
+                </span>
+                <span className="text-[9px] text-amber-600 ml-auto">{shadowBlocks.length} signal{shadowBlocks.length !== 1 ? 's' : ''} suppressed</span>
+              </div>
+              <div className="divide-y" style={{ borderColor: '#fde68a' }}>
+                {shadowBlocks.map((block, i) => {
+                  // Extract correlation value and blocking pair from reason
+                  const corrMatch = block.reason?.match(/r=([\d.-]+)/);
+                  const blockingPairMatch = block.reason?.match(/— (\w+_\w+)/);
+                  const corrValue = corrMatch ? corrMatch[1] : '?';
+                  const blockingPair = blockingPairMatch ? blockingPairMatch[1] : '?';
+
+                  return (
+                    <div key={i} className="px-4 py-2.5 flex items-center gap-3 text-[11px]">
+                      <span className="font-black text-slate-800">{block.pair?.replace('_', '/')}</span>
+                      <span className="px-1.5 py-0.5 rounded text-[9px] font-bold"
+                        style={{ background: '#dbeafe', color: '#2563eb' }}>
+                        {block.agent?.replace('atlas-hedge-', '').toUpperCase()}
+                      </span>
+                      <span className={`font-bold ${block.direction === 'long' ? 'text-emerald-600' : 'text-red-600'}`}>
+                        {block.direction?.toUpperCase()}
+                      </span>
+                      <ChevronRight className="w-3 h-3 text-amber-400" />
+                      <span className="text-[10px] text-amber-700 font-bold">
+                        CORRELATED BLOCK
+                      </span>
+                      <span className="text-[10px] text-slate-500">
+                        Blocked by <strong className="text-slate-700">{blockingPair.replace('_', '/')}</strong> (r={corrValue})
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           )}
         </section>
