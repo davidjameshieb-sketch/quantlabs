@@ -126,7 +126,7 @@ const NYCLoveDashboard = () => {
 
   // Compute average spread across instruments
   const avgSpread = INSTRUMENTS.reduce((s, i) => s + (pricing[i]?.spread || 0), 0) / Math.max(Object.keys(pricing).length, 1);
-  const spreadOk = avgSpread <= 1.2;
+  const spreadOk = avgSpread <= 3.0;
 
   // Session status
   const now = new Date();
@@ -201,7 +201,7 @@ const NYCLoveDashboard = () => {
               {INSTRUMENTS.map(inst => {
                 const p = pricing[inst];
                 const spread = p?.spread || 0;
-                const ok = spread <= 1.2;
+                const ok = spread <= 3.0;
                 return (
                   <div key={inst} className="flex justify-between items-center text-xs">
                     <span className="text-blue-300">{inst.replace('_', '/')}</span>
@@ -220,7 +220,7 @@ const NYCLoveDashboard = () => {
               })}
             </div>
             <div className={`text-[10px] mt-3 pt-2 border-t border-blue-900/30 ${spreadOk ? 'text-green-500' : 'text-red-400'}`}>
-              {spreadOk ? '✓ ALL WITHIN LIMIT (1.2)' : '⚠ SPREAD BREACH DETECTED'}
+              {spreadOk ? '✓ ALL WITHIN LIMIT (3.0)' : '⚠ SPREAD BREACH DETECTED'}
             </div>
           </div>
 
