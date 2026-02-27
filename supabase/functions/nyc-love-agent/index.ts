@@ -322,79 +322,182 @@ function calculateNeuralVolatilityBuffer(
 }
 
 // ══════════════════════════════════════════
-// PILLAR 3: OBI (Order Book Imbalance) SNIFFER — MAGNET MODEL
+// PILLAR 3: RECURSIVE LIQUIDITY PROBING — ELEPHANT ABSORPTION + STOP-RUN CAPTURE
 // ══════════════════════════════════════════
-// OANDA's order book = RETAIL positions only.
-// Retail walls are NOT barriers — they are MAGNETS.
-// Banks drive price THROUGH retail clusters to trigger stops and fill.
-// If sovereign says BUY and there's a retail Sell Wall above → CONFIRMATION.
-// The wall is liquidity the big fish will eat.
+// Evolution beyond simple magnet model:
+// 1. ELEPHANT DETECTION: Clusters >2.0% are "Elephants" — institutional-grade walls
+// 2. ABSORPTION FILTER: Velocity Delta determines if Elephant is being eaten or rejecting
+//    - Velocity > 1.8x → Elephant is being consumed → STRIKE through it
+//    - Velocity < 1.1x → Elephant is absorbing/rejecting → HOLD or FADE
+// 3. STOP-RUN CAPTURE: Detect retail stop clusters just beyond Elephants.
+//    If we spot a liquidity pocket (cluster of stops), we strike the millisecond
+//    price touches the pocket boundary — the cascade creates a price vacuum.
 
 interface OBIResult {
-  imbalanceRatio: number;       // >1 = more longs, <1 = more shorts
+  imbalanceRatio: number;
   nearbyWall: 'BUY_WALL' | 'SELL_WALL' | null;
   wallPrice: number | null;
-  wallStrength: number;         // 0-1, how thick the wall is
-  pathClear: boolean;           // always true in magnet model (walls = confirmation)
-  wallIsMagnet: boolean;        // true if wall aligns as magnet for our direction
-  longPct: number;              // total long percentage for UI
-  shortPct: number;             // total short percentage for UI
+  wallStrength: number;
+  pathClear: boolean;
+  wallIsMagnet: boolean;
+  longPct: number;
+  shortPct: number;
+  // New Elephant fields
+  elephantAction: 'STRIKE_THROUGH' | 'WAIT_FOR_ABSORPTION' | 'STOP_RUN_CAPTURE' | 'PATH_CLEAR' | 'ELEPHANT_REJECTION';
+  elephantPrice: number | null;
+  elephantDistance: number;      // pips to nearest elephant
+  stopRunTarget: number | null;  // price where stop-run liquidity pocket exists
+  absorptionDetail: string;
   detail: string;
 }
 
-function analyzeOrderBookImbalance(
+function analyzeNexusLiquidity(
   orderBook: { price: number; longPct: number; shortPct: number; buckets: { price: number; longPct: number; shortPct: number }[] } | null,
-  direction: 'BUY' | 'SELL',
+  sovereignDir: 'BUY' | 'SELL',
   instrument: string,
+  velocityRatio: number,
 ): OBIResult {
-  const neutral: OBIResult = { imbalanceRatio: 1, nearbyWall: null, wallPrice: null, wallStrength: 0, pathClear: true, wallIsMagnet: false, longPct: 50, shortPct: 50, detail: 'no order book data — path assumed clear' };
+  const neutral: OBIResult = {
+    imbalanceRatio: 1, nearbyWall: null, wallPrice: null, wallStrength: 0,
+    pathClear: true, wallIsMagnet: false, longPct: 50, shortPct: 50,
+    elephantAction: 'PATH_CLEAR', elephantPrice: null, elephantDistance: 0,
+    stopRunTarget: null, absorptionDetail: 'no order book data',
+    detail: 'no order book data — path assumed clear',
+  };
   if (!orderBook || !orderBook.buckets.length) return neutral;
 
   const currentPrice = orderBook.price;
   const pv = pipValue(instrument);
-  const scanRange = 30 * pv; // scan 30 pips in our direction
+  const ps = pipScale(instrument);
+  const prec = pricePrecision(instrument);
+  const scanRange = 50 * pv; // scan 50 pips in our direction
 
-  // Filter buckets in the direction of trade (where price needs to go for TP)
-  const relevantBuckets = orderBook.buckets.filter(b => {
-    if (direction === 'BUY') return b.price > currentPrice && b.price < currentPrice + scanRange;
+  // ── 1. ELEPHANT DETECTION ──
+  // Elephants = buckets with >2.0% concentration (institutional-grade clusters)
+  const elephants = orderBook.buckets.filter(b => b.longPct > 2.0 || b.shortPct > 2.0);
+
+  // Filter to elephants in our trade direction path
+  const directionalElephants = elephants.filter(b => {
+    if (sovereignDir === 'BUY') return b.price > currentPrice && b.price < currentPrice + scanRange;
     return b.price < currentPrice && b.price > currentPrice - scanRange;
+  }).sort((a, b) => {
+    // Sort by distance from current price (closest first)
+    return Math.abs(a.price - currentPrice) - Math.abs(b.price - currentPrice);
   });
 
-  // Find the thickest wall in our path
+  // Find the closest Elephant in our direction
+  const targetElephant = directionalElephants[0] || null;
+
+  // Global imbalance
+  let totalLong = 0, totalShort = 0;
+  for (const b of orderBook.buckets) { totalLong += b.longPct; totalShort += b.shortPct; }
+  const imbalanceRatio = totalShort > 0 ? totalLong / totalShort : 1;
+
+  // Find the thickest wall in scan range for legacy fields
   let maxWallStrength = 0;
   let wallPrice: number | null = null;
   let wallType: 'BUY_WALL' | 'SELL_WALL' | null = null;
-
+  const relevantBuckets = orderBook.buckets.filter(b => {
+    if (sovereignDir === 'BUY') return b.price > currentPrice && b.price < currentPrice + scanRange;
+    return b.price < currentPrice && b.price > currentPrice - scanRange;
+  });
   for (const b of relevantBuckets) {
-    // If we're buying, a cluster of retail SELL orders above = Sell Wall
-    // If we're selling, a cluster of retail BUY orders below = Buy Wall
-    const blockingPct = direction === 'BUY' ? b.shortPct : b.longPct;
+    const blockingPct = sovereignDir === 'BUY' ? b.shortPct : b.longPct;
     if (blockingPct > maxWallStrength) {
       maxWallStrength = blockingPct;
       wallPrice = b.price;
-      wallType = direction === 'BUY' ? 'SELL_WALL' : 'BUY_WALL';
+      wallType = sovereignDir === 'BUY' ? 'SELL_WALL' : 'BUY_WALL';
     }
   }
-
   const wallSignificant = maxWallStrength > 2.0;
-  const imbalanceRatio = orderBook.shortPct > 0 ? orderBook.longPct / orderBook.shortPct : 1;
 
-  // MAGNET MODEL: A retail wall in our path is CONFIRMATION, not a blocker.
-  // If BUY and Sell Wall above → retail is shorting there → banks will drive through to eat stops → MAGNET
-  // If SELL and Buy Wall below → retail is long there → banks will drive through → MAGNET
-  const wallIsMagnet = wallSignificant; // Any significant wall in our path = magnet
+  // ── 2. ELEPHANT ABSORPTION FILTER ──
+  let elephantAction: OBIResult['elephantAction'] = 'PATH_CLEAR';
+  let elephantPrice: number | null = null;
+  let elephantDistance = 0;
+  let stopRunTarget: number | null = null;
+  let absorptionDetail = 'No elephants in path.';
+
+  if (targetElephant) {
+    elephantPrice = targetElephant.price;
+    elephantDistance = Math.abs(targetElephant.price - currentPrice) * ps;
+
+    const isOpposingWall =
+      (sovereignDir === 'BUY' && targetElephant.shortPct > 2.0) ||
+      (sovereignDir === 'SELL' && targetElephant.longPct > 2.0);
+
+    // ── WITHIN 5 PIPS: Absorption zone — Velocity Delta decides ──
+    if (elephantDistance < 5.0) {
+      if (isOpposingWall) {
+        if (velocityRatio > 1.8) {
+          // HIGH VELOCITY + OPPOSING WALL = The Elephant is being eaten
+          elephantAction = 'STRIKE_THROUGH';
+          absorptionDetail = `🐘 ELEPHANT CONSUMED @ ${elephantPrice.toFixed(prec)} — V=${velocityRatio.toFixed(1)}x > 1.8x threshold. Wall is crumbling.`;
+        } else if (velocityRatio < 1.1) {
+          // LOW VELOCITY + OPPOSING WALL = Elephant rejecting price
+          elephantAction = 'ELEPHANT_REJECTION';
+          absorptionDetail = `🐘 ELEPHANT REJECTING @ ${elephantPrice.toFixed(prec)} — V=${velocityRatio.toFixed(1)}x < 1.1x. Price being pushed back.`;
+        } else {
+          // MEDIUM VELOCITY = Wait for resolution
+          elephantAction = 'WAIT_FOR_ABSORPTION';
+          absorptionDetail = `🐘 ABSORPTION ZONE @ ${elephantPrice.toFixed(prec)} — V=${velocityRatio.toFixed(1)}x. Waiting for Velocity Delta to resolve.`;
+        }
+      } else {
+        // Wall is NOT opposing (same-direction cluster = fuel)
+        elephantAction = 'STRIKE_THROUGH';
+        absorptionDetail = `🐘 FRIENDLY ELEPHANT @ ${elephantPrice.toFixed(prec)} — same-direction cluster is fuel. Strike.`;
+      }
+    }
+    // ── 5-15 PIPS: Approach zone — check for Stop-Run opportunity ──
+    else if (elephantDistance < 15.0) {
+      // Look for a cluster of retail stops just BEYOND the elephant (within 5 pips past it)
+      const beyondElephant = orderBook.buckets.filter(b => {
+        const pastElephant = sovereignDir === 'BUY'
+          ? b.price > elephantPrice! && b.price < elephantPrice! + 5 * pv
+          : b.price < elephantPrice! && b.price > elephantPrice! - 5 * pv;
+        // Stop clusters: for BUY, retail shorts above elephant = stop-losses that will fire
+        const stopPct = sovereignDir === 'BUY' ? b.shortPct : b.longPct;
+        return pastElephant && stopPct > 1.5;
+      });
+
+      if (beyondElephant.length > 0 && velocityRatio > 1.5) {
+        // STOP-RUN CAPTURE: There's a liquidity pocket just past the Elephant
+        const bestStop = beyondElephant.reduce((best, b) => {
+          const pct = sovereignDir === 'BUY' ? b.shortPct : b.longPct;
+          return pct > (sovereignDir === 'BUY' ? best.shortPct : best.longPct) ? b : best;
+        });
+        stopRunTarget = bestStop.price;
+        elephantAction = 'STOP_RUN_CAPTURE';
+        absorptionDetail = `🎯 STOP-RUN DETECTED: Elephant @ ${elephantPrice.toFixed(prec)}, liquidity pocket @ ${stopRunTarget.toFixed(prec)} (${elephantDistance.toFixed(1)}p away). V=${velocityRatio.toFixed(1)}x confirms momentum.`;
+      } else {
+        // Approaching elephant but no stop-run — treat as magnet
+        elephantAction = 'STRIKE_THROUGH';
+        absorptionDetail = `🧲 ELEPHANT MAGNET @ ${elephantPrice.toFixed(prec)} (${elephantDistance.toFixed(1)}p). V=${velocityRatio.toFixed(1)}x. Retail wall = institutional fuel.`;
+      }
+    }
+    // ── 15+ PIPS: Far elephant — note but don't modify behavior ──
+    else {
+      elephantAction = 'PATH_CLEAR';
+      absorptionDetail = `🐘 Distant elephant @ ${elephantPrice.toFixed(prec)} (${elephantDistance.toFixed(1)}p). Will re-evaluate on approach.`;
+    }
+  }
 
   return {
     imbalanceRatio: Math.round(imbalanceRatio * 100) / 100,
     nearbyWall: wallSignificant ? wallType : null,
     wallPrice: wallSignificant ? wallPrice : null,
     wallStrength: maxWallStrength,
-    pathClear: true, // ALWAYS true — walls are magnets, never blockers
-    wallIsMagnet,
-    longPct: orderBook.longPct,
-    shortPct: orderBook.shortPct,
+    pathClear: elephantAction !== 'ELEPHANT_REJECTION' && elephantAction !== 'WAIT_FOR_ABSORPTION',
+    wallIsMagnet: wallSignificant && elephantAction !== 'ELEPHANT_REJECTION',
+    longPct: totalLong,
+    shortPct: totalShort,
+    elephantAction,
+    elephantPrice,
+    elephantDistance,
+    stopRunTarget,
+    absorptionDetail,
     detail: wallSignificant
-      ? `🧲 MAGNET: ${wallType} @ ${wallPrice?.toFixed(pricePrecision(instrument))} (${maxWallStrength.toFixed(1)}%) — retail liquidity = fuel for institutional move`
+      ? `🐘 ${elephantAction}: ${absorptionDetail}`
       : `path clear, imbalance=${imbalanceRatio.toFixed(2)} (L/S ratio)`,
   };
 }
@@ -434,11 +537,22 @@ function calculateNexusProbability(
     score += confirmBonus;
   }
 
-  // OBI Magnet Model: +15% if wall confirms (magnet), +5% if clear, 0 if no data
-  if (obi.wallIsMagnet) {
-    score += 0.15; // Retail wall in our path = institutional fuel = CONFIRMATION
-  } else if (obi.pathClear) {
+  // OBI Elephant Absorption Model:
+  // STOP_RUN_CAPTURE = +20% (highest conviction — liquidity vacuum incoming)
+  // STRIKE_THROUGH = +15% (elephant being consumed or friendly)
+  // PATH_CLEAR = +5% (no obstacles)
+  // WAIT_FOR_ABSORPTION = -5% (uncertain — velocity ambiguous)
+  // ELEPHANT_REJECTION = -15% (elephant winning — fade or hold)
+  if (obi.elephantAction === 'STOP_RUN_CAPTURE') {
+    score += 0.20;
+  } else if (obi.elephantAction === 'STRIKE_THROUGH') {
+    score += 0.15;
+  } else if (obi.elephantAction === 'PATH_CLEAR') {
     score += 0.05;
+  } else if (obi.elephantAction === 'WAIT_FOR_ABSORPTION') {
+    score -= 0.05;
+  } else if (obi.elephantAction === 'ELEPHANT_REJECTION') {
+    score -= 0.15;
   }
 
   // Nerve Tension: +10% for clean flow, -5% for noise
@@ -736,13 +850,13 @@ Deno.serve(async (req) => {
       const volBuffer = calculateNeuralVolatilityBuffer(candles, instrument, pricing);
       log.push(`${tag} 🧠 BREATH: ${volBuffer.detail}`);
 
-      // ── PILLAR 3: OBI Sniffer ──
-      const obi = analyzeOrderBookImbalance(obiMap[instrument], sovereignDir, instrument);
+      // ── PILLAR 3: OBI — Nexus-Grade Liquidity Probe (needs velocity) ──
+      const velocity = detectVelocitySpike(candles);
+      const obi = analyzeNexusLiquidity(obiMap[instrument], sovereignDir, instrument, velocity.ratio);
       log.push(`${tag} 📊 OBI: ${obi.detail}`);
 
-      // ── Nerve + Velocity (supporting signals) ──
+      // ── Nerve (supporting signal — velocity already computed above) ──
       const nerve = calculateNerveTension(candles);
-      const velocity = detectVelocitySpike(candles);
 
       // ── NEXUS PROBABILITY ──
       const nexus = calculateNexusProbability(sovereignDir, adi, obi, volBuffer, nerve, velocity.ratio);
@@ -762,9 +876,21 @@ Deno.serve(async (req) => {
         continue;
       }
 
-      // ── OBI Magnet Logging (no longer blocks — walls are confirmation) ──
-      if (obi.wallIsMagnet) {
-        log.push(`${tag} 🧲 OBI MAGNET: Retail ${obi.nearbyWall} @ ${obi.wallPrice?.toFixed(pricePrecision(instrument))} is FUEL — institutional move will eat through`);
+      // ── ELEPHANT GATE: Absorption logic determines entry timing ──
+      if (obi.elephantAction === 'ELEPHANT_REJECTION') {
+        log.push(`${tag} 🐘 ELEPHANT REJECTION — price being pushed back. Holding fire.`);
+        executions.push({ instrument, direction: sovereignDir, status: 'elephant_rejection', detail: obi.absorptionDetail, nexusP: nexus.probability });
+        continue;
+      }
+      if (obi.elephantAction === 'WAIT_FOR_ABSORPTION') {
+        log.push(`${tag} 🐘 ABSORPTION ZONE — velocity ambiguous. Waiting for resolution.`);
+        executions.push({ instrument, direction: sovereignDir, status: 'absorption_wait', detail: obi.absorptionDetail, nexusP: nexus.probability });
+        continue;
+      }
+      if (obi.elephantAction === 'STOP_RUN_CAPTURE') {
+        log.push(`${tag} 🎯 STOP-RUN CAPTURE MODE — liquidity pocket @ ${obi.stopRunTarget?.toFixed(pricePrecision(instrument))}. Striking for vacuum.`);
+      } else if (obi.elephantAction === 'STRIKE_THROUGH') {
+        log.push(`${tag} 🐘 STRIKE THROUGH — ${obi.absorptionDetail}`);
       }
 
       // ── Position Sizing: Standard forex formula ──
