@@ -28,7 +28,12 @@ const LiquidityHeatmap: React.FC<Props> = ({ instrument, buckets, currentPrice }
     .filter(b => Math.abs(b.price - currentPrice) < range)
     .sort((a, b) => b.price - a.price);
 
-  const maxPct = Math.max(...nearby.map(b => Math.max(b.longPct, b.shortPct)), 1);
+  const maxPct = Math.max(...nearby.map(b => Math.max(b.longPct, b.shortPct)), 0.001);
+  
+  // Use percentile-based threshold for elephants — adapts to each pair's density
+  const allPcts = nearby.flatMap(b => [b.longPct, b.shortPct]).filter(v => v > 0).sort((a, b) => a - b);
+  const p80 = allPcts.length > 0 ? allPcts[Math.floor(allPcts.length * 0.80)] : maxPct * 0.5;
+  const elephantThreshold = Math.max(p80, maxPct * 0.4);
 
   return (
     <div className="space-y-0.5">
@@ -36,7 +41,7 @@ const LiquidityHeatmap: React.FC<Props> = ({ instrument, buckets, currentPrice }
         const isCurrentLevel = Math.abs(b.price - currentPrice) < pv * 3;
         const longW = (b.longPct / maxPct) * 100;
         const shortW = (b.shortPct / maxPct) * 100;
-        const isElephant = b.longPct > maxPct * 0.7 || b.shortPct > maxPct * 0.7;
+        const isElephant = b.longPct >= elephantThreshold || b.shortPct >= elephantThreshold;
 
         return (
           <div key={i} className="flex items-center gap-1 h-2.5">
