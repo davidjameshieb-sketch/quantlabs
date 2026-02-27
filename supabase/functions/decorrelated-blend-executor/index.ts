@@ -1302,6 +1302,28 @@ Deno.serve(async (req) => {
 
     console.log(`[BLEND] Cycle complete: ${filled} placed, ${skipped} skipped, ${errors} errors, ${openPairs.size} total open`);
 
+    // ═══ V12.6: Persist correlation-blocked signals as "Shadow List" for Citadel UI ═══
+    const correlationBlocks = executionResults
+      .filter(r => r.status === 'skipped' && r.skipReason?.includes('V12.6'))
+      .map(r => ({
+        pair: r.pair,
+        agent: r.component,
+        direction: r.direction,
+        reason: r.skipReason,
+        timestamp: new Date().toISOString(),
+      }));
+
+    if (correlationBlocks.length > 0) {
+      await sb.from('sovereign_memory').upsert({
+        memory_type: 'correlation_shadow',
+        memory_key: 'latest_blocked_signals',
+        payload: { blocks: correlationBlocks, generatedAt: new Date().toISOString() } as any,
+        relevance_score: 0.9,
+        created_by: 'decorrelated-blend-executor',
+      }, { onConflict: 'memory_type,memory_key' });
+      console.log(`[BLEND] V12.6 Shadow list: ${correlationBlocks.length} correlated signals blocked`);
+    }
+
     await releaseLock();
 
     return new Response(
