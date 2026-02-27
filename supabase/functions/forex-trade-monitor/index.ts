@@ -434,6 +434,86 @@ function computeTradeHealthScore(
   };
 }
 
+// ═══════════════════════════════════════════════════════════
+// SURVIVAL PROTOCOL: LIQUIDITY-AWARE BAILOUT (THE VOID SCANNER)
+// Scans order book while trade is live. If price is rejected by
+// an Elephant and next friendly wall is below SL → instant market close.
+// ═══════════════════════════════════════════════════════════
+
+interface VoidScanResult {
+  shouldBail: boolean;
+  bailReason: string;
+}
+
+function checkLiquidityBailout(
+  instrument: string,
+  direction: string,
+  entryPrice: number,
+  currentPrice: number,
+  slPrice: number,
+  buckets: Array<{ price: number; longPct: number; shortPct: number }>,
+): VoidScanResult {
+  const pv = instrument.includes('JPY') ? 0.01 : 0.0001;
+  const isLosing = direction === 'long' ? currentPrice < entryPrice : currentPrice > entryPrice;
+
+  if (!isLosing || buckets.length === 0) {
+    return { shouldBail: false, bailReason: '' };
+  }
+
+  // Filter to ±80 pip range around current price for relevance
+  const range = 80 * pv;
+  const nearby = buckets.filter(b => Math.abs(b.price - currentPrice) < range);
+  if (nearby.length === 0) {
+    return { shouldBail: false, bailReason: '' };
+  }
+
+  // Adaptive elephant threshold: top 15% of values in this pair's order book
+  const allPcts = nearby.flatMap(b => [b.longPct, b.shortPct]).filter(v => v > 0).sort((a, b) => a - b);
+  const p85 = allPcts.length > 0 ? allPcts[Math.floor(allPcts.length * 0.85)] : 0;
+  const elephantThreshold = Math.max(p85, 0.05); // minimum 0.05% for very sparse books
+
+  // Identify elephants (adaptive to each pair's density)
+  const elephants = nearby.filter(b => b.longPct >= elephantThreshold || b.shortPct >= elephantThreshold);
+
+  // Find ceiling (resistance above) and floor (support below)
+  const ceilingElephants = elephants.filter(b => b.price > currentPrice).sort((a, b) => a.price - b.price);
+  const floorElephants = elephants.filter(b => b.price < currentPrice).sort((a, b) => b.price - a.price);
+
+  const ceiling = ceilingElephants[0]?.price ?? null;
+  const floor = floorElephants[0]?.price ?? null;
+
+  const priceFmt = instrument.includes('JPY') ? 3 : 5;
+  let shouldBail = false;
+  let bailReason = '';
+
+  // Void logic for LONGS
+  if (direction === 'long') {
+    if (!floor) {
+      shouldBail = true;
+      bailReason = `🚨 VOID-BAIL: Infinite void below ${currentPrice.toFixed(priceFmt)}. No support elephants found within 80p range.`;
+    } else if (floor <= slPrice) {
+      shouldBail = true;
+      bailReason = `🚨 VOID-BAIL: Sinking into void. Next support @ ${floor.toFixed(priceFmt)} is below SL (${slPrice.toFixed(priceFmt)}). Cutting cord.`;
+    } else if (ceiling && floor && (ceiling - currentPrice) > (currentPrice - floor) * 2) {
+      shouldBail = true;
+      bailReason = `🚨 VOID-BAIL: Heavy rejection from ceiling @ ${ceiling.toFixed(priceFmt)}. Floor @ ${floor.toFixed(priceFmt)} too far to absorb momentum.`;
+    }
+  }
+
+  // Void logic for SHORTS
+  if (direction === 'short') {
+    if (!ceiling) {
+      shouldBail = true;
+      bailReason = `🚨 VOID-BAIL: Infinite void above ${currentPrice.toFixed(priceFmt)}. No resistance elephants found within 80p range.`;
+    } else if (ceiling >= slPrice) {
+      shouldBail = true;
+      bailReason = `🚨 VOID-BAIL: Launching into void. Next resistance @ ${ceiling.toFixed(priceFmt)} is above SL (${slPrice.toFixed(priceFmt)}). Cutting cord.`;
+    }
+  }
+
+  return { shouldBail, bailReason };
+}
+
 // ─── Exit Decision Engine ───
 // ═══ EXIT RULE PRIORITY (STRICT, INVIOLABLE ORDER) ═══
 // 1. TP hit          → CLOSE immediately
@@ -767,6 +847,27 @@ Deno.serve(async (req) => {
     });
     await Promise.all(indicatorPromises);
     console.log(`[TRADE-MONITOR] Fetched 15m indicators (Supertrend+ATR) for ${indicatorMap.size}/${instrumentsNeeded.size} pairs`);
+
+    // ═══ VOID SCANNER: Fetch liquidity map (order book buckets) for open pairs ═══
+    const liquidityMap = new Map<string, Array<{ price: number; longPct: number; shortPct: number }>>();
+    try {
+      const { data: liqData } = await supabase
+        .from("market_liquidity_map")
+        .select("currency_pair, all_buckets, current_price")
+        .in("currency_pair", [...instrumentsNeeded]);
+
+      if (liqData) {
+        for (const row of liqData) {
+          const buckets = (row.all_buckets as Array<{ price: number; longPct: number; shortPct: number }>) || [];
+          if (buckets.length > 0) {
+            liquidityMap.set(row.currency_pair, buckets);
+          }
+        }
+      }
+      console.log(`[VOID-SCANNER] Loaded liquidity maps for ${liquidityMap.size}/${instrumentsNeeded.size} pairs`);
+    } catch (liqErr) {
+      console.warn(`[VOID-SCANNER] Failed to load liquidity maps:`, (liqErr as Error).message);
+    }
 
     // ═══ V12.5 LOGICAL RISK MANAGER — Matrix-Flip + JPY Emergency ═══
     // Fetch current Sovereign Matrix rankings once per monitor cycle
@@ -1158,6 +1259,29 @@ Deno.serve(async (req) => {
         }
       }
 
+      // ═══ VOID SCANNER — Liquidity-Aware Bailout ═══
+      // Scans order book elephants while trade is live. If price is sinking into a void
+      // where next support/resistance is beyond the SL, bail early to save capital.
+      // Only fires for nyc-love agent and when trade is actively losing.
+      if (decision.action === "hold" && isNycLoveAgent && !maeHoldoffActive) {
+        const liqBuckets = liquidityMap.get(order.currency_pair);
+        if (liqBuckets && liqBuckets.length > 0) {
+          const voidResult = checkLiquidityBailout(
+            order.currency_pair,
+            order.direction,
+            entryPrice,
+            currentPrice,
+            dynamicSl.slPrice,
+            liqBuckets,
+          );
+          if (voidResult.shouldBail) {
+            console.log(`[VOID-SCANNER] ${order.currency_pair} ${order.direction}: ${voidResult.bailReason} | PnL=${decision.currentPnlPips.toFixed(1)}p`);
+            decision.action = "void-bail" as typeof decision.action;
+            decision.reason = voidResult.bailReason;
+          }
+        }
+      }
+
       // ═══ V12.5.1 SQUEEZE KILL — High-Velocity JPY Protection ═══
       // If JPY rank jumped 4+ positions in <30 minutes, IMMEDIATE MARKET EXIT on all JPY trades.
       // Bypasses Natural Death, bypasses BE+1 logic. Captures current pips as-is.
@@ -1442,7 +1566,8 @@ Deno.serve(async (req) => {
       const isAtlasHedge = (order.agent_id || '').startsWith('atlas-hedge-');
       const isSovereignOverride = decision.action === ("sovereign-exit-hard" as string)
         || decision.action === ("sovereign-exit" as string)
-        || decision.action === ("jpy-squeeze-kill" as string);
+        || decision.action === ("jpy-squeeze-kill" as string)
+        || decision.action === ("void-bail" as string);
 
       if (isAtlasHedge && !isSovereignOverride) {
         console.log(`[NATURAL-DEATH] ${order.currency_pair} ${order.direction} (${order.agent_id}): Exit signal "${decision.action}" SUPPRESSED — atlas-hedge trades close only via OANDA TP/SL`);
