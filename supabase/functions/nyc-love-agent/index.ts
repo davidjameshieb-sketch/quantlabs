@@ -97,6 +97,44 @@ function detectVelocitySpike(candles: { volume: number; close: number; open: num
   return { spike: true, ratio, direction };
 }
 
+// ══════════════════════════════════════════
+// MARKET TENTACLE — Liquidity Gap + Nerve Tension
+// ══════════════════════════════════════════
+
+const TENTACLE_SENSITIVITY = 0.85;
+const LIQUIDITY_GAP_THRESHOLD = 2.5; // pips — spread expanding while price stagnant = danger
+
+// ── Liquidity Gap: feel for "holes" where agents die ──
+function feelLiquidityGap(spread: number): { signal: 'RETRACT' | 'PROBE'; detail: string } {
+  if (spread > LIQUIDITY_GAP_THRESHOLD) {
+    return { signal: 'RETRACT', detail: `spread=${spread.toFixed(2)} > ${LIQUIDITY_GAP_THRESHOLD} — liquidity gap detected` };
+  }
+  return { signal: 'PROBE', detail: `spread=${spread.toFixed(2)} — liquidity OK` };
+}
+
+// ── Nerve Tension: tick variance separates retail panic from bank flow ──
+function calculateNerveTension(candles: { close: number }[]): { signal: 'NOISE' | 'CLEAN_FLOW'; variance: number; detail: string } {
+  if (candles.length < 3) return { signal: 'CLEAN_FLOW', variance: 0, detail: 'insufficient data — defaulting CLEAN' };
+
+  // Calculate tick-to-tick returns variance
+  const returns: number[] = [];
+  for (let i = 1; i < candles.length; i++) {
+    const ret = (candles[i].close - candles[i - 1].close) / candles[i - 1].close;
+    returns.push(ret);
+  }
+
+  const mean = returns.reduce((s, r) => s + r, 0) / returns.length;
+  const variance = returns.reduce((s, r) => s + (r - mean) ** 2, 0) / returns.length;
+
+  // Normalize: multiply by 1e8 to get readable scale for forex
+  const scaledVariance = variance * 1e8;
+
+  if (scaledVariance > TENTACLE_SENSITIVITY) {
+    return { signal: 'NOISE', variance: scaledVariance, detail: `variance=${scaledVariance.toFixed(3)} > ${TENTACLE_SENSITIVITY} — retail panic / jitter detected` };
+  }
+  return { signal: 'CLEAN_FLOW', variance: scaledVariance, detail: `variance=${scaledVariance.toFixed(3)} — clean institutional flow` };
+}
+
 // ── Sovereign Matrix direction: use live_strength_index from sovereign_memory ──
 async function getSovereignDirectionDebug(instrument: string, sb: ReturnType<typeof createClient>): Promise<{ direction: 'BUY' | 'SELL' | null; debug: string }> {
   try {
@@ -294,37 +332,63 @@ Deno.serve(async (req) => {
       const candles = await fetchM5Candles(instrument, 24, apiToken, accountId);
       const velocity = detectVelocitySpike(candles, 1.5);
 
-      // ── 4c. Direction: Sovereign Matrix as primary, velocity as confirmation ──
+      // ── 4c. MARKET TENTACLE — Liquidity Gap ──
+      const liquidity = feelLiquidityGap(pricing.spread);
+      log.push(`${tag} TENTACLE liquidity: ${liquidity.signal} — ${liquidity.detail}`);
+      if (liquidity.signal === 'RETRACT') {
+        executions.push({ instrument, direction: '-', status: 'tentacle_retract', detail: liquidity.detail });
+        continue;
+      }
+
+      // ── 4d. MARKET TENTACLE — Nerve Tension ──
+      const nerve = calculateNerveTension(candles);
+      log.push(`${tag} TENTACLE nerve: ${nerve.signal} — ${nerve.detail}`);
+
+      // ── 4e. Direction: Sovereign Matrix as primary, velocity + nerve as confirmation ──
       const { direction: sovereignDir, debug: sovDebug } = await getSovereignDirectionDebug(instrument, sb);
       if (sovDebug) log.push(`${tag} SOV_DEBUG: ${sovDebug}`);
       let finalDirection: 'BUY' | 'SELL' | null = null;
+      let signalStrength: 'STRIKE' | 'PROBE' | 'SOVEREIGN_ONLY' = 'SOVEREIGN_ONLY';
 
-      if (sovereignDir && velocity.spike && velocity.direction === sovereignDir) {
-        // Both agree — strong signal
+      if (sovereignDir && velocity.spike && velocity.direction === sovereignDir && nerve.signal === 'CLEAN_FLOW') {
+        // FULL STRIKE: Sovereign + Velocity + Clean Flow all agree
         finalDirection = sovereignDir;
-        log.push(`${tag} STRONG SIGNAL: Sovereign=${sovereignDir} + Velocity spike (${velocity.ratio.toFixed(1)}x) AGREE`);
-      } else if (sovereignDir && velocity.spike) {
-        // Divergence — downgrade to sovereign-only (NYC session needs time to decide)
+        signalStrength = 'STRIKE';
+        log.push(`${tag} 🐙 STRIKE: Sovereign=${sovereignDir} + Velocity(${velocity.ratio.toFixed(1)}x) + CLEAN_FLOW — full tentacle convergence`);
+      } else if (sovereignDir && velocity.spike && velocity.direction === sovereignDir) {
+        // Velocity agrees but nerve is noisy — downgrade to PROBE
         finalDirection = sovereignDir;
-        log.push(`${tag} Velocity conflict: Sovereign=${sovereignDir} vs Velocity=${velocity.direction}. Using sovereign-only (NYC breathe mode).`);
-      } else if (sovereignDir && !velocity.spike) {
-        // No velocity confirmation — still trade if sovereign is clear
+        signalStrength = 'PROBE';
+        log.push(`${tag} 🐙 PROBE: Sovereign=${sovereignDir} + Velocity agree but nerve=NOISE(${nerve.variance.toFixed(3)}) — reduced conviction`);
+      } else if (sovereignDir && nerve.signal === 'CLEAN_FLOW') {
+        // Clean flow + sovereign direction — no velocity but institutional flow detected
         finalDirection = sovereignDir;
-        log.push(`${tag} Sovereign direction: ${sovereignDir} (no velocity spike, ratio=${velocity.ratio.toFixed(1)}x)`);
+        signalStrength = 'PROBE';
+        log.push(`${tag} 🐙 PROBE: Sovereign=${sovereignDir} + CLEAN_FLOW (no velocity spike, ratio=${velocity.ratio.toFixed(1)}x)`);
+      } else if (sovereignDir && nerve.signal === 'NOISE') {
+        // Sovereign only, noisy market — trade with lowest conviction
+        finalDirection = sovereignDir;
+        signalStrength = 'SOVEREIGN_ONLY';
+        log.push(`${tag} 🐙 SOVEREIGN_ONLY: ${sovereignDir} — nerve=NOISE(${nerve.variance.toFixed(3)}), no velocity. Minimal conviction.`);
+      } else if (sovereignDir) {
+        finalDirection = sovereignDir;
+        signalStrength = 'SOVEREIGN_ONLY';
+        log.push(`${tag} Sovereign direction: ${sovereignDir} (fallback)`);
       } else {
         log.push(`${tag} No sovereign direction available, skipping`);
         executions.push({ instrument, direction: '-', status: 'no_direction', detail: 'no sovereign data' });
         continue;
       }
 
-      // ── 4d. Position Sizing ──
+      // ── 4f. Position Sizing — scale by signal strength ──
+      const sizingMultiplier = signalStrength === 'STRIKE' ? 1.0 : signalStrength === 'PROBE' ? 0.7 : 0.5;
       // units = riskDollars / (SL pips * pip value in account currency)
-      // For simplicity: pip value ≈ $10 per standard lot (100k) for non-JPY, $8.50 for JPY
       const pipDollar = instrument.includes('JPY') ? 0.0085 : 0.0001;
-      const units = Math.max(100, Math.floor(riskDollars / (SL_PIPS * pipDollar * 10)));
+      const rawUnits = Math.floor(riskDollars / (SL_PIPS * pipDollar * 10));
+      const units = Math.max(100, Math.floor(rawUnits * sizingMultiplier));
 
-      // ── 4e. Execute ──
-      log.push(`${tag} EXECUTING: ${finalDirection} ${units} units @ ${pricing.mid.toFixed(pricePrecision(instrument))}`);
+      // ── 4g. Execute ──
+      log.push(`${tag} EXECUTING: ${finalDirection} ${units} units (${signalStrength} @ ${sizingMultiplier}x) @ ${pricing.mid.toFixed(pricePrecision(instrument))}`);
 
       const signalId = `nyc-love-${instrument}-${Date.now()}`;
 
