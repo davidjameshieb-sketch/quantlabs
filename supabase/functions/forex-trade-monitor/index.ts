@@ -678,6 +678,73 @@ async function evaluateVoidBailout(
   };
 }
 
+// ═══════════════════════════════════════════════════════════
+// APEX SCALE-OUT PROTOCOL — Multi-Stage Exit Reflex
+// Stage 1 (TP1): At 1R, market-close 50% of units (Surge Capture)
+// Stage 2: Instantly snap SL to break-even (Risk-Free Runner)
+// Stage 3 (TP2): Trail remaining 50% toward next Elephant Wall
+// ═══════════════════════════════════════════════════════════
+
+async function partialCloseTrade(
+  tradeId: string,
+  unitsToClose: number,
+  environment = "live",
+): Promise<{ success: boolean; fillPrice?: number; error?: string }> {
+  try {
+    // OANDA partial close: positive units for longs, negative ignored — use string absolute value
+    const closeResult = await oandaRequest(
+      `/v3/accounts/{accountId}/trades/${tradeId}/close`,
+      "PUT",
+      { units: Math.abs(unitsToClose).toString() },
+      environment,
+    );
+    const fillPrice = closeResult.orderFillTransaction
+      ? parseFloat((closeResult.orderFillTransaction as any).price || "0")
+      : undefined;
+    console.log(`[APEX-SCALE-OUT] ✅ Partial close ${unitsToClose} units on trade ${tradeId} @ ${fillPrice}`);
+    return { success: true, fillPrice };
+  } catch (err) {
+    const msg = (err as Error).message;
+    console.error(`[APEX-SCALE-OUT] ❌ Partial close failed on trade ${tradeId}: ${msg}`);
+    return { success: false, error: msg };
+  }
+}
+
+function findNextElephantWall(
+  instrument: string,
+  direction: string,
+  currentPrice: number,
+  entryPrice: number,
+  buckets: Array<{ price: number; longPct: number; shortPct: number }>,
+): number | null {
+  if (!buckets || buckets.length === 0) return null;
+
+  const pv = instrument.includes('JPY') ? 0.01 : 0.0001;
+  const range = 120 * pv; // Scan 120 pips ahead for TP2
+
+  // Adaptive elephant threshold: top 15% of values
+  const allPcts = buckets.flatMap(b => [b.longPct, b.shortPct]).filter(v => v > 0).sort((a, b) => a - b);
+  const p85 = allPcts.length > 0 ? allPcts[Math.floor(allPcts.length * 0.85)] : 0;
+  const elephantThreshold = Math.max(p85, 0.05);
+
+  const elephants = buckets.filter(b => b.longPct >= elephantThreshold || b.shortPct >= elephantThreshold);
+
+  if (direction === 'long') {
+    // For longs, find elephant ABOVE current price (resistance where stops cluster)
+    const targets = elephants
+      .filter(b => b.price > currentPrice && b.price < currentPrice + range)
+      .sort((a, b) => a.price - b.price);
+    // Skip the first wall (TP1 target), take the second one for TP2
+    return targets.length >= 2 ? targets[1].price : targets[0]?.price ?? null;
+  } else {
+    // For shorts, find elephant BELOW current price (support where stops cluster)
+    const targets = elephants
+      .filter(b => b.price < currentPrice && b.price > currentPrice - range)
+      .sort((a, b) => b.price - a.price);
+    return targets.length >= 2 ? targets[1].price : targets[0]?.price ?? null;
+  }
+}
+
 // ─── Exit Decision Engine ───
 // ═══ EXIT RULE PRIORITY (STRICT, INVIOLABLE ORDER) ═══
 // 1. TP hit          → CLOSE immediately
@@ -1479,6 +1546,99 @@ Deno.serve(async (req) => {
             console.log(`[VOID-SCANNER] ${order.currency_pair} ${order.direction}: ${voidResult.bailReason} | PnL=${decision.currentPnlPips.toFixed(1)}p`);
             decision.action = "void-bail" as typeof decision.action;
             decision.reason = voidResult.bailReason;
+          }
+        }
+      }
+
+      // ═══ APEX SCALE-OUT PROTOCOL — Partial Close at 1R + Break-Even Snap ═══
+      // When MFE reaches 1.0R for the first time:
+      //   1. Market-close 50% of units (TP1: Surge Capture)
+      //   2. Snap SL to break-even on remaining 50% (Armor)
+      //   3. Set TP2 at next Elephant Wall from order book (Trailing Runner)
+      // Only fires once per trade (tracked via governance_payload.scaleOutDone)
+      if (decision.action === "hold" && order.oanda_trade_id && oandaTrade) {
+        const scaleGovPayload = (typeof order.governance_payload === 'object' && order.governance_payload)
+          ? order.governance_payload as Record<string, unknown>
+          : {};
+        const scaleOutDone = scaleGovPayload.scaleOutDone === true;
+
+        if (!scaleOutDone && currentMfeR >= 1.0) {
+          const currentUnits = Math.abs(parseInt(oandaTrade.currentUnits || "0"));
+          const unitsToClose = Math.floor(currentUnits / 2);
+
+          if (unitsToClose >= 1) {
+            console.log(`[APEX-SCALE-OUT] 🎯 ${order.currency_pair} ${order.direction}: MFE=${currentMfeR.toFixed(2)}R hit 1.0R — EXECUTING SURGE CAPTURE (closing ${unitsToClose}/${currentUnits} units)`);
+
+            const partialResult = await partialCloseTrade(
+              order.oanda_trade_id,
+              unitsToClose,
+              order.environment || "practice",
+            );
+
+            if (partialResult.success) {
+              // Stage 2: Snap SL to break-even (entry + 0.5 pip safety buffer)
+              const bePipMult = getPipMultiplier(order.currency_pair);
+              const beSlPrice = order.direction === "long"
+                ? entryPrice + 0.5 * bePipMult
+                : entryPrice - 0.5 * bePipMult;
+
+              const beResult = await updateTrailingStop(
+                order.oanda_trade_id,
+                beSlPrice,
+                order.environment || "practice",
+                order.currency_pair,
+              );
+
+              // Stage 3: Find next Elephant Wall for TP2
+              const liqBucketsForTp2 = liquidityMap.get(order.currency_pair);
+              let tp2Price: number | null = null;
+              if (liqBucketsForTp2 && liqBucketsForTp2.length > 0) {
+                tp2Price = findNextElephantWall(
+                  order.currency_pair,
+                  order.direction,
+                  currentPrice,
+                  entryPrice,
+                  liqBucketsForTp2,
+                );
+                if (tp2Price) {
+                  await updateTakeProfit(
+                    order.oanda_trade_id,
+                    tp2Price,
+                    order.environment || "practice",
+                    order.currency_pair,
+                  );
+                  console.log(`[APEX-SCALE-OUT] 🎯 ${order.currency_pair}: TP2 set @ ${tp2Price.toFixed(order.currency_pair.includes('JPY') ? 3 : 5)} (next Elephant Wall)`);
+                }
+              }
+
+              // Persist scale-out state
+              const tp1Pips = partialResult.fillPrice && entryPrice
+                ? (order.direction === "long"
+                  ? (partialResult.fillPrice - entryPrice) / bePipMult
+                  : (entryPrice - partialResult.fillPrice) / bePipMult)
+                : null;
+
+              await supabase.from("oanda_orders").update({
+                governance_payload: {
+                  ...scaleGovPayload,
+                  scaleOutDone: true,
+                  scaleOutAt: new Date().toISOString(),
+                  tp1FillPrice: partialResult.fillPrice,
+                  tp1UnitsClosed: unitsToClose,
+                  tp1Pips: tp1Pips ? Math.round(tp1Pips * 10) / 10 : null,
+                  tp2TargetPrice: tp2Price,
+                  beSlPrice: beSlPrice,
+                  remainingUnits: currentUnits - unitsToClose,
+                },
+              }).eq("id", order.id);
+
+              const priceFmt = order.currency_pair.includes('JPY') ? 3 : 5;
+              console.log(`[APEX-SCALE-OUT] ✅ ${order.currency_pair} ${order.direction}: SCALE-OUT COMPLETE`);
+              console.log(`  TP1: ${unitsToClose} units closed @ ${partialResult.fillPrice?.toFixed(priceFmt) || '?'} (+${tp1Pips?.toFixed(1) || '?'}p)`);
+              console.log(`  SL: Snapped to BE @ ${beSlPrice.toFixed(priceFmt)} (${beResult.success ? '✅' : '❌'})`);
+              console.log(`  TP2: ${tp2Price ? tp2Price.toFixed(priceFmt) + ' (Elephant Wall)' : 'ATR trailing (no wall found)'}`);
+              console.log(`  Runner: ${currentUnits - unitsToClose} units riding risk-free`);
+            }
           }
         }
       }
