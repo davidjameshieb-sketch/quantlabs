@@ -170,3 +170,6 @@ verify_jwt = false
 
 [functions.hedge-backtest]
 verify_jwt = false
+
+[functions.nyc-love-agent]
+verify_jwt = false
