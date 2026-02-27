@@ -8,6 +8,7 @@ import NexusPressureCard from '@/components/nexus/NexusPressureCard';
 import TentacleLog from '@/components/nexus/TentacleLog';
 import LiquidityHeatmap from '@/components/nexus/LiquidityHeatmap';
 import SessionClock from '@/components/nexus/SessionClock';
+import NeuroMatrixCortex, { type NeuroMatrixState, type TentacleState } from '@/components/nexus/NeuroMatrixCortex';
 
 const INSTRUMENTS = ['EUR_USD', 'GBP_USD', 'USD_JPY'];
 const USD_CROSSES = ['EUR_USD', 'GBP_USD', 'USD_JPY', 'USD_CHF', 'USD_CAD', 'AUD_USD', 'NZD_USD'];
@@ -17,6 +18,7 @@ interface AgentResult {
   reason?: string;
   detail?: string;
   engine?: string;
+  painWeight?: number;
   executions?: { instrument: string; direction: string; status: string; detail: string; nexusP?: number }[];
   log?: string[];
   timestamp?: string;
@@ -49,6 +51,207 @@ interface ActiveTrade {
   status: string;
 }
 
+// ── Parse Neuro-Matrix v3 state from agent log + result ──
+function parseNeuroMatrixState(result: AgentResult, pricing: Record<string, PricingData>, activeTrades: ActiveTrade[]): NeuroMatrixState {
+  const logs = result.log || [];
+  const defaultState: NeuroMatrixState = {
+    painWeight: result.painWeight ?? 1.0,
+    recentWins: 0, recentLosses: 0, maxConsecutiveLosses: 0,
+    leadingSynapse: null, leadingVelocity: 0,
+    sympatheticWeak: null, sympatheticStrong: null,
+    tentacles: [],
+    engineVersion: result.engine || 'neuro-matrix-v3',
+    timestamp: result.timestamp || '',
+  };
+
+  // Parse pain memory: "W=2 L=2 maxConsecL=2 → painWeight=0.70"
+  const painLine = logs.find(l => l.includes('PAIN MEMORY'));
+  if (painLine) {
+    const wMatch = painLine.match(/W=(\d+)/);
+    const lMatch = painLine.match(/L=(\d+)/);
+    const cMatch = painLine.match(/maxConsecL=(\d+)/);
+    if (wMatch) defaultState.recentWins = parseInt(wMatch[1]);
+    if (lMatch) defaultState.recentLosses = parseInt(lMatch[1]);
+    if (cMatch) defaultState.maxConsecutiveLosses = parseInt(cMatch[1]);
+  }
+
+  // Parse leading synapse: "LEADING SYNAPSE: USD_JPY velocity=2.5x"
+  const synapseLine = logs.find(l => l.includes('LEADING SYNAPSE:'));
+  if (synapseLine) {
+    const instMatch = synapseLine.match(/LEADING SYNAPSE: (\w+_\w+)/);
+    const velMatch = synapseLine.match(/velocity=(\d+\.?\d*)x/);
+    if (instMatch) defaultState.leadingSynapse = instMatch[1];
+    if (velMatch) defaultState.leadingVelocity = parseFloat(velMatch[1]);
+  }
+
+  // Parse sympathetic liquidity: "SYMPATHETIC LIQUIDITY: GBP_USD wall=2.1% (weak) vs EUR_USD wall=3.5% (thick)"
+  const sympathLine = logs.find(l => l.includes('SYMPATHETIC LIQUIDITY:'));
+  if (sympathLine) {
+    const weakMatch = sympathLine.match(/(\w+_\w+) wall=[\d.]+% \(weak\)/);
+    const strongMatch = sympathLine.match(/(\w+_\w+) wall=[\d.]+% \(thick\)/);
+    if (weakMatch) defaultState.sympatheticWeak = weakMatch[1];
+    if (strongMatch) defaultState.sympatheticStrong = strongMatch[1];
+  }
+
+  // Parse Apex target
+  const apexLine = logs.find(l => l.includes('APEX TARGET:'));
+  const apexInst = apexLine?.match(/APEX TARGET: (\w+_\w+)/)?.[1] || null;
+
+  // Parse secondary targets
+  const secondaryLine = logs.find(l => l.includes('SECONDARY:'));
+  const secondaryInsts: string[] = [];
+  if (secondaryLine) {
+    const matches = secondaryLine.matchAll(/(\w+_\w+)\(/g);
+    for (const m of matches) secondaryInsts.push(m[1]);
+  }
+
+  // Build tentacle states per instrument
+  for (const instrument of INSTRUMENTS) {
+    const tag = `[${instrument}]`;
+    const p = pricing[instrument];
+    const trade = activeTrades.find(t => t.instrument === instrument);
+
+    // Parse sovereign direction
+    const sovLine = logs.find(l => l.includes(tag) && l.includes('SOVEREIGN:'));
+    let sovereignDir: 'BUY' | 'SELL' | null = null;
+    if (sovLine?.includes('→ BUY')) sovereignDir = 'BUY';
+    else if (sovLine?.includes('→ SELL')) sovereignDir = 'SELL';
+
+    // Parse ADI
+    const adiLine = logs.find(l => l.includes(tag) && l.includes('ADI:'));
+    let adiConfirmed = 0, adiTotal = 0, isRetailHunt = false;
+    if (adiLine) {
+      const confMatch = adiLine.match(/confirmed=(\d+)\/(\d+)/);
+      if (confMatch) { adiConfirmed = parseInt(confMatch[1]); adiTotal = parseInt(confMatch[2]); }
+      isRetailHunt = adiLine.includes('hunt=true');
+    }
+
+    // Parse nexus
+    const nexusLine = logs.find(l => l.includes(tag) && l.includes('NEXUS:'));
+    let nexusProbability = 0, nexusTier: TentacleState['nexusTier'] = 'BLOCKED';
+    let executionDir: 'BUY' | 'SELL' | null = sovereignDir;
+    let isFaded = false;
+    if (nexusLine) {
+      const pMatch = nexusLine.match(/P=(\d+\.?\d*)%/);
+      if (pMatch) nexusProbability = parseFloat(pMatch[1]) / 100;
+      if (nexusLine.includes('OMNI_STRIKE')) nexusTier = 'OMNI_STRIKE';
+      else if (nexusLine.includes('PROBE')) nexusTier = 'PROBE';
+      else if (nexusLine.includes('SOVEREIGN_ONLY')) nexusTier = 'SOVEREIGN_ONLY';
+      const fadeMatch = nexusLine.match(/FADED→(\w+)/);
+      if (fadeMatch) { executionDir = fadeMatch[1] as 'BUY' | 'SELL'; isFaded = true; }
+    }
+
+    // Parse breath
+    const breathLine = logs.find(l => l.includes(tag) && l.includes('BREATH:'));
+    let breathRatio = 1, adaptiveSL = 20, adaptiveTP = 60, atrPips = 0;
+    if (breathLine) {
+      const brMatch = breathLine.match(/breath=(\d+\.?\d*)/);
+      const slMatch = breathLine.match(/SL=(\d+\.?\d*)/);
+      const tpMatch = breathLine.match(/TP=(\d+\.?\d*)/);
+      const atrMatch = breathLine.match(/(?:ATR|TICK-VAR)=(\d+\.?\d*)/);
+      if (brMatch) breathRatio = parseFloat(brMatch[1]);
+      if (slMatch) adaptiveSL = parseFloat(slMatch[1]);
+      if (tpMatch) adaptiveTP = parseFloat(tpMatch[1]);
+      if (atrMatch) atrPips = parseFloat(atrMatch[1]);
+    }
+
+    // Parse OBI / elephant
+    const obiLine = logs.find(l => l.includes(tag) && l.includes('OBI:'));
+    let elephantAction = 'PATH_CLEAR', elephantDistance = 0, wallStrength = 0;
+    if (obiLine) {
+      for (const action of ['STRIKE_THROUGH', 'STOP_RUN_CAPTURE', 'ELEPHANT_REJECTION', 'WAIT_FOR_ABSORPTION', 'PATH_CLEAR']) {
+        if (obiLine.includes(action)) { elephantAction = action; break; }
+      }
+      const distMatch = obiLine.match(/(\d+\.?\d*)p away/);
+      if (distMatch) elephantDistance = parseFloat(distMatch[1]);
+    }
+
+    // Parse velocity from execution line or general
+    let velocityRatio = 0, velocitySpike = false;
+    const execLine = logs.find(l => l.includes(tag) && l.includes('EXECUTING:'));
+    // Velocity is in nexus detail or synapse lines
+    const synapseBoostLine = logs.find(l => l.includes(`SYNAPSE → ${instrument}:`));
+    let synapseBoost = 0;
+    if (synapseBoostLine) {
+      const boostMatch = synapseBoostLine.match(/\+(\d+)% probe/);
+      if (boostMatch) synapseBoost = parseInt(boostMatch[1]) / 100;
+    }
+
+    // Check execution detail for sizing
+    let sizeMultiplier = 1.0, sympatheticMultiplier = 1.0;
+    if (execLine) {
+      const sizeMatch = execLine.match(/\[(APEX|SECONDARY) (\d+\.?\d*)x/);
+      if (sizeMatch) sizeMultiplier = parseFloat(sizeMatch[2]);
+      const sympathMatch = execLine.match(/SYMPATH (\d+\.?\d*)x/);
+      if (sympathMatch) sympatheticMultiplier = parseFloat(sympathMatch[1]);
+    }
+    if (instrument === defaultState.sympatheticWeak) sympatheticMultiplier = 1.5;
+    if (instrument === defaultState.sympatheticStrong) sympatheticMultiplier = 0.5;
+
+    // Has position?
+    const hasPosition = logs.some(l => l.includes(tag) && l.includes('Already has open position'));
+
+    // Gate status
+    let gateStatus = 'executable';
+    if (hasPosition) gateStatus = 'has_position';
+    else if (logs.some(l => l.includes(tag) && l.includes('Spread Shield'))) gateStatus = 'spread_blocked';
+    else if (logs.some(l => l.includes(tag) && l.includes('NEXUS BLOCKED'))) gateStatus = 'nexus_blocked';
+    else if (logs.some(l => l.includes(tag) && l.includes('ELEPHANT_REJECTION'))) gateStatus = 'elephant_blocked';
+
+    // Nerve
+    const nerve: 'NOISE' | 'CLEAN_FLOW' = 'CLEAN_FLOW'; // Default — not always logged
+
+    // Trade P&L from trade monitor logs
+    let tradePnlPips: number | undefined;
+    let tradeTHS: number | undefined;
+    if (trade && p) {
+      const isJPY = instrument.includes('JPY');
+      const scale = isJPY ? 100 : 10000;
+      const entry = trade.entry_price;
+      const current = p.mid;
+      tradePnlPips = trade.direction === 'long'
+        ? (current - entry) * scale
+        : (entry - current) * scale;
+    }
+
+    defaultState.tentacles.push({
+      instrument,
+      sovereignDir,
+      executionDir: executionDir || sovereignDir,
+      isFaded,
+      nexusProbability,
+      nexusTier,
+      velocityRatio,
+      velocitySpike,
+      breathRatio,
+      adaptiveSL,
+      adaptiveTP,
+      nerve,
+      elephantAction,
+      elephantDistance,
+      wallStrength,
+      isApex: instrument === apexInst,
+      isSecondary: secondaryInsts.includes(instrument),
+      sizeMultiplier: instrument === apexInst ? (secondaryInsts.length === 0 ? 1.5 : 1.0) : 0.5,
+      sympatheticMultiplier,
+      synapseBoost,
+      gateStatus,
+      hasPosition,
+      tradeDirection: trade?.direction,
+      tradeEntry: trade?.entry_price,
+      tradePnlPips,
+      tradeTHS,
+      adiConfirmed,
+      adiTotal,
+      isRetailHunt,
+      spread: p?.spread || 0,
+      mid: p?.mid || 0,
+    });
+  }
+
+  return defaultState;
+}
+
 const NYCLoveDashboard = () => {
   const [agentResult, setAgentResult] = useState<AgentResult | null>(null);
   const [pricing, setPricing] = useState<Record<string, PricingData>>({});
@@ -58,9 +261,11 @@ const NYCLoveDashboard = () => {
   const [loading, setLoading] = useState(false);
   const [autoMode, setAutoMode] = useState(false);
   const [cycleCount, setCycleCount] = useState(0);
+  const [neuroState, setNeuroState] = useState<NeuroMatrixState | null>(null);
   const [logs, setLogs] = useState<string[]>([
-    '[SYSTEM] Sovereign Neural Nexus v2.0 initialized',
+    '[SYSTEM] Neuro-Matrix v3 Cortex initialized',
     '[SYSTEM] Pillars: ADI Truth Filter | Neural Volatility Buffer | OBI Sniffer',
+    '[SYSTEM] Cross-Pair: Leading Synapse | Pain Memory | Sympathetic Liquidity',
     '[SYSTEM] Awaiting nexus invocation...',
   ]);
 
@@ -87,7 +292,6 @@ const NYCLoveDashboard = () => {
   // Fetch ADI from sovereign_memory cache (populated by agent)
   const fetchAdiCache = useCallback(async () => {
     try {
-      // Try the dedicated ADI cache first
       const { data: adiCache } = await supabase
         .from('sovereign_memory')
         .select('payload, updated_at')
@@ -98,31 +302,17 @@ const NYCLoveDashboard = () => {
       if (adiCache?.payload) {
         const cached = adiCache.payload as { pricing?: Record<string, any> };
         const prices = cached.pricing || {};
-        // Calculate ADI from cached pricing
         const usdCrosses = ['EUR_USD', 'GBP_USD', 'USD_JPY', 'USD_CHF', 'USD_CAD', 'AUD_USD', 'NZD_USD'];
-        let bullCount = 0, bearCount = 0, total = 0;
+        let total = 0;
         for (const cross of usdCrosses) {
-          const p = prices[cross];
-          if (!p) continue;
-          total++;
-          // Simple: if spread is tight, market is active for this cross
-          const isUsdBase = cross.startsWith('USD_');
-          // Use mid price direction as a simple indicator
-          if (p.mid) {
-            bullCount++; // We have data = confirmed cross
-          }
+          if (prices[cross]) total++;
         }
         if (total > 0) {
-          setAdiState(prev => ({
-            ...prev,
-            confirmedCrosses: total,
-            totalCrosses: 7,
-          }));
+          setAdiState(prev => ({ ...prev, confirmedCrosses: total, totalCrosses: 7 }));
         }
         return;
       }
 
-      // Fallback: compute from live sovereign strength data
       const { data: strengthData } = await supabase
         .from('sovereign_memory')
         .select('payload')
@@ -133,21 +323,14 @@ const NYCLoveDashboard = () => {
         .single();
 
       if (strengthData?.payload) {
-        const payload = strengthData.payload as { strengths?: { currency: string; rank: number; score?: number }[] };
+        const payload = strengthData.payload as { strengths?: { currency: string; rank: number }[] };
         if (payload.strengths) {
           const usd = payload.strengths.find(s => s.currency === 'USD');
           if (usd) {
-            // Derive dollar strength from rank: rank 1 = +1.0, rank 8 = -1.0
-            const normalized = 1 - ((usd.rank - 1) / 7) * 2; // rank 1→+1, rank 4.5→0, rank 8→-1
+            const normalized = 1 - ((usd.rank - 1) / 7) * 2;
             const totalCurrencies = payload.strengths.length;
-            // Count how many currencies are weaker than USD (higher rank = weaker)
             const weakerCount = payload.strengths.filter(s => s.rank > usd.rank).length;
-            setAdiState({
-              dollarStrength: Math.round(normalized * 100) / 100,
-              confirmedCrosses: weakerCount,
-              totalCrosses: totalCurrencies - 1,
-              isRetailHunt: false,
-            });
+            setAdiState({ dollarStrength: Math.round(normalized * 100) / 100, confirmedCrosses: weakerCount, totalCrosses: totalCurrencies - 1, isRetailHunt: false });
           }
         }
       }
@@ -157,7 +340,6 @@ const NYCLoveDashboard = () => {
   const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
   const apiKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
 
-  // Fetch pricing
   const fetchPricing = useCallback(async () => {
     try {
       const res = await fetch(`${supabaseUrl}/functions/v1/oanda-pricing`, {
@@ -180,7 +362,6 @@ const NYCLoveDashboard = () => {
     } catch (e) { console.error('[NEXUS] Pricing error:', e); }
   }, [supabaseUrl, apiKey]);
 
-  // Fetch sovereign rankings
   const fetchRankings = useCallback(async () => {
     try {
       const { data } = await supabase
@@ -194,14 +375,11 @@ const NYCLoveDashboard = () => {
 
       if (data?.payload) {
         const payload = data.payload as { strengths?: { currency: string; rank: number }[] };
-        if (payload.strengths) {
-          setRankings(payload.strengths);
-        }
+        if (payload.strengths) setRankings(payload.strengths);
       }
     } catch { /* empty */ }
   }, []);
 
-  // Fetch order book / liquidity heatmap data
   const fetchOrderBooks = useCallback(async () => {
     try {
       const { data } = await supabase
@@ -213,19 +391,13 @@ const NYCLoveDashboard = () => {
         const mapped: Record<string, OrderBookData> = {};
         for (const row of data) {
           const buckets = ((row as any).all_buckets || []) as { price: number; longPct: number; shortPct: number }[];
-          mapped[row.currency_pair] = {
-            price: row.current_price || 0,
-            longPct: 0,
-            shortPct: 0,
-            buckets,
-          };
+          mapped[row.currency_pair] = { price: row.current_price || 0, longPct: 0, shortPct: 0, buckets };
         }
         setOrderBooks(mapped);
       }
     } catch { /* empty */ }
   }, []);
 
-  // Fetch active trades
   const fetchActiveTrades = useCallback(async () => {
     try {
       const { data } = await supabase
@@ -246,11 +418,10 @@ const NYCLoveDashboard = () => {
     } catch { /* empty */ }
   }, []);
 
-  // Invoke agent
   const runAgent = useCallback(async () => {
     setLoading(true);
     const ts = new Date().toLocaleTimeString();
-    setLogs(prev => [...prev, `[${ts}] 🚀 Invoking Sovereign Neural Nexus...`]);
+    setLogs(prev => [...prev, `[${ts}] 🚀 Invoking Neuro-Matrix v3...`]);
 
     try {
       const res = await fetch(`${supabaseUrl}/functions/v1/nyc-love-agent`, {
@@ -264,7 +435,7 @@ const NYCLoveDashboard = () => {
       if (data.log) {
         setLogs(prev => [...prev, ...data.log!.map(l => `[${ts}] ${l}`)]);
 
-        // Parse nexus data from logs
+        // Parse nexus data from logs (for pressure cards)
         const nexusMap: Record<string, typeof nexusData[string]> = {};
         for (const inst of INSTRUMENTS) {
           const tag = `[${inst}]`;
@@ -273,23 +444,17 @@ const NYCLoveDashboard = () => {
           const obiLine = data.log.find(l => l.includes(tag) && l.includes('OBI:'));
           const sovLine = data.log.find(l => l.includes(tag) && l.includes('SOVEREIGN:'));
 
-          // Parse probability from nexus line
           const pMatch = nexusLine?.match(/P=(\d+\.?\d*)%/);
           const probability = pMatch ? parseFloat(pMatch[1]) / 100 : 0;
-
-          // Parse direction from sovereign line
           let direction: 'BUY' | 'SELL' | null = null;
           if (sovLine?.includes('→ BUY')) direction = 'BUY';
           else if (sovLine?.includes('→ SELL')) direction = 'SELL';
 
-          // Parse breath data
           const slMatch = breathLine?.match(/SL=(\d+\.?\d*)/);
           const tpMatch = breathLine?.match(/TP=(\d+\.?\d*)/);
-          const atrMatch = breathLine?.match(/ATR=(\d+\.?\d*)/);
+          const atrMatch = breathLine?.match(/(?:ATR|TICK-VAR)=(\d+\.?\d*)/);
           const avgMatch = breathLine?.match(/avg=(\d+\.?\d*)/);
           const brMatch = breathLine?.match(/breath=(\d+\.?\d*)/);
-
-          // Parse wall info
           const wallMatch = obiLine?.includes('BLOCKED') ? obiLine.split('OBI: ')[1] : null;
 
           nexusMap[inst] = {
@@ -320,18 +485,36 @@ const NYCLoveDashboard = () => {
         }
       }
 
+      // Parse the full Neuro-Matrix state for Cortex visualization
+      // Need current pricing to calculate live P&L
+      const currentPricing = { ...pricing };
+      // Re-fetch trades to get latest
+      const { data: freshTrades } = await supabase
+        .from('oanda_orders')
+        .select('currency_pair, direction, entry_price, status')
+        .eq('agent_id', 'nyc-love')
+        .in('status', ['filled', 'open', 'submitted'])
+        .eq('environment', 'practice');
+      const trades = (freshTrades || []).map(d => ({
+        instrument: d.currency_pair,
+        direction: d.direction,
+        entry_price: d.entry_price || 0,
+        status: d.status,
+      }));
+      setActiveTrades(trades);
+
+      const neuro = parseNeuroMatrixState(data, currentPricing, trades);
+      setNeuroState(neuro);
+
       if (data.reason === 'session_gate') {
         setLogs(prev => [...prev, `[${ts}] ⏳ Session gate: ${data.detail}`]);
       }
-
-      // Refresh active trades after agent run
-      fetchActiveTrades();
     } catch (e) {
       setLogs(prev => [...prev, `[${ts}] ❌ Nexus error: ${(e as Error).message}`]);
     } finally {
       setLoading(false);
     }
-  }, [supabaseUrl, apiKey, fetchActiveTrades]);
+  }, [supabaseUrl, apiKey, pricing]);
 
   // Data refresh loops
   useEffect(() => {
@@ -358,6 +541,13 @@ const NYCLoveDashboard = () => {
     return () => clearInterval(iv);
   }, [autoMode, runAgent]);
 
+  // Update neuro state when pricing changes (live P&L)
+  useEffect(() => {
+    if (!neuroState || !agentResult) return;
+    const updated = parseNeuroMatrixState(agentResult, pricing, activeTrades);
+    setNeuroState(updated);
+  }, [pricing, activeTrades]);
+
   return (
     <div className="min-h-screen cyber-grid-bg font-mono" style={{ color: 'hsl(var(--nexus-text-primary))' }}>
       {/* ═══ HEADER ═══ */}
@@ -368,13 +558,13 @@ const NYCLoveDashboard = () => {
             <ArrowLeft size={16} />
           </Link>
           <h1 className="text-base font-bold tracking-tight" style={{ color: 'hsl(var(--nexus-neon-cyan))' }}>
-            NYC LOVE <span style={{ color: 'hsl(var(--nexus-text-muted))' }}>//</span> SOVEREIGN NEURAL NEXUS
+            NYC LOVE <span style={{ color: 'hsl(var(--nexus-text-muted))' }}>//</span> NEURO-MATRIX
           </h1>
           <span className="text-[9px] px-2 py-0.5 rounded" style={{
             color: 'hsl(var(--nexus-neon-green))',
             background: 'hsl(var(--nexus-neon-green) / 0.1)',
             border: '1px solid hsl(var(--nexus-neon-green) / 0.2)',
-          }}>v2.0</span>
+          }}>v3.0</span>
         </div>
         <div className="flex items-center gap-3">
           <span className="text-[9px] px-2 py-1 rounded" style={{
@@ -384,6 +574,15 @@ const NYCLoveDashboard = () => {
           }}>
             OANDA: {Object.keys(pricing).length > 0 ? 'LIVE' : '—'}
           </span>
+          {neuroState && (
+            <span className="text-[9px] px-2 py-1 rounded" style={{
+              background: neuroState.painWeight < 0.85 ? 'hsl(var(--nexus-danger) / 0.1)' : 'hsl(var(--nexus-surface))',
+              border: `1px solid ${neuroState.painWeight < 0.85 ? 'hsl(var(--nexus-danger) / 0.3)' : 'hsl(var(--nexus-border))'}`,
+              color: neuroState.painWeight < 0.85 ? 'hsl(var(--nexus-danger))' : 'hsl(var(--nexus-text-muted))',
+            }}>
+              PAIN: {(neuroState.painWeight * 100).toFixed(0)}%
+          </span>
+          )}
           <span className="text-[9px]" style={{ color: 'hsl(var(--nexus-text-muted))' }}>
             cycles: {cycleCount}
           </span>
@@ -425,14 +624,15 @@ const NYCLoveDashboard = () => {
           </div>
         </div>
 
-        {/* ═══ TOP ROW: ADI Hub + Sovereign Matrix + Spread Shield ═══ */}
+        {/* ═══ NEURO-MATRIX CORTEX (Everything the tentacles see) ═══ */}
+        {neuroState && <NeuroMatrixCortex state={neuroState} />}
+
+        {/* ═══ TOP ROW: ADI Hub + Sovereign Matrix + Spread/Liquidity ═══ */}
         <div className="grid grid-cols-1 md:grid-cols-12 gap-5">
-          {/* ADI Radar Hub */}
           <div className="md:col-span-4 p-4 rounded-lg" style={{ background: 'hsl(var(--nexus-surface))', border: '1px solid hsl(var(--nexus-border))' }}>
             <ADIRadarHub {...adiState} />
           </div>
 
-          {/* Sovereign Leaderboard */}
           <div className="md:col-span-4 p-4 rounded-lg" style={{ background: 'hsl(var(--nexus-surface))', border: '1px solid hsl(var(--nexus-border))' }}>
             <SovereignLeaderboard rankings={rankings.length > 0 ? rankings : [
               { currency: 'USD', rank: 1 }, { currency: 'EUR', rank: 2 },
@@ -442,9 +642,7 @@ const NYCLoveDashboard = () => {
             ]} />
           </div>
 
-          {/* Spread Shield + Liquidity */}
           <div className="md:col-span-4 space-y-4">
-            {/* Spread Shield */}
             <div className="p-4 rounded-lg" style={{ background: 'hsl(var(--nexus-surface))', border: '1px solid hsl(var(--nexus-border))' }}>
               <div className="text-[10px] font-bold tracking-[0.2em] mb-3" style={{ color: 'hsl(var(--nexus-neon-cyan))' }}>
                 SPREAD SHIELD
@@ -472,7 +670,6 @@ const NYCLoveDashboard = () => {
               </div>
             </div>
 
-            {/* Global Liquidity Mini */}
             <div className="p-4 rounded-lg" style={{ background: 'hsl(var(--nexus-surface))', border: '1px solid hsl(var(--nexus-border))' }}>
               <div className="text-[10px] font-bold tracking-[0.2em] mb-2" style={{ color: 'hsl(var(--nexus-neon-cyan))' }}>
                 LIQUIDITY HEATMAP
@@ -483,11 +680,7 @@ const NYCLoveDashboard = () => {
                 return (
                   <div key={inst} className="mb-2">
                     <div className="text-[8px] mb-1" style={{ color: 'hsl(var(--nexus-text-muted))' }}>{inst.replace('_', '/')}</div>
-                    <LiquidityHeatmap
-                      instrument={inst}
-                      buckets={ob?.buckets || []}
-                      currentPrice={p?.mid || 0}
-                    />
+                    <LiquidityHeatmap instrument={inst} buckets={ob?.buckets || []} currentPrice={p?.mid || 0} />
                   </div>
                 );
               })}
@@ -495,7 +688,7 @@ const NYCLoveDashboard = () => {
           </div>
         </div>
 
-        {/* ═══ PRESSURE CARDS (NEXUS STRIKE INDICATORS) ═══ */}
+        {/* ═══ PRESSURE CARDS ═══ */}
         <div>
           <div className="text-[10px] font-bold tracking-[0.2em] mb-3" style={{ color: 'hsl(var(--nexus-neon-green))' }}>
             NEXUS STRIKE INDICATORS
