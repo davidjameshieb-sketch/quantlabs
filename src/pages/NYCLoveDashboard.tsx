@@ -259,7 +259,7 @@ const NYCLoveDashboard = () => {
   const [orderBooks, setOrderBooks] = useState<Record<string, OrderBookData>>({});
   const [activeTrades, setActiveTrades] = useState<ActiveTrade[]>([]);
   const [loading, setLoading] = useState(false);
-  const [autoMode, setAutoMode] = useState(false);
+  const [autoMode, setAutoMode] = useState(true);
   const [cycleCount, setCycleCount] = useState(0);
   const [neuroState, setNeuroState] = useState<NeuroMatrixState | null>(null);
   const [logs, setLogs] = useState<string[]>([
