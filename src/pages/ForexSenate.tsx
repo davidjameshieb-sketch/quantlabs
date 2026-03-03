@@ -13,7 +13,7 @@ import ReactMarkdown from "react-markdown";
 import {
   Upload, Settings, Brain, ShieldAlert, Crown, Loader2, ImageIcon,
   TrendingUp, TrendingDown, MinusCircle, Target, AlertTriangle, BarChart3,
-  X, Plus, Send, MessageSquare, Images, Clock, Radio, Wifi, Zap
+  X, Plus, Send, MessageSquare, Images, Clock, Radio, Wifi, Zap, Radar, ChevronRight
 } from "lucide-react";
 
 const MODELS = [
@@ -121,6 +121,11 @@ export default function ForexSenate() {
   const [previousRisk, setPreviousRisk] = useState("");
   const [previousChairman, setPreviousChairman] = useState("");
   const [requestedTimeframes, setRequestedTimeframes] = useState<string[]>([]);
+
+  // Scan state
+  const [isScanning, setIsScanning] = useState(false);
+  const [scanResults, setScanResults] = useState<{ opportunities: Array<{ pair: string; score: number; direction: string; reasoning: string; key_level?: string; timeframe_alignment?: string; next_step?: string }>; market_regime?: string; best_pair?: string; scan_summary?: string } | null>(null);
+  const [scanRawText, setScanRawText] = useState("");
 
   const fileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const followUpFileRefs = useRef<Record<string, HTMLInputElement | null>>({});
@@ -361,6 +366,65 @@ export default function ForexSenate() {
     }
   }, [followUpText, followUpTfImages, previousQuant, previousRisk, previousChairman, followUpRound, chairmanModel, addMessage, toast]);
 
+  const handleScanMajors = useCallback(async () => {
+    const session = await getSession();
+    if (!session) return;
+
+    setIsScanning(true);
+    setScanResults(null);
+    setScanRawText("");
+    setMessages([]);
+    setVerdict(null);
+    setAgreement(null);
+
+    addMessage("system", "🔍 **Scanning all 8 major pairs** — MN/W/D/H4/H1 data from OANDA...");
+
+    try {
+      const response = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/forex-senate`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
+          body: JSON.stringify({ mode: "scan", images: [], chairmanModel }),
+        }
+      );
+
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({ error: "Unknown error" }));
+        throw new Error(err.error || `HTTP ${response.status}`);
+      }
+
+      const result = await response.json();
+      setScanRawText(result.scanResult || "");
+
+      if (result.parsedOpportunities) {
+        setScanResults(result.parsedOpportunities);
+        const opps = result.parsedOpportunities.opportunities || [];
+        const summary = result.parsedOpportunities.scan_summary || `${opps.length} opportunities found`;
+        addMessage("chairman", result.scanResult);
+        addMessage("system", `✅ **Scan complete.** ${summary}`);
+      } else {
+        addMessage("chairman", result.scanResult);
+        addMessage("system", "✅ **Scan complete.** Select a pair to drill down.");
+      }
+    } catch (err: any) {
+      toast({ title: "Scan failed", description: err.message, variant: "destructive" });
+      addMessage("system", `❌ **Scan error:** ${err.message}`);
+    } finally {
+      setIsScanning(false);
+    }
+  }, [chairmanModel, addMessage, toast]);
+
+  const handleDrillDown = useCallback((pair: string) => {
+    const normalized = pair.includes("/") ? pair : pair.replace("_", "/");
+    setSelectedPair(normalized);
+    setScanResults(null);
+    setMessages([]);
+    setVerdict(null);
+    setAgreement(null);
+    toast({ title: "Pair selected", description: `${normalized} loaded. Click "Quick Analyze" to drill down.` });
+  }, [toast]);
+
   const [isExecuting, setIsExecuting] = useState(false);
   const [executionResult, setExecutionResult] = useState<{ success: boolean; message: string } | null>(null);
 
@@ -440,6 +504,16 @@ export default function ForexSenate() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {/* Scan All Majors button */}
+          <Button
+            onClick={handleScanMajors}
+            disabled={isScanning || isAnalyzing}
+            variant="outline"
+            size="sm"
+            className="border-amber-500/30 text-amber-400 hover:bg-amber-950/30 hover:text-amber-300 font-mono text-[10px] tracking-wider h-8"
+          >
+            {isScanning ? <><Loader2 className="h-3 w-3 mr-1.5 animate-spin" /> Scanning...</> : <><Radar className="h-3 w-3 mr-1.5" /> Scan All Majors</>}
+          </Button>
           {/* Model summary badges */}
           {!isAnalyzing && (
             <div className="hidden md:flex items-center gap-1.5">
@@ -833,7 +907,65 @@ export default function ForexSenate() {
 
         {/* Right: Action Panel */}
         <div className="p-4 flex flex-col gap-4 bg-[#0d0e14] overflow-y-auto">
-          <h2 className="text-xs font-mono font-bold text-white/60 uppercase tracking-wider">Verdict</h2>
+          <h2 className="text-xs font-mono font-bold text-white/60 uppercase tracking-wider">
+            {scanResults ? "Scan Results" : "Verdict"}
+          </h2>
+
+          {/* Scan Results */}
+          {scanResults && scanResults.opportunities && scanResults.opportunities.length > 0 ? (
+            <div className="space-y-3">
+              {scanResults.market_regime && (
+                <div className="rounded-lg bg-amber-950/30 border border-amber-700/40 p-3">
+                  <span className="text-[9px] font-mono text-amber-400/60 uppercase block mb-1">Market Regime</span>
+                  <p className="text-[11px] font-mono text-amber-300/80">{scanResults.market_regime}</p>
+                </div>
+              )}
+              {scanResults.opportunities.map((opp, i) => {
+                const isLong = opp.direction?.toUpperCase().includes("LONG") || opp.direction?.toUpperCase().includes("BUY");
+                const isShort = opp.direction?.toUpperCase().includes("SHORT") || opp.direction?.toUpperCase().includes("SELL");
+                const scoreColor = opp.score >= 8 ? "text-emerald-400" : opp.score >= 6 ? "text-amber-400" : "text-white/40";
+                const borderColor = opp.score >= 8 ? "border-emerald-700/50" : opp.score >= 6 ? "border-amber-700/40" : "border-white/10";
+                return (
+                  <button
+                    key={i}
+                    onClick={() => handleDrillDown(opp.pair)}
+                    className={`w-full rounded-lg border ${borderColor} bg-white/[0.03] p-3 text-left hover:bg-white/[0.06] transition-colors group`}
+                  >
+                    <div className="flex items-center justify-between mb-1.5">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-mono font-bold text-white">{opp.pair}</span>
+                        <Badge className={`text-[8px] font-mono px-1.5 py-0 ${
+                          isLong ? "bg-emerald-600/20 text-emerald-400 border-emerald-700/50" :
+                          isShort ? "bg-red-600/20 text-red-400 border-red-700/50" :
+                          "bg-zinc-600/20 text-zinc-400 border-zinc-700/50"
+                        }`}>{opp.direction}</Badge>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <span className={`text-lg font-mono font-black ${scoreColor}`}>{opp.score}</span>
+                        <ChevronRight className="h-3 w-3 text-white/20 group-hover:text-white/50 transition-colors" />
+                      </div>
+                    </div>
+                    <p className="text-[10px] font-mono text-white/50 leading-relaxed">{opp.reasoning}</p>
+                    {opp.key_level && (
+                      <div className="flex items-center gap-2 mt-1.5">
+                        <span className="text-[9px] font-mono text-white/25">Key: {opp.key_level}</span>
+                        {opp.timeframe_alignment && <span className="text-[9px] font-mono text-cyan-400/50">TF: {opp.timeframe_alignment}</span>}
+                      </div>
+                    )}
+                  </button>
+                );
+              })}
+              {scanResults.scan_summary && (
+                <p className="text-[10px] font-mono text-white/30 text-center pt-2">{scanResults.scan_summary}</p>
+              )}
+              <p className="text-[9px] font-mono text-white/20 text-center">Click a pair to drill down with full Senate analysis</p>
+            </div>
+          ) : scanResults && (!scanResults.opportunities || scanResults.opportunities.length === 0) ? (
+            <div className="rounded-lg bg-amber-950/30 border border-amber-700/40 p-4 text-center">
+              <p className="text-xs font-mono text-amber-400">No clear opportunities found</p>
+              <p className="text-[10px] font-mono text-white/30 mt-1">Market may be choppy or unclear</p>
+            </div>
+          ) : null}
 
           {/* Agreement Meter - THE HERO */}
           {agreement ? (

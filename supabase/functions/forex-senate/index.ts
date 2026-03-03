@@ -483,6 +483,7 @@ interface RequestBody {
   previousRisk?: string;
   previousChairman?: string;
   followUpRound?: number;
+  mode?: "analyze" | "scan";
 }
 
 const ERR = {
@@ -654,6 +655,52 @@ ${(body.followUpImages?.length || 0) > 0 ? `The trader has also provided ${body.
         verdict,
         needsMoreInfo: needsMore && (body.followUpRound || 2) < 3,
         livePrice,
+      }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
+
+    // ── SCAN ALL MAJORS MODE ──
+    if (body.mode === "scan") {
+      console.log("[SENATE] Scan mode: scanning all 8 majors");
+      const { apiToken, accountId, host } = getOandaCredentials();
+      if (!apiToken || !accountId) return ERR.internal("OANDA credentials not configured");
+
+      // Fetch scan context for all 8 majors in parallel
+      const scanContexts = await Promise.all(
+        MAJOR_PAIRS.map(async (inst) => {
+          try {
+            return await buildScanContext(inst, host, accountId, apiToken);
+          } catch (e) {
+            console.warn(`[SENATE] Scan failed for ${inst}:`, e);
+            return `\n── ${inst.replace("_", "/")} ──\nData unavailable\n`;
+          }
+        })
+      );
+
+      const fullScanData = `SCANNING ${MAJOR_PAIRS.length} MAJOR PAIRS\nTimestamp: ${new Date().toISOString()}\n${scanContexts.join("\n")}`;
+      const scanContent = [{ type: "text" as const, text: fullScanData }];
+      const scanModel = body.chairmanModel || "google/gemini-2.5-pro";
+      
+      const scanResult = await callAgent(LOVABLE_API_KEY, SCANNER_PROMPT, scanContent, scanModel);
+      console.log("[SENATE] Scan complete");
+
+      // Try to parse JSON from the response
+      let parsedOpportunities = null;
+      try {
+        const jsonMatch = scanResult.match(/```json\s*([\s\S]*?)```/) || scanResult.match(/\{[\s\S]*"opportunities"[\s\S]*\}/);
+        if (jsonMatch) {
+          const jsonStr = jsonMatch[1] || jsonMatch[0];
+          parsedOpportunities = JSON.parse(jsonStr);
+        }
+      } catch (e) {
+        console.warn("[SENATE] Could not parse scan JSON:", e);
+      }
+
+      return new Response(JSON.stringify({
+        mode: "scan",
+        scanResult,
+        parsedOpportunities,
+        pairsScanned: MAJOR_PAIRS.length,
+        timestamp: new Date().toISOString(),
       }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
