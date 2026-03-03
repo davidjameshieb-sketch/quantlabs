@@ -209,7 +209,7 @@ export default function ForexSenate() {
   };
 
   const handleAnalyze = useCallback(async () => {
-    if (filledCount === 0) return;
+    if (filledCount === 0 && !selectedPair) return;
     const session = await getSession();
     if (!session) return;
 
@@ -226,8 +226,9 @@ export default function ForexSenate() {
 
     const pairLabel = selectedPair ? ` | Pair: **${selectedPair}**` : "";
     const oandaLabel = selectedPair ? " + 📡 **Live OANDA data**" : "";
-    addMessage("system", `🏛️ **Senate session opened.** ${labeledImages.length} chart${labeledImages.length > 1 ? "s" : ""} submitted: **${tfList}**${pairLabel}${oandaLabel}`);
-    addMessage("system", `⏳ Phase 1 — ${selectedPair ? "Fetching live OANDA data & d" : "D"}ispatching charts to **The Quant** and **The Risk Manager** in parallel...`);
+    const chartMsg = labeledImages.length > 0 ? `${labeledImages.length} chart${labeledImages.length > 1 ? "s" : ""} submitted: **${tfList}**` : "**Data-only mode** (no charts)";
+    addMessage("system", `🏛️ **Senate session opened.** ${chartMsg}${pairLabel}${oandaLabel}`);
+    addMessage("system", `⏳ Phase 1 — ${selectedPair ? "Fetching live OANDA data & d" : "D"}ispatching to **The Quant** and **The Risk Manager** in parallel...`);
     setPhase("Phase 1: Analysts reviewing charts...");
 
     try {
@@ -511,9 +512,20 @@ export default function ForexSenate() {
               </SelectContent>
             </Select>
             {selectedPair && selectedPair !== "none" && (
-              <p className="text-[9px] text-emerald-400/50 font-mono">
-                📡 Live candles, spread, ATR & correlated pairs will be injected into analysis
-              </p>
+              <>
+                <p className="text-[9px] text-emerald-400/50 font-mono">
+                  📡 Live candles, spread, ATR & correlated pairs will be injected into analysis
+                </p>
+                {filledCount === 0 && (
+                  <Button
+                    onClick={handleAnalyze}
+                    disabled={isAnalyzing}
+                    className="w-full bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 text-white font-mono text-[11px] tracking-wider h-9"
+                  >
+                    {isAnalyzing ? <><Loader2 className="h-3 w-3 mr-2 animate-spin" /> Analyzing...</> : <><Wifi className="h-3 w-3 mr-2" /> Quick Analyze (Data Only)</>}
+                  </Button>
+                )}
+              </>
             )}
             {livePrice && (
               <div className="grid grid-cols-3 gap-1.5 text-center">
@@ -593,7 +605,7 @@ export default function ForexSenate() {
 
           <Button
             onClick={handleAnalyze}
-            disabled={filledCount === 0 || isAnalyzing}
+            disabled={(filledCount === 0 && !selectedPair) || isAnalyzing}
             className="w-full bg-gradient-to-r from-cyan-600 to-emerald-600 hover:from-cyan-500 hover:to-emerald-500 text-white font-mono text-xs tracking-wider mt-2"
           >
             {isAnalyzing ? <><Loader2 className="h-3 w-3 mr-2 animate-spin" /> Analyzing...</> : <><BarChart3 className="h-3 w-3 mr-2" /> Convene Senate</>}

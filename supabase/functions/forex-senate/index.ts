@@ -430,6 +430,13 @@ async function callAgent(
 function buildImageContent(images: string[], labels?: string[], oandaContext?: string): Array<{ type: string; text?: string; image_url?: { url: string } }> {
   const content: Array<{ type: string; text?: string; image_url?: { url: string } }> = [];
   const count = images.length;
+
+  if (count === 0 && oandaContext) {
+    // Data-only mode: no charts, just OANDA data
+    content.push({ type: "text", text: `Analyze this Forex pair using ONLY the live OANDA market data below. No chart screenshots were provided — base your entire analysis on the numerical data, candle history, ATR, spread, and correlated pair context.\n${oandaContext}` });
+    return content;
+  }
+
   const hasLabels = labels && labels.length === count;
   const labelList = hasLabels ? labels!.join(", ") : `${count} chart(s)`;
   
@@ -548,7 +555,7 @@ ${(body.followUpImages?.length || 0) > 0 ? `The trader has also provided ${body.
     // ── INITIAL ANALYSIS FLOW ──
     const images = body.images || [];
     const labels = body.timeframeLabels || [];
-    if (images.length === 0) return ERR.bad("At least one image is required");
+    if (images.length === 0 && !body.pair) return ERR.bad("Provide at least one image or select a currency pair");
     if (images.length > 7) return ERR.bad("Maximum 7 images allowed");
 
     const totalSize = images.reduce((s, img) => s + img.length, 0);
