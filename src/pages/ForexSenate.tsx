@@ -13,7 +13,7 @@ import ReactMarkdown from "react-markdown";
 import {
   Upload, Settings, Brain, ShieldAlert, Crown, Loader2, ImageIcon,
   TrendingUp, TrendingDown, MinusCircle, Target, AlertTriangle, BarChart3,
-  X, Plus, Send, MessageSquare, Images, Clock, Radio, Wifi
+  X, Plus, Send, MessageSquare, Images, Clock, Radio, Wifi, Zap
 } from "lucide-react";
 
 const MODELS = [
@@ -220,6 +220,7 @@ export default function ForexSenate() {
     setNeedsMoreInfo(false);
     setFollowUpRound(1);
     setRequestedTimeframes([]);
+    setExecutionResult(null);
 
     const labeledImages = buildLabeledImages(tfImages);
     const tfList = labeledImages.map(l => l.timeframe).join(", ");
@@ -360,10 +361,70 @@ export default function ForexSenate() {
     }
   }, [followUpText, followUpTfImages, previousQuant, previousRisk, previousChairman, followUpRound, chairmanModel, addMessage, toast]);
 
+  const [isExecuting, setIsExecuting] = useState(false);
+  const [executionResult, setExecutionResult] = useState<{ success: boolean; message: string } | null>(null);
+
+  // Determine if execution is allowed: unanimous agreement + confidence >= 75%
   const verdictDirection = verdict?.verdict?.toUpperCase();
   const isBuy = verdictDirection?.includes("BUY");
   const isSell = verdictDirection?.includes("SELL");
   const isNeedMore = verdictDirection?.includes("NEED_MORE_INFO");
+
+  const canExecute = !!(
+    agreement &&
+    selectedPair &&
+    (agreement.long_pct === 100 || agreement.short_pct === 100) &&
+    verdict?.confidence &&
+    parseInt(verdict.confidence) >= 75 &&
+    !isNeedMore
+  );
+
+  const executionDirection: "long" | "short" | null = agreement?.long_pct === 100 ? "long" : agreement?.short_pct === 100 ? "short" : null;
+
+  const handleExecuteTrade = useCallback(async () => {
+    if (!canExecute || !selectedPair || !executionDirection || !verdict) return;
+    const session = await getSession();
+    if (!session) return;
+
+    setIsExecuting(true);
+    setExecutionResult(null);
+
+    try {
+      const instrument = selectedPair.replace("/", "_");
+      const response = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/oanda-execute`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
+          body: JSON.stringify({
+            action: "execute",
+            signalId: `senate-${Date.now()}`,
+            currencyPair: instrument,
+            direction: executionDirection,
+            units: 1000, // Conservative default
+            confidenceScore: parseInt(verdict.confidence || "0") / 100,
+            agentId: "senate-consensus",
+            environment: "practice", // Default to practice for safety
+          }),
+        }
+      );
+
+      const result = await response.json();
+      if (result.success) {
+        setExecutionResult({ success: true, message: `✅ ${executionDirection.toUpperCase()} ${selectedPair} filled at ${result.order?.entry_price || "market"}` });
+        addMessage("system", `🚀 **Trade Executed!** ${executionDirection.toUpperCase()} ${selectedPair} — filled at ${result.order?.entry_price || "market"} (Senate consensus)`);
+        toast({ title: "Trade executed", description: `${executionDirection.toUpperCase()} ${selectedPair} filled successfully` });
+      } else {
+        setExecutionResult({ success: false, message: `❌ ${result.error || "Execution failed"}` });
+        addMessage("system", `❌ **Execution failed:** ${result.error || "Unknown error"}`);
+      }
+    } catch (err: any) {
+      setExecutionResult({ success: false, message: `❌ ${err.message}` });
+      toast({ title: "Execution failed", description: err.message, variant: "destructive" });
+    } finally {
+      setIsExecuting(false);
+    }
+  }, [canExecute, selectedPair, executionDirection, verdict, addMessage, toast]);
 
   return (
     <div className="min-h-screen bg-[#0a0b0f] text-white">
@@ -885,6 +946,48 @@ export default function ForexSenate() {
                 <div className="rounded-lg bg-white/5 border border-white/10 p-3">
                   <span className="text-[10px] text-white/40 font-mono uppercase block mb-1">Rationale</span>
                   <p className="text-xs font-mono text-white/60 leading-relaxed">{verdict.rationale}</p>
+                </div>
+              )}
+
+              {/* Execute Trade Button */}
+              {canExecute && !executionResult && (
+                <Button
+                  onClick={handleExecuteTrade}
+                  disabled={isExecuting}
+                  className={`w-full h-12 font-mono text-sm font-black tracking-wider ${
+                    executionDirection === "long"
+                      ? "bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-500 hover:to-emerald-400"
+                      : "bg-gradient-to-r from-red-600 to-red-500 hover:from-red-500 hover:to-red-400"
+                  } text-white border-0`}
+                >
+                  {isExecuting ? (
+                    <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Executing...</>
+                  ) : (
+                    <><Zap className="h-4 w-4 mr-2" /> Execute {executionDirection?.toUpperCase()} {selectedPair}</>
+                  )}
+                </Button>
+              )}
+
+              {/* Not eligible for execution */}
+              {agreement && !canExecute && !executionResult && (
+                <div className="rounded-lg bg-white/5 border border-white/5 p-2.5 text-center">
+                  <span className="text-[9px] font-mono text-white/25">
+                    {!selectedPair ? "Select a pair to enable execution" :
+                     agreement.long_pct !== 100 && agreement.short_pct !== 100 ? "Unanimous agreement required to execute" :
+                     parseInt(verdict?.confidence || "0") < 75 ? "Chairman confidence must be ≥ 75%" :
+                     "Execution not available"}
+                  </span>
+                </div>
+              )}
+
+              {/* Execution result */}
+              {executionResult && (
+                <div className={`rounded-lg p-3 border ${
+                  executionResult.success
+                    ? "bg-emerald-950/40 border-emerald-700/50"
+                    : "bg-red-950/40 border-red-700/50"
+                }`}>
+                  <p className="text-xs font-mono text-white/80">{executionResult.message}</p>
                 </div>
               )}
             </div>
