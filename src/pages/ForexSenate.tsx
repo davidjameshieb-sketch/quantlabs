@@ -722,50 +722,7 @@ export default function ForexSenate() {
             )}
           </div>
 
-          {/* Auto-fill Timeframe Data Grid */}
-          <div className="space-y-1.5">
-            <span className="text-[10px] font-mono text-white/30 uppercase tracking-wider">Timeframe Data</span>
-            {TIMEFRAME_SLOTS.map((tf) => {
-              const fetched = fetchedTimeframes[tf.key];
-              const isFetching = fetched?.status === "fetching";
-              const isFetched = fetched?.status === "fetched";
-              return (
-                <div key={tf.key} className={`rounded-lg border p-2.5 flex items-center gap-3 transition-all ${
-                  isFetched ? "border-emerald-700/40 bg-emerald-950/15" :
-                  isFetching ? "border-cyan-700/30 bg-cyan-950/10 animate-pulse" :
-                  "border-white/5 bg-white/[0.01]"
-                }`}>
-                  <div className={`h-8 w-8 rounded flex items-center justify-center shrink-0 ${
-                    isFetched ? "bg-emerald-600/20" : isFetching ? "bg-cyan-600/10" : "bg-white/[0.03]"
-                  }`}>
-                    {isFetched ? (
-                      <BarChart3 className="h-3.5 w-3.5 text-emerald-400" />
-                    ) : isFetching ? (
-                      <Loader2 className="h-3.5 w-3.5 text-cyan-400 animate-spin" />
-                    ) : (
-                      <Clock className="h-3.5 w-3.5 text-white/10" />
-                    )}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-1.5">
-                      <span className={`text-[10px] font-mono font-bold ${
-                        isFetched ? "text-emerald-400" : isFetching ? "text-cyan-400" : "text-white/20"
-                      }`}>{tf.shortLabel}</span>
-                      <span className={`text-[10px] font-mono ${isFetched ? "text-white/50" : "text-white/15"}`}>{tf.label}</span>
-                    </div>
-                    <p className={`text-[9px] font-mono ${isFetched ? "text-white/30" : "text-white/10"}`}>
-                      {isFetched && fetched.bars ? `${fetched.bars} bars · OHLCV + ATR` : tf.description}
-                    </p>
-                  </div>
-                  {isFetched && (
-                    <Badge className="bg-emerald-600/20 text-emerald-400 border-emerald-700/40 text-[7px] font-mono px-1.5 py-0 shrink-0">
-                      ✓
-                    </Badge>
-                  )}
-                </div>
-              );
-            })}
-          </div>
+
 
           {/* Quick Analyze / Convene */}
           {selectedPair && (
