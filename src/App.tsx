@@ -10,6 +10,7 @@ import HedgeControlCenter from "./pages/HedgeControlCenter";
 import TheCitadel from "./pages/TheCitadel";
 import NYCLoveDashboard from "./pages/NYCLoveDashboard";
 import SovereignFlightDeck from "./pages/SovereignFlightDeck";
+import ForexSenate from "./pages/ForexSenate";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -28,6 +29,7 @@ const App = () => (
           <Route path="/citadel" element={<TheCitadel />} />
           <Route path="/nyc-love" element={<NYCLoveDashboard />} />
           <Route path="/flight-deck" element={<SovereignFlightDeck />} />
+          <Route path="/senate" element={<ForexSenate />} />
           <Route path="*" element={<NotFound />} />
         </Routes>
       </BrowserRouter>
