@@ -13,7 +13,7 @@ import ReactMarkdown from "react-markdown";
 import {
   Upload, Settings, Brain, ShieldAlert, Crown, Loader2, ImageIcon,
   TrendingUp, TrendingDown, MinusCircle, Target, AlertTriangle, BarChart3,
-  X, Plus, Send, MessageSquare, Images
+  X, Plus, Send, MessageSquare, Images, Clock
 } from "lucide-react";
 
 const MODELS = [
@@ -25,6 +25,21 @@ const MODELS = [
   { value: "openai/gpt-5", label: "GPT-5" },
   { value: "openai/gpt-5-mini", label: "GPT-5 Mini" },
 ];
+
+const TIMEFRAME_SLOTS = [
+  { key: "MN", label: "Monthly", shortLabel: "MN", description: "Macro trend & major S/R" },
+  { key: "W1", label: "Weekly", shortLabel: "W1", description: "Swing structure" },
+  { key: "D1", label: "Daily", shortLabel: "D1", description: "Directional bias" },
+  { key: "H4", label: "4 Hour", shortLabel: "H4", description: "Session structure" },
+  { key: "H1", label: "1 Hour", shortLabel: "H1", description: "Intraday context" },
+  { key: "M15", label: "15 Min", shortLabel: "M15", description: "Entry timing" },
+  { key: "M5", label: "5 Min", shortLabel: "M5", description: "Precision entry" },
+];
+
+interface TimeframeImage {
+  timeframe: string;
+  image: string;
+}
 
 interface SenateMessage {
   id: string;
@@ -59,7 +74,7 @@ const personaConfig = {
 };
 
 export default function ForexSenate() {
-  const [images, setImages] = useState<string[]>([]);
+  const [tfImages, setTfImages] = useState<Record<string, string>>({});
   const [messages, setMessages] = useState<SenateMessage[]>([]);
   const [verdict, setVerdict] = useState<Verdict | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -71,16 +86,19 @@ export default function ForexSenate() {
   // Follow-up state
   const [needsMoreInfo, setNeedsMoreInfo] = useState(false);
   const [followUpText, setFollowUpText] = useState("");
-  const [followUpImages, setFollowUpImages] = useState<string[]>([]);
+  const [followUpTfImages, setFollowUpTfImages] = useState<Record<string, string>>({});
   const [followUpRound, setFollowUpRound] = useState(1);
   const [previousQuant, setPreviousQuant] = useState("");
   const [previousRisk, setPreviousRisk] = useState("");
   const [previousChairman, setPreviousChairman] = useState("");
+  const [requestedTimeframes, setRequestedTimeframes] = useState<string[]>([]);
 
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const followUpFileRef = useRef<HTMLInputElement>(null);
+  const fileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
+  const followUpFileRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const scrollRef = useRef<HTMLDivElement>(null);
   const { toast } = useToast();
+
+  const filledCount = Object.keys(tfImages).length;
 
   const scrollToBottom = useCallback(() => {
     setTimeout(() => scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" }), 100);
@@ -102,45 +120,26 @@ export default function ForexSenate() {
     });
   };
 
-  const handleFiles = useCallback(async (files: FileList) => {
-    const newImages: string[] = [];
-    for (const file of Array.from(files)) {
-      try {
-        const b64 = await readFileAsBase64(file);
-        newImages.push(b64);
-      } catch (err: any) {
-        toast({ title: "Upload error", description: err.message, variant: "destructive" });
-      }
+  const handleSlotFile = useCallback(async (tfKey: string, file: File) => {
+    try {
+      const b64 = await readFileAsBase64(file);
+      setTfImages(prev => ({ ...prev, [tfKey]: b64 }));
+    } catch (err: any) {
+      toast({ title: "Upload error", description: err.message, variant: "destructive" });
     }
-    setImages(prev => {
-      const combined = [...prev, ...newImages];
-      if (combined.length > 5) {
-        toast({ title: "Max 5 charts", description: "Remove some before adding more.", variant: "destructive" });
-        return combined.slice(0, 5);
-      }
-      return combined;
-    });
   }, [toast]);
 
-  const handleFollowUpFiles = useCallback(async (files: FileList) => {
-    const newImages: string[] = [];
-    for (const file of Array.from(files)) {
-      try {
-        newImages.push(await readFileAsBase64(file));
-      } catch (err: any) {
-        toast({ title: "Upload error", description: err.message, variant: "destructive" });
-      }
+  const handleFollowUpSlotFile = useCallback(async (tfKey: string, file: File) => {
+    try {
+      const b64 = await readFileAsBase64(file);
+      setFollowUpTfImages(prev => ({ ...prev, [tfKey]: b64 }));
+    } catch (err: any) {
+      toast({ title: "Upload error", description: err.message, variant: "destructive" });
     }
-    setFollowUpImages(prev => [...prev, ...newImages].slice(0, 5));
   }, [toast]);
 
-  const handleDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    if (e.dataTransfer.files.length) handleFiles(e.dataTransfer.files);
-  }, [handleFiles]);
-
-  const removeImage = (idx: number) => setImages(prev => prev.filter((_, i) => i !== idx));
-  const removeFollowUpImage = (idx: number) => setFollowUpImages(prev => prev.filter((_, i) => i !== idx));
+  const removeSlotImage = (tfKey: string) => setTfImages(prev => { const n = { ...prev }; delete n[tfKey]; return n; });
+  const removeFollowUpSlotImage = (tfKey: string) => setFollowUpTfImages(prev => { const n = { ...prev }; delete n[tfKey]; return n; });
 
   const getSession = async () => {
     const { data: { session } } = await supabase.auth.getSession();
@@ -151,8 +150,37 @@ export default function ForexSenate() {
     return session;
   };
 
+  // Build labeled images array for the edge function
+  const buildLabeledImages = (imgMap: Record<string, string>): { timeframe: string; image: string }[] => {
+    return TIMEFRAME_SLOTS
+      .filter(tf => imgMap[tf.key])
+      .map(tf => ({ timeframe: tf.key, image: imgMap[tf.key] }));
+  };
+
+  // Parse Chairman response for requested timeframes
+  const parseRequestedTimeframes = (chairmanText: string): string[] => {
+    const requested: string[] = [];
+    const tfKeys = TIMEFRAME_SLOTS.map(t => t.key);
+    const tfLabels: Record<string, string> = {
+      "monthly": "MN", "month": "MN", "mn": "MN",
+      "weekly": "W1", "week": "W1", "w1": "W1",
+      "daily": "D1", "day": "D1", "d1": "D1",
+      "4 hour": "H4", "4h": "H4", "h4": "H4", "4-hour": "H4",
+      "1 hour": "H1", "1h": "H1", "h1": "H1", "1-hour": "H1", "hourly": "H1",
+      "15 min": "M15", "15m": "M15", "m15": "M15", "15-min": "M15", "15-minute": "M15",
+      "5 min": "M5", "5m": "M5", "m5": "M5", "5-min": "M5", "5-minute": "M5",
+    };
+    const lowerText = chairmanText.toLowerCase();
+    for (const [pattern, tfKey] of Object.entries(tfLabels)) {
+      if (lowerText.includes(pattern) && !Object.keys(tfImages).includes(tfKey)) {
+        if (!requested.includes(tfKey)) requested.push(tfKey);
+      }
+    }
+    return requested;
+  };
+
   const handleAnalyze = useCallback(async () => {
-    if (images.length === 0) return;
+    if (filledCount === 0) return;
     const session = await getSession();
     if (!session) return;
 
@@ -161,8 +189,12 @@ export default function ForexSenate() {
     setVerdict(null);
     setNeedsMoreInfo(false);
     setFollowUpRound(1);
+    setRequestedTimeframes([]);
 
-    addMessage("system", `🏛️ **Senate session opened.** ${images.length} chart${images.length > 1 ? "s" : ""} submitted for multi-agent analysis.`);
+    const labeledImages = buildLabeledImages(tfImages);
+    const tfList = labeledImages.map(l => l.timeframe).join(", ");
+
+    addMessage("system", `🏛️ **Senate session opened.** ${labeledImages.length} chart${labeledImages.length > 1 ? "s" : ""} submitted: **${tfList}**`);
     addMessage("system", "⏳ Phase 1 — Dispatching charts to **The Quant** and **The Risk Manager** in parallel...");
     setPhase("Phase 1: Analysts reviewing charts...");
 
@@ -172,7 +204,11 @@ export default function ForexSenate() {
         {
           method: "POST",
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
-          body: JSON.stringify({ images, quantModel, riskModel, chairmanModel }),
+          body: JSON.stringify({
+            images: labeledImages.map(l => l.image),
+            timeframeLabels: labeledImages.map(l => l.timeframe),
+            quantModel, riskModel, chairmanModel,
+          }),
         }
       );
 
@@ -182,7 +218,6 @@ export default function ForexSenate() {
       }
 
       const result = await response.json();
-
       addMessage("quant", result.quant);
       await new Promise(r => setTimeout(r, 400));
       addMessage("risk", result.riskManager);
@@ -200,7 +235,10 @@ export default function ForexSenate() {
       if (result.needsMoreInfo) {
         setNeedsMoreInfo(true);
         setFollowUpRound(2);
-        addMessage("system", "📋 **The Chairman needs more information.** Please respond below with answers and/or additional charts.");
+        const reqTFs = parseRequestedTimeframes(result.chairman);
+        setRequestedTimeframes(reqTFs);
+        const tfMsg = reqTFs.length > 0 ? ` Requested timeframes: **${reqTFs.join(", ")}**` : "";
+        addMessage("system", `📋 **The Chairman needs more information.** Please respond below.${tfMsg}`);
       } else {
         addMessage("system", "✅ **Senate session closed.** Verdict delivered.");
       }
@@ -213,19 +251,23 @@ export default function ForexSenate() {
     } finally {
       setIsAnalyzing(false);
     }
-  }, [images, quantModel, riskModel, chairmanModel, addMessage, toast]);
+  }, [tfImages, filledCount, quantModel, riskModel, chairmanModel, addMessage, toast]);
 
   const handleFollowUp = useCallback(async () => {
-    if (!followUpText.trim() && followUpImages.length === 0) return;
+    if (!followUpText.trim() && Object.keys(followUpTfImages).length === 0) return;
     const session = await getSession();
     if (!session) return;
 
     setIsAnalyzing(true);
     setNeedsMoreInfo(false);
 
-    const userMsg = followUpText.trim() || "(Additional charts provided)";
-    addMessage("user", userMsg, followUpImages.length > 0 ? followUpImages : undefined);
-    addMessage("system", `⚖️ **The Chairman** is reviewing your response${followUpImages.length > 0 ? ` and ${followUpImages.length} new chart(s)` : ""}...`);
+    const labeledFollowUp = buildLabeledImages(followUpTfImages);
+    const followUpImagesArray = labeledFollowUp.map(l => l.image);
+    const followUpLabels = labeledFollowUp.map(l => l.timeframe);
+    const userMsg = followUpText.trim() || `(Additional charts provided: ${followUpLabels.join(", ")})`;
+
+    addMessage("user", userMsg, followUpImagesArray.length > 0 ? followUpImagesArray : undefined);
+    addMessage("system", `⚖️ **The Chairman** is reviewing your response${followUpLabels.length > 0 ? ` and ${followUpLabels.length} new chart(s): **${followUpLabels.join(", ")}**` : ""}...`);
     setPhase("Chairman reviewing your response...");
 
     try {
@@ -238,7 +280,8 @@ export default function ForexSenate() {
             images: [],
             isFollowUp: true,
             followUpText: followUpText.trim(),
-            followUpImages,
+            followUpImages: followUpImagesArray,
+            followUpTimeframeLabels: followUpLabels,
             previousQuant,
             previousRisk,
             previousChairman,
@@ -261,13 +304,15 @@ export default function ForexSenate() {
       if (result.needsMoreInfo) {
         setNeedsMoreInfo(true);
         setFollowUpRound(prev => prev + 1);
+        const reqTFs = parseRequestedTimeframes(result.chairman);
+        setRequestedTimeframes(reqTFs);
         addMessage("system", "📋 **The Chairman still needs clarification.** Please respond below.");
       } else {
         addMessage("system", "✅ **Senate session closed.** Final verdict delivered.");
       }
       setPhase("");
       setFollowUpText("");
-      setFollowUpImages([]);
+      setFollowUpTfImages({});
     } catch (err: any) {
       toast({ title: "Follow-up failed", description: err.message, variant: "destructive" });
       addMessage("system", `❌ **Error:** ${err.message}`);
@@ -276,7 +321,7 @@ export default function ForexSenate() {
     } finally {
       setIsAnalyzing(false);
     }
-  }, [followUpText, followUpImages, previousQuant, previousRisk, previousChairman, followUpRound, chairmanModel, addMessage, toast]);
+  }, [followUpText, followUpTfImages, previousQuant, previousRisk, previousChairman, followUpRound, chairmanModel, addMessage, toast]);
 
   const verdictDirection = verdict?.verdict?.toUpperCase();
   const isBuy = verdictDirection?.includes("BUY");
@@ -335,86 +380,86 @@ export default function ForexSenate() {
       {/* Main Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-[360px_1fr_320px] gap-0 h-[calc(100vh-57px)]">
 
-        {/* Left: Multi-Image Upload Zone */}
+        {/* Left: Timeframe Slots */}
         <div className="border-r border-white/10 p-4 flex flex-col gap-3 bg-[#0d0e14] overflow-y-auto">
           <div className="flex items-center justify-between">
-            <h2 className="text-xs font-mono font-bold text-white/60 uppercase tracking-wider">Chart Input</h2>
+            <h2 className="text-xs font-mono font-bold text-white/60 uppercase tracking-wider flex items-center gap-1.5">
+              <Clock className="h-3 w-3" /> Timeframe Slots
+            </h2>
             <Badge variant="outline" className="text-[10px] font-mono border-white/10 text-white/30">
-              <Images className="h-3 w-3 mr-1" /> {images.length}/5
+              {filledCount}/{TIMEFRAME_SLOTS.length}
             </Badge>
           </div>
 
-          {/* Image thumbnails */}
-          {images.length > 0 && (
-            <div className="grid grid-cols-2 gap-2">
-              {images.map((img, i) => (
-                <div key={i} className="relative group rounded-lg overflow-hidden border border-white/10 bg-white/5">
-                  <img src={img} alt={`Chart ${i + 1}`} className="w-full h-24 object-cover" />
-                  <button
-                    onClick={() => removeImage(i)}
-                    className="absolute top-1 right-1 h-5 w-5 rounded-full bg-black/70 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
-                  >
-                    <X className="h-3 w-3 text-white" />
-                  </button>
-                  <div className="absolute bottom-1 left-1 bg-black/70 rounded px-1.5 py-0.5">
-                    <span className="text-[9px] font-mono text-white/60">TF {i + 1}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
+          <p className="text-[10px] text-white/25 font-mono">Upload charts per timeframe. More = better analysis.</p>
 
-          {/* Drop zone */}
-          <div
-            onDrop={handleDrop}
-            onDragOver={(e) => e.preventDefault()}
-            onClick={() => images.length < 5 && fileInputRef.current?.click()}
-            className={`
-              flex-1 min-h-[120px] rounded-lg border-2 border-dashed cursor-pointer transition-all duration-200
-              flex items-center justify-center
-              ${images.length >= 5
-                ? "border-white/5 bg-white/[0.01] cursor-not-allowed opacity-50"
-                : "border-white/10 bg-white/[0.02] hover:border-cyan-500/50 hover:bg-cyan-950/20"
-              }
-            `}
-          >
-            <div className="text-center p-4">
-              {images.length === 0 ? (
-                <>
-                  <Upload className="h-8 w-8 text-white/20 mx-auto mb-2" />
-                  <p className="text-xs text-white/40 font-mono">Drop chart screenshots here</p>
-                  <p className="text-[10px] text-white/20 font-mono mt-1">Upload multiple timeframes for best results</p>
-                </>
-              ) : images.length < 5 ? (
-                <>
-                  <Plus className="h-6 w-6 text-white/20 mx-auto mb-1" />
-                  <p className="text-[10px] text-white/30 font-mono">Add another timeframe</p>
-                </>
-              ) : (
-                <p className="text-[10px] text-white/20 font-mono">Max charts reached</p>
-              )}
-            </div>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="image/*"
-              multiple
-              className="hidden"
-              onChange={(e) => { if (e.target.files?.length) handleFiles(e.target.files); e.target.value = ""; }}
-            />
+          {/* Timeframe slot grid */}
+          <div className="space-y-2">
+            {TIMEFRAME_SLOTS.map((tf) => {
+              const hasImage = !!tfImages[tf.key];
+              return (
+                <div key={tf.key} className={`rounded-lg border transition-all ${
+                  hasImage ? "border-cyan-700/50 bg-cyan-950/20" : "border-white/10 bg-white/[0.02] hover:border-white/20"
+                }`}>
+                  {hasImage ? (
+                    <div className="flex items-center gap-3 p-2">
+                      <img src={tfImages[tf.key]} alt={tf.label} className="h-14 w-20 object-cover rounded border border-white/10" />
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          <Badge className="bg-cyan-600/30 text-cyan-300 border-cyan-700/50 text-[9px] font-mono px-1.5 py-0">{tf.shortLabel}</Badge>
+                          <span className="text-[10px] text-white/50 font-mono">{tf.label}</span>
+                        </div>
+                        <p className="text-[9px] text-white/25 font-mono mt-0.5">{tf.description}</p>
+                      </div>
+                      <button onClick={() => removeSlotImage(tf.key)}
+                        className="h-6 w-6 rounded flex items-center justify-center text-white/20 hover:text-red-400 hover:bg-red-950/30 transition-colors">
+                        <X className="h-3 w-3" />
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => fileInputRefs.current[tf.key]?.click()}
+                      className="w-full flex items-center gap-3 p-2.5 group"
+                    >
+                      <div className="h-10 w-14 rounded border border-dashed border-white/10 group-hover:border-cyan-500/40 flex items-center justify-center transition-colors bg-white/[0.02]">
+                        <Upload className="h-3.5 w-3.5 text-white/15 group-hover:text-cyan-500/60 transition-colors" />
+                      </div>
+                      <div className="flex-1 text-left">
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-[10px] font-mono font-bold text-white/30 group-hover:text-white/50 transition-colors">{tf.shortLabel}</span>
+                          <span className="text-[10px] text-white/20 font-mono">{tf.label}</span>
+                        </div>
+                        <p className="text-[9px] text-white/15 font-mono">{tf.description}</p>
+                      </div>
+                    </button>
+                  )}
+                  <input
+                    ref={(el) => { fileInputRefs.current[tf.key] = el; }}
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) handleSlotFile(tf.key, file);
+                      e.target.value = "";
+                    }}
+                  />
+                </div>
+              );
+            })}
           </div>
 
           <Button
             onClick={handleAnalyze}
-            disabled={images.length === 0 || isAnalyzing}
-            className="w-full bg-gradient-to-r from-cyan-600 to-emerald-600 hover:from-cyan-500 hover:to-emerald-500 text-white font-mono text-xs tracking-wider"
+            disabled={filledCount === 0 || isAnalyzing}
+            className="w-full bg-gradient-to-r from-cyan-600 to-emerald-600 hover:from-cyan-500 hover:to-emerald-500 text-white font-mono text-xs tracking-wider mt-2"
           >
             {isAnalyzing ? <><Loader2 className="h-3 w-3 mr-2 animate-spin" /> Analyzing...</> : <><BarChart3 className="h-3 w-3 mr-2" /> Convene Senate</>}
           </Button>
 
-          {images.length > 0 && !isAnalyzing && (
+          {filledCount > 0 && !isAnalyzing && (
             <Button variant="ghost" size="sm" className="text-white/30 text-[10px] font-mono hover:text-white/60"
-              onClick={() => { setImages([]); setMessages([]); setVerdict(null); setNeedsMoreInfo(false); setFollowUpText(""); setFollowUpImages([]); }}>
+              onClick={() => { setTfImages({}); setMessages([]); setVerdict(null); setNeedsMoreInfo(false); setFollowUpText(""); setFollowUpTfImages({}); setRequestedTimeframes([]); }}>
               Clear all
             </Button>
           )}
@@ -434,8 +479,8 @@ export default function ForexSenate() {
               <div className="flex items-center justify-center h-full text-white/10">
                 <div className="text-center">
                   <Crown className="h-12 w-12 mx-auto mb-3 opacity-30" />
-                  <p className="text-xs font-mono">Upload chart(s) and convene the Senate</p>
-                  <p className="text-[10px] font-mono mt-1 opacity-50">Multiple timeframes = better analysis</p>
+                  <p className="text-xs font-mono">Upload chart(s) to timeframe slots and convene the Senate</p>
+                  <p className="text-[10px] font-mono mt-1 opacity-50">Fill multiple slots for multi-timeframe confluence</p>
                 </div>
               </div>
             ) : (
@@ -473,34 +518,87 @@ export default function ForexSenate() {
             )}
           </ScrollArea>
 
-          {/* Follow-up input zone */}
+          {/* Follow-up input zone with requested timeframe slots */}
           {needsMoreInfo && !isAnalyzing && (
             <div className="border-t border-white/10 p-4 bg-[#0d0e14] space-y-3">
               <div className="flex items-center gap-2">
                 <MessageSquare className="h-3 w-3 text-violet-400" />
                 <span className="text-[10px] font-mono text-violet-400 uppercase font-bold">Chairman requests your input</span>
               </div>
-              {/* Follow-up image attachments */}
-              {followUpImages.length > 0 && (
-                <div className="flex gap-2 flex-wrap">
-                  {followUpImages.map((img, i) => (
-                    <div key={i} className="relative group">
-                      <img src={img} alt={`Follow-up ${i + 1}`} className="h-12 rounded border border-white/10 object-cover" />
-                      <button onClick={() => removeFollowUpImage(i)}
-                        className="absolute -top-1 -right-1 h-4 w-4 rounded-full bg-red-600 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-                        <X className="h-2.5 w-2.5 text-white" />
-                      </button>
-                    </div>
-                  ))}
+
+              {/* Requested timeframe slots */}
+              {requestedTimeframes.length > 0 && (
+                <div className="space-y-1.5">
+                  <span className="text-[9px] font-mono text-amber-400/60 uppercase">Requested timeframes:</span>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {requestedTimeframes.map(tfKey => {
+                      const tf = TIMEFRAME_SLOTS.find(t => t.key === tfKey);
+                      if (!tf) return null;
+                      const hasImg = !!followUpTfImages[tfKey];
+                      return (
+                        <div key={tfKey} className={`rounded border p-1.5 ${
+                          hasImg ? "border-emerald-700/50 bg-emerald-950/20" : "border-amber-700/40 bg-amber-950/20 animate-pulse"
+                        }`}>
+                          {hasImg ? (
+                            <div className="flex items-center gap-1.5">
+                              <img src={followUpTfImages[tfKey]} alt={tf.label} className="h-8 w-12 object-cover rounded" />
+                              <Badge className="bg-emerald-600/30 text-emerald-300 text-[8px] font-mono px-1 py-0">{tf.shortLabel} ✓</Badge>
+                              <button onClick={() => removeFollowUpSlotImage(tfKey)} className="ml-auto text-white/20 hover:text-red-400">
+                                <X className="h-2.5 w-2.5" />
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              onClick={() => followUpFileRefs.current[tfKey]?.click()}
+                              className="w-full flex items-center gap-1.5 group"
+                            >
+                              <div className="h-8 w-12 rounded border border-dashed border-amber-600/30 flex items-center justify-center">
+                                <Upload className="h-2.5 w-2.5 text-amber-500/40" />
+                              </div>
+                              <Badge variant="outline" className="border-amber-600/40 text-amber-400 text-[8px] font-mono px-1 py-0">{tf.shortLabel}</Badge>
+                            </button>
+                          )}
+                          <input
+                            ref={(el) => { followUpFileRefs.current[tfKey] = el; }}
+                            type="file" accept="image/*" className="hidden"
+                            onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFollowUpSlotFile(tfKey, f); e.target.value = ""; }}
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               )}
+
+              {/* Also allow any additional timeframe uploads */}
+              {TIMEFRAME_SLOTS.filter(tf => !requestedTimeframes.includes(tf.key) && !tfImages[tf.key] && !followUpTfImages[tf.key]).length > 0 && (
+                <details className="text-[9px] font-mono text-white/20">
+                  <summary className="cursor-pointer hover:text-white/40 transition-colors">+ Add other timeframes</summary>
+                  <div className="grid grid-cols-3 gap-1 mt-1.5">
+                    {TIMEFRAME_SLOTS.filter(tf => !requestedTimeframes.includes(tf.key) && !tfImages[tf.key] && !followUpTfImages[tf.key]).map(tf => (
+                      <div key={tf.key}>
+                        <button onClick={() => followUpFileRefs.current[`extra-${tf.key}`]?.click()}
+                          className={`w-full rounded border border-white/10 p-1.5 flex items-center gap-1 hover:border-cyan-500/30 transition-colors ${
+                            followUpTfImages[tf.key] ? "border-cyan-700/50 bg-cyan-950/20" : ""
+                          }`}>
+                          {followUpTfImages[tf.key] ? (
+                            <Badge className="bg-cyan-600/30 text-cyan-300 text-[8px] font-mono px-1 py-0">{tf.shortLabel} ✓</Badge>
+                          ) : (
+                            <span className="text-[9px] font-mono text-white/25">{tf.shortLabel}</span>
+                          )}
+                        </button>
+                        <input
+                          ref={(el) => { followUpFileRefs.current[`extra-${tf.key}`] = el; }}
+                          type="file" accept="image/*" className="hidden"
+                          onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFollowUpSlotFile(tf.key, f); e.target.value = ""; }}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              )}
+
               <div className="flex gap-2">
-                <Button variant="ghost" size="icon" className="text-white/30 hover:text-white shrink-0 h-9 w-9"
-                  onClick={() => followUpFileRef.current?.click()}>
-                  <Plus className="h-4 w-4" />
-                </Button>
-                <input ref={followUpFileRef} type="file" accept="image/*" multiple className="hidden"
-                  onChange={(e) => { if (e.target.files?.length) handleFollowUpFiles(e.target.files); e.target.value = ""; }} />
                 <Input
                   value={followUpText}
                   onChange={(e) => setFollowUpText(e.target.value)}
@@ -508,7 +606,8 @@ export default function ForexSenate() {
                   placeholder="Answer the Chairman's questions..."
                   className="bg-white/5 border-white/10 text-white text-xs font-mono placeholder:text-white/20"
                 />
-                <Button onClick={handleFollowUp} disabled={!followUpText.trim() && followUpImages.length === 0}
+                <Button onClick={handleFollowUp}
+                  disabled={!followUpText.trim() && Object.keys(followUpTfImages).length === 0}
                   className="bg-emerald-600 hover:bg-emerald-500 shrink-0 h-9 w-9 p-0">
                   <Send className="h-3.5 w-3.5" />
                 </Button>
@@ -558,7 +657,7 @@ export default function ForexSenate() {
                 </div>
               </div>
 
-              {/* Preliminary bias (when NEED_MORE_INFO) */}
+              {/* Preliminary bias */}
               {isNeedMore && verdict.preliminary_bias && verdict.preliminary_bias !== "—" && (
                 <div className="rounded-lg bg-violet-950/30 border border-violet-800/30 p-3">
                   <span className="text-[10px] text-violet-400/60 font-mono uppercase block mb-1">Preliminary Bias</span>
@@ -566,7 +665,7 @@ export default function ForexSenate() {
                 </div>
               )}
 
-              {/* Trade Parameters (only when not NEED_MORE_INFO) */}
+              {/* Trade Parameters */}
               {!isNeedMore && (
                 <Card className="bg-white/5 border-white/10">
                   <CardContent className="p-3 space-y-2">

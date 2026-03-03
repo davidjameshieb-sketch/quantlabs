@@ -136,6 +136,7 @@ Rules:
 
 interface RequestBody {
   images: string[];        // array of base64 data URIs
+  timeframeLabels?: string[]; // e.g. ["H4", "H1", "M15"]
   quantModel?: string;
   riskModel?: string;
   chairmanModel?: string;
@@ -143,6 +144,7 @@ interface RequestBody {
   isFollowUp?: boolean;
   followUpText?: string;
   followUpImages?: string[];
+  followUpTimeframeLabels?: string[];
   previousQuant?: string;
   previousRisk?: string;
   previousChairman?: string;
@@ -197,11 +199,17 @@ async function callAgent(
   return data.choices?.[0]?.message?.content ?? "No response from agent.";
 }
 
-function buildImageContent(images: string[]): Array<{ type: string; text?: string; image_url?: { url: string } }> {
+function buildImageContent(images: string[], labels?: string[]): Array<{ type: string; text?: string; image_url?: { url: string } }> {
   const content: Array<{ type: string; text?: string; image_url?: { url: string } }> = [];
   const count = images.length;
-  content.push({ type: "text", text: `Analyze ${count === 1 ? "this" : `these ${count}`} Forex chart screenshot${count > 1 ? "s" : ""} (${count > 1 ? "multiple timeframes provided — use ALL for confluence" : "single timeframe"}):` });
-  for (const img of images) {
+  const hasLabels = labels && labels.length === count;
+  const labelList = hasLabels ? labels!.join(", ") : `${count} chart(s)`;
+  content.push({ type: "text", text: `Analyze ${count === 1 ? "this" : `these ${count}`} Forex chart screenshot${count > 1 ? "s" : ""}. ${hasLabels ? `Timeframes provided: ${labelList}. Each image is labeled below.` : `${count > 1 ? "Multiple timeframes provided — use ALL for confluence." : "Single timeframe."}`}` });
+  for (let i = 0; i < images.length; i++) {
+    const img = images[i];
+    if (hasLabels) {
+      content.push({ type: "text", text: `--- ${labels![i]} chart ---` });
+    }
     const url = img.startsWith("data:") ? img : `data:image/png;base64,${img}`;
     content.push({ type: "image_url", image_url: { url } });
   }
@@ -255,10 +263,13 @@ ${body.previousChairman || "N/A"}
 --- TRADER'S RESPONSE TO YOUR QUESTIONS ---
 ${body.followUpText || "No text response provided."}
 
-${(body.followUpImages?.length || 0) > 0 ? `The trader has also provided ${body.followUpImages!.length} additional chart(s):` : "No additional charts provided."}` });
+${(body.followUpImages?.length || 0) > 0 ? `The trader has also provided ${body.followUpImages!.length} additional chart(s)${body.followUpTimeframeLabels?.length ? ` (timeframes: ${body.followUpTimeframeLabels.join(", ")})` : ""}:` : "No additional charts provided."}` });
 
       if (body.followUpImages?.length) {
-        for (const img of body.followUpImages) {
+        const fuLabels = body.followUpTimeframeLabels || [];
+        for (let i = 0; i < body.followUpImages.length; i++) {
+          const img = body.followUpImages[i];
+          if (fuLabels[i]) followUpContent.push({ type: "text", text: `--- ${fuLabels[i]} chart ---` });
           const url = img.startsWith("data:") ? img : `data:image/png;base64,${img}`;
           followUpContent.push({ type: "image_url", image_url: { url } });
         }
@@ -278,15 +289,17 @@ ${(body.followUpImages?.length || 0) > 0 ? `The trader has also provided ${body.
 
     // ── INITIAL ANALYSIS FLOW ──
     const images = body.images || [];
+    const labels = body.timeframeLabels || [];
     if (images.length === 0) return ERR.bad("At least one image is required");
-    if (images.length > 5) return ERR.bad("Maximum 5 images allowed");
+    if (images.length > 7) return ERR.bad("Maximum 7 images allowed");
 
     const totalSize = images.reduce((s, img) => s + img.length, 0);
     if (totalSize > 50_000_000) return ERR.bad("Total image data too large (max ~35MB)");
 
-    console.log(`[SENATE] Starting analysis with ${images.length} image(s). Quant=${qModel}, Risk=${rModel}, Chairman=${cModel}`);
+    const labelInfo = labels.length > 0 ? ` Timeframes: ${labels.join(", ")}` : "";
+    console.log(`[SENATE] Starting analysis with ${images.length} image(s).${labelInfo} Quant=${qModel}, Risk=${rModel}, Chairman=${cModel}`);
 
-    const imageContent = buildImageContent(images);
+    const imageContent = buildImageContent(images, labels.length > 0 ? labels : undefined);
 
     const [quantResult, riskResult] = await Promise.all([
       callAgent(LOVABLE_API_KEY, QUANT_PROMPT, imageContent, qModel),
@@ -304,10 +317,11 @@ ${quantResult}
 --- THE RISK MANAGER'S ANALYSIS ---
 ${riskResult}
 
-Now review the original chart(s):` },
+Now review the original chart(s)${labels.length > 0 ? ` (timeframes: ${labels.join(", ")})` : ""}:` },
     ];
-    for (const img of images) {
-      const url = img.startsWith("data:") ? img : `data:image/png;base64,${img}`;
+    for (let i = 0; i < images.length; i++) {
+      if (labels[i]) chairmanInput.push({ type: "text", text: `--- ${labels[i]} chart ---` });
+      const url = images[i].startsWith("data:") ? images[i] : `data:image/png;base64,${images[i]}`;
       chairmanInput.push({ type: "image_url", image_url: { url } });
     }
 
