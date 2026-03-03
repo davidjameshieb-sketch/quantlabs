@@ -125,7 +125,9 @@ function summarizeCandles(candles: CandleData[], count = 10): string {
   }).join("\n");
 }
 
-async function buildOandaContext(pair: string): Promise<{ context: string; livePrice: { bid: number; ask: number; spread: number } | null }> {
+const MAJOR_PAIRS = ["EUR_USD", "GBP_USD", "USD_JPY", "USD_CHF", "AUD_USD", "NZD_USD", "USD_CAD", "EUR_GBP"];
+
+async function buildOandaContext(pair: string, includeHigherTF = true): Promise<{ context: string; livePrice: { bid: number; ask: number; spread: number } | null }> {
   const { apiToken, accountId, host } = getOandaCredentials();
   if (!apiToken || !accountId) {
     console.warn("[SENATE-OANDA] No OANDA credentials configured");
@@ -133,20 +135,42 @@ async function buildOandaContext(pair: string): Promise<{ context: string; liveP
   }
 
   const instrument = pair.replace("/", "_");
-  const correlatedPairs = (CORRELATION_MAP[instrument] || []).filter(p => p !== "DXY"); // skip DXY - not available on OANDA
+  const correlatedPairs = (CORRELATION_MAP[instrument] || []).filter(p => p !== "DXY");
 
-  console.log(`[SENATE-OANDA] Fetching data for ${instrument} + correlated: ${correlatedPairs.join(", ")}`);
+  console.log(`[SENATE-OANDA] Fetching data for ${instrument} (higher TF: ${includeHigherTF})`);
 
-  // Fetch primary pair data across timeframes + live price
-  const [h4Candles, h1Candles, m15Candles, m5Candles, livePrice] = await Promise.all([
-    fetchCandles(host, accountId, apiToken, instrument, "H4", 30),
-    fetchCandles(host, accountId, apiToken, instrument, "H1", 50),
-    fetchCandles(host, accountId, apiToken, instrument, "M15", 40),
-    fetchCandles(host, accountId, apiToken, instrument, "M5", 40),
-    fetchLivePrice(host, accountId, apiToken, instrument),
+  // Fetch all timeframes in parallel
+  const fetches: Promise<CandleData[]>[] = [];
+  const fetchLabels: string[] = [];
+
+  if (includeHigherTF) {
+    fetches.push(fetchCandles(host, accountId, apiToken, instrument, "M", 6));
+    fetchLabels.push("MN");
+    fetches.push(fetchCandles(host, accountId, apiToken, instrument, "W", 12));
+    fetchLabels.push("W");
+    fetches.push(fetchCandles(host, accountId, apiToken, instrument, "D", 20));
+    fetchLabels.push("D");
+  }
+
+  fetches.push(fetchCandles(host, accountId, apiToken, instrument, "H4", 30));
+  fetchLabels.push("H4");
+  fetches.push(fetchCandles(host, accountId, apiToken, instrument, "H1", 50));
+  fetchLabels.push("H1");
+  fetches.push(fetchCandles(host, accountId, apiToken, instrument, "M15", 40));
+  fetchLabels.push("M15");
+  fetches.push(fetchCandles(host, accountId, apiToken, instrument, "M5", 40));
+  fetchLabels.push("M5");
+
+  const livePriceFetch = fetchLivePrice(host, accountId, apiToken, instrument);
+  const [candleResults, livePrice] = await Promise.all([
+    Promise.all(fetches),
+    livePriceFetch,
   ]);
 
-  // Fetch correlated pairs (just H1 for context)
+  const candleMap: Record<string, CandleData[]> = {};
+  fetchLabels.forEach((label, i) => { candleMap[label] = candleResults[i]; });
+
+  // Fetch correlated pairs
   const correlatedData: Record<string, { candles: CandleData[]; price: { bid: number; ask: number; spread: number } | null }> = {};
   await Promise.all(
     correlatedPairs.map(async (cp) => {
@@ -158,52 +182,38 @@ async function buildOandaContext(pair: string): Promise<{ context: string; liveP
     })
   );
 
-  // Build context string
   const isJpy = instrument.includes("JPY");
   const pipFactor = isJpy ? 100 : 10000;
-  const h4ATR = computeATR(h4Candles);
-  const h1ATR = computeATR(h1Candles);
-  const m15ATR = computeATR(m15Candles);
 
   let ctx = `\n\n═══ LIVE OANDA MARKET DATA ═══\n`;
-  ctx += `Pair: ${pair}\n`;
+  ctx += `Pair: ${pair.replace("_", "/")}\n`;
   if (livePrice) {
     ctx += `Live Bid: ${livePrice.bid} | Ask: ${livePrice.ask} | Spread: ${livePrice.spread} pips\n`;
   }
+
+  // ATR section
   ctx += `\n── ATR (Average True Range) ──\n`;
-  ctx += `H4 ATR(14): ${(h4ATR * pipFactor).toFixed(1)} pips\n`;
-  ctx += `H1 ATR(14): ${(h1ATR * pipFactor).toFixed(1)} pips\n`;
-  ctx += `M15 ATR(14): ${(m15ATR * pipFactor).toFixed(1)} pips\n`;
-
-  // H4 summary
-  if (h4Candles.length > 0) {
-    const h4Last = h4Candles[h4Candles.length - 1];
-    const h4First = h4Candles[0];
-    const h4Range = ((Math.max(...h4Candles.map(c => c.high)) - Math.min(...h4Candles.map(c => c.low))) * pipFactor).toFixed(1);
-    ctx += `\n── H4 (${h4Candles.length} candles) ──\n`;
-    ctx += `Range: ${h4Range} pips | Recent trend: ${h4Last.close > h4First.close ? "BULLISH" : "BEARISH"}\n`;
-    ctx += `Recent H4 candles:\n${summarizeCandles(h4Candles, 8)}\n`;
+  for (const tf of ["D", "H4", "H1", "M15"]) {
+    if (candleMap[tf]?.length > 14) {
+      const atr = computeATR(candleMap[tf]);
+      ctx += `${tf} ATR(14): ${(atr * pipFactor).toFixed(1)} pips\n`;
+    }
   }
 
-  // H1 summary
-  if (h1Candles.length > 0) {
-    const h1Last = h1Candles[h1Candles.length - 1];
-    const h1First = h1Candles[Math.max(0, h1Candles.length - 20)];
-    ctx += `\n── H1 (${h1Candles.length} candles) ──\n`;
-    ctx += `Recent 20-bar trend: ${h1Last.close > h1First.close ? "BULLISH" : "BEARISH"}\n`;
-    ctx += `Recent H1 candles:\n${summarizeCandles(h1Candles, 10)}\n`;
-  }
+  // Candle summaries for each timeframe
+  const tfOrder = includeHigherTF ? ["MN", "W", "D", "H4", "H1", "M15", "M5"] : ["H4", "H1", "M15", "M5"];
+  const tfCandleCount: Record<string, number> = { MN: 6, W: 8, D: 10, H4: 8, H1: 10, M15: 8, M5: 8 };
 
-  // M15 summary
-  if (m15Candles.length > 0) {
-    ctx += `\n── M15 (${m15Candles.length} candles) ──\n`;
-    ctx += `Recent M15 candles:\n${summarizeCandles(m15Candles, 8)}\n`;
-  }
-
-  // M5 summary
-  if (m5Candles.length > 0) {
-    ctx += `\n── M5 (${m5Candles.length} candles) ──\n`;
-    ctx += `Recent M5 candles:\n${summarizeCandles(m5Candles, 8)}\n`;
+  for (const tf of tfOrder) {
+    const candles = candleMap[tf];
+    if (!candles || candles.length === 0) continue;
+    const last = candles[candles.length - 1];
+    const first = candles[0];
+    const range = ((Math.max(...candles.map(c => c.high)) - Math.min(...candles.map(c => c.low))) * pipFactor).toFixed(1);
+    const trend = last.close > first.close ? "BULLISH" : "BEARISH";
+    ctx += `\n── ${tf} (${candles.length} candles) ──\n`;
+    ctx += `Range: ${range} pips | Trend: ${trend}\n`;
+    ctx += `Recent ${tf} candles:\n${summarizeCandles(candles, tfCandleCount[tf] || 8)}\n`;
   }
 
   // Correlated pairs
@@ -226,6 +236,89 @@ async function buildOandaContext(pair: string): Promise<{ context: string; liveP
   ctx += `═══ END OANDA DATA ═══\n`;
   return { context: ctx, livePrice };
 }
+
+// Lightweight scan data for one pair (MN/W/D/H4/H1 summary only)
+async function buildScanContext(instrument: string, host: string, accountId: string, apiToken: string): Promise<string> {
+  const isJpy = instrument.includes("JPY");
+  const pipFactor = isJpy ? 100 : 10000;
+
+  const [mnCandles, wCandles, dCandles, h4Candles, h1Candles, livePrice] = await Promise.all([
+    fetchCandles(host, accountId, apiToken, instrument, "M", 6),
+    fetchCandles(host, accountId, apiToken, instrument, "W", 12),
+    fetchCandles(host, accountId, apiToken, instrument, "D", 20),
+    fetchCandles(host, accountId, apiToken, instrument, "H4", 15),
+    fetchCandles(host, accountId, apiToken, instrument, "H1", 20),
+    fetchLivePrice(host, accountId, apiToken, instrument),
+  ]);
+
+  const pair = instrument.replace("_", "/");
+  let ctx = `\n── ${pair} ──\n`;
+  if (livePrice) ctx += `Price: ${livePrice.bid}/${livePrice.ask} | Spread: ${livePrice.spread}p\n`;
+
+  for (const [label, candles] of [["MN", mnCandles], ["W", wCandles], ["D", dCandles], ["H4", h4Candles], ["H1", h1Candles]] as [string, CandleData[]][]) {
+    if (candles.length < 2) continue;
+    const last = candles[candles.length - 1];
+    const first = candles[0];
+    const hi = Math.max(...candles.map(c => c.high));
+    const lo = Math.min(...candles.map(c => c.low));
+    const range = ((hi - lo) * pipFactor).toFixed(0);
+    const trend = last.close > first.close ? "BULL" : "BEAR";
+    const body = Math.abs(last.close - last.open);
+    const wick = last.high - last.low;
+    const conviction = wick > 0 ? (body / wick * 100).toFixed(0) : "0";
+    ctx += `${label}: ${trend} | Range ${range}p | Last candle body ${conviction}% | Hi ${hi.toFixed(isJpy ? 3 : 5)} Lo ${lo.toFixed(isJpy ? 3 : 5)}\n`;
+  }
+
+  // D ATR
+  if (dCandles.length > 14) {
+    const dATR = computeATR(dCandles);
+    ctx += `D-ATR(14): ${(dATR * pipFactor).toFixed(1)}p\n`;
+  }
+
+  return ctx;
+}
+
+const SCANNER_PROMPT = `You are the **Market Scanner** for the AI Trading Senate — a composite intelligence representing Goldman Sachs, Morgan Stanley, and BlackRock Alpha.
+
+You are scanning ALL 8 major forex pairs simultaneously using Monthly, Weekly, Daily, H4, and H1 data from OANDA.
+
+YOUR MISSION: Rank the pairs by trade opportunity quality. Identify which pairs have the CLEAREST setups right now.
+
+SCANNING CRITERIA:
+1. **Multi-TF Alignment**: Do MN/W/D/H4/H1 all point the same direction? Full alignment = high score.
+2. **Structure Clarity**: Is there a clean break of structure, order block, or FVG on the Daily/H4?
+3. **Trend Strength**: Strong displacement candles with high body-to-wick ratio = conviction.
+4. **Key Level Proximity**: Is price near a major MN/W/D support/resistance level?
+5. **Volatility Context**: Is D-ATR expanding or contracting? Expanding = opportunity.
+6. **Spread Efficiency**: Is the spread reasonable relative to the expected move?
+
+OUTPUT FORMAT (use EXACTLY this JSON structure):
+\`\`\`json
+{
+  "opportunities": [
+    {
+      "pair": "EUR/USD",
+      "score": 8.5,
+      "direction": "SHORT",
+      "reasoning": "MN/W/D all bearish. H4 just broke structure. Clean FVG at 1.0850. D-ATR expanding.",
+      "key_level": "1.0850",
+      "timeframe_alignment": "5/5",
+      "next_step": "Need H1/M15/M5 chart screenshots to confirm entry timing"
+    }
+  ],
+  "market_regime": "USD strength cycle — risk-off flows dominating",
+  "best_pair": "EUR/USD",
+  "scan_summary": "3 pairs show actionable setups. EUR/USD and GBP/USD are highest conviction."
+}
+\`\`\`
+
+Rules:
+- Score each pair 1-10
+- Only include pairs scoring 6+ in opportunities array
+- Sort by score descending (best first)
+- Be SPECIFIC about levels and structure
+- "next_step" should always request lower TF data for top opportunities
+- If NO pairs score 6+, say so — "No clear opportunities right now. Market is choppy/unclear."`;
 
 // ── Persona System Prompts ──
 
