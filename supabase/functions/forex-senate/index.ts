@@ -589,6 +589,7 @@ ${oandaContext ? `--- LIVE OANDA MARKET DATA ---\n${oandaContext}\n` : ""}Now re
 
     const verdict = parseVerdict(chairmanResult);
     const needsMore = chairmanResult.includes("**VERDICT**: NEED_MORE_INFO") || chairmanResult.includes("NEED_MORE_INFO");
+    const agreement = computeAgreement(quantResult, riskResult, chairmanResult);
 
     return new Response(JSON.stringify({
       quant: quantResult,
@@ -597,6 +598,7 @@ ${oandaContext ? `--- LIVE OANDA MARKET DATA ---\n${oandaContext}\n` : ""}Now re
       verdict,
       needsMoreInfo: needsMore,
       livePrice,
+      agreement,
     }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
   } catch (error) {
@@ -618,4 +620,52 @@ function parseVerdict(text: string): Record<string, string> {
     result[field.toLowerCase().replace(/[: ]/g, "_")] = match?.[1]?.trim() ?? "—";
   }
   return result;
+}
+
+function extractDirectionVote(text: string): "LONG" | "SHORT" | "STAY_OUT" {
+  const lower = text.toLowerCase();
+  // Look for explicit verdict/bias keywords
+  const buySignals = ["buy", "long", "bullish bias", "bullish setup", "bullish reversal", "upside", "go long"];
+  const sellSignals = ["sell", "short", "bearish bias", "bearish setup", "bearish reversal", "downside", "go short"];
+  const stayOutSignals = ["no trade", "stay out", "avoid", "extreme risk", "risk rating: extreme", "not recommended", "wait for"];
+
+  let buyScore = 0, sellScore = 0, stayOutScore = 0;
+  for (const s of stayOutSignals) if (lower.includes(s)) stayOutScore += 3;
+  for (const s of buySignals) if (lower.includes(s)) buyScore += 1;
+  for (const s of sellSignals) if (lower.includes(s)) sellScore += 1;
+
+  if (stayOutScore >= 3) return "STAY_OUT";
+  if (buyScore > sellScore && buyScore > 0) return "LONG";
+  if (sellScore > buyScore && sellScore > 0) return "SHORT";
+  return "STAY_OUT";
+}
+
+function computeAgreement(
+  quantText: string,
+  riskText: string,
+  chairmanText: string
+): { long_pct: number; short_pct: number; stay_out_pct: number; consensus: string } {
+  const votes = [
+    extractDirectionVote(quantText),
+    extractDirectionVote(riskText),
+    extractDirectionVote(chairmanText),
+  ];
+
+  const counts = { LONG: 0, SHORT: 0, STAY_OUT: 0 };
+  for (const v of votes) counts[v]++;
+
+  const total = 3;
+  const long_pct = Math.round((counts.LONG / total) * 100);
+  const short_pct = Math.round((counts.SHORT / total) * 100);
+  const stay_out_pct = Math.round((counts.STAY_OUT / total) * 100);
+
+  let consensus = "SPLIT";
+  if (counts.LONG === 3) consensus = "UNANIMOUS LONG";
+  else if (counts.SHORT === 3) consensus = "UNANIMOUS SHORT";
+  else if (counts.STAY_OUT === 3) consensus = "UNANIMOUS STAY OUT";
+  else if (counts.LONG === 2) consensus = "MAJORITY LONG";
+  else if (counts.SHORT === 2) consensus = "MAJORITY SHORT";
+  else if (counts.STAY_OUT === 2) consensus = "MAJORITY STAY OUT";
+
+  return { long_pct, short_pct, stay_out_pct, consensus };
 }

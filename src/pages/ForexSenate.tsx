@@ -68,6 +68,13 @@ interface SenateMessage {
   images?: string[];
 }
 
+interface Agreement {
+  long_pct: number;
+  short_pct: number;
+  stay_out_pct: number;
+  consensus: string;
+}
+
 interface Verdict {
   verdict?: string;
   pair?: string;
@@ -98,6 +105,7 @@ export default function ForexSenate() {
   const [tfImages, setTfImages] = useState<Record<string, string>>({});
   const [messages, setMessages] = useState<SenateMessage[]>([]);
   const [verdict, setVerdict] = useState<Verdict | null>(null);
+  const [agreement, setAgreement] = useState<Agreement | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [phase, setPhase] = useState("");
   const [quantModel, setQuantModel] = useState("google/gemini-2.5-pro");
@@ -208,6 +216,7 @@ export default function ForexSenate() {
     setIsAnalyzing(true);
     setMessages([]);
     setVerdict(null);
+    setAgreement(null);
     setNeedsMoreInfo(false);
     setFollowUpRound(1);
     setRequestedTimeframes([]);
@@ -253,6 +262,7 @@ export default function ForexSenate() {
 
       addMessage("chairman", result.chairman);
       setVerdict(result.verdict);
+      if (result.agreement) setAgreement(result.agreement);
       setPreviousQuant(result.quant);
       setPreviousRisk(result.riskManager);
       setPreviousChairman(result.chairman);
@@ -591,7 +601,7 @@ export default function ForexSenate() {
 
           {filledCount > 0 && !isAnalyzing && (
             <Button variant="ghost" size="sm" className="text-white/30 text-[10px] font-mono hover:text-white/60"
-              onClick={() => { setTfImages({}); setMessages([]); setVerdict(null); setNeedsMoreInfo(false); setFollowUpText(""); setFollowUpTfImages({}); setRequestedTimeframes([]); setSelectedPair(""); setLivePrice(null); }}>
+              onClick={() => { setTfImages({}); setMessages([]); setVerdict(null); setAgreement(null); setNeedsMoreInfo(false); setFollowUpText(""); setFollowUpTfImages({}); setRequestedTimeframes([]); setSelectedPair(""); setLivePrice(null); }}>
               Clear all
             </Button>
           )}
@@ -752,55 +762,97 @@ export default function ForexSenate() {
         <div className="p-4 flex flex-col gap-4 bg-[#0d0e14] overflow-y-auto">
           <h2 className="text-xs font-mono font-bold text-white/60 uppercase tracking-wider">Verdict</h2>
 
-          {verdict ? (
+          {/* Agreement Meter - THE HERO */}
+          {agreement ? (
             <div className="space-y-4">
-              {/* Direction badge */}
+              {/* Consensus Badge */}
               <div className={`rounded-lg p-4 text-center border ${
-                isNeedMore ? "bg-violet-950/50 border-violet-700/50" :
-                isBuy ? "bg-emerald-950/50 border-emerald-700/50" :
-                isSell ? "bg-red-950/50 border-red-700/50" :
+                agreement.consensus.includes("LONG") ? "bg-emerald-950/50 border-emerald-700/50" :
+                agreement.consensus.includes("SHORT") ? "bg-red-950/50 border-red-700/50" :
+                agreement.consensus.includes("STAY OUT") ? "bg-amber-950/50 border-amber-700/50" :
                 "bg-zinc-900/50 border-zinc-700/50"
               }`}>
-                <div className="flex items-center justify-center gap-2 mb-1">
-                  {isNeedMore ? <MessageSquare className="h-5 w-5 text-violet-400" /> :
-                   isBuy ? <TrendingUp className="h-5 w-5 text-emerald-400" /> :
-                   isSell ? <TrendingDown className="h-5 w-5 text-red-400" /> :
-                   <MinusCircle className="h-5 w-5 text-zinc-400" />}
-                  <span className={`text-xl font-mono font-black tracking-wider ${
-                    isNeedMore ? "text-violet-400" : isBuy ? "text-emerald-400" : isSell ? "text-red-400" : "text-zinc-400"
-                  }`}>
-                    {isNeedMore ? "MORE INFO" : verdict.verdict || "—"}
-                  </span>
+                <span className={`text-lg font-mono font-black tracking-wider ${
+                  agreement.consensus.includes("LONG") ? "text-emerald-400" :
+                  agreement.consensus.includes("SHORT") ? "text-red-400" :
+                  agreement.consensus.includes("STAY OUT") ? "text-amber-400" :
+                  "text-zinc-400"
+                }`}>
+                  {agreement.consensus}
+                </span>
+                {verdict?.pair && verdict.pair !== "—" && (
+                  <p className="text-[10px] text-white/30 font-mono mt-1">{verdict.pair}</p>
+                )}
+              </div>
+
+              {/* Three bars: LONG / SHORT / STAY OUT */}
+              <div className="space-y-3">
+                {/* LONG */}
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-mono font-bold text-emerald-400 flex items-center gap-1.5">
+                      <TrendingUp className="h-3 w-3" /> LONG
+                    </span>
+                    <span className="text-sm font-mono font-black text-emerald-400">{agreement.long_pct}%</span>
+                  </div>
+                  <div className="h-3 bg-white/5 rounded-full overflow-hidden border border-white/5">
+                    <div className="h-full rounded-full bg-gradient-to-r from-emerald-600 to-emerald-400 transition-all duration-1000"
+                      style={{ width: `${agreement.long_pct}%` }} />
+                  </div>
                 </div>
-                <p className="text-[10px] text-white/30 font-mono">{verdict.pair || "—"} · {verdict.timeframe || "—"}</p>
+
+                {/* SHORT */}
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-mono font-bold text-red-400 flex items-center gap-1.5">
+                      <TrendingDown className="h-3 w-3" /> SHORT
+                    </span>
+                    <span className="text-sm font-mono font-black text-red-400">{agreement.short_pct}%</span>
+                  </div>
+                  <div className="h-3 bg-white/5 rounded-full overflow-hidden border border-white/5">
+                    <div className="h-full rounded-full bg-gradient-to-r from-red-600 to-red-400 transition-all duration-1000"
+                      style={{ width: `${agreement.short_pct}%` }} />
+                  </div>
+                </div>
+
+                {/* STAY OUT */}
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-mono font-bold text-amber-400 flex items-center gap-1.5">
+                      <MinusCircle className="h-3 w-3" /> STAY OUT
+                    </span>
+                    <span className="text-sm font-mono font-black text-amber-400">{agreement.stay_out_pct}%</span>
+                  </div>
+                  <div className="h-3 bg-white/5 rounded-full overflow-hidden border border-white/5">
+                    <div className="h-full rounded-full bg-gradient-to-r from-amber-600 to-amber-400 transition-all duration-1000"
+                      style={{ width: `${agreement.stay_out_pct}%` }} />
+                  </div>
+                </div>
               </div>
 
               {/* Confidence */}
-              <div className="rounded-lg bg-white/5 border border-white/10 p-3">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-[10px] text-white/40 font-mono uppercase">Confidence</span>
-                  <span className="text-sm font-mono font-bold text-white">{verdict.confidence || "—"}</span>
-                </div>
-                <div className="h-1.5 bg-white/10 rounded-full overflow-hidden">
-                  <div className={`h-full rounded-full transition-all duration-1000 ${
-                    parseInt(verdict.confidence || "0") > 70 ? "bg-emerald-500" :
-                    parseInt(verdict.confidence || "0") > 40 ? "bg-amber-500" : "bg-red-500"
-                  }`} style={{ width: `${parseInt(verdict.confidence || "0")}%` }} />
-                </div>
-              </div>
-
-              {/* Preliminary bias */}
-              {isNeedMore && verdict.preliminary_bias && verdict.preliminary_bias !== "—" && (
-                <div className="rounded-lg bg-violet-950/30 border border-violet-800/30 p-3">
-                  <span className="text-[10px] text-violet-400/60 font-mono uppercase block mb-1">Preliminary Bias</span>
-                  <p className="text-xs font-mono text-violet-300/70 leading-relaxed">{verdict.preliminary_bias}</p>
+              {verdict && verdict.confidence && verdict.confidence !== "—" && (
+                <div className="rounded-lg bg-white/5 border border-white/10 p-3">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-[10px] text-white/40 font-mono uppercase">Chairman Confidence</span>
+                    <span className="text-sm font-mono font-bold text-white">{verdict.confidence}</span>
+                  </div>
+                  <div className="h-1.5 bg-white/10 rounded-full overflow-hidden">
+                    <div className={`h-full rounded-full transition-all duration-1000 ${
+                      parseInt(verdict.confidence || "0") > 70 ? "bg-emerald-500" :
+                      parseInt(verdict.confidence || "0") > 40 ? "bg-amber-500" : "bg-red-500"
+                    }`} style={{ width: `${parseInt(verdict.confidence || "0")}%` }} />
+                  </div>
                 </div>
               )}
 
-              {/* Trade Parameters */}
-              {!isNeedMore && (
-                <Card className="bg-white/5 border-white/10">
-                  <CardContent className="p-3 space-y-2">
+              {/* Trade Parameters (collapsed) */}
+              {verdict && !isNeedMore && (
+                <details className="rounded-lg bg-white/5 border border-white/10">
+                  <summary className="p-3 text-[10px] text-white/40 font-mono uppercase cursor-pointer hover:text-white/60 transition-colors">
+                    Trade Parameters
+                  </summary>
+                  <div className="px-3 pb-3 space-y-2">
                     {[
                       { label: "Entry", value: verdict.entry, icon: Target },
                       { label: "Stop Loss", value: verdict.stop_loss, icon: AlertTriangle },
@@ -812,23 +864,15 @@ export default function ForexSenate() {
                         <span className="text-xs font-mono font-bold text-white">{value || "—"}</span>
                       </div>
                     ))}
-                  </CardContent>
-                </Card>
+                  </div>
+                </details>
               )}
 
               {/* Rationale */}
-              {!isNeedMore && verdict.rationale && verdict.rationale !== "—" && (
+              {verdict && !isNeedMore && verdict.rationale && verdict.rationale !== "—" && (
                 <div className="rounded-lg bg-white/5 border border-white/10 p-3">
                   <span className="text-[10px] text-white/40 font-mono uppercase block mb-1">Rationale</span>
                   <p className="text-xs font-mono text-white/60 leading-relaxed">{verdict.rationale}</p>
-                </div>
-              )}
-
-              {/* Dissent */}
-              {!isNeedMore && verdict.dissent && verdict.dissent !== "—" && (
-                <div className="rounded-lg bg-amber-950/30 border border-amber-800/30 p-3">
-                  <span className="text-[10px] text-amber-400/60 font-mono uppercase block mb-1">⚠ Dissent</span>
-                  <p className="text-xs font-mono text-amber-300/60 leading-relaxed">{verdict.dissent}</p>
                 </div>
               )}
             </div>
