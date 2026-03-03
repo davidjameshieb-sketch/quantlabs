@@ -103,6 +103,7 @@ export default function ForexSenate() {
   const [selectedPair, setSelectedPair] = useState<string>("");
   const [livePrice, setLivePrice] = useState<{ bid: number; ask: number; spread: number } | null>(null);
   const [tfImages, setTfImages] = useState<Record<string, string>>({});
+  const [fetchedTimeframes, setFetchedTimeframes] = useState<Record<string, { status: "fetched" | "fetching"; bars?: number; atr?: string }>>({});
   const [messages, setMessages] = useState<SenateMessage[]>([]);
   const [verdict, setVerdict] = useState<Verdict | null>(null);
   const [agreement, setAgreement] = useState<Agreement | null>(null);
@@ -235,7 +236,7 @@ export default function ForexSenate() {
   };
 
   const handleAnalyze = useCallback(async () => {
-    if (filledCount === 0 && !selectedPair) return;
+    if (!selectedPair) return;
     const session = await getSession();
     if (!session) return;
 
@@ -247,6 +248,13 @@ export default function ForexSenate() {
     setFollowUpRound(1);
     setRequestedTimeframes([]);
     setExecutionResult(null);
+
+    // Mark all timeframes as fetching
+    if (selectedPair) {
+      const fetching: Record<string, { status: "fetching" | "fetched" }> = {};
+      ["MN", "W1", "D1", "H4", "H1", "M15", "M5"].forEach(tf => { fetching[tf] = { status: "fetching" }; });
+      setFetchedTimeframes(fetching);
+    }
 
     const labeledImages = buildLabeledImages(tfImages);
     const tfList = labeledImages.map(l => l.timeframe).join(", ");
@@ -280,6 +288,14 @@ export default function ForexSenate() {
 
       const result = await response.json();
       if (result.livePrice) setLivePrice(result.livePrice);
+
+      // Mark all timeframes as fetched
+      if (selectedPair) {
+        const fetched: Record<string, { status: "fetched" | "fetching"; bars?: number }> = {};
+        const barCounts: Record<string, number> = { MN: 12, W1: 24, D1: 60, H4: 30, H1: 50, M15: 40, M5: 40 };
+        Object.entries(barCounts).forEach(([tf, bars]) => { fetched[tf] = { status: "fetched", bars }; });
+        setFetchedTimeframes(fetched);
+      }
       addMessage("quant", result.quant);
       await new Promise(r => setTimeout(r, 400));
       addMessage("risk", result.riskManager);
@@ -314,7 +330,7 @@ export default function ForexSenate() {
     } finally {
       setIsAnalyzing(false);
     }
-  }, [tfImages, filledCount, selectedPair, quantModel, riskModel, chairmanModel, addMessage, toast]);
+  }, [tfImages, selectedPair, quantModel, riskModel, chairmanModel, addMessage, toast]);
 
   const handleFollowUp = useCallback(async () => {
     if (!followUpText.trim() && Object.keys(followUpTfImages).length === 0) return;
@@ -658,55 +674,36 @@ export default function ForexSenate() {
       {/* Main Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-[360px_1fr_320px] gap-0 h-[calc(100vh-57px)]">
 
-        {/* Left: Timeframe Slots */}
+        {/* Left: Data Feed Panel */}
         <div className="border-r border-white/10 p-4 flex flex-col gap-3 bg-[#0d0e14] overflow-y-auto">
           <div className="flex items-center justify-between">
             <h2 className="text-xs font-mono font-bold text-white/60 uppercase tracking-wider flex items-center gap-1.5">
-              <Clock className="h-3 w-3" /> Timeframe Slots
+              <Wifi className="h-3 w-3" /> Data Feed
             </h2>
-            <Badge variant="outline" className="text-[10px] font-mono border-white/10 text-white/30">
-              {filledCount}/{TIMEFRAME_SLOTS.length}
-            </Badge>
+            {selectedPair && (
+              <Badge variant="outline" className="text-[10px] font-mono border-emerald-700/40 text-emerald-400">
+                <Radio className="h-2 w-2 mr-1 animate-pulse" /> LIVE
+              </Badge>
+            )}
           </div>
 
-          {/* Pair Selector with OANDA Link */}
+          {/* Pair Selector */}
           <div className="rounded-lg border border-white/10 bg-white/[0.02] p-3 space-y-2">
             <div className="flex items-center gap-1.5">
               <Wifi className={`h-3 w-3 ${selectedPair ? "text-emerald-400" : "text-white/20"}`} />
               <span className="text-[10px] font-mono text-white/40 uppercase tracking-wider">OANDA Live Feed</span>
-              {selectedPair && livePrice && (
-                <Badge className="ml-auto bg-emerald-600/20 text-emerald-400 border-emerald-700/50 text-[8px] font-mono px-1.5 py-0">
-                  <Radio className="h-2 w-2 mr-1 animate-pulse" /> LIVE
-                </Badge>
-              )}
             </div>
-            <Select value={selectedPair || "none"} onValueChange={(v) => { setSelectedPair(v === "none" ? "" : v); setLivePrice(null); }}>
+            <Select value={selectedPair || "none"} onValueChange={(v) => { setSelectedPair(v === "none" ? "" : v); setLivePrice(null); setFetchedTimeframes({}); }}>
               <SelectTrigger className="bg-white/5 border-white/10 text-white text-xs font-mono h-8">
-                <SelectValue placeholder="Select pair (optional)" />
+                <SelectValue placeholder="Select pair" />
               </SelectTrigger>
               <SelectContent className="bg-[#1a1b23] border-white/10 max-h-[300px]">
-                <SelectItem value="none" className="text-white/40 text-xs font-mono">No pair (screenshot only)</SelectItem>
+                <SelectItem value="none" className="text-white/40 text-xs font-mono">No pair selected</SelectItem>
                 {FOREX_PAIRS.map(p => (
                   <SelectItem key={p} value={p} className="text-white text-xs font-mono">{p}</SelectItem>
                 ))}
               </SelectContent>
             </Select>
-            {selectedPair && selectedPair !== "none" && (
-              <>
-                <p className="text-[9px] text-emerald-400/50 font-mono">
-                  📡 Live candles, spread, ATR & correlated pairs will be injected into analysis
-                </p>
-                {filledCount === 0 && (
-                  <Button
-                    onClick={handleAnalyze}
-                    disabled={isAnalyzing}
-                    className="w-full bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 text-white font-mono text-[11px] tracking-wider h-9"
-                  >
-                    {isAnalyzing ? <><Loader2 className="h-3 w-3 mr-2 animate-spin" /> Analyzing...</> : <><Wifi className="h-3 w-3 mr-2" /> Quick Analyze (Data Only)</>}
-                  </Button>
-                )}
-              </>
-            )}
             {livePrice && (
               <div className="grid grid-cols-3 gap-1.5 text-center">
                 <div className="rounded bg-white/5 p-1.5">
@@ -725,76 +722,73 @@ export default function ForexSenate() {
             )}
           </div>
 
-          <p className="text-[10px] text-white/25 font-mono">Upload charts per timeframe. More = better analysis.</p>
-
-          {/* Timeframe slot grid */}
-          <div className="space-y-2">
+          {/* Auto-fill Timeframe Data Grid */}
+          <div className="space-y-1.5">
+            <span className="text-[10px] font-mono text-white/30 uppercase tracking-wider">Timeframe Data</span>
             {TIMEFRAME_SLOTS.map((tf) => {
-              const hasImage = !!tfImages[tf.key];
+              const fetched = fetchedTimeframes[tf.key];
+              const isFetching = fetched?.status === "fetching";
+              const isFetched = fetched?.status === "fetched";
               return (
-                <div key={tf.key} className={`rounded-lg border transition-all ${
-                  hasImage ? "border-cyan-700/50 bg-cyan-950/20" : "border-white/10 bg-white/[0.02] hover:border-white/20"
+                <div key={tf.key} className={`rounded-lg border p-2.5 flex items-center gap-3 transition-all ${
+                  isFetched ? "border-emerald-700/40 bg-emerald-950/15" :
+                  isFetching ? "border-cyan-700/30 bg-cyan-950/10 animate-pulse" :
+                  "border-white/5 bg-white/[0.01]"
                 }`}>
-                  {hasImage ? (
-                    <div className="flex items-center gap-3 p-2">
-                      <img src={tfImages[tf.key]} alt={tf.label} className="h-14 w-20 object-cover rounded border border-white/10" />
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-1.5">
-                          <Badge className="bg-cyan-600/30 text-cyan-300 border-cyan-700/50 text-[9px] font-mono px-1.5 py-0">{tf.shortLabel}</Badge>
-                          <span className="text-[10px] text-white/50 font-mono">{tf.label}</span>
-                        </div>
-                        <p className="text-[9px] text-white/25 font-mono mt-0.5">{tf.description}</p>
-                      </div>
-                      <button onClick={() => removeSlotImage(tf.key)}
-                        className="h-6 w-6 rounded flex items-center justify-center text-white/20 hover:text-red-400 hover:bg-red-950/30 transition-colors">
-                        <X className="h-3 w-3" />
-                      </button>
+                  <div className={`h-8 w-8 rounded flex items-center justify-center shrink-0 ${
+                    isFetched ? "bg-emerald-600/20" : isFetching ? "bg-cyan-600/10" : "bg-white/[0.03]"
+                  }`}>
+                    {isFetched ? (
+                      <BarChart3 className="h-3.5 w-3.5 text-emerald-400" />
+                    ) : isFetching ? (
+                      <Loader2 className="h-3.5 w-3.5 text-cyan-400 animate-spin" />
+                    ) : (
+                      <Clock className="h-3.5 w-3.5 text-white/10" />
+                    )}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      <span className={`text-[10px] font-mono font-bold ${
+                        isFetched ? "text-emerald-400" : isFetching ? "text-cyan-400" : "text-white/20"
+                      }`}>{tf.shortLabel}</span>
+                      <span className={`text-[10px] font-mono ${isFetched ? "text-white/50" : "text-white/15"}`}>{tf.label}</span>
                     </div>
-                  ) : (
-                    <button
-                      onClick={() => fileInputRefs.current[tf.key]?.click()}
-                      className="w-full flex items-center gap-3 p-2.5 group"
-                    >
-                      <div className="h-10 w-14 rounded border border-dashed border-white/10 group-hover:border-cyan-500/40 flex items-center justify-center transition-colors bg-white/[0.02]">
-                        <Upload className="h-3.5 w-3.5 text-white/15 group-hover:text-cyan-500/60 transition-colors" />
-                      </div>
-                      <div className="flex-1 text-left">
-                        <div className="flex items-center gap-1.5">
-                          <span className="text-[10px] font-mono font-bold text-white/30 group-hover:text-white/50 transition-colors">{tf.shortLabel}</span>
-                          <span className="text-[10px] text-white/20 font-mono">{tf.label}</span>
-                        </div>
-                        <p className="text-[9px] text-white/15 font-mono">{tf.description}</p>
-                      </div>
-                    </button>
+                    <p className={`text-[9px] font-mono ${isFetched ? "text-white/30" : "text-white/10"}`}>
+                      {isFetched && fetched.bars ? `${fetched.bars} bars · OHLCV + ATR` : tf.description}
+                    </p>
+                  </div>
+                  {isFetched && (
+                    <Badge className="bg-emerald-600/20 text-emerald-400 border-emerald-700/40 text-[7px] font-mono px-1.5 py-0 shrink-0">
+                      ✓
+                    </Badge>
                   )}
-                  <input
-                    ref={(el) => { fileInputRefs.current[tf.key] = el; }}
-                    type="file"
-                    accept="image/*"
-                    className="hidden"
-                    onChange={(e) => {
-                      const file = e.target.files?.[0];
-                      if (file) handleSlotFile(tf.key, file);
-                      e.target.value = "";
-                    }}
-                  />
                 </div>
               );
             })}
           </div>
 
-          <Button
-            onClick={handleAnalyze}
-            disabled={(filledCount === 0 && !selectedPair) || isAnalyzing}
-            className="w-full bg-gradient-to-r from-cyan-600 to-emerald-600 hover:from-cyan-500 hover:to-emerald-500 text-white font-mono text-xs tracking-wider mt-2"
-          >
-            {isAnalyzing ? <><Loader2 className="h-3 w-3 mr-2 animate-spin" /> Analyzing...</> : <><BarChart3 className="h-3 w-3 mr-2" /> Convene Senate</>}
-          </Button>
+          {/* Quick Analyze / Convene */}
+          {selectedPair && (
+            <Button
+              onClick={handleAnalyze}
+              disabled={isAnalyzing}
+              className="w-full bg-gradient-to-r from-cyan-600 to-emerald-600 hover:from-cyan-500 hover:to-emerald-500 text-white font-mono text-xs tracking-wider mt-2 h-10"
+            >
+              {isAnalyzing ? <><Loader2 className="h-3 w-3 mr-2 animate-spin" /> Analyzing...</> : <><Zap className="h-3 w-3 mr-2" /> Quick Analyze {selectedPair}</>}
+            </Button>
+          )}
 
-          {filledCount > 0 && !isAnalyzing && (
+          {!selectedPair && (
+            <div className="rounded-lg border border-dashed border-white/10 p-4 text-center">
+              <p className="text-[10px] font-mono text-white/20">Select a pair above to fetch live data</p>
+              <p className="text-[9px] font-mono text-white/10 mt-1">Or use Scan All Majors to analyze all 8 pairs</p>
+            </div>
+          )}
+
+          {(messages.length > 0 || Object.keys(fetchedTimeframes).length > 0) && !isAnalyzing && (
             <Button variant="ghost" size="sm" className="text-white/30 text-[10px] font-mono hover:text-white/60"
-              onClick={() => { setTfImages({}); setMessages([]); setVerdict(null); setAgreement(null); setNeedsMoreInfo(false); setFollowUpText(""); setFollowUpTfImages({}); setRequestedTimeframes([]); setSelectedPair(""); setLivePrice(null); }}>
-              Clear all
+              onClick={() => { setTfImages({}); setFetchedTimeframes({}); setMessages([]); setVerdict(null); setAgreement(null); setNeedsMoreInfo(false); setFollowUpText(""); setFollowUpTfImages({}); setRequestedTimeframes([]); setSelectedPair(""); setLivePrice(null); }}>
+              Reset session
             </Button>
           )}
         </div>
@@ -813,8 +807,8 @@ export default function ForexSenate() {
               <div className="flex items-center justify-center h-full text-white/10">
                 <div className="text-center">
                   <Crown className="h-12 w-12 mx-auto mb-3 opacity-30" />
-                  <p className="text-xs font-mono">Upload chart(s) to timeframe slots and convene the Senate</p>
-                  <p className="text-[10px] font-mono mt-1 opacity-50">Fill multiple slots for multi-timeframe confluence</p>
+                  <p className="text-xs font-mono">Select a pair and hit Quick Analyze</p>
+                  <p className="text-[10px] font-mono mt-1 opacity-50">Or scan all majors for the best setups</p>
                 </div>
               </div>
             ) : (
@@ -1243,8 +1237,8 @@ export default function ForexSenate() {
           ) : (
             <div className="flex-1 flex items-center justify-center text-white/10">
               <div className="text-center">
-                <ImageIcon className="h-8 w-8 mx-auto mb-2 opacity-30" />
-                <p className="text-[10px] font-mono">Awaiting chart submission</p>
+                <Radar className="h-8 w-8 mx-auto mb-2 opacity-30" />
+                <p className="text-[10px] font-mono">Awaiting analysis</p>
               </div>
             </div>
           )}
