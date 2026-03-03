@@ -497,13 +497,42 @@ export default function ForexSenate() {
             })),
           });
         }
-        const pairCount = (parsed.pairs || parsed.opportunities || []).length;
+        const pairs = parsed.pairs || parsed.opportunities || [];
+        const pairCount = pairs.length;
+        const execReady = pairs.filter((p: any) => p.execution_ready).length;
         const summary = parsed.scan_summary || `${pairCount} pairs analyzed`;
-        addMessage("chairman", result.scanResult);
-        addMessage("system", `✅ **Scan complete.** ${summary}`);
+        
+        // Build a clean structured summary instead of raw JSON
+        const topPairs = pairs.slice(0, 5).map((p: any) => {
+          const consensus = p.consensus || "—";
+          const score = p.score || p.confidence_score || "—";
+          const dir = p.votes
+            ? Object.values(p.votes as Record<string, { direction?: string }>).map(v => v.direction).filter(Boolean).join("/")
+            : "—";
+          return `| ${p.pair} | ${score} | ${consensus} | ${dir} | ${p.execution_ready ? "✅" : "—"} |`;
+        }).join("\n");
+        
+        const scanMsg = [
+          `## 📊 Market Scan Complete`,
+          ``,
+          parsed.market_regime ? `**Regime:** ${parsed.market_regime}` : null,
+          `**Pairs scanned:** ${pairCount} · **Execution ready:** ${execReady}`,
+          parsed.best_pair ? `**Best pair:** ${parsed.best_pair}` : null,
+          ``,
+          `| Pair | Score | Consensus | Votes | Ready |`,
+          `|------|-------|-----------|-------|-------|`,
+          topPairs,
+          ``,
+          summary,
+          ``,
+          `*View structured results in the right panel. Click a pair to drill down.*`,
+        ].filter(Boolean).join("\n");
+        
+        addMessage("chairman", scanMsg);
       } else {
-        addMessage("chairman", result.scanResult);
-        addMessage("system", "✅ **Scan complete.** Select a pair to drill down.");
+        // No parsed data — show a brief note rather than raw JSON
+        const briefText = (result.scanResult || "").substring(0, 500);
+        addMessage("chairman", `## 📊 Scan Complete\n\n${briefText}${briefText.length >= 500 ? "..." : ""}\n\n*Check the right panel for structured results.*`);
       }
     } catch (err: any) {
       toast({ title: "Scan failed", description: err.message, variant: "destructive" });
