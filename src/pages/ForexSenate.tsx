@@ -13,7 +13,7 @@ import ReactMarkdown from "react-markdown";
 import {
   Upload, Settings, Brain, ShieldAlert, Crown, Loader2, ImageIcon,
   TrendingUp, TrendingDown, MinusCircle, Target, AlertTriangle, BarChart3,
-  X, Plus, Send, MessageSquare, Images, Clock
+  X, Plus, Send, MessageSquare, Images, Clock, Radio, Wifi
 } from "lucide-react";
 
 const MODELS = [
@@ -35,6 +35,15 @@ const tierColors: Record<string, string> = {
 };
 const tierLabels: Record<string, string> = { flagship: "★ Flagship", balanced: "⚡ Balanced", speed: "🚀 Speed" };
 const providerColors: Record<string, string> = { Google: "text-blue-400", OpenAI: "text-green-400" };
+
+const FOREX_PAIRS = [
+  // Majors
+  "EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF", "AUD/USD", "NZD/USD", "USD/CAD",
+  // Crosses
+  "EUR/GBP", "EUR/JPY", "GBP/JPY", "EUR/CHF", "EUR/AUD", "EUR/CAD", "EUR/NZD",
+  "GBP/AUD", "GBP/CAD", "GBP/CHF", "GBP/NZD",
+  "AUD/JPY", "AUD/NZD", "AUD/CAD", "CAD/JPY", "CHF/JPY", "NZD/JPY", "NZD/CAD",
+];
 
 const TIMEFRAME_SLOTS = [
   { key: "MN", label: "Monthly", shortLabel: "MN", description: "Macro trend & major S/R" },
@@ -84,6 +93,8 @@ const personaConfig = {
 };
 
 export default function ForexSenate() {
+  const [selectedPair, setSelectedPair] = useState<string>("");
+  const [livePrice, setLivePrice] = useState<{ bid: number; ask: number; spread: number } | null>(null);
   const [tfImages, setTfImages] = useState<Record<string, string>>({});
   const [messages, setMessages] = useState<SenateMessage[]>([]);
   const [verdict, setVerdict] = useState<Verdict | null>(null);
@@ -204,8 +215,10 @@ export default function ForexSenate() {
     const labeledImages = buildLabeledImages(tfImages);
     const tfList = labeledImages.map(l => l.timeframe).join(", ");
 
-    addMessage("system", `🏛️ **Senate session opened.** ${labeledImages.length} chart${labeledImages.length > 1 ? "s" : ""} submitted: **${tfList}**`);
-    addMessage("system", "⏳ Phase 1 — Dispatching charts to **The Quant** and **The Risk Manager** in parallel...");
+    const pairLabel = selectedPair ? ` | Pair: **${selectedPair}**` : "";
+    const oandaLabel = selectedPair ? " + 📡 **Live OANDA data**" : "";
+    addMessage("system", `🏛️ **Senate session opened.** ${labeledImages.length} chart${labeledImages.length > 1 ? "s" : ""} submitted: **${tfList}**${pairLabel}${oandaLabel}`);
+    addMessage("system", `⏳ Phase 1 — ${selectedPair ? "Fetching live OANDA data & d" : "D"}ispatching charts to **The Quant** and **The Risk Manager** in parallel...`);
     setPhase("Phase 1: Analysts reviewing charts...");
 
     try {
@@ -214,11 +227,12 @@ export default function ForexSenate() {
         {
           method: "POST",
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
-          body: JSON.stringify({
-            images: labeledImages.map(l => l.image),
-            timeframeLabels: labeledImages.map(l => l.timeframe),
-            quantModel, riskModel, chairmanModel,
-          }),
+           body: JSON.stringify({
+              images: labeledImages.map(l => l.image),
+              timeframeLabels: labeledImages.map(l => l.timeframe),
+              pair: selectedPair || undefined,
+              quantModel, riskModel, chairmanModel,
+            }),
         }
       );
 
@@ -228,6 +242,7 @@ export default function ForexSenate() {
       }
 
       const result = await response.json();
+      if (result.livePrice) setLivePrice(result.livePrice);
       addMessage("quant", result.quant);
       await new Promise(r => setTimeout(r, 400));
       addMessage("risk", result.riskManager);
@@ -261,7 +276,7 @@ export default function ForexSenate() {
     } finally {
       setIsAnalyzing(false);
     }
-  }, [tfImages, filledCount, quantModel, riskModel, chairmanModel, addMessage, toast]);
+  }, [tfImages, filledCount, selectedPair, quantModel, riskModel, chairmanModel, addMessage, toast]);
 
   const handleFollowUp = useCallback(async () => {
     if (!followUpText.trim() && Object.keys(followUpTfImages).length === 0) return;
@@ -286,18 +301,19 @@ export default function ForexSenate() {
         {
           method: "POST",
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
-          body: JSON.stringify({
-            images: [],
-            isFollowUp: true,
-            followUpText: followUpText.trim(),
-            followUpImages: followUpImagesArray,
-            followUpTimeframeLabels: followUpLabels,
-            previousQuant,
-            previousRisk,
-            previousChairman,
-            followUpRound,
-            chairmanModel,
-          }),
+           body: JSON.stringify({
+              images: [],
+              isFollowUp: true,
+              followUpText: followUpText.trim(),
+              followUpImages: followUpImagesArray,
+              followUpTimeframeLabels: followUpLabels,
+              pair: selectedPair || undefined,
+              previousQuant,
+              previousRisk,
+              previousChairman,
+              followUpRound,
+              chairmanModel,
+            }),
         }
       );
 
@@ -462,6 +478,51 @@ export default function ForexSenate() {
             </Badge>
           </div>
 
+          {/* Pair Selector with OANDA Link */}
+          <div className="rounded-lg border border-white/10 bg-white/[0.02] p-3 space-y-2">
+            <div className="flex items-center gap-1.5">
+              <Wifi className={`h-3 w-3 ${selectedPair ? "text-emerald-400" : "text-white/20"}`} />
+              <span className="text-[10px] font-mono text-white/40 uppercase tracking-wider">OANDA Live Feed</span>
+              {selectedPair && livePrice && (
+                <Badge className="ml-auto bg-emerald-600/20 text-emerald-400 border-emerald-700/50 text-[8px] font-mono px-1.5 py-0">
+                  <Radio className="h-2 w-2 mr-1 animate-pulse" /> LIVE
+                </Badge>
+              )}
+            </div>
+            <Select value={selectedPair || "none"} onValueChange={(v) => { setSelectedPair(v === "none" ? "" : v); setLivePrice(null); }}>
+              <SelectTrigger className="bg-white/5 border-white/10 text-white text-xs font-mono h-8">
+                <SelectValue placeholder="Select pair (optional)" />
+              </SelectTrigger>
+              <SelectContent className="bg-[#1a1b23] border-white/10 max-h-[300px]">
+                <SelectItem value="none" className="text-white/40 text-xs font-mono">No pair (screenshot only)</SelectItem>
+                {FOREX_PAIRS.map(p => (
+                  <SelectItem key={p} value={p} className="text-white text-xs font-mono">{p}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {selectedPair && selectedPair !== "none" && (
+              <p className="text-[9px] text-emerald-400/50 font-mono">
+                📡 Live candles, spread, ATR & correlated pairs will be injected into analysis
+              </p>
+            )}
+            {livePrice && (
+              <div className="grid grid-cols-3 gap-1.5 text-center">
+                <div className="rounded bg-white/5 p-1.5">
+                  <span className="text-[8px] text-white/30 font-mono block">BID</span>
+                  <span className="text-[10px] text-white/80 font-mono font-bold">{livePrice.bid}</span>
+                </div>
+                <div className="rounded bg-white/5 p-1.5">
+                  <span className="text-[8px] text-white/30 font-mono block">ASK</span>
+                  <span className="text-[10px] text-white/80 font-mono font-bold">{livePrice.ask}</span>
+                </div>
+                <div className="rounded bg-white/5 p-1.5">
+                  <span className="text-[8px] text-white/30 font-mono block">SPREAD</span>
+                  <span className="text-[10px] text-cyan-400 font-mono font-bold">{livePrice.spread}p</span>
+                </div>
+              </div>
+            )}
+          </div>
+
           <p className="text-[10px] text-white/25 font-mono">Upload charts per timeframe. More = better analysis.</p>
 
           {/* Timeframe slot grid */}
@@ -530,7 +591,7 @@ export default function ForexSenate() {
 
           {filledCount > 0 && !isAnalyzing && (
             <Button variant="ghost" size="sm" className="text-white/30 text-[10px] font-mono hover:text-white/60"
-              onClick={() => { setTfImages({}); setMessages([]); setVerdict(null); setNeedsMoreInfo(false); setFollowUpText(""); setFollowUpTfImages({}); setRequestedTimeframes([]); }}>
+              onClick={() => { setTfImages({}); setMessages([]); setVerdict(null); setNeedsMoreInfo(false); setFollowUpText(""); setFollowUpTfImages({}); setRequestedTimeframes([]); setSelectedPair(""); setLivePrice(null); }}>
               Clear all
             </Button>
           )}
