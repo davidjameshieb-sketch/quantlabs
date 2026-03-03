@@ -183,7 +183,6 @@ async function callAgent(
         { role: "user", content: userContent },
       ],
       temperature: 0.4,
-      max_tokens: 3000,
     }),
   });
 
