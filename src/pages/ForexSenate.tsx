@@ -92,9 +92,9 @@ interface Verdict {
 }
 
 const personaConfig = {
-  quant: { label: "The Quant", icon: Brain, color: "text-cyan-400", bg: "bg-cyan-950/40 border-cyan-800/50" },
-  risk: { label: "Risk Manager", icon: ShieldAlert, color: "text-amber-400", bg: "bg-amber-950/40 border-amber-800/50" },
-  chairman: { label: "The Chairman", icon: Crown, color: "text-emerald-400", bg: "bg-emerald-950/40 border-emerald-800/50" },
+  quant: { label: "Goldman Sachs", icon: Brain, color: "text-cyan-400", bg: "bg-cyan-950/40 border-cyan-800/50" },
+  risk: { label: "Morgan Stanley", icon: ShieldAlert, color: "text-amber-400", bg: "bg-amber-950/40 border-amber-800/50" },
+  chairman: { label: "BlackRock Alpha", icon: Crown, color: "text-emerald-400", bg: "bg-emerald-950/40 border-emerald-800/50" },
   system: { label: "Senate", icon: BarChart3, color: "text-muted-foreground", bg: "bg-muted/30 border-border" },
   user: { label: "You", icon: MessageSquare, color: "text-violet-400", bg: "bg-violet-950/40 border-violet-800/50" },
 };
@@ -229,7 +229,7 @@ export default function ForexSenate() {
     const oandaLabel = selectedPair ? " + 📡 **Live OANDA data**" : "";
     const chartMsg = labeledImages.length > 0 ? `${labeledImages.length} chart${labeledImages.length > 1 ? "s" : ""} submitted: **${tfList}**` : "**Data-only mode** (no charts)";
     addMessage("system", `🏛️ **Senate session opened.** ${chartMsg}${pairLabel}${oandaLabel}`);
-    addMessage("system", `⏳ Phase 1 — ${selectedPair ? "Fetching live OANDA data & d" : "D"}ispatching to **The Quant** and **The Risk Manager** in parallel...`);
+    addMessage("system", `⏳ Phase 1 — ${selectedPair ? "Fetching live OANDA data & d" : "D"}ispatching to **Goldman Sachs** and **Morgan Stanley** in parallel...`);
     setPhase("Phase 1: Analysts reviewing charts...");
 
     try {
@@ -258,8 +258,8 @@ export default function ForexSenate() {
       await new Promise(r => setTimeout(r, 400));
       addMessage("risk", result.riskManager);
 
-      setPhase("Phase 2: The Chairman is deliberating...");
-      addMessage("system", "⚖️ Phase 2 — **The Chairman** is reviewing all evidence...");
+      setPhase("Phase 2: BlackRock Alpha is deliberating...");
+      addMessage("system", "⚖️ Phase 2 — **BlackRock Alpha** is reviewing all evidence...");
       await new Promise(r => setTimeout(r, 600));
 
       addMessage("chairman", result.chairman);
@@ -275,7 +275,7 @@ export default function ForexSenate() {
         const reqTFs = parseRequestedTimeframes(result.chairman);
         setRequestedTimeframes(reqTFs);
         const tfMsg = reqTFs.length > 0 ? ` Requested timeframes: **${reqTFs.join(", ")}**` : "";
-        addMessage("system", `📋 **The Chairman needs more information.** Please respond below.${tfMsg}`);
+        addMessage("system", `📋 **BlackRock Alpha needs more information.** Please respond below.${tfMsg}`);
       } else {
         addMessage("system", "✅ **Senate session closed.** Verdict delivered.");
       }
@@ -304,8 +304,8 @@ export default function ForexSenate() {
     const userMsg = followUpText.trim() || `(Additional charts provided: ${followUpLabels.join(", ")})`;
 
     addMessage("user", userMsg, followUpImagesArray.length > 0 ? followUpImagesArray : undefined);
-    addMessage("system", `⚖️ **The Chairman** is reviewing your response${followUpLabels.length > 0 ? ` and ${followUpLabels.length} new chart(s): **${followUpLabels.join(", ")}**` : ""}...`);
-    setPhase("Chairman reviewing your response...");
+    addMessage("system", `⚖️ **BlackRock Alpha** is reviewing your response${followUpLabels.length > 0 ? ` and ${followUpLabels.length} new chart(s): **${followUpLabels.join(", ")}**` : ""}...`);
+    setPhase("BlackRock Alpha reviewing your response...");
 
     try {
       const response = await fetch(
@@ -344,7 +344,7 @@ export default function ForexSenate() {
         setFollowUpRound(prev => prev + 1);
         const reqTFs = parseRequestedTimeframes(result.chairman);
         setRequestedTimeframes(reqTFs);
-        addMessage("system", "📋 **The Chairman still needs clarification.** Please respond below.");
+        addMessage("system", "📋 **BlackRock Alpha still needs clarification.** Please respond below.");
       } else {
         addMessage("system", "✅ **Senate session closed.** Final verdict delivered.");
       }
@@ -495,9 +495,9 @@ export default function ForexSenate() {
                 
                 {/* Agent assignments */}
                 {[
-                  { label: "The Quant", icon: Brain, color: "text-cyan-400", val: quantModel, set: setQuantModel, role: "Technical analysis & pattern recognition" },
-                  { label: "Risk Manager", icon: ShieldAlert, color: "text-amber-400", val: riskModel, set: setRiskModel, role: "Risk assessment & trap detection" },
-                  { label: "The Chairman", icon: Crown, color: "text-emerald-400", val: chairmanModel, set: setChairmanModel, role: "Final verdict & synthesis" },
+                  { label: "Goldman Sachs", icon: Brain, color: "text-cyan-400", val: quantModel, set: setQuantModel, role: "David Solomon — Institutional order flow & structure" },
+                  { label: "Morgan Stanley", icon: ShieldAlert, color: "text-amber-400", val: riskModel, set: setRiskModel, role: "Ted Pick — Risk framework & capital preservation" },
+                  { label: "BlackRock Alpha", icon: Crown, color: "text-emerald-400", val: chairmanModel, set: setChairmanModel, role: "Rob Goldstein — Final verdict & macro synthesis" },
                 ].map(({ label, icon: I, color, val, set, role }) => {
                   const selected = MODELS.find(m => m.value === val);
                   return (
@@ -818,7 +818,7 @@ export default function ForexSenate() {
                   value={followUpText}
                   onChange={(e) => setFollowUpText(e.target.value)}
                   onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleFollowUp(); } }}
-                  placeholder="Answer the Chairman's questions..."
+                  placeholder="Answer BlackRock Alpha's questions..."
                   className="bg-white/5 border-white/10 text-white text-xs font-mono placeholder:text-white/20"
                 />
                 <Button onClick={handleFollowUp}
