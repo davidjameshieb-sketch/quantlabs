@@ -24,6 +24,8 @@ const MODELS = [
   { value: "google/gemini-3-pro-preview", label: "Gemini 3 Pro" },
   { value: "openai/gpt-5", label: "GPT-5" },
   { value: "openai/gpt-5-mini", label: "GPT-5 Mini" },
+  { value: "openai/gpt-5-nano", label: "GPT-5 Nano" },
+  { value: "openai/gpt-5.2", label: "GPT-5.2" },
 ];
 
 const TIMEFRAME_SLOTS = [
