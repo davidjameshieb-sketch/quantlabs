@@ -17,16 +17,24 @@ import {
 } from "lucide-react";
 
 const MODELS = [
-  { value: "google/gemini-2.5-pro", label: "Gemini 2.5 Pro" },
-  { value: "google/gemini-2.5-flash", label: "Gemini 2.5 Flash" },
-  { value: "google/gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite" },
-  { value: "google/gemini-3-flash-preview", label: "Gemini 3 Flash" },
-  { value: "google/gemini-3-pro-preview", label: "Gemini 3 Pro" },
-  { value: "openai/gpt-5", label: "GPT-5" },
-  { value: "openai/gpt-5-mini", label: "GPT-5 Mini" },
-  { value: "openai/gpt-5-nano", label: "GPT-5 Nano" },
-  { value: "openai/gpt-5.2", label: "GPT-5.2" },
+  { value: "google/gemini-2.5-pro", label: "Gemini 2.5 Pro", provider: "Google", tier: "flagship", desc: "Vision + reasoning powerhouse" },
+  { value: "google/gemini-2.5-flash", label: "Gemini 2.5 Flash", provider: "Google", tier: "balanced", desc: "Fast multimodal, good reasoning" },
+  { value: "google/gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite", provider: "Google", tier: "speed", desc: "Fastest, best for simple tasks" },
+  { value: "google/gemini-3-flash-preview", label: "Gemini 3 Flash", provider: "Google", tier: "balanced", desc: "Next-gen balanced speed+quality" },
+  { value: "google/gemini-3-pro-preview", label: "Gemini 3 Pro", provider: "Google", tier: "flagship", desc: "Next-gen flagship reasoning" },
+  { value: "openai/gpt-5", label: "GPT-5", provider: "OpenAI", tier: "flagship", desc: "Top-tier reasoning & nuance" },
+  { value: "openai/gpt-5-mini", label: "GPT-5 Mini", provider: "OpenAI", tier: "balanced", desc: "Strong reasoning, lower cost" },
+  { value: "openai/gpt-5-nano", label: "GPT-5 Nano", provider: "OpenAI", tier: "speed", desc: "Ultra-fast, high-volume tasks" },
+  { value: "openai/gpt-5.2", label: "GPT-5.2", provider: "OpenAI", tier: "flagship", desc: "Latest, enhanced reasoning" },
 ];
+
+const tierColors: Record<string, string> = {
+  flagship: "border-amber-500/50 text-amber-400 bg-amber-950/30",
+  balanced: "border-cyan-500/50 text-cyan-400 bg-cyan-950/30",
+  speed: "border-emerald-500/50 text-emerald-400 bg-emerald-950/30",
+};
+const tierLabels: Record<string, string> = { flagship: "★ Flagship", balanced: "⚡ Balanced", speed: "🚀 Speed" };
+const providerColors: Record<string, string> = { Google: "text-blue-400", OpenAI: "text-green-400" };
 
 const TIMEFRAME_SLOTS = [
   { key: "MN", label: "Monthly", shortLabel: "MN", description: "Macro trend & major S/R" },
@@ -344,6 +352,24 @@ export default function ForexSenate() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {/* Model summary badges */}
+          {!isAnalyzing && (
+            <div className="hidden md:flex items-center gap-1.5">
+              {[
+                { icon: Brain, color: "text-cyan-400", model: quantModel },
+                { icon: ShieldAlert, color: "text-amber-400", model: riskModel },
+                { icon: Crown, color: "text-emerald-400", model: chairmanModel },
+              ].map(({ icon: I, color, model }, idx) => {
+                const m = MODELS.find(x => x.value === model);
+                return (
+                  <div key={idx} className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-white/5 border border-white/5">
+                    <I className={`h-2.5 w-2.5 ${color}`} />
+                    <span className="text-[8px] font-mono text-white/40">{m?.label || "?"}</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
           {isAnalyzing && (
             <Badge variant="outline" className="border-cyan-500/50 text-cyan-400 text-[10px] font-mono animate-pulse">
               <Loader2 className="h-3 w-3 mr-1 animate-spin" /> {phase || "Processing..."}
@@ -353,26 +379,69 @@ export default function ForexSenate() {
             <SheetTrigger asChild>
               <Button variant="ghost" size="icon" className="text-white/50 hover:text-white"><Settings className="h-4 w-4" /></Button>
             </SheetTrigger>
-            <SheetContent className="bg-[#0d0e14] border-white/10 text-white">
+            <SheetContent className="bg-[#0d0e14] border-white/10 text-white w-[400px] sm:w-[440px]">
               <SheetHeader><SheetTitle className="text-white font-mono">Senate Configuration</SheetTitle></SheetHeader>
               <div className="mt-6 space-y-6">
-                <p className="text-xs text-white/40 font-mono">Select which AI model represents each Senate member.</p>
-                <Separator className="bg-white/10" />
-                {[
-                  { label: "The Quant", icon: Brain, color: "text-cyan-400", val: quantModel, set: setQuantModel },
-                  { label: "Risk Manager", icon: ShieldAlert, color: "text-amber-400", val: riskModel, set: setRiskModel },
-                  { label: "The Chairman", icon: Crown, color: "text-emerald-400", val: chairmanModel, set: setChairmanModel },
-                ].map(({ label, icon: I, color, val, set }) => (
-                  <div key={label}>
-                    <label className={`text-xs font-mono ${color} flex items-center gap-2 mb-2`}><I className="h-3 w-3" /> {label}</label>
-                    <Select value={val} onValueChange={set}>
-                      <SelectTrigger className="bg-white/5 border-white/10 text-white text-xs font-mono"><SelectValue /></SelectTrigger>
-                      <SelectContent className="bg-[#1a1b23] border-white/10">
-                        {MODELS.map(m => <SelectItem key={m.value} value={m.value} className="text-white text-xs font-mono">{m.label}</SelectItem>)}
-                      </SelectContent>
-                    </Select>
+                <p className="text-xs text-white/40 font-mono">Assign AI models to each Senate member. Mix providers for diverse perspectives.</p>
+                
+                {/* Model roster */}
+                <div className="rounded-lg border border-white/10 bg-white/[0.02] p-3">
+                  <span className="text-[10px] font-mono text-white/30 uppercase tracking-wider block mb-2">Available Models ({MODELS.length})</span>
+                  <div className="grid grid-cols-1 gap-1.5">
+                    {MODELS.map(m => (
+                      <div key={m.value} className={`flex items-center gap-2 px-2 py-1.5 rounded border ${tierColors[m.tier]}`}>
+                        <span className={`text-[9px] font-mono font-bold ${providerColors[m.provider]}`}>{m.provider}</span>
+                        <span className="text-[10px] font-mono text-white/70 flex-1">{m.label}</span>
+                        <span className="text-[8px] font-mono text-white/30">{m.desc}</span>
+                      </div>
+                    ))}
                   </div>
-                ))}
+                  <div className="flex gap-3 mt-2">
+                    {Object.entries(tierLabels).map(([k, v]) => (
+                      <span key={k} className={`text-[8px] font-mono ${tierColors[k].split(" ")[1]}`}>{v}</span>
+                    ))}
+                  </div>
+                </div>
+
+                <Separator className="bg-white/10" />
+                
+                {/* Agent assignments */}
+                {[
+                  { label: "The Quant", icon: Brain, color: "text-cyan-400", val: quantModel, set: setQuantModel, role: "Technical analysis & pattern recognition" },
+                  { label: "Risk Manager", icon: ShieldAlert, color: "text-amber-400", val: riskModel, set: setRiskModel, role: "Risk assessment & trap detection" },
+                  { label: "The Chairman", icon: Crown, color: "text-emerald-400", val: chairmanModel, set: setChairmanModel, role: "Final verdict & synthesis" },
+                ].map(({ label, icon: I, color, val, set, role }) => {
+                  const selected = MODELS.find(m => m.value === val);
+                  return (
+                    <div key={label} className="space-y-1.5">
+                      <label className={`text-xs font-mono ${color} flex items-center gap-2`}><I className="h-3 w-3" /> {label}</label>
+                      <p className="text-[9px] text-white/20 font-mono">{role}</p>
+                      <Select value={val} onValueChange={set}>
+                        <SelectTrigger className="bg-white/5 border-white/10 text-white text-xs font-mono">
+                          <SelectValue>
+                            {selected && (
+                              <span className="flex items-center gap-2">
+                                <span className={`text-[9px] font-bold ${providerColors[selected.provider]}`}>{selected.provider}</span>
+                                <span>{selected.label}</span>
+                              </span>
+                            )}
+                          </SelectValue>
+                        </SelectTrigger>
+                        <SelectContent className="bg-[#1a1b23] border-white/10 w-[360px]">
+                          {MODELS.map(m => (
+                            <SelectItem key={m.value} value={m.value} className="text-white text-xs font-mono py-2">
+                              <div className="flex items-center gap-2 w-full">
+                                <span className={`text-[9px] font-bold min-w-[40px] ${providerColors[m.provider]}`}>{m.provider}</span>
+                                <span className="flex-1">{m.label}</span>
+                                <span className={`text-[8px] px-1.5 py-0.5 rounded border ${tierColors[m.tier]}`}>{tierLabels[m.tier]}</span>
+                              </div>
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  );
+                })}
               </div>
             </SheetContent>
           </Sheet>
