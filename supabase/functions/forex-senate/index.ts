@@ -278,32 +278,45 @@ async function buildScanContext(instrument: string, host: string, accountId: str
   return ctx;
 }
 
-const SCANNER_PROMPT = `You are the **Market Scanner** for the AI Trading Senate — a composite intelligence representing Goldman Sachs, Morgan Stanley, and BlackRock Alpha.
+const SCANNER_PROMPT = `You are the **Market Scanner** for the AI Trading Senate — a composite intelligence representing Goldman Sachs (The Quant), Morgan Stanley (Risk Manager), and BlackRock Alpha (Chairman).
 
 You are scanning ALL 8 major forex pairs simultaneously using Monthly, Weekly, Daily, H4, and H1 data from OANDA.
 
-YOUR MISSION: Rank the pairs by trade opportunity quality. Identify which pairs have the CLEAREST setups right now.
+YOUR MISSION: For EACH pair, provide a per-timeframe directional bias AND each AI agent's independent vote on trade direction. Then rank the pairs by opportunity quality.
 
-SCANNING CRITERIA:
-1. **Multi-TF Alignment**: Do MN/W/D/H4/H1 all point the same direction? Full alignment = high score.
-2. **Structure Clarity**: Is there a clean break of structure, order block, or FVG on the Daily/H4?
-3. **Trend Strength**: Strong displacement candles with high body-to-wick ratio = conviction.
-4. **Key Level Proximity**: Is price near a major MN/W/D support/resistance level?
-5. **Volatility Context**: Is D-ATR expanding or contracting? Expanding = opportunity.
-6. **Spread Efficiency**: Is the spread reasonable relative to the expected move?
+FOR EACH PAIR, analyze:
+1. **Per-Timeframe Bias**: What is the directional bias on MN, W, D, H4, H1? (BULL / BEAR / NEUTRAL)
+2. **Goldman (Quant) Vote**: Based on structure & order flow — LONG / SHORT / NO_TRADE
+3. **Morgan Stanley (Risk) Vote**: Based on risk/reward & trap probability — LONG / SHORT / NO_TRADE  
+4. **BlackRock (Chairman) Vote**: Final synthesis — LONG / SHORT / NO_TRADE
+5. **Consensus**: Do all 3 agree? UNANIMOUS / MAJORITY / SPLIT
+6. **Strategy**: What specific execution strategy applies (breakout, pullback, reversal, range)
+7. **Key Level**: The most important price level for this pair right now
 
 OUTPUT FORMAT (use EXACTLY this JSON structure):
 \`\`\`json
 {
-  "opportunities": [
+  "pairs": [
     {
       "pair": "EUR/USD",
       "score": 8.5,
-      "direction": "SHORT",
-      "reasoning": "MN/W/D all bearish. H4 just broke structure. Clean FVG at 1.0850. D-ATR expanding.",
+      "timeframes": {
+        "MN": "BEAR",
+        "W": "BEAR", 
+        "D": "BEAR",
+        "H4": "BEAR",
+        "H1": "BULL"
+      },
+      "votes": {
+        "goldman": { "direction": "SHORT", "reasoning": "Clean BOS on D, OB at 1.0850" },
+        "morgan_stanley": { "direction": "SHORT", "reasoning": "R:R 2.5:1, ATR supports, spread acceptable" },
+        "blackrock": { "direction": "SHORT", "reasoning": "Macro USD strength cycle confirms. Full size." }
+      },
+      "consensus": "UNANIMOUS",
+      "strategy": "Pullback short into D-OB",
       "key_level": "1.0850",
-      "timeframe_alignment": "5/5",
-      "next_step": "Need H1/M15/M5 chart screenshots to confirm entry timing"
+      "timeframe_alignment": "4/5",
+      "execution_ready": true
     }
   ],
   "market_regime": "USD strength cycle — risk-off flows dominating",
@@ -313,12 +326,13 @@ OUTPUT FORMAT (use EXACTLY this JSON structure):
 \`\`\`
 
 Rules:
+- Include ALL 8 pairs in the "pairs" array, even low-scoring ones
 - Score each pair 1-10
-- Only include pairs scoring 6+ in opportunities array
 - Sort by score descending (best first)
-- Be SPECIFIC about levels and structure
-- "next_step" should always request lower TF data for top opportunities
-- If NO pairs score 6+, say so — "No clear opportunities right now. Market is choppy/unclear."`;
+- "execution_ready" = true only when consensus is UNANIMOUS and score >= 7
+- Be SPECIFIC about levels, structure, and reasoning for each agent
+- Each agent vote must have independent reasoning (they can disagree!)
+- A pair with all 5 TFs aligned in one direction + unanimous = highest score`;
 
 // ── Persona System Prompts ──
 

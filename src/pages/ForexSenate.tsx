@@ -124,7 +124,28 @@ export default function ForexSenate() {
 
   // Scan state
   const [isScanning, setIsScanning] = useState(false);
-  const [scanResults, setScanResults] = useState<{ opportunities: Array<{ pair: string; score: number; direction: string; reasoning: string; key_level?: string; timeframe_alignment?: string; next_step?: string }>; market_regime?: string; best_pair?: string; scan_summary?: string } | null>(null);
+  const [scanResults, setScanResults] = useState<{
+    pairs: Array<{
+      pair: string;
+      score: number;
+      timeframes: Record<string, string>;
+      votes: {
+        goldman: { direction: string; reasoning: string };
+        morgan_stanley: { direction: string; reasoning: string };
+        blackrock: { direction: string; reasoning: string };
+      };
+      consensus: string;
+      strategy: string;
+      key_level?: string;
+      timeframe_alignment?: string;
+      execution_ready?: boolean;
+    }>;
+    market_regime?: string;
+    best_pair?: string;
+    scan_summary?: string;
+    // Legacy support
+    opportunities?: Array<{ pair: string; score: number; direction: string; reasoning: string; key_level?: string; timeframe_alignment?: string }>;
+  } | null>(null);
   const [scanRawText, setScanRawText] = useState("");
 
   const fileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
@@ -398,9 +419,33 @@ export default function ForexSenate() {
       setScanRawText(result.scanResult || "");
 
       if (result.parsedOpportunities) {
-        setScanResults(result.parsedOpportunities);
-        const opps = result.parsedOpportunities.opportunities || [];
-        const summary = result.parsedOpportunities.scan_summary || `${opps.length} opportunities found`;
+        // Support both new "pairs" format and legacy "opportunities" format
+        const parsed = result.parsedOpportunities;
+        if (parsed.pairs) {
+          setScanResults(parsed);
+        } else if (parsed.opportunities) {
+          // Legacy format: convert opportunities to pairs format
+          setScanResults({
+            ...parsed,
+            pairs: parsed.opportunities.map((o: any) => ({
+              pair: o.pair,
+              score: o.score,
+              timeframes: o.timeframes || {},
+              votes: o.votes || {
+                goldman: { direction: o.direction, reasoning: o.reasoning },
+                morgan_stanley: { direction: o.direction, reasoning: "" },
+                blackrock: { direction: o.direction, reasoning: "" },
+              },
+              consensus: "—",
+              strategy: o.next_step || "",
+              key_level: o.key_level,
+              timeframe_alignment: o.timeframe_alignment,
+              execution_ready: false,
+            })),
+          });
+        }
+        const pairCount = (parsed.pairs || parsed.opportunities || []).length;
+        const summary = parsed.scan_summary || `${pairCount} pairs analyzed`;
         addMessage("chairman", result.scanResult);
         addMessage("system", `✅ **Scan complete.** ${summary}`);
       } else {
@@ -911,56 +956,128 @@ export default function ForexSenate() {
             {scanResults ? "Scan Results" : "Verdict"}
           </h2>
 
-          {/* Scan Results */}
-          {scanResults && scanResults.opportunities && scanResults.opportunities.length > 0 ? (
+          {/* Scan Results - Full Matrix Dashboard */}
+          {scanResults && scanResults.pairs && scanResults.pairs.length > 0 ? (
             <div className="space-y-3">
               {scanResults.market_regime && (
-                <div className="rounded-lg bg-amber-950/30 border border-amber-700/40 p-3">
-                  <span className="text-[9px] font-mono text-amber-400/60 uppercase block mb-1">Market Regime</span>
-                  <p className="text-[11px] font-mono text-amber-300/80">{scanResults.market_regime}</p>
+                <div className="rounded-lg bg-amber-950/30 border border-amber-700/40 p-2.5">
+                  <span className="text-[8px] font-mono text-amber-400/60 uppercase block mb-0.5">Market Regime</span>
+                  <p className="text-[10px] font-mono text-amber-300/80">{scanResults.market_regime}</p>
                 </div>
               )}
-              {scanResults.opportunities.map((opp, i) => {
-                const isLong = opp.direction?.toUpperCase().includes("LONG") || opp.direction?.toUpperCase().includes("BUY");
-                const isShort = opp.direction?.toUpperCase().includes("SHORT") || opp.direction?.toUpperCase().includes("SELL");
-                const scoreColor = opp.score >= 8 ? "text-emerald-400" : opp.score >= 6 ? "text-amber-400" : "text-white/40";
-                const borderColor = opp.score >= 8 ? "border-emerald-700/50" : opp.score >= 6 ? "border-amber-700/40" : "border-white/10";
+
+              {scanResults.pairs.map((p, i) => {
+                const isUnan = p.consensus === "UNANIMOUS";
+                const isMajority = p.consensus?.includes("MAJORITY");
+                const consensusDir = p.votes?.blackrock?.direction || "";
+                const isLong = consensusDir.includes("LONG") || consensusDir.includes("BUY");
+                const isShort = consensusDir.includes("SHORT") || consensusDir.includes("SELL");
+                const scoreColor = p.score >= 8 ? "text-emerald-400" : p.score >= 6 ? "text-amber-400" : "text-white/30";
+                const borderColor = p.execution_ready ? "border-emerald-700/50" : p.score >= 6 ? "border-amber-700/40" : "border-white/10";
+
+                const TF_KEYS = ["MN", "W", "D", "H4", "H1"];
+                const biasIcon = (b: string) => {
+                  if (!b) return <span className="text-white/15">—</span>;
+                  const u = b.toUpperCase();
+                  if (u.includes("BULL")) return <TrendingUp className="h-2.5 w-2.5 text-emerald-400" />;
+                  if (u.includes("BEAR")) return <TrendingDown className="h-2.5 w-2.5 text-red-400" />;
+                  return <MinusCircle className="h-2.5 w-2.5 text-white/25" />;
+                };
+
+                const voteColor = (dir: string) => {
+                  const u = (dir || "").toUpperCase();
+                  if (u.includes("LONG") || u.includes("BUY")) return "text-emerald-400";
+                  if (u.includes("SHORT") || u.includes("SELL")) return "text-red-400";
+                  return "text-white/30";
+                };
+
+                const voteBadge = (dir: string) => {
+                  const u = (dir || "").toUpperCase();
+                  if (u.includes("LONG") || u.includes("BUY")) return "bg-emerald-600/20 text-emerald-400 border-emerald-700/50";
+                  if (u.includes("SHORT") || u.includes("SELL")) return "bg-red-600/20 text-red-400 border-red-700/50";
+                  return "bg-zinc-600/20 text-zinc-400 border-zinc-700/50";
+                };
+
                 return (
                   <button
                     key={i}
-                    onClick={() => handleDrillDown(opp.pair)}
+                    onClick={() => handleDrillDown(p.pair)}
                     className={`w-full rounded-lg border ${borderColor} bg-white/[0.03] p-3 text-left hover:bg-white/[0.06] transition-colors group`}
                   >
-                    <div className="flex items-center justify-between mb-1.5">
+                    {/* Header: Pair + Score + Execution Badge */}
+                    <div className="flex items-center justify-between mb-2">
                       <div className="flex items-center gap-2">
-                        <span className="text-sm font-mono font-bold text-white">{opp.pair}</span>
-                        <Badge className={`text-[8px] font-mono px-1.5 py-0 ${
-                          isLong ? "bg-emerald-600/20 text-emerald-400 border-emerald-700/50" :
-                          isShort ? "bg-red-600/20 text-red-400 border-red-700/50" :
-                          "bg-zinc-600/20 text-zinc-400 border-zinc-700/50"
-                        }`}>{opp.direction}</Badge>
+                        <span className="text-sm font-mono font-bold text-white">{p.pair}</span>
+                        {p.execution_ready && (
+                          <Badge className="bg-emerald-600/30 text-emerald-300 border-emerald-700/50 text-[7px] font-mono px-1 py-0">
+                            <Zap className="h-2 w-2 mr-0.5" />READY
+                          </Badge>
+                        )}
                       </div>
                       <div className="flex items-center gap-1.5">
-                        <span className={`text-lg font-mono font-black ${scoreColor}`}>{opp.score}</span>
-                        <ChevronRight className="h-3 w-3 text-white/20 group-hover:text-white/50 transition-colors" />
+                        <span className={`text-lg font-mono font-black ${scoreColor}`}>{p.score}</span>
+                        <ChevronRight className="h-3 w-3 text-white/20 group-hover:text-white/50" />
                       </div>
                     </div>
-                    <p className="text-[10px] font-mono text-white/50 leading-relaxed">{opp.reasoning}</p>
-                    {opp.key_level && (
-                      <div className="flex items-center gap-2 mt-1.5">
-                        <span className="text-[9px] font-mono text-white/25">Key: {opp.key_level}</span>
-                        {opp.timeframe_alignment && <span className="text-[9px] font-mono text-cyan-400/50">TF: {opp.timeframe_alignment}</span>}
-                      </div>
+
+                    {/* TF Bias Row */}
+                    <div className="flex items-center gap-0.5 mb-2">
+                      {TF_KEYS.map(tf => (
+                        <div key={tf} className="flex-1 text-center rounded bg-white/[0.04] py-1 px-0.5">
+                          <span className="text-[7px] font-mono text-white/25 block">{tf}</span>
+                          <div className="flex justify-center mt-0.5">{biasIcon(p.timeframes?.[tf] || "")}</div>
+                        </div>
+                      ))}
+                      {p.timeframe_alignment && (
+                        <div className="pl-1.5">
+                          <span className="text-[8px] font-mono text-cyan-400/60">{p.timeframe_alignment}</span>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* AI Votes */}
+                    <div className="grid grid-cols-3 gap-1 mb-2">
+                      {[
+                        { key: "goldman", label: "GS", icon: Brain, color: "text-cyan-400", vote: p.votes?.goldman },
+                        { key: "ms", label: "MS", icon: ShieldAlert, color: "text-amber-400", vote: p.votes?.morgan_stanley },
+                        { key: "br", label: "BR", icon: Crown, color: "text-emerald-400", vote: p.votes?.blackrock },
+                      ].map(({ key, label, icon: I, color, vote }) => (
+                        <div key={key} className="rounded bg-white/[0.04] p-1.5">
+                          <div className="flex items-center gap-1 mb-0.5">
+                            <I className={`h-2 w-2 ${color}`} />
+                            <span className="text-[7px] font-mono text-white/30">{label}</span>
+                          </div>
+                          <Badge className={`text-[7px] font-mono px-1 py-0 ${voteBadge(vote?.direction || "")}`}>
+                            {vote?.direction || "—"}
+                          </Badge>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Consensus + Strategy */}
+                    <div className="flex items-center gap-2 mb-1.5">
+                      <Badge className={`text-[7px] font-mono px-1.5 py-0 ${
+                        isUnan ? (isLong ? "bg-emerald-600/30 text-emerald-300 border-emerald-700/50" : isShort ? "bg-red-600/30 text-red-300 border-red-700/50" : "bg-zinc-600/20 text-zinc-300 border-zinc-700/50")
+                        : isMajority ? "bg-amber-600/20 text-amber-300 border-amber-700/50"
+                        : "bg-zinc-600/20 text-zinc-400 border-zinc-700/50"
+                      }`}>{p.consensus}</Badge>
+                      {p.strategy && <span className="text-[8px] font-mono text-white/30 truncate">{p.strategy}</span>}
+                    </div>
+
+                    {/* Key Level */}
+                    {p.key_level && (
+                      <span className="text-[8px] font-mono text-white/20">Key: {p.key_level}</span>
                     )}
                   </button>
                 );
               })}
+
               {scanResults.scan_summary && (
                 <p className="text-[10px] font-mono text-white/30 text-center pt-2">{scanResults.scan_summary}</p>
               )}
               <p className="text-[9px] font-mono text-white/20 text-center">Click a pair to drill down with full Senate analysis</p>
             </div>
-          ) : scanResults && (!scanResults.opportunities || scanResults.opportunities.length === 0) ? (
+          ) : scanResults && (!scanResults.pairs || scanResults.pairs.length === 0) ? (
             <div className="rounded-lg bg-amber-950/30 border border-amber-700/40 p-4 text-center">
               <p className="text-xs font-mono text-amber-400">No clear opportunities found</p>
               <p className="text-[10px] font-mono text-white/30 mt-1">Market may be choppy or unclear</p>
