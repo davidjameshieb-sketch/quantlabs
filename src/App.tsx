@@ -4,12 +4,6 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 
-import ForexOanda from "./pages/ForexOanda";
-import SovereignMatrix from "./pages/SovereignMatrix";
-import HedgeControlCenter from "./pages/HedgeControlCenter";
-import TheCitadel from "./pages/TheCitadel";
-import NYCLoveDashboard from "./pages/NYCLoveDashboard";
-import SovereignFlightDeck from "./pages/SovereignFlightDeck";
 import ForexSenate from "./pages/ForexSenate";
 import NotFound from "./pages/NotFound";
 
@@ -22,14 +16,8 @@ const App = () => (
       <Sonner />
       <BrowserRouter>
         <Routes>
-          <Route path="/" element={<Navigate to="/oanda" replace />} />
-          <Route path="/oanda" element={<ForexOanda />} />
-          <Route path="/matrix" element={<SovereignMatrix />} />
-          <Route path="/hedge" element={<HedgeControlCenter />} />
-          <Route path="/citadel" element={<TheCitadel />} />
-          <Route path="/nyc-love" element={<NYCLoveDashboard />} />
-          <Route path="/flight-deck" element={<SovereignFlightDeck />} />
-          <Route path="/senate" element={<ForexSenate />} />
+          <Route path="/" element={<ForexSenate />} />
+          <Route path="/senate" element={<Navigate to="/" replace />} />
           <Route path="*" element={<NotFound />} />
         </Routes>
       </BrowserRouter>
