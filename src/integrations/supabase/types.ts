@@ -647,6 +647,63 @@ export type Database = {
         }
         Relationships: []
       }
+      senate_scans: {
+        Row: {
+          best_pair: string | null
+          completed_at: string | null
+          created_at: string
+          duration_ms: number | null
+          error: string | null
+          execution_ready_count: number
+          id: string
+          market_regime: string | null
+          model_used: string | null
+          pairs_scanned: number
+          raw_text: string | null
+          scan_payload: Json
+          scan_summary: string | null
+          scan_type: string
+          status: string
+          triggered_by: string
+        }
+        Insert: {
+          best_pair?: string | null
+          completed_at?: string | null
+          created_at?: string
+          duration_ms?: number | null
+          error?: string | null
+          execution_ready_count?: number
+          id?: string
+          market_regime?: string | null
+          model_used?: string | null
+          pairs_scanned?: number
+          raw_text?: string | null
+          scan_payload?: Json
+          scan_summary?: string | null
+          scan_type?: string
+          status?: string
+          triggered_by?: string
+        }
+        Update: {
+          best_pair?: string | null
+          completed_at?: string | null
+          created_at?: string
+          duration_ms?: number | null
+          error?: string | null
+          execution_ready_count?: number
+          id?: string
+          market_regime?: string | null
+          model_used?: string | null
+          pairs_scanned?: number
+          raw_text?: string | null
+          scan_payload?: Json
+          scan_summary?: string | null
+          scan_type?: string
+          status?: string
+          triggered_by?: string
+        }
+        Relationships: []
+      }
       shadow_trade_ledger: {
         Row: {
           agent_id: string

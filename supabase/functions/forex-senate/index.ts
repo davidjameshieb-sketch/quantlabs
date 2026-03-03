@@ -587,13 +587,20 @@ serve(async (req) => {
     const authHeader = req.headers.get("Authorization");
     if (!authHeader?.startsWith("Bearer ")) return ERR.unauthorized();
 
-    const supabase = createClient(
-      Deno.env.get("SUPABASE_URL") ?? "",
-      Deno.env.get("SUPABASE_ANON_KEY") ?? "",
-      { global: { headers: { Authorization: authHeader } } }
-    );
-    const { data: { user }, error: authErr } = await supabase.auth.getUser();
-    if (authErr || !user) return ERR.unauthorized();
+    // Allow service-role key for automated/cron calls
+    const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+    const token = authHeader.replace("Bearer ", "");
+    const isServiceRole = token === serviceKey;
+
+    if (!isServiceRole) {
+      const supabase = createClient(
+        Deno.env.get("SUPABASE_URL") ?? "",
+        Deno.env.get("SUPABASE_ANON_KEY") ?? "",
+        { global: { headers: { Authorization: authHeader } } }
+      );
+      const { data: { user }, error: authErr } = await supabase.auth.getUser();
+      if (authErr || !user) return ERR.unauthorized();
+    }
 
     const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
     if (!LOVABLE_API_KEY) {

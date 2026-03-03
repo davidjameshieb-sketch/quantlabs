@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef } from "react";
+import React, { useState, useCallback, useRef, useEffect } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -124,6 +124,21 @@ export default function ForexSenate() {
   const [requestedTimeframes, setRequestedTimeframes] = useState<string[]>([]);
 
   // Scan state
+  // Auto-scan activity feed
+  const [recentScans, setRecentScans] = useState<Array<{
+    id: string;
+    status: string;
+    scan_type: string;
+    best_pair: string | null;
+    execution_ready_count: number;
+    market_regime: string | null;
+    scan_summary: string | null;
+    duration_ms: number | null;
+    triggered_by: string;
+    created_at: string;
+    completed_at: string | null;
+  }>>([]);
+
   const [isScanning, setIsScanning] = useState(false);
   const [scanResults, setScanResults] = useState<{
     pairs: Array<{
@@ -155,6 +170,28 @@ export default function ForexSenate() {
   const { toast } = useToast();
 
   const filledCount = Object.keys(tfImages).length;
+
+  // Fetch recent auto-scans and subscribe to realtime updates
+  useEffect(() => {
+    const fetchRecentScans = async () => {
+      const { data } = await supabase
+        .from("senate_scans")
+        .select("id, status, scan_type, best_pair, execution_ready_count, market_regime, scan_summary, duration_ms, triggered_by, created_at, completed_at")
+        .order("created_at", { ascending: false })
+        .limit(10);
+      if (data) setRecentScans(data as any);
+    };
+    fetchRecentScans();
+
+    const channel = supabase
+      .channel("senate-scans-realtime")
+      .on("postgres_changes", { event: "*", schema: "public", table: "senate_scans" }, () => {
+        fetchRecentScans();
+      })
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
+  }, []);
 
   const scrollToBottom = useCallback(() => {
     setTimeout(() => scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" }), 100);
@@ -748,6 +785,95 @@ export default function ForexSenate() {
               Reset session
             </Button>
           )}
+
+          {/* Auto-Scan Activity Feed */}
+          <div className="mt-auto pt-3 border-t border-white/10 space-y-2">
+            <div className="flex items-center justify-between">
+              <h3 className="text-[10px] font-mono text-white/30 uppercase tracking-wider flex items-center gap-1.5">
+                <Radar className="h-3 w-3" /> Auto-Scan Feed
+              </h3>
+              <Badge variant="outline" className="text-[8px] font-mono border-emerald-700/40 text-emerald-400/80 px-1.5 py-0">
+                Every 15m
+              </Badge>
+            </div>
+
+            {recentScans.length === 0 ? (
+              <div className="rounded-lg border border-dashed border-white/10 p-3 text-center">
+                <p className="text-[9px] font-mono text-white/15">No automated scans yet</p>
+              </div>
+            ) : (
+              <div className="space-y-1.5 max-h-[280px] overflow-y-auto">
+                {recentScans.map((scan) => {
+                  const isRunning = scan.status === "running";
+                  const isError = scan.status === "error";
+                  const isComplete = scan.status === "completed";
+                  const age = Date.now() - new Date(scan.created_at).getTime();
+                  const ageLabel = age < 60000 ? "just now" :
+                    age < 3600000 ? `${Math.floor(age / 60000)}m ago` :
+                    age < 86400000 ? `${Math.floor(age / 3600000)}h ago` :
+                    `${Math.floor(age / 86400000)}d ago`;
+
+                  return (
+                    <button
+                      key={scan.id}
+                      onClick={() => {
+                        if (isComplete && scan.best_pair) {
+                          handleDrillDown(scan.best_pair);
+                        }
+                      }}
+                      className={`w-full rounded-lg border p-2.5 text-left transition-all ${
+                        isRunning ? "border-cyan-700/40 bg-cyan-950/10 animate-pulse" :
+                        isError ? "border-red-700/30 bg-red-950/10" :
+                        isComplete && scan.execution_ready_count > 0 ? "border-emerald-700/30 bg-emerald-950/10 hover:bg-emerald-950/20" :
+                        "border-white/5 bg-white/[0.02] hover:bg-white/[0.04]"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between mb-1">
+                        <div className="flex items-center gap-1.5">
+                          {isRunning ? (
+                            <Loader2 className="h-3 w-3 text-cyan-400 animate-spin" />
+                          ) : isError ? (
+                            <AlertTriangle className="h-3 w-3 text-red-400" />
+                          ) : (
+                            <Radar className="h-3 w-3 text-emerald-400" />
+                          )}
+                          <span className={`text-[10px] font-mono font-bold ${
+                            isRunning ? "text-cyan-400" : isError ? "text-red-400" : "text-white/60"
+                          }`}>
+                            {isRunning ? "Scanning..." : isError ? "Error" : `${scan.execution_ready_count} ready`}
+                          </span>
+                        </div>
+                        <span className="text-[8px] font-mono text-white/20">{ageLabel}</span>
+                      </div>
+                      {isComplete && (
+                        <>
+                          {scan.best_pair && (
+                            <div className="flex items-center gap-1.5 mb-0.5">
+                              <span className="text-[9px] font-mono text-white/30">Best:</span>
+                              <span className="text-[10px] font-mono text-emerald-400 font-bold">{scan.best_pair}</span>
+                              {scan.duration_ms && (
+                                <span className="text-[8px] font-mono text-white/15 ml-auto">{Math.round(scan.duration_ms / 1000)}s</span>
+                              )}
+                            </div>
+                          )}
+                          {scan.scan_summary && (
+                            <p className="text-[8px] font-mono text-white/20 line-clamp-2 leading-relaxed">{scan.scan_summary}</p>
+                          )}
+                        </>
+                      )}
+                      <div className="flex items-center gap-1 mt-1">
+                        <Badge variant="outline" className={`text-[7px] font-mono px-1 py-0 ${
+                          scan.triggered_by === "cron" ? "border-violet-700/40 text-violet-400/60" : "border-white/10 text-white/20"
+                        }`}>
+                          {scan.triggered_by === "cron" ? "⏱ auto" : "👤 manual"}
+                        </Badge>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Center: Senate Floor */}
