@@ -173,3 +173,6 @@ verify_jwt = false
 
 [functions.nyc-love-agent]
 verify_jwt = false
+
+[functions.h4-sentiment-engine]
+verify_jwt = false
