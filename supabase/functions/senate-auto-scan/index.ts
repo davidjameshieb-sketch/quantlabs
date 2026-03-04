@@ -103,12 +103,104 @@ Deno.serve(async (req) => {
 
     console.log(`[AUTO-SCAN] Scan ${scanId} completed in ${durationMs}ms — ${executionReady} execution-ready pairs`);
 
+    // ═══ AUTO-TRADE: Execute on demo when confidence ≥85% + unanimous consensus ═══
+    const autoTrades: any[] = [];
+    const CONFIDENCE_THRESHOLD = 85;
+    
+    for (const p of pairs) {
+      if (!p.execution_ready) continue;
+      
+      // Check confidence score (may be 0-100 or 0-10 scale)
+      const rawScore = p.score || p.confidence_score || 0;
+      const confidence = rawScore <= 10 ? rawScore * 10 : rawScore;
+      if (confidence < CONFIDENCE_THRESHOLD) {
+        console.log(`[AUTO-TRADE] ${p.pair}: Skipped — confidence ${confidence} < ${CONFIDENCE_THRESHOLD}`);
+        continue;
+      }
+      
+      // Determine unanimous direction from consensus
+      const consensus = (p.consensus || "").toUpperCase();
+      let direction: "long" | "short" | null = null;
+      if (consensus === "UNANIMOUS LONG" || consensus === "100% LONG") direction = "long";
+      else if (consensus === "UNANIMOUS SHORT" || consensus === "100% SHORT") direction = "short";
+      
+      if (!direction) {
+        console.log(`[AUTO-TRADE] ${p.pair}: Skipped — no unanimous consensus (${p.consensus})`);
+        continue;
+      }
+
+      // Check for existing open position on this pair to avoid doubling
+      const { data: existingOrders } = await db
+        .from("oanda_orders")
+        .select("id")
+        .eq("currency_pair", p.pair.replace("/", "_"))
+        .eq("environment", "practice")
+        .in("status", ["open", "submitted", "filled"])
+        .limit(1);
+
+      if (existingOrders && existingOrders.length > 0) {
+        console.log(`[AUTO-TRADE] ${p.pair}: Skipped — already has open position`);
+        continue;
+      }
+
+      // Execute trade via oanda-execute
+      try {
+        const execUrl = `${SUPABASE_URL}/functions/v1/oanda-execute`;
+        const signalId = `senate-auto-${scanId.slice(0, 8)}-${p.pair.replace("/", "_")}`;
+        const execRes = await fetch(execUrl, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${SERVICE_KEY}`,
+          },
+          body: JSON.stringify({
+            action: "execute",
+            signalId,
+            currencyPair: p.pair.replace("/", "_"),
+            direction,
+            units: 1000,
+            confidenceScore: confidence,
+            agentId: "senate-auto-scan",
+            environment: "practice",
+            stopLossPrice: p.stop_loss || undefined,
+            takeProfitPrice: p.take_profit || undefined,
+          }),
+        });
+
+        const execResult = await execRes.json();
+        const tradeOk = execRes.ok && !execResult.error;
+        autoTrades.push({
+          pair: p.pair,
+          direction,
+          confidence,
+          success: tradeOk,
+          oandaOrderId: execResult.oandaOrderId || null,
+          error: execResult.error || null,
+        });
+        console.log(`[AUTO-TRADE] ${p.pair} ${direction} 1000u → ${tradeOk ? "✅ PLACED" : "❌ FAILED"}: ${JSON.stringify(execResult).slice(0, 200)}`);
+      } catch (tradeErr: any) {
+        autoTrades.push({ pair: p.pair, direction, confidence, success: false, error: tradeErr.message });
+        console.error(`[AUTO-TRADE] ${p.pair} execution error:`, tradeErr.message);
+      }
+    }
+
+    // Update scan record with auto-trade results
+    if (autoTrades.length > 0) {
+      await db
+        .from("senate_scans")
+        .update({
+          scan_payload: { ...parsed, auto_trades: autoTrades },
+        })
+        .eq("id", scanId);
+    }
+
     return new Response(JSON.stringify({
       ok: true,
       scan_id: scanId,
       duration_ms: durationMs,
       execution_ready_count: executionReady,
       best_pair: parsed?.best_pair || null,
+      auto_trades: autoTrades,
     }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
