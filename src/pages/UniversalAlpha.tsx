@@ -141,7 +141,7 @@ export default function UniversalAlpha() {
   const [confidence, setConfidence] = useState(5);
   const [dailyBudget, setDailyBudget] = useState(25);
   const [positions, setPositions] = useState<LoggedPosition[]>(loadPositions);
-  const [activeTab, setActiveTab] = useState("heatmap");
+  const [activeTab, setActiveTab] = useState("alerts");
 
   const fetchData = useCallback(async () => {
     setLoading(true);
