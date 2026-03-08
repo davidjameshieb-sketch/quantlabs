@@ -1,254 +1,103 @@
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers":
     "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
-// ─── Sport Categories matching Kalshi's full catalog ───
-const SPORT_CATEGORIES = [
-  "Basketball", "Baseball", "Hockey", "Soccer", "Tennis",
-  "Golf", "Aussie Rules", "Cricket", "Racing", "Esports",
-];
+const KALSHI_API = "https://api.elections.kalshi.com/trade-api/v2";
 
-// ─── Simulated market generators per sport ───
+// Category mapping for Kalshi series
+const SPORT_CATEGORIES: Record<string, string> = {
+  "NBA": "Basketball", "WNBA": "Basketball", "CBB": "Basketball", "NCAA": "Basketball",
+  "NFL": "Football", "CFB": "Football",
+  "MLB": "Baseball",
+  "NHL": "Hockey",
+  "MLS": "Soccer", "EPL": "Soccer", "UCL": "Soccer", "SOCCER": "Soccer", "FIFA": "Soccer",
+  "ATP": "Tennis", "WTA": "Tennis", "TENNIS": "Tennis",
+  "PGA": "Golf", "GOLF": "Golf", "LPGA": "Golf",
+  "AFL": "Aussie Rules",
+  "CRICKET": "Cricket", "IPL": "Cricket",
+  "F1": "Racing", "NASCAR": "Racing",
+  "CS": "Esports", "LOL": "Esports", "DOTA": "Esports", "VAL": "Esports",
+};
 
-function randomBetween(a: number, b: number) {
-  return +(a + Math.random() * (b - a)).toFixed(2);
-}
+function categorizeEvent(event: any): string {
+  const ticker = (event.series_ticker || event.event_ticker || "").toUpperCase();
+  const title = (event.title || "").toUpperCase();
+  const category = (event.category || "").toUpperCase();
 
-function makeTeamMarket(sport: string, teamA: string, teamB: string, opts?: { league?: string; live?: boolean; period?: string }) {
-  const pA = randomBetween(0.05, 0.95);
-  const pB = +(1 - pA).toFixed(2);
-  const spread = randomBetween(-12.5, 12.5);
-  const total = randomBetween(150, 250);
-  return {
-    sport, league: opts?.league || sport,
-    type: "game", live: opts?.live ?? Math.random() > 0.5,
-    period: opts?.period || (opts?.live ? "In Progress" : "Upcoming"),
-    teamA: { name: teamA, yesPrice: Math.max(0.01, Math.min(0.99, pA)), pct: Math.round(pA * 100) },
-    teamB: { name: teamB, yesPrice: Math.max(0.01, Math.min(0.99, pB)), pct: Math.round(pB * 100) },
-    spread, total,
-    volume: Math.round(Math.random() * 50000 + 5000),
-    startTime: new Date(Date.now() + Math.random() * 86400000).toISOString(),
-  };
-}
-
-function makePlayerPropMarket(sport: string, player: string, prop: string, line: number) {
-  const overPrice = randomBetween(0.35, 0.70);
-  return {
-    sport, type: "player_prop", live: Math.random() > 0.6,
-    player, prop, line,
-    over: { price: overPrice, pct: Math.round(overPrice * 100) },
-    under: { price: +(1 - overPrice + 0.01).toFixed(2), pct: Math.round((1 - overPrice) * 100) },
-    volume: Math.round(Math.random() * 20000 + 2000),
-  };
-}
-
-function makeOutrightMarket(sport: string, event: string, participants: { name: string; score?: number }[]) {
-  let remaining = 1.0;
-  const priced = participants.map((p, i) => {
-    const isLast = i === participants.length - 1;
-    const price = isLast ? remaining : +(remaining * randomBetween(0.1, 0.6)).toFixed(2);
-    remaining = +(remaining - price).toFixed(2);
-    return { ...p, yesPrice: Math.max(0.01, price), pct: Math.round(price * 100) };
-  });
-  return { sport, type: "outright", event, participants: priced, live: Math.random() > 0.4, volume: Math.round(Math.random() * 100000 + 10000) };
-}
-
-// ─── Generate full market catalog ───
-
-function generateAllMarkets() {
-  const markets: any[] = [];
-
-  // Basketball
-  const nbaGames = [
-    ["New York Knicks", "Los Angeles Lakers"], ["Boston Celtics", "Milwaukee Bucks"],
-    ["Golden State Warriors", "Denver Nuggets"], ["Phoenix Suns", "Dallas Mavericks"],
-    ["Philadelphia 76ers", "Miami Heat"], ["Minnesota Timberwolves", "Oklahoma City Thunder"],
-  ];
-  nbaGames.forEach(([a, b]) => markets.push(makeTeamMarket("Basketball", a, b, { league: "NBA" })));
-  markets.push(makePlayerPropMarket("Basketball", "LeBron James", "Points", 27.5));
-  markets.push(makePlayerPropMarket("Basketball", "Jalen Brunson", "Assists", 7.5));
-  markets.push(makePlayerPropMarket("Basketball", "Nikola Jokic", "Rebounds", 12.5));
-
-  // Baseball
-  const mlbGames = [
-    ["New York Yankees", "Boston Red Sox"], ["Los Angeles Dodgers", "San Francisco Giants"],
-    ["Houston Astros", "Texas Rangers"], ["Atlanta Braves", "Philadelphia Phillies"],
-  ];
-  mlbGames.forEach(([a, b]) => markets.push(makeTeamMarket("Baseball", a, b, { league: "MLB" })));
-  markets.push(makePlayerPropMarket("Baseball", "Shohei Ohtani", "Strikeouts", 7.5));
-
-  // Hockey
-  const nhlGames = [
-    ["New York Rangers", "New Jersey Devils"], ["Toronto Maple Leafs", "Montreal Canadiens"],
-    ["Colorado Avalanche", "Vegas Golden Knights"], ["Edmonton Oilers", "Vancouver Canucks"],
-    ["Florida Panthers", "Carolina Hurricanes"],
-  ];
-  nhlGames.forEach(([a, b]) => markets.push(makeTeamMarket("Hockey", a, b, { league: "NHL" })));
-
-  // Soccer
-  const soccerGames = [
-    ["Manchester City", "Arsenal", "Premier League"], ["Real Madrid", "Barcelona", "La Liga"],
-    ["AC Milan", "Inter Milan", "Serie A"], ["Bayern Munich", "Borussia Dortmund", "Bundesliga"],
-    ["PSG", "Marseille", "Ligue 1"], ["LA Galaxy", "LAFC", "MLS"],
-    ["Flamengo", "Palmeiras", "Brasileirao"], ["Celtic", "Rangers", "Scottish Premiership"],
-  ];
-  soccerGames.forEach(([a, b, lg]) => markets.push(makeTeamMarket("Soccer", a, b, { league: lg })));
-
-  // Tennis
-  const tennisMatches = [
-    ["Carlos Alcaraz", "Jannik Sinner"], ["Novak Djokovic", "Alexander Zverev"],
-    ["Iga Swiatek", "Aryna Sabalenka"], ["Coco Gauff", "Jessica Pegula"],
-  ];
-  tennisMatches.forEach(([a, b]) => markets.push(makeTeamMarket("Tennis", a, b, { league: "ATP/WTA" })));
-
-  // Golf - Outright
-  markets.push(makeOutrightMarket("Golf", "PGA Arnold Palmer Invitational Winner", [
-    { name: "Daniel Berger", score: -15 }, { name: "Akshay Bhatia", score: -13 },
-    { name: "Scottie Scheffler", score: -12 }, { name: "Rory McIlroy", score: -11 },
-    { name: "Collin Morikawa", score: -10 },
-  ]));
-  markets.push(makeOutrightMarket("Golf", "Masters 2026 Winner", [
-    { name: "Scottie Scheffler" }, { name: "Rory McIlroy" },
-    { name: "Jon Rahm" }, { name: "Xander Schauffele" },
-  ]));
-
-  // Aussie Rules
-  const aflGames = [
-    ["Collingwood", "Carlton"], ["Richmond", "Geelong"],
-    ["Sydney Swans", "Melbourne"], ["Brisbane Lions", "West Coast"],
-  ];
-  aflGames.forEach(([a, b]) => markets.push(makeTeamMarket("Aussie Rules", a, b, { league: "AFL" })));
-
-  // Cricket
-  markets.push(makeTeamMarket("Cricket", "India", "Australia", { league: "Test" }));
-  markets.push(makeTeamMarket("Cricket", "England", "South Africa", { league: "ODI" }));
-  markets.push(makeOutrightMarket("Cricket", "IPL 2026 Winner", [
-    { name: "Mumbai Indians" }, { name: "Chennai Super Kings" },
-    { name: "Royal Challengers" }, { name: "Gujarat Titans" },
-  ]));
-
-  // Racing
-  markets.push(makeOutrightMarket("Racing", "Kentucky Derby 2026 Winner", [
-    { name: "Favorite Horse A" }, { name: "Contender B" },
-    { name: "Longshot C" }, { name: "Dark Horse D" },
-  ]));
-
-  // Esports
-  markets.push(makeTeamMarket("Esports", "HAVU", "los kogutos", { league: "CS2" }));
-  markets.push(makeTeamMarket("Esports", "T1", "Gen.G", { league: "LoL LCK" }));
-  markets.push(makeTeamMarket("Esports", "Cloud9", "Team Liquid", { league: "Valorant" }));
-
-  return markets;
-}
-
-// ─── Portfolio simulation ───
-
-function generatePortfolio(markets: any[]) {
-  const gameMarkets = markets.filter(m => m.type === "game" && m.live);
-  const positions: any[] = [];
-
-  // Pick some random live positions
-  const picks = gameMarkets.sort(() => Math.random() - 0.5).slice(0, 8);
-  for (const m of picks) {
-    const side = Math.random() > 0.5 ? "teamA" : "teamB";
-    const team = m[side];
-    const qty = Math.round(Math.random() * 80 + 10);
-    const avgCost = randomBetween(0.2, 0.7);
-    const currentPrice = team.yesPrice;
-    positions.push({
-      sport: m.sport, league: m.league,
-      market: `${m.teamA.name} vs ${m.teamB.name}`,
-      side: team.name, type: "Yes",
-      contracts: qty, avgCost, currentPrice,
-      value: +(qty * currentPrice).toFixed(2),
-      cost: +(qty * avgCost).toFixed(2),
-      pnl: +(qty * (currentPrice - avgCost)).toFixed(2),
-      pnlPct: +(((currentPrice - avgCost) / avgCost) * 100).toFixed(1),
-      live: m.live,
-    });
+  // Check category field first
+  if (category === "SPORTS" || category.includes("SPORT")) {
+    // Try to identify specific sport from ticker/title
+    for (const [key, sport] of Object.entries(SPORT_CATEGORIES)) {
+      if (ticker.includes(key) || title.includes(key)) return sport;
+    }
   }
 
-  // Add a golf outright
-  positions.push({
-    sport: "Golf", league: "PGA",
-    market: "Arnold Palmer Invitational Winner",
-    side: "Daniel Berger", type: "Yes",
-    contracts: 934, avgCost: 0.01, currentPrice: 0.78,
-    value: +(934 * 0.78).toFixed(2), cost: +(934 * 0.01).toFixed(2),
-    pnl: +(934 * (0.78 - 0.01)).toFixed(2),
-    pnlPct: +(((0.78 - 0.01) / 0.01) * 100).toFixed(1),
-    live: true,
+  // Check ticker patterns
+  for (const [key, sport] of Object.entries(SPORT_CATEGORIES)) {
+    if (ticker.includes(key)) return sport;
+  }
+
+  // Check title keywords
+  const titleLower = title.toLowerCase();
+  if (titleLower.includes("basketball") || titleLower.includes("nba")) return "Basketball";
+  if (titleLower.includes("football") || titleLower.includes("nfl")) return "Football";
+  if (titleLower.includes("baseball") || titleLower.includes("mlb")) return "Baseball";
+  if (titleLower.includes("hockey") || titleLower.includes("nhl")) return "Hockey";
+  if (titleLower.includes("soccer") || titleLower.includes("premier league") || titleLower.includes("mls")) return "Soccer";
+  if (titleLower.includes("tennis") || titleLower.includes("atp") || titleLower.includes("wta")) return "Tennis";
+  if (titleLower.includes("golf") || titleLower.includes("pga") || titleLower.includes("masters")) return "Golf";
+  if (titleLower.includes("f1") || titleLower.includes("nascar") || titleLower.includes("race")) return "Racing";
+
+  return category || "Other";
+}
+
+async function fetchKalshiEvents(sport?: string) {
+  // Fetch events - sports category
+  const params = new URLSearchParams({
+    limit: "200",
+    status: "open",
   });
 
-  const totalValue = positions.reduce((s, p) => s + p.value, 0);
-  const totalCost = positions.reduce((s, p) => s + p.cost, 0);
+  const eventsUrl = `${KALSHI_API}/events?${params}`;
+  console.log("Fetching Kalshi events:", eventsUrl);
 
-  return {
-    positions,
-    totalValue: +totalValue.toFixed(2),
-    totalCost: +totalCost.toFixed(2),
-    totalPnl: +(totalValue - totalCost).toFixed(2),
-    totalPnlPct: +(((totalValue - totalCost) / totalCost) * 100).toFixed(1),
-  };
-}
+  const response = await fetch(eventsUrl, {
+    headers: { "Accept": "application/json" },
+  });
 
-// ─── Edge detection: find mispriced markets ───
-
-function findEdges(markets: any[]) {
-  const edges: any[] = [];
-
-  for (const m of markets) {
-    if (m.type !== "game") continue;
-    // Flag big favorites trading below expected
-    if (m.teamA.pct > 80 && m.teamA.yesPrice < 0.75) {
-      edges.push({
-        sport: m.sport, market: `${m.teamA.name} vs ${m.teamB.name}`,
-        signal: "UNDERPRICED_FAVORITE", team: m.teamA.name,
-        price: m.teamA.yesPrice, expectedFloor: 0.80,
-        edge: +((0.80 - m.teamA.yesPrice) * 100).toFixed(0),
-        reasoning: `${m.teamA.name} at ${(m.teamA.yesPrice * 100).toFixed(0)}¢ — implied ${m.teamA.pct}% but trading ${((0.80 - m.teamA.yesPrice) * 100).toFixed(0)}¢ below floor`,
-      });
-    }
-    if (m.teamB.pct > 80 && m.teamB.yesPrice < 0.75) {
-      edges.push({
-        sport: m.sport, market: `${m.teamA.name} vs ${m.teamB.name}`,
-        signal: "UNDERPRICED_FAVORITE", team: m.teamB.name,
-        price: m.teamB.yesPrice, expectedFloor: 0.80,
-        edge: +((0.80 - m.teamB.yesPrice) * 100).toFixed(0),
-        reasoning: `${m.teamB.name} at ${(m.teamB.yesPrice * 100).toFixed(0)}¢ — implied ${m.teamB.pct}% but trading ${((0.80 - m.teamB.yesPrice) * 100).toFixed(0)}¢ below floor`,
-      });
-    }
-    // Flag near-coin-flip markets with volume
-    if (Math.abs(m.teamA.pct - 50) < 8 && m.volume > 20000) {
-      edges.push({
-        sport: m.sport, market: `${m.teamA.name} vs ${m.teamB.name}`,
-        signal: "HIGH_VOLUME_TOSS_UP", team: null,
-        reasoning: `Coin-flip game with $${m.volume.toLocaleString()} volume — watch for late line movement`,
-      });
-    }
+  if (!response.ok) {
+    const errText = await response.text();
+    console.error("Kalshi API error:", response.status, errText);
+    throw new Error(`Kalshi API returned ${response.status}`);
   }
 
-  return edges.slice(0, 12);
+  const data = await response.json();
+  return data.events || [];
 }
 
-// ─── Portfolio history ───
-function generatePortfolioHistory() {
-  const now = Date.now();
-  const points = [];
-  let value = 200;
-  for (let i = 72; i >= 0; i--) {
-    value += (Math.random() - 0.42) * 8;
-    value = Math.max(100, Math.min(500, value));
-    points.push({ time: new Date(now - i * 20 * 60 * 1000).toISOString(), value: +value.toFixed(2) });
+async function fetchKalshiMarkets(eventTicker?: string) {
+  const params = new URLSearchParams({
+    limit: "200",
+    status: "open",
+  });
+  if (eventTicker) params.set("event_ticker", eventTicker);
+
+  const url = `${KALSHI_API}/markets?${params}`;
+  const response = await fetch(url, {
+    headers: { "Accept": "application/json" },
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    console.error("Kalshi markets error:", response.status, errText);
+    throw new Error(`Kalshi markets API returned ${response.status}`);
   }
-  return points;
-}
 
-// ─── Main handler ───
+  const data = await response.json();
+  return data.markets || [];
+}
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
@@ -257,46 +106,105 @@ Deno.serve(async (req) => {
 
   try {
     const body = await req.json().catch(() => ({}));
-    const filterSport = body.sport || null; // optional filter
+    const filterSport = body.sport || null;
 
-    let markets = generateAllMarkets();
-    if (filterSport && filterSport !== "All") {
-      markets = markets.filter(m => m.sport === filterSport);
+    // Fetch real events and markets from Kalshi
+    const [events, markets] = await Promise.all([
+      fetchKalshiEvents(),
+      fetchKalshiMarkets(),
+    ]);
+
+    console.log(`Fetched ${events.length} events, ${markets.length} markets from Kalshi`);
+
+    // Categorize and enrich events
+    const enrichedEvents = events.map((evt: any) => ({
+      ...evt,
+      sport_category: categorizeEvent(evt),
+    }));
+
+    // Build market-to-event lookup
+    const eventMap = new Map<string, any>();
+    for (const evt of enrichedEvents) {
+      eventMap.set(evt.event_ticker, evt);
     }
 
-    const portfolio = generatePortfolio(markets);
-    const edges = findEdges(markets);
-    const history = generatePortfolioHistory();
+    // Enrich markets with event data
+    const enrichedMarkets = markets.map((mkt: any) => {
+      const event = eventMap.get(mkt.event_ticker) || {};
+      const sport = event.sport_category || categorizeEvent({ ...mkt, title: mkt.title || mkt.subtitle });
 
-    // Category summary
-    const categorySummary = SPORT_CATEGORIES.map(cat => {
-      const catMarkets = markets.filter(m => m.sport === cat);
-      const liveCount = catMarkets.filter(m => m.live).length;
-      return { sport: cat, total: catMarkets.length, live: liveCount };
-    }).filter(c => c.total > 0);
+      // Calculate implied probabilities from yes/no prices
+      const yesPrice = (mkt.yes_ask || mkt.last_price || 0) / 100;
+      const noPrice = (mkt.no_ask || (100 - (mkt.last_price || 50))) / 100;
 
-    const liveTotal = markets.filter(m => m.live).length;
+      return {
+        ticker: mkt.ticker,
+        event_ticker: mkt.event_ticker,
+        title: mkt.title || mkt.subtitle || mkt.ticker,
+        event_title: event.title || "",
+        sport,
+        status: mkt.status,
+        yes_price: yesPrice,
+        no_price: noPrice,
+        yes_bid: (mkt.yes_bid || 0) / 100,
+        yes_ask: (mkt.yes_ask || 0) / 100,
+        no_bid: (mkt.no_bid || 0) / 100,
+        no_ask: (mkt.no_ask || 0) / 100,
+        last_price: (mkt.last_price || 0) / 100,
+        volume: mkt.volume || 0,
+        volume_24h: mkt.volume_24h || 0,
+        open_interest: mkt.open_interest || 0,
+        close_time: mkt.close_time || mkt.expiration_time,
+        result: mkt.result,
+        category: event.category || "",
+        subtitle: mkt.subtitle || "",
+      };
+    });
+
+    // Filter by sport if requested
+    let filtered = enrichedMarkets;
+    if (filterSport && filterSport !== "All") {
+      filtered = enrichedMarkets.filter((m: any) => m.sport === filterSport);
+    }
+
+    // Sort: live/active first, then by volume
+    filtered.sort((a: any, b: any) => (b.volume_24h || b.volume || 0) - (a.volume_24h || a.volume || 0));
+
+    // Build category summary
+    const catCounts = new Map<string, { total: number; volume: number }>();
+    for (const m of enrichedMarkets) {
+      const existing = catCounts.get(m.sport) || { total: 0, volume: 0 };
+      existing.total++;
+      existing.volume += m.volume_24h || m.volume || 0;
+      catCounts.set(m.sport, existing);
+    }
+
+    const categories = Array.from(catCounts.entries())
+      .map(([sport, data]) => ({ sport, total: data.total, volume: data.volume }))
+      .sort((a, b) => b.total - a.total);
 
     return new Response(JSON.stringify({
-      categories: categorySummary,
-      markets,
-      portfolio,
-      edges,
-      portfolioHistory: history,
+      categories,
+      markets: filtered,
       stats: {
-        totalMarkets: markets.length,
-        liveMarkets: liveTotal,
-        sports: categorySummary.length,
-        portfolioPositions: portfolio.positions.length,
+        totalMarkets: enrichedMarkets.length,
+        filteredMarkets: filtered.length,
+        totalEvents: events.length,
+        categories: categories.length,
       },
+      source: "kalshi_live",
       timestamp: new Date().toISOString(),
     }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (error) {
     console.error("Kalshi sports error:", error);
-    return new Response(JSON.stringify({ error: error.message }), {
-      status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
+    return new Response(JSON.stringify({
+      error: error.message,
+      source: "kalshi_live",
+    }), {
+      status: 500,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
 });
