@@ -1,172 +1,174 @@
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers":
     "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
-// Simulated live tournament data (replace with Sportradar/Golf Channel API)
-function generateTournamentData() {
-  const players = [
-    { name: "Scottie Scheffler", rank: 1, score: -18, thru: 14, today: -5, strokes: 54, round: 4 },
-    { name: "Rory McIlroy", rank: 2, score: -15, thru: 15, today: -3, strokes: 57, round: 4 },
-    { name: "Jon Rahm", rank: 3, score: -14, thru: 13, today: -2, strokes: 58, round: 4 },
-    { name: "Collin Morikawa", rank: 4, score: -13, thru: 16, today: -4, strokes: 59, round: 4 },
-    { name: "Viktor Hovland", rank: 5, score: -12, thru: 14, today: -1, strokes: 60, round: 4 },
-    { name: "Xander Schauffele", rank: 6, score: -11, thru: 15, today: -2, strokes: 61, round: 4 },
-    { name: "Patrick Cantlay", rank: 7, score: -10, thru: 13, today: -1, strokes: 62, round: 4 },
-    { name: "Ludvig Aberg", rank: 8, score: -9, thru: 14, today: 0, strokes: 63, round: 4 },
-    { name: "Wyndham Clark", rank: 9, score: -8, thru: 12, today: +1, strokes: 64, round: 4 },
-    { name: "Tommy Fleetwood", rank: 10, score: -7, thru: 15, today: -1, strokes: 65, round: 4 },
-    { name: "Max Homa", rank: 11, score: -6, thru: 14, today: 0, strokes: 66, round: 4 },
-    { name: "Sahith Theegala", rank: 12, score: -5, thru: 13, today: +1, strokes: 67, round: 4 },
-  ];
+const KALSHI_API = "https://api.elections.kalshi.com/trade-api/v2";
 
-  // Add slight randomization
-  return players.map((p) => ({
-    ...p,
-    thru: Math.min(18, p.thru + Math.floor(Math.random() * 2)),
-  }));
-}
+// ─── Kalshi Data Fetchers ───────────────────────────────────────
 
-// Simulated Kalshi contract pricing
-function generateKalshiContracts(players: any[]) {
-  const leader = players[0];
-  const leaderLead = Math.abs(leader.score - players[1].score);
-
-  return players.map((p, i) => {
-    // Winner Yes price inversely related to rank
-    const winnerYesBase = i === 0 ? 0.65 : i === 1 ? 0.18 : i === 2 ? 0.08 : Math.max(0.01, 0.05 - i * 0.005);
-    const winnerYes = +(winnerYesBase + (Math.random() * 0.06 - 0.03)).toFixed(2);
-
-    // Top 10 price based on rank
-    const top10Base = i < 5 ? 0.92 - i * 0.03 : i < 10 ? 0.75 - (i - 5) * 0.08 : 0.3 - (i - 10) * 0.1;
-    const top10Yes = +Math.min(0.99, Math.max(0.05, top10Base + (Math.random() * 0.08 - 0.04))).toFixed(2);
-
-    // Round leader No price (for hedging)
-    const roundLeaderNo = i === 0 ? +(1 - winnerYes + 0.02).toFixed(2) : +(0.85 + Math.random() * 0.1).toFixed(2);
-
-    return {
-      player: p.name,
-      rank: p.rank,
-      winnerYes: Math.min(0.99, Math.max(0.01, winnerYes)),
-      winnerNo: +(1 - Math.min(0.99, Math.max(0.01, winnerYes)) + 0.01).toFixed(2),
-      top10Yes: top10Yes,
-      top10No: +(1 - top10Yes + 0.01).toFixed(2),
-      roundLeaderNo,
-      leaderLead: i === 0 ? leaderLead : null,
-    };
+async function fetchKalshiGolfMarkets() {
+  // Fetch events first to find golf-related ones
+  const eventsRes = await fetch(`${KALSHI_API}/events?limit=200&status=open`, {
+    headers: { Accept: "application/json" },
   });
+  if (!eventsRes.ok) throw new Error(`Kalshi events API ${eventsRes.status}`);
+  const eventsData = await eventsRes.json();
+  const events = eventsData.events || [];
+
+  // Filter for golf events
+  const golfEvents = events.filter((e: any) => {
+    const t = ((e.title || "") + " " + (e.series_ticker || "") + " " + (e.event_ticker || "")).toUpperCase();
+    return t.includes("GOLF") || t.includes("PGA") || t.includes("MASTERS") || t.includes("OPEN") ||
+      t.includes("LPGA") || t.includes("TOUR") || t.includes("BIRDIE") || t.includes("WINNER") && t.includes("TOURNAMENT");
+  });
+
+  console.log(`Found ${golfEvents.length} golf events out of ${events.length} total`);
+
+  // Fetch all open markets
+  const marketsRes = await fetch(`${KALSHI_API}/markets?limit=200&status=open`, {
+    headers: { Accept: "application/json" },
+  });
+  if (!marketsRes.ok) throw new Error(`Kalshi markets API ${marketsRes.status}`);
+  const marketsData = await marketsRes.json();
+  const allMarkets = marketsData.markets || [];
+
+  // Build event ticker set for golf
+  const golfEventTickers = new Set(golfEvents.map((e: any) => e.event_ticker));
+
+  // Filter markets belonging to golf events, or with golf keywords in title
+  const golfMarkets = allMarkets.filter((m: any) => {
+    if (golfEventTickers.has(m.event_ticker)) return true;
+    const title = ((m.title || "") + " " + (m.subtitle || "") + " " + (m.ticker || "")).toUpperCase();
+    return title.includes("GOLF") || title.includes("PGA") || title.includes("MASTERS") ||
+      title.includes("TOP 10") && (title.includes("TOUR") || title.includes("OPEN"));
+  });
+
+  console.log(`Found ${golfMarkets.length} golf markets`);
+
+  return { events: golfEvents, markets: golfMarkets, allMarkets, allEvents: events };
 }
 
-// Portfolio simulation
-function generatePortfolio(players: any[], contracts: any[]) {
-  const positions = [
-    { player: players[0].name, market: "Winner Yes", contracts: 50, avgCost: 0.45, currentPrice: contracts[0].winnerYes, type: "anchor" },
-    { player: players[1].name, market: "Winner Yes", contracts: 20, avgCost: 0.12, currentPrice: contracts[1].winnerYes, type: "satellite" },
-    { player: players[3].name, market: "Winner Yes", contracts: 15, avgCost: 0.08, currentPrice: contracts[3].winnerYes, type: "satellite" },
-    { player: players[0].name, market: "Round Leader No", contracts: 30, avgCost: 0.32, currentPrice: contracts[0].roundLeaderNo, type: "hedge" },
-    { player: players[4].name, market: "Top 10 Yes", contracts: 40, avgCost: 0.72, currentPrice: contracts[4].top10Yes, type: "floor" },
-    { player: players[2].name, market: "Top 10 Yes", contracts: 25, avgCost: 0.68, currentPrice: contracts[2].top10Yes, type: "floor" },
+// ─── Market Classification ──────────────────────────────────────
+
+type MarketType = "winner" | "top10" | "top5" | "top20" | "round_leader" | "matchup" | "other";
+
+function classifyMarket(market: any): MarketType {
+  const title = ((market.title || "") + " " + (market.subtitle || "")).toUpperCase();
+  if (title.includes("WINNER") || title.includes("WIN THE")) return "winner";
+  if (title.includes("TOP 10") || title.includes("TOP TEN")) return "top10";
+  if (title.includes("TOP 5") || title.includes("TOP FIVE")) return "top5";
+  if (title.includes("TOP 20") || title.includes("TOP TWENTY")) return "top20";
+  if (title.includes("ROUND LEADER") || title.includes("LEAD AFTER")) return "round_leader";
+  if (title.includes("VS") || title.includes("MATCHUP") || title.includes("HEAD TO HEAD")) return "matchup";
+  return "other";
+}
+
+function extractPlayerName(market: any): string {
+  const title = market.title || market.subtitle || "";
+  // Try to extract player name — usually before "to win", "top 10", etc.
+  const patterns = [
+    /^(.+?)\s+to\s+(win|finish)/i,
+    /^(.+?)\s*[-–]\s*(winner|top)/i,
+    /^Will\s+(.+?)\s+(win|finish|make)/i,
+    /^(.+?)\s+(winner|top\s*\d+)/i,
   ];
-
-  return positions.map((pos) => ({
-    ...pos,
-    value: +(pos.contracts * pos.currentPrice).toFixed(2),
-    cost: +(pos.contracts * pos.avgCost).toFixed(2),
-    pnl: +(pos.contracts * (pos.currentPrice - pos.avgCost)).toFixed(2),
-    pnlPct: +(((pos.currentPrice - pos.avgCost) / pos.avgCost) * 100).toFixed(1),
-  }));
+  for (const p of patterns) {
+    const m = title.match(p);
+    if (m) return m[1].trim();
+  }
+  return title.split(/[-–]/)[0].trim().substring(0, 30);
 }
 
-// Concentration engine
-function calculateConcentration(portfolio: any[], contracts: any[], leader: any) {
-  const anchorPos = portfolio.find((p) => p.type === "anchor");
-  const satellites = portfolio.filter((p) => p.type === "satellite");
-  const leaderLead = contracts[0].leaderLead || 0;
+// ─── Alpha Models ───────────────────────────────────────────────
 
-  const suggestions: any[] = [];
+interface PlayerMarketData {
+  name: string;
+  winnerYes: number;
+  winnerNo: number;
+  top10Yes: number;
+  top10No: number;
+  roundLeaderNo: number;
+  winnerTicker: string;
+  top10Ticker: string;
+  roundLeaderTicker: string;
+  winnerVolume: number;
+  top10Volume: number;
+  winnerOpenInterest: number;
+  top10OpenInterest: number;
+}
 
-  if (leaderLead >= 3) {
-    for (const sat of satellites) {
-      const liquidationValue = sat.value;
-      const additionalContracts = Math.floor(liquidationValue / contracts[0].winnerYes);
-      const newAnchorValue = (anchorPos?.contracts || 0) + additionalContracts;
-      const roi = +(((1.0 - contracts[0].winnerYes) / contracts[0].winnerYes) * 100).toFixed(1);
+// Leader Lag: Fair Value = 1 - (1 / (1 + Lead_Strokes / (Holes_Remaining / 2)))
+function computeLeaderLag(
+  currentPrice: number,
+  leadStrokes: number,
+  holesRemaining: number
+): { fairValue: number; edge: number; signal: string } {
+  if (holesRemaining <= 0) return { fairValue: currentPrice, edge: 0, signal: "FINISHED" };
+  const fairValue = 1 - (1 / (1 + leadStrokes / (holesRemaining / 2)));
+  const edge = (fairValue - currentPrice) / fairValue;
+  let signal = "HOLD";
+  if (edge >= 0.15) signal = "CONCENTRATION_BUY";
+  else if (edge >= 0.08) signal = "WATCH";
+  else if (edge <= -0.10) signal = "OVERPRICED";
+  return { fairValue: +fairValue.toFixed(4), edge: +edge.toFixed(4), signal };
+}
 
-      suggestions.push({
-        action: "LIQUIDATE",
-        from: `${sat.player} - ${sat.market}`,
-        value: liquidationValue,
-        toContracts: additionalContracts,
-        roi,
-        reasoning: `Leader +${leaderLead} strokes. Satellite ROI declining. Redirect to Anchor at ${contracts[0].winnerYes}¢ for ${roi}% upside.`,
-      });
-    }
-  }
-
+// Probability Wall: Top 5 player with Top 10 < 90¢ and ≥3 stroke lead over T11
+function computeProbabilityWall(
+  rank: number,
+  top10Price: number,
+  strokeLeadOverBubble: number
+): { signal: string; discount: number; reasoning: string } | null {
+  if (rank > 5) return null;
+  if (top10Price >= 0.90) return null;
+  if (strokeLeadOverBubble < 3) return null;
+  const discount = +(0.90 - top10Price).toFixed(2);
   return {
-    anchorSize: anchorPos?.value || 0,
-    anchorPct: +((anchorPos?.value || 0) / portfolio.reduce((s, p) => s + p.value, 0) * 100).toFixed(1),
-    suggestions,
-    recommendation: leaderLead >= 3 ? "CONCENTRATE" : leaderLead >= 1 ? "HOLD" : "DIVERSIFY",
+    signal: "CAPITAL_LOCK",
+    discount,
+    reasoning: `Rank ${rank} player at ${(top10Price * 100).toFixed(0)}¢ Top 10 — ${discount * 100}¢ below 90¢ fair value with ${strokeLeadOverBubble}-stroke cushion over bubble. Max $5.00 limit.`,
   };
 }
 
-// Hedge calculator
-function calculateHedge(portfolio: any[], contracts: any[], leader: any, players: any[]) {
-  const anchorPos = portfolio.find((p) => p.type === "anchor");
-  if (!anchorPos) return null;
-
-  const anchorRisk = anchorPos.cost;
-  const roundLeaderNoPrice = contracts[0].roundLeaderNo;
-  const contractsNeeded = Math.ceil(anchorRisk / (1.0 - roundLeaderNoPrice));
-  const hedgeCost = +(contractsNeeded * roundLeaderNoPrice).toFixed(2);
-  const maxLoss = +(anchorRisk - (contractsNeeded * (1.0 - roundLeaderNoPrice))).toFixed(2);
-  const leaderLead = contracts[0].leaderLead || 0;
-
+// Chaos Hedge: Winner position up >50%, Round Leader No < 12¢
+function computeChaosHedge(
+  winnerYes: number,
+  winnerCost: number,
+  roundLeaderNo: number
+): { signal: string; reasoning: string } | null {
+  if (winnerCost <= 0) return null;
+  const gain = (winnerYes - winnerCost) / winnerCost;
+  if (gain <= 0.50) return null;
+  if (roundLeaderNo >= 0.12) return null;
   return {
-    anchorCost: anchorRisk,
-    roundLeaderNoPrice,
-    contractsNeeded,
-    hedgeCost,
-    maxLossIfSwing: Math.max(0, maxLoss),
-    protectionLevel: "3-stroke swing",
-    urgency: leaderLead < 1 ? "EMERGENCY" : leaderLead < 2 ? "HIGH" : leaderLead < 3 ? "MODERATE" : "LOW",
-    corridorStatus: portfolio.some((p) => p.type === "hedge") && portfolio.some((p) => p.type === "floor") ? "PROTECTED" : portfolio.some((p) => p.type === "hedge") ? "PARTIAL" : "EXPOSED",
+    signal: "RISK_FREE_HEDGE",
+    reasoning: `Winner position up ${(gain * 100).toFixed(0)}%. Round Leader No at ${(roundLeaderNo * 100).toFixed(0)}¢ — below 12¢ threshold. Hedge locks in profit with minimal downside.`,
   };
 }
 
-// Floor stabilizers
-function findFloorStabilizers(players: any[], contracts: any[]) {
-  return contracts
-    .filter((c, i) => i < 5 && c.top10Yes < 0.80)
-    .map((c, i) => ({
-      player: c.player,
-      rank: c.rank,
-      top10Price: c.top10Yes,
-      discount: +((0.80 - c.top10Yes) * 100).toFixed(0),
-      signal: "FLOOR_STABILIZER",
-      reasoning: `Rank ${c.rank} player trading at ${(c.top10Yes * 100).toFixed(0)}¢ — ${((0.80 - c.top10Yes) * 100).toFixed(0)}¢ below fair value. High-probability floor position.`,
-    }));
+// ─── Bet Calculator ─────────────────────────────────────────────
+
+function computeBetSize(alphaScore: number): { suggested: number; reasoning: string } {
+  // alphaScore = gap between market price and model probability (0 to 1)
+  const abs = Math.abs(alphaScore);
+  let suggested: number;
+  if (abs >= 0.25) suggested = 5.00;
+  else if (abs >= 0.15) suggested = 3.00;
+  else if (abs >= 0.10) suggested = 2.00;
+  else if (abs >= 0.05) suggested = 1.00;
+  else suggested = 0;
+
+  return {
+    suggested,
+    reasoning: suggested === 0
+      ? "Edge too small — no bet"
+      : `Alpha ${(abs * 100).toFixed(1)}% → $${suggested.toFixed(2)} entry`,
+  };
 }
 
-// Portfolio value history (simulated)
-function generatePortfolioHistory() {
-  const now = Date.now();
-  const points = [];
-  let value = 85;
-  for (let i = 48; i >= 0; i--) {
-    value += (Math.random() - 0.4) * 3;
-    value = Math.max(60, Math.min(150, value));
-    points.push({
-      time: new Date(now - i * 30 * 60 * 1000).toISOString(),
-      value: +value.toFixed(2),
-    });
-  }
-  return points;
-}
+// ─── Main Handler ───────────────────────────────────────────────
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
@@ -174,58 +176,206 @@ Deno.serve(async (req) => {
   }
 
   try {
-    const players = generateTournamentData();
-    const contracts = generateKalshiContracts(players);
-    const portfolio = generatePortfolio(players, contracts);
-    const concentration = calculateConcentration(portfolio, contracts, players[0]);
-    const hedge = calculateHedge(portfolio, contracts, players[0], players);
-    const floorStabilizers = findFloorStabilizers(players, contracts);
-    const portfolioHistory = generatePortfolioHistory();
+    const { events, markets, allMarkets, allEvents } = await fetchKalshiGolfMarkets();
 
-    const leaderLead = contracts[0].leaderLead || 0;
-    const totalValue = portfolio.reduce((s, p) => s + p.value, 0);
-    const totalCost = portfolio.reduce((s, p) => s + p.cost, 0);
-    const totalPnl = +(totalValue - totalCost).toFixed(2);
+    // Classify all golf markets
+    const classified = markets.map((m: any) => ({
+      ...m,
+      marketType: classifyMarket(m),
+      playerName: extractPlayerName(m),
+      yesPrice: (m.yes_ask || m.last_price || 0) / 100,
+      noPrice: (m.no_ask || (100 - (m.last_price || 50))) / 100,
+      yesBid: (m.yes_bid || 0) / 100,
+      yesAsk: (m.yes_ask || 0) / 100,
+      noBid: (m.no_bid || 0) / 100,
+      noAsk: (m.no_ask || 0) / 100,
+      lastPrice: (m.last_price || 0) / 100,
+      vol24h: m.volume_24h || 0,
+      volume: m.volume || 0,
+      openInterest: m.open_interest || 0,
+    }));
 
+    // Build player map — aggregate winner + top10 + round leader for each player
+    const winnerMarkets = classified.filter((m: any) => m.marketType === "winner");
+    const top10Markets = classified.filter((m: any) => m.marketType === "top10");
+    const top5Markets = classified.filter((m: any) => m.marketType === "top5");
+    const roundLeaderMarkets = classified.filter((m: any) => m.marketType === "round_leader");
+
+    // Sort winner markets by price (implied rank)
+    winnerMarkets.sort((a: any, b: any) => b.yesPrice - a.yesPrice);
+
+    // Build player grid (Top 15 by winner price)
+    const playerGrid = winnerMarkets.slice(0, 15).map((wm: any, idx: number) => {
+      const name = wm.playerName;
+      const top10 = top10Markets.find((t: any) =>
+        t.playerName.toLowerCase().includes(name.split(" ").pop()?.toLowerCase() || "xxx")
+      );
+      const roundLeader = roundLeaderMarkets.find((r: any) =>
+        r.playerName.toLowerCase().includes(name.split(" ").pop()?.toLowerCase() || "xxx")
+      );
+
+      const impliedRank = idx + 1;
+      const winnerYes = wm.yesPrice;
+      const top10Yes = top10?.yesPrice || 0;
+      const roundLeaderNo = roundLeader ? (1 - roundLeader.yesPrice) : 0;
+
+      // Estimate holes remaining and lead from market prices
+      // Leader's implied lead ≈ proportional to price gap
+      const leaderPrice = winnerMarkets[0]?.yesPrice || 0;
+      const estimatedLead = idx === 0 ? Math.max(1, Math.round((leaderPrice - (winnerMarkets[1]?.yesPrice || 0)) * 20)) : 0;
+      const holesRemaining = 18; // Default assumption for live round
+
+      // Alpha: Leader Lag
+      const leaderLag = idx === 0
+        ? computeLeaderLag(winnerYes, estimatedLead, holesRemaining)
+        : { fairValue: 0, edge: 0, signal: "N/A" };
+
+      // Alpha: Probability Wall — estimate stroke lead over T11
+      const t11Price = winnerMarkets[10]?.yesPrice || 0;
+      const strokeLeadOverBubble = Math.round((winnerYes - t11Price) * 30);
+      const probWall = computeProbabilityWall(impliedRank, top10Yes, strokeLeadOverBubble);
+
+      // Bet calculator
+      const alphaScore = idx === 0 ? leaderLag.edge : (probWall ? probWall.discount : 0);
+      const bet = computeBetSize(alphaScore);
+
+      return {
+        rank: impliedRank,
+        name,
+        winnerYes,
+        winnerNo: +(1 - winnerYes).toFixed(4),
+        top10Yes,
+        top10No: top10Yes > 0 ? +(1 - top10Yes).toFixed(4) : 0,
+        roundLeaderNo,
+        winnerTicker: wm.ticker,
+        top10Ticker: top10?.ticker || "",
+        roundLeaderTicker: roundLeader?.ticker || "",
+        winnerVolume: wm.vol24h || wm.volume || 0,
+        top10Volume: top10?.vol24h || top10?.volume || 0,
+        winnerOpenInterest: wm.openInterest || 0,
+        top10OpenInterest: top10?.openInterest || 0,
+        leaderLag: idx === 0 ? leaderLag : null,
+        probWall,
+        bet,
+        estimatedLead: idx === 0 ? estimatedLead : null,
+      };
+    });
+
+    // ─── Edge Alerts ──────────────────────────────────────
     const alerts: any[] = [];
-    if (leaderLead > 3) {
-      alerts.push({ type: "LOCKED", severity: "success", message: `Winner Yes LOCKED — Leader by ${leaderLead} strokes` });
+
+    // Leader Lag alert
+    const leader = playerGrid[0];
+    if (leader?.leaderLag?.signal === "CONCENTRATION_BUY") {
+      alerts.push({
+        type: "LEADER_LAG",
+        severity: "critical",
+        signal: "CONCENTRATION_BUY",
+        message: `${leader.name} Winner Yes at ${(leader.winnerYes * 100).toFixed(0)}¢ — Fair Value ${(leader.leaderLag.fairValue * 100).toFixed(0)}¢. Edge: ${(leader.leaderLag.edge * 100).toFixed(1)}%. BUY.`,
+        bet: leader.bet,
+      });
     }
-    if (leaderLead < 1) {
-      alerts.push({ type: "EMERGENCY_HEDGE", severity: "critical", message: `EMERGENCY: Leader lead < 1 stroke. Hedge Round Leader NOW.` });
+
+    // Probability Wall alerts
+    for (const p of playerGrid) {
+      if (p.probWall) {
+        alerts.push({
+          type: "PROBABILITY_WALL",
+          severity: "success",
+          signal: "CAPITAL_LOCK",
+          message: p.probWall.reasoning,
+          bet: p.bet,
+          player: p.name,
+        });
+      }
     }
-    if (floorStabilizers.length > 0) {
-      alerts.push({ type: "FLOOR_OPPORTUNITY", severity: "info", message: `${floorStabilizers.length} Floor Stabilizer(s) detected below 80¢` });
+
+    // Chaos Hedge — check if leader's winner is up significantly and round leader no is cheap
+    if (leader && leader.roundLeaderNo > 0) {
+      const chaosHedge = computeChaosHedge(
+        leader.winnerYes,
+        leader.winnerYes * 0.5, // Assume 50% cost basis as estimate
+        leader.roundLeaderNo
+      );
+      if (chaosHedge) {
+        alerts.push({
+          type: "CHAOS_HEDGE",
+          severity: "warning",
+          signal: "RISK_FREE_HEDGE",
+          message: chaosHedge.reasoning,
+          player: leader.name,
+        });
+      }
     }
+
+    // Delta alerts — markets with high volume but low price (potential panic)
+    for (const p of playerGrid.slice(0, 10)) {
+      if (p.winnerVolume > 100 && p.winnerYes < 0.10 && p.rank <= 5) {
+        alerts.push({
+          type: "MARKET_PANIC",
+          severity: "info",
+          signal: "DELTA_ALERT",
+          message: `${p.name} (Rank ${p.rank}) Winner at ${(p.winnerYes * 100).toFixed(0)}¢ with ${p.winnerVolume} volume — possible market panic. Check score.`,
+          player: p.name,
+        });
+      }
+    }
+
+    // ─── No-Loss Corridor ─────────────────────────────────
+    // Green if leader has winner + top10 floor + round hedge available
+    const corridorStatus = {
+      winnerActive: leader?.winnerYes > 0,
+      top10Floor: leader?.top10Yes >= 0.80,
+      roundHedge: leader?.roundLeaderNo > 0 && leader?.roundLeaderNo < 0.20,
+      status: "EXPOSED" as string,
+    };
+    if (corridorStatus.winnerActive && corridorStatus.top10Floor && corridorStatus.roundHedge) {
+      corridorStatus.status = "PROTECTED";
+    } else if (corridorStatus.winnerActive && (corridorStatus.top10Floor || corridorStatus.roundHedge)) {
+      corridorStatus.status = "PARTIAL";
+    }
+
+    // ─── Market Summary ───────────────────────────────────
+    const summary = {
+      totalGolfMarkets: markets.length,
+      winnerMarkets: winnerMarkets.length,
+      top10Markets: top10Markets.length,
+      top5Markets: top5Markets.length,
+      roundLeaderMarkets: roundLeaderMarkets.length,
+      otherMarkets: classified.filter((m: any) => m.marketType === "other").length,
+      totalGolfEvents: events.length,
+    };
+
+    // All classified markets for the raw feed
+    const allClassified = classified.map((m: any) => ({
+      ticker: m.ticker,
+      title: m.title || m.subtitle,
+      marketType: m.marketType,
+      playerName: m.playerName,
+      yesPrice: m.yesPrice,
+      noPrice: m.noPrice,
+      yesBid: m.yesBid,
+      yesAsk: m.yesAsk,
+      volume: m.volume,
+      vol24h: m.vol24h,
+      openInterest: m.openInterest,
+      closeTime: m.close_time || m.expiration_time,
+    }));
 
     return new Response(
       JSON.stringify({
-        tournament: {
-          name: "The Masters 2026",
-          course: "Augusta National Golf Club",
-          round: 4,
-          status: "In Progress",
-        },
-        leaderboard: players,
-        contracts,
-        portfolio: {
-          positions: portfolio,
-          totalValue: +totalValue.toFixed(2),
-          totalCost: +totalCost.toFixed(2),
-          totalPnl,
-          totalPnlPct: +((totalPnl / totalCost) * 100).toFixed(1),
-        },
-        concentration,
-        hedge,
-        floorStabilizers,
-        portfolioHistory,
+        playerGrid,
         alerts,
-        corridor: {
-          status: hedge?.corridorStatus || "EXPOSED",
-          anchorProtected: portfolio.some((p) => p.type === "hedge"),
-          floorActive: portfolio.some((p) => p.type === "floor"),
-          leaderLead,
-        },
+        corridor: corridorStatus,
+        summary,
+        markets: allClassified,
+        events: events.map((e: any) => ({
+          ticker: e.event_ticker,
+          title: e.title,
+          category: e.category,
+          status: e.status,
+        })),
+        source: "kalshi_live",
         timestamp: new Date().toISOString(),
       }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
@@ -233,7 +383,7 @@ Deno.serve(async (req) => {
   } catch (error) {
     console.error("Golf portfolio error:", error);
     return new Response(
-      JSON.stringify({ error: error.message }),
+      JSON.stringify({ error: error.message, source: "kalshi_live" }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }
