@@ -129,6 +129,130 @@ export default function KalshiSports() {
       </header>
 
       <main className="max-w-[1680px] mx-auto px-4 py-3 space-y-3">
+        {/* ─── PASTE-TO-EDGE ZONE ─── */}
+        <div
+          onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+          onDragLeave={() => setIsDragging(false)}
+          onDrop={handleDrop}
+          className={`rounded-lg border-2 border-dashed transition-all ${
+            isDragging ? "border-emerald-500/60 bg-emerald-500/5" :
+            edgeResults ? "border-zinc-700/40 bg-zinc-900/40" :
+            "border-zinc-700/30 bg-zinc-900/30"
+          }`}
+        >
+          {!edgeResults && !scanning && (
+            <div className="p-4">
+              <div className="flex items-center gap-2 mb-2">
+                <Clipboard className="w-4 h-4 text-emerald-400" />
+                <span className="text-xs font-mono font-bold text-zinc-300">PASTE KALSHI DATA → GET EDGES</span>
+                <Badge className="bg-emerald-500/20 text-emerald-400 border-emerald-500/30 text-[8px]">AI-POWERED</Badge>
+              </div>
+              <textarea
+                ref={textareaRef}
+                value={pasteText}
+                onChange={(e) => setPasteText(e.target.value)}
+                onPaste={handlePaste}
+                placeholder="Copy & paste any Kalshi page here — markets, prices, leaderboards — and AI will find every edge instantly…"
+                className="w-full bg-zinc-800/40 border border-zinc-700/30 rounded-md p-3 text-xs text-zinc-300 placeholder-zinc-600 font-mono resize-none focus:outline-none focus:border-emerald-500/40 h-20"
+              />
+              {pasteText.length > 10 && (
+                <Button size="sm" onClick={() => scanForEdges(pasteText)}
+                  className="mt-2 bg-emerald-600 hover:bg-emerald-700 text-white h-7 text-[10px] px-3">
+                  <Sparkles className="w-3 h-3 mr-1" /> Scan for Edges
+                </Button>
+              )}
+            </div>
+          )}
+
+          {scanning && (
+            <div className="p-8 flex flex-col items-center justify-center gap-3">
+              <Loader2 className="w-6 h-6 animate-spin text-emerald-400" />
+              <p className="text-xs font-mono text-zinc-400">Gemini is scanning {pasteText.length.toLocaleString()} chars for edges…</p>
+            </div>
+          )}
+
+          {edgeResults && !edgeResults.error && (
+            <div className="p-4">
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2">
+                  <Sparkles className="w-4 h-4 text-emerald-400" />
+                  <span className="text-xs font-mono font-bold text-zinc-200">
+                    {edgeResults.edges?.length || 0} EDGES FOUND
+                  </span>
+                  <span className="text-[10px] text-zinc-500">from {edgeResults.markets_found || "?"} markets</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button size="sm" variant="outline" onClick={() => { setEdgeResults(null); setPasteText(""); }}
+                    className="h-6 text-[9px] border-zinc-700 text-zinc-400 px-2">
+                    <X className="w-3 h-3 mr-0.5" /> Clear
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => scanForEdges(pasteText)}
+                    className="h-6 text-[9px] border-zinc-700 text-zinc-400 px-2">
+                    <RefreshCw className="w-3 h-3 mr-0.5" /> Re-scan
+                  </Button>
+                </div>
+              </div>
+
+              {/* Summary */}
+              {edgeResults.summary && (
+                <div className="bg-zinc-800/40 rounded-md p-3 mb-3 border border-zinc-700/20">
+                  <p className="text-[11px] text-zinc-300">{edgeResults.summary}</p>
+                  {edgeResults.risk_notes && (
+                    <p className="text-[10px] text-amber-400/70 mt-1 flex items-center gap-1">
+                      <AlertTriangle className="w-3 h-3" /> {edgeResults.risk_notes}
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {/* Edge cards */}
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
+                {(edgeResults.edges || []).map((edge: any, i: number) => (
+                  <div key={i} className={`rounded-lg p-3 border ${
+                    edge.confidence === "HIGH" ? "bg-emerald-500/5 border-emerald-500/25" :
+                    edge.confidence === "MEDIUM" ? "bg-amber-500/5 border-amber-500/25" :
+                    "bg-zinc-800/30 border-zinc-700/30"
+                  }`}>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <Badge className={`text-[8px] px-1.5 py-0 ${
+                        edge.confidence === "HIGH" ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/30" :
+                        edge.confidence === "MEDIUM" ? "bg-amber-500/20 text-amber-400 border-amber-500/30" :
+                        "bg-zinc-700 text-zinc-400 border-zinc-600"
+                      }`}>{edge.confidence}</Badge>
+                      <Badge variant="outline" className="text-[7px] border-zinc-700 text-zinc-500 px-1 py-0">
+                        {(edge.category || "EDGE").replace(/_/g, " ")}
+                      </Badge>
+                    </div>
+                    <p className="text-[11px] font-medium text-zinc-200 mb-1">{edge.market}</p>
+                    <div className="flex items-center gap-2 mb-1.5">
+                      <span className="text-[10px] text-zinc-400">
+                        {edge.player_or_team} <strong className="text-zinc-200">{edge.side}</strong>
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-3 text-[10px] font-mono">
+                      <span className="text-zinc-500">Now: <span className="text-zinc-300">{((edge.current_price || 0) * 100).toFixed(0)}¢</span></span>
+                      <span className="text-zinc-500">Fair: <span className="text-emerald-400">{((edge.fair_value || 0) * 100).toFixed(0)}¢</span></span>
+                      <span className="font-bold text-emerald-400">+{edge.edge_cents || 0}¢ edge</span>
+                    </div>
+                    <p className="text-[9px] text-zinc-500 mt-1.5 leading-relaxed">{edge.reasoning}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {edgeResults?.error && (
+            <div className="p-4">
+              <Alert className="bg-red-500/10 border-red-500/30">
+                <AlertTriangle className="w-4 h-4 text-red-400" />
+                <AlertTitle className="text-xs text-red-300">Scan Failed</AlertTitle>
+                <AlertDescription className="text-[10px] text-red-400">{edgeResults.error}</AlertDescription>
+              </Alert>
+              <Button size="sm" variant="outline" onClick={() => { setEdgeResults(null); }}
+                className="mt-2 h-6 text-[9px] border-zinc-700 text-zinc-400 px-2">Try Again</Button>
+            </div>
+          )}
+        </div>
         {/* ─── Sport Category Tabs ─── */}
         {data && (
           <div className="flex items-center gap-1.5 overflow-x-auto pb-1">

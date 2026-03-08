@@ -182,3 +182,6 @@ verify_jwt = false
 
 [functions.kalshi-sports]
 verify_jwt = false
+
+[functions.kalshi-edge-scan]
+verify_jwt = false
