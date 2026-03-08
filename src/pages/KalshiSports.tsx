@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef, DragEvent } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -11,7 +11,8 @@ import {
 } from "recharts";
 import {
   Trophy, RefreshCw, Circle, TrendingUp, Zap, DollarSign, BarChart3,
-  ArrowUpRight, ArrowDownRight, Target, Shield, Activity
+  ArrowUpRight, ArrowDownRight, Target, Shield, Activity, Clipboard,
+  Sparkles, AlertTriangle, Loader2, X
 } from "lucide-react";
 
 const SPORT_ICONS: Record<string, string> = {
@@ -24,6 +25,50 @@ export default function KalshiSports() {
   const [loading, setLoading] = useState(false);
   const [activeSport, setActiveSport] = useState("All");
   const [lastRefresh, setLastRefresh] = useState("");
+
+  // Paste-to-edge state
+  const [pasteText, setPasteText] = useState("");
+  const [scanning, setScanning] = useState(false);
+  const [edgeResults, setEdgeResults] = useState<any>(null);
+  const [showPasteZone, setShowPasteZone] = useState(true);
+  const [isDragging, setIsDragging] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const scanForEdges = useCallback(async (text: string) => {
+    if (!text.trim() || text.length < 10) return;
+    setScanning(true);
+    setEdgeResults(null);
+    try {
+      const { data: res, error } = await supabase.functions.invoke("kalshi-edge-scan", {
+        body: { pastedText: text },
+      });
+      if (error) throw error;
+      setEdgeResults(res.analysis);
+    } catch (e: any) {
+      console.error("Edge scan failed:", e);
+      setEdgeResults({ error: e.message });
+    } finally {
+      setScanning(false);
+    }
+  }, []);
+
+  const handleDrop = (e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const text = e.dataTransfer.getData("text/plain");
+    if (text) {
+      setPasteText(text);
+      scanForEdges(text);
+    }
+  };
+
+  const handlePaste = (e: React.ClipboardEvent) => {
+    const text = e.clipboardData.getData("text/plain");
+    if (text && text.length > 10) {
+      setPasteText(text);
+      scanForEdges(text);
+    }
+  };
 
   const fetchData = useCallback(async () => {
     setLoading(true);
