@@ -9,6 +9,7 @@ import H4Dashboard from "./pages/H4Dashboard";
 import KalshiGolf from "./pages/KalshiGolf";
 import KalshiSports from "./pages/KalshiSports";
 import UniversalAlpha from "./pages/UniversalAlpha";
+import CommandCenter from "./pages/CommandCenter";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -26,6 +27,7 @@ const App = () => (
           <Route path="/golf" element={<KalshiGolf />} />
           <Route path="/sports" element={<KalshiSports />} />
           <Route path="/alpha" element={<UniversalAlpha />} />
+          <Route path="/command" element={<CommandCenter />} />
           <Route path="*" element={<NotFound />} />
         </Routes>
       </BrowserRouter>
