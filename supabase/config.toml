@@ -179,3 +179,6 @@ verify_jwt = false
 
 [functions.golf-portfolio]
 verify_jwt = false
+
+[functions.kalshi-sports]
+verify_jwt = false
