@@ -300,11 +300,11 @@ export default function UniversalAlpha() {
       <div className="p-4 space-y-4">
         <Tabs value={activeTab} onValueChange={setActiveTab}>
           <TabsList className="bg-[hsl(var(--nexus-surface))] border border-[hsl(var(--nexus-border))]">
-            <TabsTrigger value="heatmap" className="font-mono text-xs data-[state=active]:bg-[hsl(var(--nexus-surface-raised))] data-[state=active]:text-emerald-400">
-              🔥 HEATMAP
-            </TabsTrigger>
             <TabsTrigger value="alerts" className="font-mono text-xs data-[state=active]:bg-[hsl(var(--nexus-surface-raised))] data-[state=active]:text-amber-400">
               ⚡ EDGE ALERTS
+            </TabsTrigger>
+            <TabsTrigger value="heatmap" className="font-mono text-xs data-[state=active]:bg-[hsl(var(--nexus-surface-raised))] data-[state=active]:text-emerald-400">
+              🔥 HEATMAP
             </TabsTrigger>
             <TabsTrigger value="allocator" className="font-mono text-xs data-[state=active]:bg-[hsl(var(--nexus-surface-raised))] data-[state=active]:text-cyan-400">
               💰 ALLOCATOR
