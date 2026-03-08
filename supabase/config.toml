@@ -176,3 +176,6 @@ verify_jwt = false
 
 [functions.h4-sentiment-engine]
 verify_jwt = false
+
+[functions.golf-portfolio]
+verify_jwt = false

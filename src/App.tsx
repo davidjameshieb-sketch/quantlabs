@@ -6,6 +6,7 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 
 import ForexSenate from "./pages/ForexSenate";
 import H4Dashboard from "./pages/H4Dashboard";
+import KalshiGolf from "./pages/KalshiGolf";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -20,6 +21,7 @@ const App = () => (
           <Route path="/" element={<ForexSenate />} />
           <Route path="/senate" element={<Navigate to="/" replace />} />
           <Route path="/h4" element={<H4Dashboard />} />
+          <Route path="/golf" element={<KalshiGolf />} />
           <Route path="*" element={<NotFound />} />
         </Routes>
       </BrowserRouter>
