@@ -384,10 +384,10 @@ export default function UniversalAlpha() {
                             <span className={`font-mono text-xs font-semibold ${v.color}`}>{v.label}</span>
                           </div>
                         </TableCell>
-                        <TableCell className="text-center">
-                          <span className="text-amber-400 text-[11px] tracking-wider font-mono">
-                            {qualityStars(m.alpha_score)}
-                          </span>
+                        <TableCell className="max-w-[250px]">
+                          <p className="font-mono text-[10px] text-[hsl(var(--nexus-text-muted))] leading-snug line-clamp-2">
+                            {m.alpha_strategy || m.alpha_reasoning || v.explanation}
+                          </p>
                         </TableCell>
                         <TableCell className="text-right">
                           <span className={`font-mono text-sm font-bold ${
