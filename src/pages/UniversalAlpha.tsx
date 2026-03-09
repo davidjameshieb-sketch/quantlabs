@@ -127,7 +127,7 @@ function kalshiUrl(seriesTicker: string, eventTicker: string): string {
     return `https://kalshi.com/markets/${seriesTicker.toLowerCase()}`;
   }
   // Fallback: extract series from event_ticker (before date segment)
-  const match = eventTicker.match(/^([A-Z]+)-\d{2}[A-Z]{3}\d{2}/i);
+  const match = eventTicker.match(/^([A-Z0-9]+)-\d{2}[A-Z]{3}\d{2}/i);
   if (match) {
     return `https://kalshi.com/markets/${match[1].toLowerCase()}`;
   }
