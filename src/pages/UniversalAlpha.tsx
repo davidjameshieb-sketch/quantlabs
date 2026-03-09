@@ -473,6 +473,7 @@ export default function UniversalAlpha() {
                     return (
                       <TableRow key={m.ticker}
                         className={`border-[hsl(var(--nexus-border))] hover:bg-[hsl(var(--nexus-surface-raised))] cursor-pointer group ${
+                          m.alpha_type === "PRE_MOMENTUM_LOTTO" ? "bg-fuchsia-500/5" :
                           isGhost ? "bg-purple-500/5" : ""
                         }`}
                         onClick={() => window.open(kalshiUrl(m), "_blank")}>
