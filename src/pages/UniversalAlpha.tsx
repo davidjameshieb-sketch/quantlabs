@@ -221,101 +221,180 @@ export default function UniversalAlpha() {
 
   return (
     <div className="min-h-screen bg-[hsl(var(--nexus-bg))] text-[hsl(var(--nexus-text-primary))]">
-      {/* Header */}
-      <div className="border-b border-[hsl(var(--nexus-border))] px-4 py-3">
-        <div className="flex items-center justify-between flex-wrap gap-3">
+      {/* Sticky Header */}
+      <div className="sticky top-0 z-50 backdrop-blur-xl bg-[hsl(var(--nexus-bg))]/90 border-b border-[hsl(var(--nexus-border))]">
+        <div className="px-4 py-3">
+          <div className="flex items-center justify-between flex-wrap gap-3">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded bg-gradient-to-br from-emerald-500 to-cyan-500 flex items-center justify-center shadow-lg">
+                <Target className="w-6 h-6 text-black" />
+              </div>
+              <div>
+                <h1 className="text-xl font-bold font-[family-name:var(--font-mono)] tracking-tight">
+                  UNIVERSAL ALPHA
+                </h1>
+                <p className="text-xs text-[hsl(var(--nexus-text-muted))] font-mono">
+                  {data?.stats.activeAlerts || 0} EDGE OPPORTUNITIES • {lastRefresh || "—"}
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <Badge variant="outline" className={`font-mono px-3 py-1 ${totalPnl >= 0 ? "text-emerald-400 border-emerald-500/40 bg-emerald-500/10" : "text-red-400 border-red-500/40 bg-red-500/10"}`}>
+                P&L: {totalPnl >= 0 ? "+" : ""}{totalPnl.toFixed(2)}
+              </Badge>
+              <Badge variant="outline" className="font-mono px-3 py-1 text-cyan-400 border-cyan-500/40 bg-cyan-500/10">
+                {openPositions.length} OPEN
+              </Badge>
+              <Button size="sm" onClick={fetchData} disabled={loading}
+                className="bg-emerald-600 hover:bg-emerald-700 text-white font-mono">
+                {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+                {!loading && <span className="ml-1 text-xs">SCAN</span>}
+              </Button>
+            </div>
+          </div>
+        </div>
+
+        {/* Controls */}
+        <div className="px-4 pb-3 flex flex-wrap gap-4 items-center">
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded bg-gradient-to-br from-emerald-500 to-cyan-500 flex items-center justify-center">
-              <Target className="w-5 h-5 text-black" />
-            </div>
-            <div>
-              <h1 className="text-lg font-bold font-[family-name:var(--font-mono)] tracking-tight">
-                UNIVERSAL ALPHA SCANNER
-              </h1>
-              <p className="text-xs text-[hsl(var(--nexus-text-muted))]">
-                Multi-Asset Arbitrage • Kalshi Live • {lastRefresh || "—"}
-              </p>
-            </div>
+            <span className="text-xs font-mono text-[hsl(var(--nexus-text-muted))] uppercase">Confidence</span>
+            <Slider
+              value={[confidence]}
+              onValueChange={([v]) => setConfidence(v)}
+              min={1} max={10} step={1}
+              className="w-32"
+            />
+            <span className="text-sm font-mono font-bold text-emerald-400 w-6">{confidence}</span>
           </div>
           <div className="flex items-center gap-2">
-            <Badge variant="outline" className={`font-mono text-xs ${totalPnl >= 0 ? "text-emerald-400 border-emerald-500/30" : "text-red-400 border-red-500/30"}`}>
-              P&L: {totalPnl >= 0 ? "+" : ""}{totalPnl.toFixed(2)}
-            </Badge>
-            <Badge variant="outline" className="font-mono text-xs text-cyan-400 border-cyan-500/30">
-              {openPositions.length} OPEN
-            </Badge>
-            <Button size="sm" variant="outline" onClick={fetchData} disabled={loading}
-              className="border-[hsl(var(--nexus-border))] bg-[hsl(var(--nexus-surface))] text-[hsl(var(--nexus-text-primary))] hover:bg-[hsl(var(--nexus-surface-raised))]">
-              {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
-            </Button>
-          </div>
-        </div>
-      </div>
-
-      {error && (
-        <Alert className="m-4 bg-red-500/10 border-red-500/30">
-          <AlertTriangle className="h-4 w-4 text-red-400" />
-          <AlertTitle className="text-red-400">Error</AlertTitle>
-          <AlertDescription className="text-red-300">{error}</AlertDescription>
-        </Alert>
-      )}
-
-      {/* Controls Row: Confidence Slider + Budget */}
-      <div className="px-4 pt-3 pb-2 flex flex-wrap gap-4 items-center border-b border-[hsl(var(--nexus-border))]">
-        <div className="flex items-center gap-3 min-w-[220px]">
-          <span className="text-xs font-mono text-[hsl(var(--nexus-text-muted))]">CONFIDENCE</span>
-          <Slider
-            value={[confidence]}
-            onValueChange={([v]) => setConfidence(v)}
-            min={1} max={10} step={1}
-            className="w-32"
-          />
-          <span className="text-sm font-mono font-bold text-cyan-400 w-6">{confidence}</span>
-        </div>
-        <div className="flex items-center gap-3">
-          <span className="text-xs font-mono text-[hsl(var(--nexus-text-muted))]">DAILY BUDGET</span>
-          <div className="flex gap-1">
+            <span className="text-xs font-mono text-[hsl(var(--nexus-text-muted))] uppercase">Budget</span>
             {[10, 25, 50, 100].map(b => (
               <Button key={b} size="sm" variant={dailyBudget === b ? "default" : "outline"} onClick={() => setDailyBudget(b)}
-                className={`text-xs font-mono h-7 px-2 ${dailyBudget === b
+                className={`text-xs font-mono h-7 px-3 ${dailyBudget === b
                   ? "bg-emerald-600 text-white hover:bg-emerald-700"
-                  : "border-[hsl(var(--nexus-border))] bg-[hsl(var(--nexus-surface))] text-[hsl(var(--nexus-text-muted))] hover:bg-[hsl(var(--nexus-surface-raised))]"
+                  : "border-[hsl(var(--nexus-border))] text-[hsl(var(--nexus-text-muted))] hover:bg-[hsl(var(--nexus-surface-raised))]"
                 }`}>
                 ${b}
               </Button>
             ))}
           </div>
         </div>
-        {data && (
-          <div className="ml-auto flex gap-3 text-xs font-mono text-[hsl(var(--nexus-text-muted))]">
-            <span>{data.stats.totalMarkets} mkts</span>
-            <span>{data.stats.totalEvents} evts</span>
-            <span>{data.stats.assetClasses} classes</span>
-            <span className="text-amber-400">{data.stats.activeAlerts} alerts</span>
-          </div>
-        )}
       </div>
 
-      {/* Main Content */}
-      <div className="p-4 space-y-4">
-        <Tabs value={activeTab} onValueChange={setActiveTab}>
-          <TabsList className="bg-[hsl(var(--nexus-surface))] border border-[hsl(var(--nexus-border))]">
-            <TabsTrigger value="alerts" className="font-mono text-xs data-[state=active]:bg-[hsl(var(--nexus-surface-raised))] data-[state=active]:text-amber-400">
-              ⚡ EDGE ALERTS
-            </TabsTrigger>
-            <TabsTrigger value="heatmap" className="font-mono text-xs data-[state=active]:bg-[hsl(var(--nexus-surface-raised))] data-[state=active]:text-emerald-400">
-              🔥 HEATMAP
-            </TabsTrigger>
-            <TabsTrigger value="allocator" className="font-mono text-xs data-[state=active]:bg-[hsl(var(--nexus-surface-raised))] data-[state=active]:text-cyan-400">
-              💰 ALLOCATOR
-            </TabsTrigger>
-            <TabsTrigger value="markets" className="font-mono text-xs data-[state=active]:bg-[hsl(var(--nexus-surface-raised))] data-[state=active]:text-purple-400">
-              📊 ALL MARKETS
-            </TabsTrigger>
-            <TabsTrigger value="portfolio" className="font-mono text-xs data-[state=active]:bg-[hsl(var(--nexus-surface-raised))] data-[state=active]:text-emerald-400">
-              📈 ROI TRACKER
-            </TabsTrigger>
-          </TabsList>
+      {error && (
+        <Alert className="m-4 bg-red-500/10 border-red-500/40">
+          <AlertTriangle className="h-4 w-4 text-red-400" />
+          <AlertTitle className="text-red-400 font-mono">Error</AlertTitle>
+          <AlertDescription className="text-red-300 font-mono text-sm">{error}</AlertDescription>
+        </Alert>
+      )}
+
+      {/* Main Content - Single Scroll */}
+      <div className="max-w-[1600px] mx-auto p-4 space-y-6">
+        
+        {/* ═══ TOP EDGE OPPORTUNITIES ═══ */}
+        <section>
+          <div className="flex items-center gap-3 mb-4">
+            <Zap className="w-6 h-6 text-amber-400" />
+            <h2 className="text-2xl font-bold font-[family-name:var(--font-mono)] tracking-tight">
+              TOP EDGE OPPORTUNITIES
+            </h2>
+            <Badge className="font-mono text-xs bg-amber-500/20 text-amber-400 border-amber-500/30">
+              {data?.alerts.length || 0} LIVE
+            </Badge>
+          </div>
+
+          {/* Liquidation Alerts */}
+          {data?.liquidations?.map((liq, i) => (
+            <Alert key={i} className="mb-3 bg-red-500/10 border-red-500/40">
+              <Skull className="h-5 w-5 text-red-400" />
+              <AlertTitle className="text-red-400 font-mono font-bold">
+                ☠️ INSTANT LIQUIDATION — {liq.ticker}
+              </AlertTitle>
+              <AlertDescription className="text-red-300 font-mono text-sm mt-1">
+                {liq.reasoning}
+              </AlertDescription>
+            </Alert>
+          ))}
+
+          {/* Top Edge Cards */}
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+            {data?.alerts.slice(0, 6).map((alert, i) => {
+              const market = data?.markets.find(m => m.ticker === alert.ticker);
+              return (
+                <Card key={i} className="bg-[hsl(var(--nexus-surface))] border-[hsl(var(--nexus-border))] hover:border-emerald-500/40 transition-all">
+                  <CardHeader className="pb-3">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <span className="text-2xl">{alert.icon}</span>
+                        <div>
+                          <Badge className={`font-mono text-[10px] mb-1 ${signalColor(alert.signal)}`}>
+                            {alert.signal}
+                          </Badge>
+                          <CardTitle className="text-sm font-mono leading-tight">
+                            {alert.title.slice(0, 60)}
+                          </CardTitle>
+                        </div>
+                      </div>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    {/* Price & Probability */}
+                    <div className="flex items-center justify-between p-3 rounded bg-[hsl(var(--nexus-bg))]/50">
+                      <div>
+                        <p className="text-xs font-mono text-[hsl(var(--nexus-text-muted))] uppercase mb-1">Current Price</p>
+                        <p className="text-3xl font-bold font-mono text-emerald-400">
+                          {(alert.price * 100).toFixed(0)}¢
+                        </p>
+                        <p className="text-xs font-mono text-[hsl(var(--nexus-text-muted))] mt-1">
+                          Implied: {(alert.price * 100).toFixed(1)}%
+                        </p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-xs font-mono text-[hsl(var(--nexus-text-muted))] uppercase mb-1">Alpha Score</p>
+                        <p className="text-2xl font-bold font-mono text-amber-400">
+                          {(alert.score * 100).toFixed(1)}%
+                        </p>
+                        <Progress value={alert.score * 100} className="w-20 h-2 mt-2" />
+                      </div>
+                    </div>
+
+                    {/* Reasoning */}
+                    <p className="text-xs font-mono text-[hsl(var(--nexus-text-muted))] leading-relaxed">
+                      {alert.reasoning}
+                    </p>
+
+                    {/* Action */}
+                    <div className="flex items-center justify-between pt-2 border-t border-[hsl(var(--nexus-border))]">
+                      <div>
+                        <p className="text-xs font-mono text-[hsl(var(--nexus-text-muted))]">Suggested Bet</p>
+                        <p className="text-lg font-bold font-mono text-cyan-400">${alert.bet.toFixed(2)}</p>
+                      </div>
+                      {market && (
+                        <Button size="sm" onClick={() => logPosition(market)}
+                          className="bg-emerald-600 hover:bg-emerald-700 text-white font-mono">
+                          <DollarSign className="w-4 h-4 mr-1" />
+                          BUY
+                        </Button>
+                      )}
+                    </div>
+                  </CardContent>
+                </Card>
+              );
+            })}
+          </div>
+
+          {data && data.alerts.length === 0 && (
+            <Card className="bg-[hsl(var(--nexus-surface))] border-[hsl(var(--nexus-border))]">
+              <CardContent className="p-8 text-center">
+                <Activity className="w-12 h-12 text-[hsl(var(--nexus-text-muted))] mx-auto mb-3" />
+                <p className="font-mono text-[hsl(var(--nexus-text-muted))]">
+                  No high-alpha opportunities detected. Adjust confidence or scan again.
+                </p>
+              </CardContent>
+            </Card>
+          )}
+        </section>
 
           {/* ─── HEATMAP ─────────────────────────────────────── */}
           <TabsContent value="heatmap" className="mt-4">
