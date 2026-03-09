@@ -487,7 +487,10 @@ export default function UniversalAlpha() {
                           </div>
                         </TableCell>
                         <TableCell className="text-right">
-                          <span className={`font-mono text-base font-bold ${isGhost ? "text-purple-400" : "text-emerald-400"}`}>
+                          <span className={`font-mono text-base font-bold ${
+                            m.alpha_type === "PRE_MOMENTUM_LOTTO" ? "text-fuchsia-400" :
+                            isGhost ? "text-purple-400" : "text-emerald-400"
+                          }`}>
                             {(m.yes_price * 100).toFixed(0)}¢
                           </span>
                         </TableCell>

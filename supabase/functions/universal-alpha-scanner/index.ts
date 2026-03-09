@@ -579,8 +579,8 @@ Deno.serve(async (req) => {
       goal: recoveryGoal,
       accelerator_count: accelerators.length,
       best_roi_pct: accelerators.length > 0 ? Math.max(...accelerators.map(m => m.yes_price > 0 ? (1 / m.yes_price - 1) * 100 : 0)) : 0,
-      ghost_volume_count: classified.filter(m => m.alpha_type === "GHOST_VOLUME").length,
-      lotto_count: classified.filter(m => m.alpha_type === "ASYMMETRIC_LOTTO").length,
+      ghost_volume_count: classified.filter(m => m.alpha_type === "GHOST_VOLUME" || m.alpha_type === "PRE_MOMENTUM_LOTTO").length,
+      lotto_count: classified.filter(m => m.alpha_type === "ASYMMETRIC_LOTTO" || m.alpha_type === "PRE_MOMENTUM_LOTTO" || m.alpha_type === "LOW_ALPHA_LOTTO").length,
     };
 
     return new Response(JSON.stringify({
