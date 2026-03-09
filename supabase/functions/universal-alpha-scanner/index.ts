@@ -558,8 +558,9 @@ Deno.serve(async (req) => {
       filtered = classified.filter(m => m.asset_class === filterClass);
     }
 
-    // Sort: PRE_MOMENTUM_LOTTO first, then ASYMMETRIC_LOTTO, then GHOST_VOLUME, then ACCELERATOR
+    // Sort: PENNY_AMAZON first, then lotto plays, then ghost volume
     const typePriority = (m: ClassifiedMarket) => {
+      if (m.alpha_type === "PENNY_AMAZON") return 300;
       if (m.alpha_type === "PRE_MOMENTUM_LOTTO") return 200;
       if (m.alpha_type === "ASYMMETRIC_LOTTO") return 150;
       if (m.alpha_type === "GHOST_VOLUME") return 100;
