@@ -12,6 +12,7 @@ const CATEGORY_MAP: Record<string, { class: string; icon: string }> = {
   NBA: { class: "Sports", icon: "🏀" }, WNBA: { class: "Sports", icon: "🏀" },
   NFL: { class: "Sports", icon: "🏈" }, CFB: { class: "Sports", icon: "🏈" },
   MLB: { class: "Sports", icon: "⚾" }, NHL: { class: "Sports", icon: "🏒" },
+  NRL: { class: "Sports", icon: "🏉" }, RUGBY: { class: "Sports", icon: "🏉" },
   PGA: { class: "Sports", icon: "⛳" }, GOLF: { class: "Sports", icon: "⛳" },
   ATP: { class: "Sports", icon: "🎾" }, WTA: { class: "Sports", icon: "🎾" },
   F1: { class: "Sports", icon: "🏎️" }, NASCAR: { class: "Sports", icon: "🏎️" },
@@ -21,6 +22,7 @@ const CATEGORY_MAP: Record<string, { class: string; icon: string }> = {
   ELECTION: { class: "Politics", icon: "🏛️" }, GOVERN: { class: "Politics", icon: "🏛️" },
   PARTY: { class: "Politics", icon: "🏛️" }, VOTE: { class: "Politics", icon: "🏛️" },
   TRUMP: { class: "Politics", icon: "🏛️" }, BIDEN: { class: "Politics", icon: "🏛️" },
+  MENTION: { class: "Politics", icon: "🏛️" },
   FED: { class: "Economics", icon: "📈" }, RATE: { class: "Economics", icon: "📈" },
   CPI: { class: "Economics", icon: "📈" }, GDP: { class: "Economics", icon: "📈" },
   JOBS: { class: "Economics", icon: "📈" }, INFLATION: { class: "Economics", icon: "📈" },
@@ -35,6 +37,16 @@ const CATEGORY_MAP: Record<string, { class: string; icon: string }> = {
   TEMP: { class: "Climate", icon: "🌍" }, HURRICANE: { class: "Climate", icon: "🌍" },
   CLIMATE: { class: "Climate", icon: "🌍" }, WEATHER: { class: "Climate", icon: "🌍" },
 };
+
+// ─── Pre-Momentum Target Keywords ──────────────────────────────
+const PRE_MOMENTUM_TARGETS = [
+  "try scorer", "tryscorer", "try_scorer",
+  "round 1 leader", "round leader", "r1 leader",
+  "weekly mentions", "mention",
+  "first goal", "anytime scorer", "anytime goal",
+  "top 5", "top 10", "top 20",
+  "winner",
+];
 
 interface ClassifiedMarket {
   ticker: string;
@@ -61,7 +73,10 @@ interface ClassifiedMarket {
   alpha_score: number;
   alpha_reasoning: string | null;
   alpha_strategy: string | null;
+  alpha_tier: string | null;
   suggested_bet: number;
+  time_to_event_hours: number | null;
+  recovery_tag: string | null;
 }
 
 function classifyAssetClass(ticker: string, title: string, category: string): { class: string; icon: string } {
@@ -75,7 +90,16 @@ function classifyAssetClass(ticker: string, title: string, category: string): { 
   return { class: "Other", icon: "📊" };
 }
 
-// ─── Edge Detection Engine ──────────────────────────────────────
+// ─── Time to Event ──────────────────────────────────────────────
+
+function hoursUntilClose(closeTime: string | null): number | null {
+  if (!closeTime) return null;
+  const diff = new Date(closeTime).getTime() - Date.now();
+  if (diff <= 0) return 0;
+  return +(diff / 3600000).toFixed(1);
+}
+
+// ─── Early-Entry Sniper Engine ──────────────────────────────────
 
 interface EdgeResult {
   type: string;
@@ -83,9 +107,16 @@ interface EdgeResult {
   score: number;
   reasoning: string;
   strategy: string;
+  tier: string | null;
+  recovery_tag: string | null;
 }
 
-function detectEdge(m: any, yesPrice: number, noPrice: number, vol24h: number, oi: number, assetClass: string): EdgeResult {
+function isPreMomentumTarget(title: string): boolean {
+  const lower = title.toLowerCase();
+  return PRE_MOMENTUM_TARGETS.some(t => lower.includes(t));
+}
+
+function detectEdge(m: any, yesPrice: number, noPrice: number, vol24h: number, oi: number, assetClass: string, hoursLeft: number | null): EdgeResult {
   const yesBid = (m.yes_bid || 0) / 100;
   const yesAsk = (m.yes_ask || 0) / 100;
   const noBid = (m.no_bid || 0) / 100;
@@ -93,19 +124,95 @@ function detectEdge(m: any, yesPrice: number, noPrice: number, vol24h: number, o
   const spread = yesAsk > 0 && yesBid > 0 ? yesAsk - yesBid : 0;
   const maxROI = yesPrice > 0 ? (1 / yesPrice - 1) : 0;
   const priceCents = Math.round(yesPrice * 100);
+  const title = (m.title || m.subtitle || "").toLowerCase();
 
-  // ── 1. MATHEMATICAL DEATH: price ≤ 2¢ with OI ──
-  if (yesPrice > 0 && yesPrice <= 0.02 && oi > 0) {
+  // ══════════════════════════════════════════════════════════════
+  // RULE 1: GHOST-VOLUME SNIPER (Pre-Momentum Early Entry)
+  // Low volume (<500) but meaningful OI (>250) = smart money positioning
+  // ══════════════════════════════════════════════════════════════
+  if (vol24h < 500 && oi > 250 && yesPrice > 0.01 && yesPrice < 0.85) {
+    const isTarget = isPreMomentumTarget(title);
+    const oiVolRatio = oi / Math.max(vol24h, 1);
+    const score = Math.min(0.95, 0.4 + (oiVolRatio > 10 ? 0.3 : oiVolRatio * 0.03) + (isTarget ? 0.2 : 0));
+    const earlyHours = hoursLeft !== null && hoursLeft >= 24 && hoursLeft <= 72;
+    const finalScore = earlyHours ? Math.min(0.99, score + 0.1) : score;
+
     return {
-      type: "MATHEMATICAL_DEATH",
-      signal: "INSTANT_LIQUIDATION",
-      score: 0,
-      reasoning: `${priceCents}¢ with ${oi} OI — 0% probability. Sell to recover capital.`,
-      strategy: "LIQUIDATE: This position is dead. Sell at any price to recover pennies.",
+      type: "GHOST_VOLUME",
+      signal: "PRE_MOMENTUM_SNIPE",
+      score: +finalScore.toFixed(3),
+      reasoning: `👻 Ghost Volume: ${oi} OI but only ${vol24h} trades. Smart money is already positioned. ${isTarget ? "HIGH-VALUE TARGET market." : ""} ${earlyHours ? `⏰ ${hoursLeft?.toFixed(0)}h to event — EARLY ENTRY WINDOW.` : ""}`,
+      strategy: `PRE-MOMENTUM SNIPE: Place a $1-2 LIMIT ORDER at ${priceCents}¢. Big players holding ${oi} contracts but retail hasn't arrived. Get in 24-48h early before the volume spike gaps the price up.`,
+      tier: maxROI > 5 ? "ACCELERATOR" : "EARLY_ENTRY",
+      recovery_tag: maxROI > 5 ? "ACCELERATOR" : null,
     };
   }
 
-  // ── 2. SPREAD ARBITRAGE: Yes + No prices sum to < 95¢ ──
+  // ══════════════════════════════════════════════════════════════
+  // RULE 2: BINARY CLIFF KILL-SWITCH (Capital Protection)
+  // 85¢+ in final phase = TAKE PROFIT NOW
+  // ══════════════════════════════════════════════════════════════
+  if (yesPrice >= 0.85 && hoursLeft !== null && hoursLeft <= 4) {
+    const profitPct = Math.round((yesPrice - 0.10) / 0.10 * 100); // assuming ~10¢ entry
+    return {
+      type: "BINARY_CLIFF",
+      signal: "IMMEDIATE_LIQUIDATION",
+      score: 0.01,
+      reasoning: `🚨 BINARY CLIFF: ${priceCents}¢ with only ${hoursLeft.toFixed(1)}h left. You've captured the move. Take 75% off now — the remaining 15¢ upside isn't worth the Black Swan risk.`,
+      strategy: `SELL 75% NOW: Lock in your ${profitPct > 0 ? `~${profitPct}%` : ""} gain. Leave 25% as a free-roll. At 85¢+ in the final phase, the risk/reward has flipped against you.`,
+      tier: "FLOOR_DEFENSE",
+      recovery_tag: "FLOOR_DEFENSE",
+    };
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // RULE 3: ASYMMETRIC LOTTO TIER (1-7¢ with Alpha > 0.40)
+  // ══════════════════════════════════════════════════════════════
+  if (yesPrice > 0 && yesPrice <= 0.07) {
+    // Calculate alpha based on OI, volume, and target relevance
+    const lottoAlpha = Math.min(1, 
+      (oi > 50 ? 0.2 : 0) + 
+      (vol24h > 10 ? 0.15 : 0) + 
+      (isPreMomentumTarget(title) ? 0.25 : 0) + 
+      (oi > 100 ? 0.1 : 0) +
+      (vol24h > 50 ? 0.1 : 0) +
+      (spread < 0.05 ? 0.05 : 0)
+    );
+
+    if (lottoAlpha >= 0.40) {
+      const roi = Math.round(maxROI * 100);
+      return {
+        type: "ASYMMETRIC_LOTTO",
+        signal: "LOTTO_LIMIT_ONLY",
+        score: +lottoAlpha.toFixed(3),
+        reasoning: `🎰 ASYMMETRIC LOTTO: ${priceCents}¢ = ${roi}% ROI. Alpha Score: ${(lottoAlpha * 100).toFixed(0)}%. ${oi > 0 ? `${oi} OI shows positioning.` : ""} Historical patterns suggest this type of market hits more than ${priceCents}% of the time.`,
+        strategy: `LIMIT ORDER ONLY: Place $1.00-$2.50 limit at ${priceCents}¢. NEVER market buy a lotto. At ${roi}% ROI, you only need to win 1 in ${Math.round(1/yesPrice)} to break even.`,
+        tier: roi > 500 ? "ACCELERATOR" : "LOTTO",
+        recovery_tag: roi > 500 ? "ACCELERATOR" : null,
+      };
+    }
+
+    // Low-alpha lottos — still show but mark as speculative
+    if (oi > 0 || vol24h > 0) {
+      const roi = Math.round(maxROI * 100);
+      return {
+        type: "LOW_ALPHA_LOTTO",
+        signal: "SPECULATIVE_LOTTO",
+        score: +lottoAlpha.toFixed(3),
+        reasoning: `${priceCents}¢ lotto — ${roi}% ROI but Alpha only ${(lottoAlpha * 100).toFixed(0)}%. Below our 40% threshold. ${oi > 0 ? `${oi} OI.` : "No positioning."}`,
+        strategy: `SKIP or $1 max: Alpha too low for confident entry. If you play, limit order only at ${priceCents}¢.`,
+        tier: "LOTTO",
+        recovery_tag: null,
+      };
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // RULE 4: REVENGE RECOVERY MULTIPLIER (ROI > 500% = ACCELERATOR)
+  // ══════════════════════════════════════════════════════════════
+  // This is applied as a tag overlay — check maxROI for any non-dead market
+
+  // ── SPREAD ARBITRAGE ──
   if (yesAsk > 0 && noAsk > 0 && (yesAsk + noAsk) < 0.95) {
     const arb = 1 - (yesAsk + noAsk);
     const score = Math.min(1, arb * 5);
@@ -113,39 +220,45 @@ function detectEdge(m: any, yesPrice: number, noPrice: number, vol24h: number, o
       type: "SPREAD_ARB",
       signal: "BUY_BOTH",
       score: +score.toFixed(3),
-      reasoning: `Yes ${Math.round(yesAsk * 100)}¢ + No ${Math.round(noAsk * 100)}¢ = ${Math.round((yesAsk + noAsk) * 100)}¢. Guaranteed ${Math.round(arb * 100)}¢ profit buying both sides.`,
-      strategy: "ARBITRAGE: Buy Yes AND No — you profit no matter who wins. The combined cost is less than the $1 payout.",
+      reasoning: `💰 GUARANTEED PROFIT: Yes ${Math.round(yesAsk * 100)}¢ + No ${Math.round(noAsk * 100)}¢ = ${Math.round((yesAsk + noAsk) * 100)}¢. Buy both for ${Math.round(arb * 100)}¢ risk-free.`,
+      strategy: "ARBITRAGE: Buy Yes AND No. Combined cost < $1 payout. Guaranteed profit no matter who wins.",
+      tier: "ACCELERATOR",
+      recovery_tag: "ACCELERATOR",
     };
   }
 
-  // ── 3. WIDE SPREAD SNIPE: spread ≥ 8¢ — place limit order at mid ──
+  // ── WIDE SPREAD SNIPE ──
   if (spread >= 0.08 && yesPrice >= 0.05 && yesPrice <= 0.90) {
     const mid = (yesBid + yesAsk) / 2;
-    const edgeCents = Math.round(spread * 50); // half the spread
+    const edgeCents = Math.round(spread * 50);
     const score = Math.min(0.8, spread * 3);
     return {
       type: "WIDE_SPREAD",
       signal: "LIMIT_SNIPE",
       score: +score.toFixed(3),
-      reasoning: `Bid ${Math.round(yesBid * 100)}¢ / Ask ${Math.round(yesAsk * 100)}¢ — ${Math.round(spread * 100)}¢ spread. Place limit at ${Math.round(mid * 100)}¢ for ~${edgeCents}¢ edge.`,
-      strategy: `LIMIT ORDER: Don't market buy. Place a limit at ${Math.round(mid * 100)}¢ (midpoint). You get ${edgeCents}¢ of instant edge vs. the ask price.`,
+      reasoning: `🎯 Bid ${Math.round(yesBid * 100)}¢ / Ask ${Math.round(yesAsk * 100)}¢ — ${Math.round(spread * 100)}¢ spread. Midpoint limit = ~${edgeCents}¢ instant edge.`,
+      strategy: `LIMIT ORDER at ${Math.round(mid * 100)}¢. Don't market buy. ${edgeCents}¢ edge vs ask.`,
+      tier: maxROI > 5 ? "ACCELERATOR" : null,
+      recovery_tag: maxROI > 5 ? "ACCELERATOR" : null,
     };
   }
 
-  // ── 4. MICRO VALUE: price 1-15¢ with any activity — high ROI lotto ──
-  if (yesPrice > 0 && yesPrice < 0.15 && (vol24h > 0 || oi > 5)) {
+  // ── MICRO VALUE (8-15¢) ──
+  if (yesPrice > 0.07 && yesPrice < 0.15 && (vol24h > 0 || oi > 5)) {
     const roi = Math.round(maxROI * 100);
     const score = Math.min(1, (0.15 - yesPrice) / 0.15 * 0.6 + Math.min(vol24h, 200) / 500);
     return {
       type: "MICRO_VALUE",
       signal: "LOTTO_BUY",
       score: +score.toFixed(3),
-      reasoning: `${priceCents}¢ — ${roi}% ROI if it wins. ${vol24h > 0 ? `${vol24h} contracts traded today.` : `${oi} open interest.`}`,
-      strategy: `LOTTO PLAY: Risk $1-2 for up to $${(maxROI + 1).toFixed(0)} payout. These low-price contracts are where 10x returns come from. Only risk what you'd spend on a scratch ticket.`,
+      reasoning: `${priceCents}¢ — ${roi}% ROI. ${vol24h > 0 ? `${vol24h} traded today.` : `${oi} OI.`}`,
+      strategy: `Risk $1-2 for up to $${(maxROI + 1).toFixed(0)} payout. Limit order only.`,
+      tier: roi > 500 ? "ACCELERATOR" : "VALUE",
+      recovery_tag: roi > 500 ? "ACCELERATOR" : null,
     };
   }
 
-  // ── 5. VALUE ZONE: 15-40¢ with volume — the sweet spot ──
+  // ── VALUE ZONE (15-40¢) ──
   if (yesPrice >= 0.15 && yesPrice < 0.40 && (vol24h > 10 || oi > 20)) {
     const roi = Math.round(maxROI * 100);
     const score = Math.min(0.7, (0.40 - yesPrice) / 0.25 * 0.4 + Math.min(vol24h, 300) / 800);
@@ -153,12 +266,14 @@ function detectEdge(m: any, yesPrice: number, noPrice: number, vol24h: number, o
       type: "VALUE_ZONE",
       signal: "ANCHOR_BUY",
       score: +score.toFixed(3),
-      reasoning: `${priceCents}¢ with ${vol24h > 0 ? `${vol24h} vol` : `${oi} OI`} — ${roi}% max ROI. Market says ${priceCents}% chance but activity suggests it's undervalued.`,
-      strategy: `VALUE BET: The price implies only a ${priceCents}% chance, but trading activity suggests it could be higher. Risk $2-5 for a ${roi}% return if you're right.`,
+      reasoning: `${priceCents}¢ with ${vol24h > 0 ? `${vol24h} vol` : `${oi} OI`} — ${roi}% max ROI.`,
+      strategy: `VALUE BET: Risk $2-5. Market says ${priceCents}% but activity says higher.`,
+      tier: roi > 500 ? "ACCELERATOR" : "VALUE",
+      recovery_tag: roi > 500 ? "ACCELERATOR" : null,
     };
   }
 
-  // ── 6. VOLUME SPIKE: unusual activity relative to history ──
+  // ── VOLUME SPIKE ──
   if (vol24h > 50 && m.volume > 0) {
     const avgDaily = Math.max(m.volume / 30, 1);
     const ratio = vol24h / avgDaily;
@@ -168,87 +283,97 @@ function detectEdge(m: any, yesPrice: number, noPrice: number, vol24h: number, o
         type: "VOLUME_SPIKE",
         signal: "MOMENTUM_ENTRY",
         score: +score.toFixed(3),
-        reasoning: `${ratio.toFixed(1)}x normal volume at ${priceCents}¢ — someone knows something. Price hasn't caught up yet.`,
-        strategy: `FOLLOW THE MONEY: Volume is ${ratio.toFixed(1)}x the daily average. Smart money is loading up before a price move. Get in before the crowd.`,
+        reasoning: `📊 ${ratio.toFixed(1)}x normal volume at ${priceCents}¢. Someone knows something.`,
+        strategy: `FOLLOW THE MONEY: Smart money loading up. Get in before the crowd.`,
+        tier: maxROI > 5 ? "ACCELERATOR" : null,
+        recovery_tag: maxROI > 5 ? "ACCELERATOR" : null,
       };
     }
   }
 
-  // ── 7. COIN FLIP: 40-60¢ — use for hedging or if you have info ──
+  // ── COIN FLIP (40-60¢) ──
   if (yesPrice >= 0.40 && yesPrice <= 0.60) {
-    const score = vol24h > 50 ? 0.1 : 0.03;
     return {
       type: "COIN_FLIP",
       signal: "NEUTRAL",
-      score,
-      reasoning: `${priceCents}¢ — market sees this as a coin flip. ${vol24h > 50 ? `Active (${vol24h} vol).` : "Low activity."}`,
-      strategy: `50/50 BET: Only play this if you have an opinion the market doesn't. At ${priceCents}¢, you need to be right more than ${priceCents}% of the time to profit.`,
+      score: vol24h > 50 ? 0.1 : 0.03,
+      reasoning: `${priceCents}¢ — coin flip. ${vol24h > 50 ? `Active (${vol24h} vol).` : "Low activity."}`,
+      strategy: `50/50: Only play with an edge the market doesn't see.`,
+      tier: null,
+      recovery_tag: null,
     };
   }
 
-  // ── 8. FAVORITE: 60-85¢ — limited upside ──
+  // ── FAVORITE (60-85¢) ──
   if (yesPrice > 0.60 && yesPrice <= 0.85) {
     const roi = Math.round(maxROI * 100);
-    const score = vol24h > 100 ? 0.05 : 0.02;
     return {
       type: "FAVORITE",
       signal: "LOW_UPSIDE",
-      score,
-      reasoning: `${priceCents}¢ — probably wins but only ${roi}% return. ${vol24h > 0 ? `${vol24h} vol.` : ""}`,
-      strategy: `SAFE BET: This will probably win, but you only make ${roi}¢ per dollar. Better as part of a parlay or if you're parking cash.`,
+      score: vol24h > 100 ? 0.05 : 0.02,
+      reasoning: `${priceCents}¢ — probably wins, ${roi}% return. ${vol24h > 0 ? `${vol24h} vol.` : ""}`,
+      strategy: `SAFE BET: Only ${roi}¢/dollar. Better as a parlay leg.`,
+      tier: null,
+      recovery_tag: null,
     };
   }
 
-  // ── 9. HEAVY FAVORITE: 85-95¢ — near certain ──
+  // ── HEAVY FAVORITE (85-95¢) — FLOOR DEFENSE ──
   if (yesPrice > 0.85 && yesPrice <= 0.95) {
     const roi = Math.round(maxROI * 100);
     return {
       type: "HEAVY_FAVORITE",
       signal: "MINIMAL_EDGE",
       score: 0.01,
-      reasoning: `${priceCents}¢ — almost certain winner. Only ${roi}% return.`,
-      strategy: `CASH EQUIVALENT: This is basically a savings account. ${roi}% return if it wins (which it probably will). Only useful for very large positions.`,
+      reasoning: `${priceCents}¢ — near certain. Only ${roi}% return.`,
+      strategy: `CASH EQUIVALENT: ${roi}% return. Only for large positions.`,
+      tier: "FLOOR_DEFENSE",
+      recovery_tag: "FLOOR_DEFENSE",
     };
   }
 
-  // ── 10. SETTLED: > 95¢ ──
+  // ── MATHEMATICAL DEATH (≤2¢) ──
+  if (yesPrice > 0 && yesPrice <= 0.02 && oi > 0) {
+    return {
+      type: "MATHEMATICAL_DEATH",
+      signal: "INSTANT_LIQUIDATION",
+      score: 0,
+      reasoning: `${priceCents}¢ with ${oi} OI — 0% probability. Sell to recover capital.`,
+      strategy: "LIQUIDATE: Dead position. Sell at any price.",
+      tier: null,
+      recovery_tag: null,
+    };
+  }
+
+  // ── SETTLED / DEAD ──
   if (yesPrice > 0.95) {
-    return {
-      type: "SETTLED",
-      signal: "NO_EDGE",
-      score: 0,
-      reasoning: `${priceCents}¢ — this is done.`,
-      strategy: "NO TRADE: This market is effectively settled. Zero edge.",
-    };
+    return { type: "SETTLED", signal: "NO_EDGE", score: 0, reasoning: `${priceCents}¢ — done.`, strategy: "NO TRADE.", tier: "FLOOR_DEFENSE", recovery_tag: "FLOOR_DEFENSE" };
   }
-
-  // ── 11. DEAD ──
   if (yesPrice <= 0) {
-    return {
-      type: "DEAD",
-      signal: "NO_EDGE",
-      score: 0,
-      reasoning: "0¢ — dead contract.",
-      strategy: "NO TRADE: Dead market.",
-    };
+    return { type: "DEAD", signal: "NO_EDGE", score: 0, reasoning: "0¢ — dead.", strategy: "NO TRADE.", tier: null, recovery_tag: null };
   }
 
-  // ── Fallback ──
   return {
     type: "LOW_LIQUIDITY",
     signal: "SPECULATIVE",
     score: 0.02,
-    reasoning: `${priceCents}¢ — low liquidity, hard to trade.`,
-    strategy: `SPECULATIVE: Low activity means you might not be able to buy or sell easily. Only enter if you have strong conviction.`,
+    reasoning: `${priceCents}¢ — low liquidity.`,
+    strategy: `SPECULATIVE: Hard to trade. Only enter with strong conviction.`,
+    tier: null,
+    recovery_tag: maxROI > 5 ? "ACCELERATOR" : null,
   };
 }
 
 // ─── Bet Sizing ─────────────────────────────────────────────────
 
-function computeBetSize(alphaScore: number, confidence: number): number {
+function computeBetSize(alphaScore: number, confidence: number, tier: string | null): number {
+  if (tier === "ACCELERATOR") {
+    // Recovery mode: slightly larger bets on high-conviction lottos
+    const base = alphaScore >= 0.5 ? 5.00 : alphaScore >= 0.3 ? 3.50 : 2.50;
+    return Math.min(5.00, +(base * Math.min(confidence / 10, 1)).toFixed(2));
+  }
   const base = alphaScore >= 0.5 ? 5.00 : alphaScore >= 0.3 ? 3.00 : alphaScore >= 0.15 ? 2.00 : alphaScore >= 0.05 ? 1.00 : 0;
-  const multiplier = Math.min(confidence / 10, 1);
-  return Math.min(5.00, +(base * multiplier).toFixed(2));
+  return Math.min(5.00, +(base * Math.min(confidence / 10, 1)).toFixed(2));
 }
 
 function extractSeriesTicker(eventTicker: string): string {
@@ -271,6 +396,7 @@ Deno.serve(async (req) => {
     const filterClass = body.asset_class || null;
     const confidence = Math.max(1, Math.min(10, body.confidence || 5));
     const dailyBudget = body.daily_budget || 25.00;
+    const recoveryGoal = body.recovery_goal || 130.00;
 
     const [eventsRes, marketsRes] = await Promise.all([
       fetch(`${KALSHI_API}/events?limit=200&status=open`, { headers: { Accept: "application/json" } }),
@@ -301,8 +427,10 @@ Deno.serve(async (req) => {
       const noPrice = (m.no_ask || (100 - (m.last_price || 50))) / 100;
       const vol24h = m.volume_24h || 0;
       const oi = m.open_interest || 0;
+      const closeTime = m.close_time || m.expiration_time || null;
+      const hoursLeft = hoursUntilClose(closeTime);
 
-      const edge = detectEdge(m, yesPrice, noPrice, vol24h, oi, assetClass);
+      const edge = detectEdge(m, yesPrice, noPrice, vol24h, oi, assetClass, hoursLeft);
 
       return {
         ticker: m.ticker,
@@ -322,14 +450,17 @@ Deno.serve(async (req) => {
         volume: m.volume || 0,
         volume_24h: vol24h,
         open_interest: oi,
-        close_time: m.close_time || m.expiration_time,
+        close_time: closeTime,
         subtitle: m.subtitle || "",
         alpha_type: edge.type,
         alpha_signal: edge.signal,
         alpha_score: edge.score,
         alpha_reasoning: edge.reasoning,
         alpha_strategy: edge.strategy,
-        suggested_bet: computeBetSize(edge.score, confidence),
+        alpha_tier: edge.tier,
+        suggested_bet: computeBetSize(edge.score, confidence, edge.tier),
+        time_to_event_hours: hoursLeft,
+        recovery_tag: edge.recovery_tag,
       };
     });
 
@@ -338,8 +469,13 @@ Deno.serve(async (req) => {
       filtered = classified.filter(m => m.asset_class === filterClass);
     }
 
-    // Sort by alpha score then volume
-    filtered.sort((a, b) => (b.alpha_score - a.alpha_score) || (b.volume_24h - a.volume_24h));
+    // Sort: GHOST_VOLUME and ACCELERATOR first, then by alpha score
+    filtered.sort((a, b) => {
+      const aPrio = a.alpha_type === "GHOST_VOLUME" ? 100 : a.recovery_tag === "ACCELERATOR" ? 50 : 0;
+      const bPrio = b.alpha_type === "GHOST_VOLUME" ? 100 : b.recovery_tag === "ACCELERATOR" ? 50 : 0;
+      if (aPrio !== bPrio) return bPrio - aPrio;
+      return (b.alpha_score - a.alpha_score) || (b.volume_24h - a.volume_24h);
+    });
 
     // Build heatmap
     const heatmap = new Map<string, { count: number; volume: number; totalAlpha: number; topSignal: string | null; icon: string }>();
@@ -360,11 +496,16 @@ Deno.serve(async (req) => {
       top_signal: d.topSignal,
     })).sort((a, b) => b.avg_alpha - a.avg_alpha);
 
-    // Edge alerts (top opportunities)
+    // Edge alerts — top opportunities prioritizing pre-momentum
     const alerts = classified
-      .filter(m => m.alpha_score > 0.05)
-      .sort((a, b) => b.alpha_score - a.alpha_score)
-      .slice(0, 10)
+      .filter(m => m.alpha_score > 0.05 || m.alpha_type === "GHOST_VOLUME" || m.alpha_type === "BINARY_CLIFF")
+      .sort((a, b) => {
+        const aPrio = a.alpha_type === "GHOST_VOLUME" ? 100 : a.alpha_type === "BINARY_CLIFF" ? 90 : a.recovery_tag === "ACCELERATOR" ? 50 : 0;
+        const bPrio = b.alpha_type === "GHOST_VOLUME" ? 100 : b.alpha_type === "BINARY_CLIFF" ? 90 : b.recovery_tag === "ACCELERATOR" ? 50 : 0;
+        if (aPrio !== bPrio) return bPrio - aPrio;
+        return b.alpha_score - a.alpha_score;
+      })
+      .slice(0, 12)
       .map(m => ({
         ticker: m.ticker,
         title: m.title,
@@ -380,23 +521,40 @@ Deno.serve(async (req) => {
         bet: m.suggested_bet,
         event_ticker: m.event_ticker,
         series_ticker: m.series_ticker,
+        tier: m.alpha_tier,
+        recovery_tag: m.recovery_tag,
+        time_to_event_hours: m.time_to_event_hours,
+        open_interest: m.open_interest,
+        volume_24h: m.volume_24h,
       }));
 
     const liquidations = classified
-      .filter(m => m.alpha_type === "MATHEMATICAL_DEATH")
+      .filter(m => m.alpha_type === "MATHEMATICAL_DEATH" || m.alpha_type === "BINARY_CLIFF")
       .map(m => ({
         ticker: m.ticker,
         title: m.title,
         price: m.yes_price,
         open_interest: m.open_interest,
         reasoning: m.alpha_reasoning,
+        type: m.alpha_type,
       }));
+
+    // Recovery stats
+    const accelerators = classified.filter(m => m.recovery_tag === "ACCELERATOR");
+    const recoveryStats = {
+      goal: recoveryGoal,
+      accelerator_count: accelerators.length,
+      best_roi_pct: accelerators.length > 0 ? Math.max(...accelerators.map(m => m.yes_price > 0 ? (1 / m.yes_price - 1) * 100 : 0)) : 0,
+      ghost_volume_count: classified.filter(m => m.alpha_type === "GHOST_VOLUME").length,
+      lotto_count: classified.filter(m => m.alpha_type === "ASYMMETRIC_LOTTO").length,
+    };
 
     return new Response(JSON.stringify({
       heatmap: heatmapArr,
       alerts,
       liquidations,
       markets: filtered.slice(0, 100),
+      recovery: recoveryStats,
       stats: {
         totalMarkets: classified.length,
         filteredMarkets: filtered.length,
