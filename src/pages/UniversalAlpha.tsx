@@ -379,6 +379,7 @@ export default function UniversalAlpha() {
                           <div>
                             <p className="text-xs text-[hsl(var(--nexus-text-muted))] font-mono mb-0.5">Price</p>
                           <p className={`text-2xl font-bold font-mono ${
+                              m.alpha_type === "PENNY_AMAZON" ? "text-yellow-400" :
                               m.alpha_type === "PRE_MOMENTUM_LOTTO" ? "text-fuchsia-400" :
                               m.alpha_type === "GHOST_VOLUME" ? "text-purple-400" : "text-emerald-400"
                             }`}>
