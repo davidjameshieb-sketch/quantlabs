@@ -51,6 +51,7 @@ interface MarketRow {
   alpha_signal: string | null;
   alpha_score: number;
   alpha_reasoning: string | null;
+  alpha_strategy: string | null;
   suggested_bet: number;
   close_time: string;
 }
