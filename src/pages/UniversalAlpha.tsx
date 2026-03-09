@@ -121,13 +121,18 @@ function qualityStars(score: number): string {
   return "☆☆☆☆☆";
 }
 
-function kalshiUrl(eventTicker: string): string {
-  // Kalshi uses event_ticker in lowercase for specific market pages
-  // e.g. kalshi.com/markets/kxatpmatch-26mar10fonsin
-  if (eventTicker) {
-    return `https://kalshi.com/markets/${eventTicker.toLowerCase()}`;
+function kalshiUrl(market: MarketRow): string {
+  // Kalshi uses series_ticker for market pages (verified working)
+  const st = market.series_ticker || "";
+  if (st) {
+    return `https://kalshi.com/markets/${st.toLowerCase()}`;
   }
-  return "https://kalshi.com/markets";
+  // Fallback: extract series from event_ticker
+  const match = (market.event_ticker || "").match(/^([A-Z0-9]+)-/i);
+  if (match) {
+    return `https://kalshi.com/markets/${match[1].toLowerCase()}`;
+  }
+  return `https://kalshi.com/markets`;
 }
 
 // ─── Component ──────────────────────────────────────────────────
