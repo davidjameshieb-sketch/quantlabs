@@ -147,6 +147,49 @@ function detectEdge(m: any, yesPrice: number, noPrice: number, vol24h: number, o
   const priceCents = Math.round(yesPrice * 100);
   const title = (m.title || m.subtitle || "").toLowerCase();
 
+  // Helper: is this a high-profile event where underdogs get mispriced?
+  const isHighProfile = HIGH_PROFILE_KEYWORDS.some(k => title.includes(k) || (m.event_title || "").toLowerCase().includes(k));
+  const eventTitle = (m.event_title || "").toLowerCase();
+
+  // ══════════════════════════════════════════════════════════════
+  // RULE 0: "PENNY AMAZON" — The Crown Jewel
+  // Cheap (≤10¢) + high-profile event + ANY sign of life = hidden gem
+  // These are the bets that look "impossible" but have real upside
+  // ══════════════════════════════════════════════════════════════
+  if (yesPrice > 0.005 && yesPrice <= 0.10) {
+    const roi = Math.round(maxROI * 100);
+    const hasLife = oi > 0 || vol24h > 0;
+    const hasConviction = oi > 20 || vol24h > 10;
+    const hasSmartMoney = oi > 100 && vol24h < 500; // ghost volume pattern
+    const earlyWindow = hoursLeft !== null && hoursLeft >= 6 && hoursLeft <= 168; // up to 7 days out
+    const isTarget = isPreMomentumTarget(title);
+
+    // Penny Amazon Score: how much does this look like a hidden gem?
+    let gemScore = 0;
+    if (isHighProfile) gemScore += 0.25; // big stage = bigger mispricings
+    if (hasSmartMoney) gemScore += 0.25; // ghost volume = someone knows
+    if (hasConviction) gemScore += 0.15; // any OI/vol = not completely dead
+    if (isTarget) gemScore += 0.15; // target market type
+    if (earlyWindow) gemScore += 0.1; // timing right for entry
+    if (yesPrice <= 0.05) gemScore += 0.1; // cheaper = more asymmetric
+    if (oi > 200) gemScore += 0.1; // heavy positioning
+    if (vol24h > 0 && vol24h < 100) gemScore += 0.05; // activity but not crowded
+    gemScore = Math.min(0.99, gemScore);
+
+    if (gemScore >= 0.20 && hasLife) {
+      const amazonTag = gemScore >= 0.5 ? "🏆 HIDDEN GEM" : gemScore >= 0.35 ? "💎 PENNY ALPHA" : "🌱 SEEDLING";
+      return {
+        type: "PENNY_AMAZON",
+        signal: "ASYMMETRIC_BET",
+        score: +gemScore.toFixed(3),
+        reasoning: `${amazonTag}: ${priceCents}¢ on "${(m.title || "").slice(0, 60)}" — ${roi}% ROI. ${hasSmartMoney ? `👻 ${oi} OI with only ${vol24h} vol = ghost positioning.` : ""} ${isHighProfile ? "🔥 HIGH-PROFILE event — underdogs get mispriced here." : ""} ${earlyWindow ? `⏰ ${hoursLeft?.toFixed(0)}h out.` : ""} Market says ${priceCents}% chance — but is it really?`,
+        strategy: `PENNY PLAY: $1-3 LIMIT at ${priceCents}¢. Pays $${(maxROI + 1).toFixed(0)} per contract if it hits. ${hasSmartMoney ? "Smart money already in." : ""} ${roi >= 1000 ? "10x+ bagger potential." : `${roi}% return.`} This is your Amazon-at-a-penny moment — small risk, massive asymmetry.`,
+        tier: "ACCELERATOR",
+        recovery_tag: "ACCELERATOR",
+      };
+    }
+  }
+
   // ══════════════════════════════════════════════════════════════
   // RULE 1: PRE-MOMENTUM LOTTO SNIPER (Ghost Volume + Cheap = Gold)
   // OI > 50 with low volume = positioning before retail arrives
@@ -154,12 +197,11 @@ function detectEdge(m: any, yesPrice: number, noPrice: number, vol24h: number, o
   // ══════════════════════════════════════════════════════════════
   
   // 1A: PRE-MOMENTUM LOTTO — Ghost volume on cheap contracts (the sweet spot)
-  if (vol24h < 1000 && oi > 50 && yesPrice > 0.005 && yesPrice <= 0.15) {
+  if (vol24h < 1000 && oi > 50 && yesPrice > 0.10 && yesPrice <= 0.20) {
     const isTarget = isPreMomentumTarget(title);
     const oiVolRatio = oi / Math.max(vol24h, 1);
-    const cheapBonus = yesPrice <= 0.07 ? 0.2 : 0.1; // extra score for sub-7¢
     const oiBonus = oi > 200 ? 0.25 : oi > 100 ? 0.15 : 0.05;
-    const score = Math.min(0.99, 0.3 + cheapBonus + oiBonus + (isTarget ? 0.2 : 0) + (oiVolRatio > 5 ? 0.15 : 0));
+    const score = Math.min(0.99, 0.3 + oiBonus + (isTarget ? 0.2 : 0) + (oiVolRatio > 5 ? 0.15 : 0) + (isHighProfile ? 0.15 : 0));
     const earlyHours = hoursLeft !== null && hoursLeft >= 12 && hoursLeft <= 96;
     const finalScore = earlyHours ? Math.min(0.99, score + 0.1) : score;
     const roi = Math.round(maxROI * 100);
@@ -168,15 +210,15 @@ function detectEdge(m: any, yesPrice: number, noPrice: number, vol24h: number, o
       type: "PRE_MOMENTUM_LOTTO",
       signal: "LOTTO_SNIPE",
       score: +finalScore.toFixed(3),
-      reasoning: `🔮 PRE-MOMENTUM LOTTO: ${priceCents}¢ with ${oi} OI but only ${vol24h} vol. ${roi}% ROI. Smart money positioned, retail hasn't arrived. ${isTarget ? "🎯 HIGH-VALUE TARGET." : ""} ${earlyHours ? `⏰ ${hoursLeft?.toFixed(0)}h out — EARLY ENTRY.` : ""}`,
-      strategy: `LOTTO SNIPE: $1-2.50 LIMIT at ${priceCents}¢. ${oi} contracts held but ${vol24h} traded = ghost volume. ${roi}% ROI if it hits. Get in before the volume spike.`,
+      reasoning: `🔮 PRE-MOMENTUM: ${priceCents}¢ with ${oi} OI / ${vol24h} vol. ${roi}% ROI. ${isHighProfile ? "🔥 Big event." : ""} ${earlyHours ? `⏰ ${hoursLeft?.toFixed(0)}h out.` : ""}`,
+      strategy: `$1-3 LIMIT at ${priceCents}¢. ${oi} positioned, ${vol24h} traded. ${roi}% if it hits.`,
       tier: "ACCELERATOR",
       recovery_tag: "ACCELERATOR",
     };
   }
 
-  // 1B: GHOST VOLUME on mid-priced contracts (15-85¢)
-  if (vol24h < 1000 && oi > 100 && yesPrice > 0.15 && yesPrice < 0.85) {
+  // 1B: GHOST VOLUME on mid-priced contracts (20-85¢)
+  if (vol24h < 1000 && oi > 100 && yesPrice > 0.20 && yesPrice < 0.85) {
     const isTarget = isPreMomentumTarget(title);
     const oiVolRatio = oi / Math.max(vol24h, 1);
     const score = Math.min(0.85, 0.3 + (oiVolRatio > 10 ? 0.25 : oiVolRatio * 0.025) + (isTarget ? 0.15 : 0));
@@ -187,8 +229,8 @@ function detectEdge(m: any, yesPrice: number, noPrice: number, vol24h: number, o
       type: "GHOST_VOLUME",
       signal: "PRE_MOMENTUM_SNIPE",
       score: +finalScore.toFixed(3),
-      reasoning: `👻 Ghost Volume: ${oi} OI / ${vol24h} vol. Smart money positioned. ${isTarget ? "TARGET market." : ""} ${earlyHours ? `⏰ ${hoursLeft?.toFixed(0)}h — entry window.` : ""}`,
-      strategy: `LIMIT ORDER at ${priceCents}¢. ${oi} contracts held, retail not yet in.`,
+      reasoning: `👻 Ghost Volume: ${oi} OI / ${vol24h} vol. ${isTarget ? "TARGET." : ""} ${earlyHours ? `⏰ ${hoursLeft?.toFixed(0)}h.` : ""}`,
+      strategy: `LIMIT at ${priceCents}¢. ${oi} contracts held, retail not in yet.`,
       tier: maxROI > 5 ? "ACCELERATOR" : "EARLY_ENTRY",
       recovery_tag: maxROI > 5 ? "ACCELERATOR" : null,
     };
