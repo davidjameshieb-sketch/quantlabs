@@ -102,6 +102,8 @@ function getVerdict(type: string | null, score: number, price: number): { label:
   const maxROI = price > 0 ? ((1 / price - 1) * 100).toFixed(0) : "∞";
 
   switch (type) {
+    case "PENNY_AMAZON":
+      return { label: "💎 Penny Amazon", color: "text-yellow-400", emoji: "💎", explanation: `Cheap contract on a big event — massive asymmetric upside. The market is sleeping on this.` };
     case "PRE_MOMENTUM_LOTTO":
       return { label: "🔮 Pre-Mo Lotto", color: "text-fuchsia-400", emoji: "🔮", explanation: `Ghost volume on a cheap contract — the sweet spot. Limit order only.` };
     case "GHOST_VOLUME":
