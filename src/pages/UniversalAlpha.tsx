@@ -10,7 +10,7 @@ import { Progress } from "@/components/ui/progress";
 import { Switch } from "@/components/ui/switch";
 import {
   RefreshCw, Zap, Activity, AlertTriangle, Loader2,
-  TrendingUp, Shield, Skull, DollarSign, Target, Flame
+  TrendingUp, Shield, Skull, DollarSign, Target, Flame, ExternalLink
 } from "lucide-react";
 
 // ─── Types ──────────────────────────────────────────────────────
