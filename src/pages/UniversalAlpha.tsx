@@ -241,11 +241,11 @@ export default function UniversalAlpha() {
         <div className="max-w-[1400px] mx-auto flex items-center justify-between gap-4 flex-wrap">
           <div>
             <h1 className="text-xl font-bold font-[family-name:var(--font-mono)] tracking-tight flex items-center gap-2">
-              <Target className="w-5 h-5 text-fuchsia-400" />
-              Pre-Momentum Lotto Sniper
+              <Target className="w-5 h-5 text-yellow-400" />
+              Penny Amazon Scanner
             </h1>
             <p className="text-xs text-[hsl(var(--nexus-text-muted))] font-mono">
-              {data?.stats.totalMarkets || 0} scanned • {recovery?.lotto_count || 0} lottos • {recovery?.ghost_volume_count || 0} ghost-vol • Updated {lastRefresh || "—"}
+              {data?.stats.totalMarkets || 0} scanned • {recovery?.penny_amazon_count || 0} penny gems • {recovery?.lotto_count || 0} lottos • Updated {lastRefresh || "—"}
             </p>
           </div>
 
