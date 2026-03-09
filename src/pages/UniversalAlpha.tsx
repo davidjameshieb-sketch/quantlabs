@@ -101,6 +101,8 @@ function getVerdict(type: string | null, score: number, price: number): { label:
   const maxROI = price > 0 ? ((1 / price - 1) * 100).toFixed(0) : "∞";
 
   switch (type) {
+    case "PRE_MOMENTUM_LOTTO":
+      return { label: "🔮 Pre-Mo Lotto", color: "text-fuchsia-400", emoji: "🔮", explanation: `Ghost volume on a cheap contract — the sweet spot. Limit order only.` };
     case "GHOST_VOLUME":
       return { label: "👻 Pre-Momentum", color: "text-purple-400", emoji: "👻", explanation: `Smart money positioned but retail hasn't arrived. EARLY ENTRY.` };
     case "BINARY_CLIFF":
