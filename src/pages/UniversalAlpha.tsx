@@ -398,11 +398,11 @@ export default function UniversalAlpha() {
                           </div>
                         </div>
 
-                        <p className={`text-[11px] font-mono leading-relaxed font-semibold ${
-                          m.alpha_type === "PENNY_AMAZON" ? "text-yellow-300/90" :
-                          m.alpha_type === "PRE_MOMENTUM_LOTTO" ? "text-fuchsia-300/80" : "text-purple-300/80"
+                        <p className={`text-[11px] font-mono leading-relaxed ${
+                          m.alpha_type === "PENNY_AMAZON" ? "text-yellow-200/90 line-clamp-6" :
+                          m.alpha_type === "PRE_MOMENTUM_LOTTO" ? "text-fuchsia-300/80 line-clamp-2" : "text-purple-300/80 line-clamp-2"
                         }`}>
-                          {m.alpha_strategy || v.explanation}
+                          {m.alpha_type === "PENNY_AMAZON" ? (m.alpha_reasoning || v.explanation) : (m.alpha_strategy || v.explanation)}
                         </p>
 
                         <div className="flex items-center justify-between pt-2 border-t border-[hsl(var(--nexus-border))]">
