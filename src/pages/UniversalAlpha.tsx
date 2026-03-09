@@ -218,11 +218,13 @@ export default function UniversalAlpha() {
   });
 
   const bestBets = markets.filter(m => 
-    m.alpha_type === "GHOST_VOLUME" || 
+    m.alpha_type === "PRE_MOMENTUM_LOTTO" ||
     m.alpha_type === "ASYMMETRIC_LOTTO" ||
+    m.alpha_type === "GHOST_VOLUME" || 
     m.alpha_type === "SPREAD_ARB" ||
-    m.alpha_score >= 0.1
-  ).slice(0, 8);
+    m.alpha_type === "MICRO_VALUE" ||
+    m.alpha_score >= 0.15
+  ).slice(0, 12);
 
   const killSwitchAlerts = (data?.markets || []).filter(m => m.alpha_type === "BINARY_CLIFF");
   const deadPositions = (data?.markets || []).filter(m => m.alpha_type === "MATHEMATICAL_DEATH");
