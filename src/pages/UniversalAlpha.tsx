@@ -82,22 +82,22 @@ function getVerdict(type: string | null, score: number, price: number): { label:
   const maxROI = price > 0 ? ((1 / price - 1) * 100).toFixed(0) : "∞";
 
   switch (type) {
-    case "MOMENTUM_LOAD":
-    case "UNDERDOG_VALUE":
-      return { label: "Good Value", color: "text-emerald-400", emoji: "🟢", explanation: `Only ${priceCents}¢ — if this wins you get up to ${maxROI}% return` };
-    case "TREND_CONFIRM":
+    case "SPREAD_ARB":
+      return { label: "🔥 Arbitrage!", color: "text-emerald-400", emoji: "💰", explanation: `Buy both sides for guaranteed profit — combined price < $1` };
+    case "WIDE_SPREAD":
+      return { label: "Limit Snipe", color: "text-emerald-400", emoji: "🎯", explanation: `Wide spread = free edge. Place a limit order at the midpoint, don't market buy.` };
+    case "MICRO_VALUE":
+      return { label: "Lotto Play", color: "text-emerald-400", emoji: "🎰", explanation: `Only ${priceCents}¢ — risk $1 for up to ${maxROI}% return. High risk, huge upside.` };
     case "VALUE_ZONE":
-      return { label: "Worth Watching", color: "text-cyan-400", emoji: "🔵", explanation: `${priceCents}¢ with trading activity — potential ${maxROI}% return` };
-    case "SWEEP_SIGNAL":
-      return { label: "Early Mover", color: "text-cyan-400", emoji: "🔵", explanation: `Early buying detected at ${priceCents}¢ — could move up` };
+      return { label: "Value Bet", color: "text-cyan-400", emoji: "🔵", explanation: `${priceCents}¢ = ${priceCents}% implied chance. Market may be underpricing this.` };
     case "VOLUME_SPIKE":
-      return { label: "Unusual Activity", color: "text-amber-400", emoji: "🟡", explanation: `Spike in trading volume at ${priceCents}¢ — something's happening` };
+      return { label: "Smart Money", color: "text-amber-400", emoji: "🟡", explanation: `Unusual volume spike — someone is loading up before a move` };
     case "COIN_FLIP":
-      return { label: "50/50 Toss-Up", color: "text-yellow-400", emoji: "🟡", explanation: `${priceCents}¢ — basically a coin flip right now` };
+      return { label: "50/50 Toss-Up", color: "text-yellow-400", emoji: "🟡", explanation: `${priceCents}¢ — only bet if you have info the market doesn't` };
     case "FAVORITE":
       return { label: "Likely Winner", color: "text-blue-400", emoji: "🔷", explanation: `${priceCents}¢ — probably wins but only ${maxROI}% return` };
     case "HEAVY_FAVORITE":
-      return { label: "Almost Certain", color: "text-slate-400", emoji: "⚪", explanation: `${priceCents}¢ — very likely but tiny ${maxROI}% return` };
+      return { label: "Near Certain", color: "text-slate-400", emoji: "⚪", explanation: `${priceCents}¢ — ${maxROI}% return. Only useful for big positions.` };
     case "MATHEMATICAL_DEATH":
       return { label: "Dead — Sell Now", color: "text-red-400", emoji: "🔴", explanation: `${priceCents}¢ — this isn't going to happen, get out` };
     case "STALE_PRICING":
