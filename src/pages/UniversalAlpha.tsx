@@ -120,8 +120,9 @@ function qualityStars(score: number): string {
   return "☆☆☆☆☆";
 }
 
-function kalshiUrl(ticker: string): string {
-  return `https://kalshi.com/markets/${ticker.toLowerCase()}`;
+function kalshiUrl(eventTicker: string): string {
+  // Kalshi website uses event_ticker in lowercase for URLs
+  return `https://kalshi.com/markets/${eventTicker.toLowerCase()}`;
 }
 
 // ─── Component ──────────────────────────────────────────────────
