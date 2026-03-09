@@ -178,12 +178,59 @@ function detectEdge(m: any, yesPrice: number, noPrice: number, vol24h: number, o
 
     if (gemScore >= 0.20 && hasLife) {
       const amazonTag = gemScore >= 0.5 ? "🏆 HIDDEN GEM" : gemScore >= 0.35 ? "💎 PENNY ALPHA" : "🌱 SEEDLING";
+
+      // Build a specific investment thesis — WHY this is worth buying
+      const reasons: string[] = [];
+      
+      // 1. The math case
+      reasons.push(`At ${priceCents}¢, you risk $1 to make $${(maxROI + 1).toFixed(0)}. You only need to win 1 in ${Math.round(1/yesPrice)} for this bet to be profitable.`);
+      
+      // 2. The positioning case
+      if (hasSmartMoney) {
+        reasons.push(`${oi} contracts are already held but only ${vol24h} traded recently — that's "ghost volume." Someone with conviction bought and is holding. Retail hasn't noticed yet.`);
+      } else if (oi > 0) {
+        reasons.push(`${oi} open interest means real money is already committed at this level. These aren't empty markets.`);
+      }
+      if (vol24h > 0 && vol24h < 200) {
+        reasons.push(`Only ${vol24h} traded today — this is pre-discovery phase. When volume arrives, the price gaps up.`);
+      }
+      
+      // 3. The event case
+      if (isHighProfile) {
+        reasons.push(`This is on a HIGH-PROFILE event where the public overreacts to favorites. Underdogs consistently get mispriced on big stages.`);
+      }
+      
+      // 4. The timing case
+      if (earlyWindow && hoursLeft !== null) {
+        if (hoursLeft <= 24) {
+          reasons.push(`Event is ${hoursLeft.toFixed(0)}h away — last chance for early entry before the final price run.`);
+        } else if (hoursLeft <= 72) {
+          reasons.push(`${hoursLeft.toFixed(0)}h to event — sweet spot for entry. Early enough to capture the full move, close enough that catalysts are forming.`);
+        } else {
+          reasons.push(`${Math.round(hoursLeft / 24)}d out — maximum early-mover advantage. Price will re-rate as the event approaches.`);
+        }
+      }
+
+      // 5. The asymmetry case
+      if (yesPrice <= 0.03) {
+        reasons.push(`Sub-3¢ means the market thinks this is "impossible." But binary events have fat tails — the market systematically underprices 2-5% probability outcomes.`);
+      } else if (yesPrice <= 0.07) {
+        reasons.push(`Sub-7¢ territory — these contracts regularly 3-5x when any positive news hits. One headline shifts this.`);
+      }
+
+      // 6. The target-specific case
+      if (isTarget) {
+        reasons.push(`This is a high-value target category (scorer props, round leaders, weekly mentions) where pricing lags behind actual probability.`);
+      }
+
+      const thesis = reasons.join(" ");
+
       return {
         type: "PENNY_AMAZON",
         signal: "ASYMMETRIC_BET",
         score: +gemScore.toFixed(3),
-        reasoning: `${amazonTag}: ${priceCents}¢ on "${(m.title || "").slice(0, 60)}" — ${roi}% ROI. ${hasSmartMoney ? `👻 ${oi} OI with only ${vol24h} vol = ghost positioning.` : ""} ${isHighProfile ? "🔥 HIGH-PROFILE event — underdogs get mispriced here." : ""} ${earlyWindow ? `⏰ ${hoursLeft?.toFixed(0)}h out.` : ""} Market says ${priceCents}% chance — but is it really?`,
-        strategy: `PENNY PLAY: $1-3 LIMIT at ${priceCents}¢. Pays $${(maxROI + 1).toFixed(0)} per contract if it hits. ${hasSmartMoney ? "Smart money already in." : ""} ${roi >= 1000 ? "10x+ bagger potential." : `${roi}% return.`} This is your Amazon-at-a-penny moment — small risk, massive asymmetry.`,
+        reasoning: `${amazonTag}: ${thesis}`,
+        strategy: `$1-3 LIMIT at ${priceCents}¢. NEVER market buy. ${roi >= 1000 ? `This is a ${Math.round(roi/100)}x bagger if it hits.` : `${roi}% return on a $1 bet.`}`,
         tier: "ACCELERATOR",
         recovery_tag: "ACCELERATOR",
       };
