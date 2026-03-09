@@ -504,6 +504,7 @@ export default function UniversalAlpha() {
                         </TableCell>
                         <TableCell className="text-right">
                           <span className={`font-mono text-base font-bold ${
+                            m.alpha_type === "PENNY_AMAZON" ? "text-yellow-400" :
                             m.alpha_type === "PRE_MOMENTUM_LOTTO" ? "text-fuchsia-400" :
                             isGhost ? "text-purple-400" : "text-emerald-400"
                           }`}>
