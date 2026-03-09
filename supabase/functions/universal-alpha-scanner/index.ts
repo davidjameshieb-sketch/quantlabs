@@ -216,9 +216,16 @@ function computeMathematicalDeath(market: any): { type: string; signal: string; 
   return null;
 }
 
-function computeGeneralEdge(price: number, vol24h: number, openInterest: number): { type: string; signal: string; score: number; reasoning: string } | null {
-  // LIQUIDITY GATE: Filter out > 95¢
-  if (price > 0.95) return null;
+function computeGeneralEdge(price: number, vol24h: number, openInterest: number): { type: string; signal: string; score: number; reasoning: string } {
+  // LIQUIDITY GATE: Settled outcomes
+  if (price > 0.95) {
+    return {
+      type: "SETTLED",
+      signal: "NO_EDGE",
+      score: 0,
+      reasoning: `Price ${(price * 100).toFixed(0)}¢ — settled outcome, zero ROI potential.`,
+    };
+  }
   
   // STALE PRICE FILTER
   if (vol24h === 0 && openInterest > 100) {
@@ -241,8 +248,69 @@ function computeGeneralEdge(price: number, vol24h: number, openInterest: number)
     };
   }
   
-  // Don't flag overpriced favorites > 85¢ (limited upside)
-  return null;
+  // Moderate value: 15-40¢ with volume
+  if (price >= 0.15 && price < 0.40 && vol24h > 50) {
+    const score = Math.min(0.4, (0.40 - price) * 1.2 + vol24h / 1000);
+    return {
+      type: "VALUE_ZONE",
+      signal: "WATCH",
+      score: +score.toFixed(3),
+      reasoning: `${(price * 100).toFixed(0)}¢ with ${vol24h} volume — value zone, 150-500% ROI potential.`,
+    };
+  }
+
+  // Mid-range: 40-60¢ — coin-flip territory
+  if (price >= 0.40 && price <= 0.60) {
+    const volFactor = Math.min(0.2, vol24h / 2000);
+    const score = 0.05 + volFactor;
+    return {
+      type: "COIN_FLIP",
+      signal: "NEUTRAL",
+      score: +score.toFixed(3),
+      reasoning: `${(price * 100).toFixed(0)}¢ — coin-flip zone. ${vol24h > 100 ? `Active with ${vol24h} volume.` : "Low conviction."}`,
+    };
+  }
+
+  // Favorites: 60-85¢ — limited upside but may have momentum
+  if (price > 0.60 && price <= 0.85) {
+    const volFactor = Math.min(0.15, vol24h / 3000);
+    const score = 0.02 + volFactor;
+    return {
+      type: "FAVORITE",
+      signal: "LOW_UPSIDE",
+      score: +score.toFixed(3),
+      reasoning: `${(price * 100).toFixed(0)}¢ favorite — limited upside (${((1 / price - 1) * 100).toFixed(0)}% max ROI). ${vol24h > 100 ? `Volume: ${vol24h}.` : ""}`,
+    };
+  }
+
+  // Heavy favorites: 85-95¢
+  if (price > 0.85 && price <= 0.95) {
+    return {
+      type: "HEAVY_FAVORITE",
+      signal: "MINIMAL_EDGE",
+      score: 0.01,
+      reasoning: `${(price * 100).toFixed(0)}¢ heavy favorite — only ${((1 / price - 1) * 100).toFixed(0)}% max ROI. Near-settled.`,
+    };
+  }
+
+  // Dead / zero price
+  if (price <= 0) {
+    return {
+      type: "DEAD",
+      signal: "NO_EDGE",
+      score: 0,
+      reasoning: `0¢ — no market. Dead contract.`,
+    };
+  }
+
+  // Fallback for anything else (1-15¢ low volume)
+  const baseScore = Math.max(0.01, (0.15 - price) / 0.15 * 0.1);
+  return {
+    type: "LOW_LIQUIDITY",
+    signal: "SPECULATIVE",
+    score: +baseScore.toFixed(3),
+    reasoning: `${(price * 100).toFixed(1)}¢ with ${vol24h} volume — low liquidity speculative. High ROI potential but thin market.`,
+  };
 }
 
 // ─── Bet Sizing ─────────────────────────────────────────────────
