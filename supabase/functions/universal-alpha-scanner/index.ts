@@ -367,7 +367,7 @@ Deno.serve(async (req) => {
     // Fetch from Kalshi
     const [eventsRes, marketsRes] = await Promise.all([
       fetch(`${KALSHI_API}/events?limit=200&status=open`, { headers: { Accept: "application/json" } }),
-      fetch(`${KALSHI_API}/markets?limit=200&status=open`, { headers: { Accept: "application/json" } }),
+      fetch(`${KALSHI_API}/markets?limit=200&status=open&mve_filter=exclude`, { headers: { Accept: "application/json" } }),
     ]);
 
     if (!eventsRes.ok) throw new Error(`Kalshi events: ${eventsRes.status}`);
