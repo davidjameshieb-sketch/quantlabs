@@ -400,9 +400,10 @@ Deno.serve(async (req) => {
       // Compute alpha based on asset class
       let alpha: { type: string; signal: string; score: number; reasoning: string } | null = null;
 
-      // Check for mathematical death first
+      // Check for mathematical death first (highest priority)
       alpha = computeMathematicalDeath(m);
 
+      // Then check asset-class specific edges
       if (!alpha) {
         switch (assetClass) {
           case "Politics":
@@ -418,12 +419,12 @@ Deno.serve(async (req) => {
         }
       }
 
-      // Fallback general edge
+      // Always compute general edge as final fallback (returns score for all markets)
       if (!alpha) {
         alpha = computeGeneralEdge(yesPrice, vol24h, oi);
       }
 
-      const alphaScore = alpha?.score || 0;
+      const alphaScore = alpha.score;
 
       return {
         ticker: m.ticker,
