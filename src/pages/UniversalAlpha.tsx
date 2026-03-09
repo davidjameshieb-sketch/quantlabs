@@ -215,8 +215,9 @@ export default function UniversalAlpha() {
 
   const markets = (data?.markets || []).filter(m => {
     if (!hideJunk) return true;
-    if (m.alpha_type === "BINARY_CLIFF") return true; // always show kill-switch alerts
-    if (m.recovery_tag === "FLOOR_DEFENSE" && hideJunk) return false; // hide safe/floor unless junk off
+    if (m.alpha_type === "PENNY_AMAZON") return true; // ALWAYS show penny amazons
+    if (m.alpha_type === "BINARY_CLIFF") return true;
+    if (m.recovery_tag === "FLOOR_DEFENSE" && hideJunk) return false;
     return m.alpha_type !== "DEAD" && m.alpha_type !== "SETTLED" && m.yes_price > 0.01 && m.yes_price < 0.97;
   });
 
