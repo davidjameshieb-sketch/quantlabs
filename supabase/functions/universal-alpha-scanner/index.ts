@@ -226,6 +226,11 @@ function detectEdge(m: any, yesPrice: number, noPrice: number, vol24h: number, o
         reasons.push(`This is a high-value target category (scorer props, round leaders, weekly mentions) where pricing lags behind actual probability.`);
       }
 
+      // 7. Fallback — if no specific signals, the pure math is the thesis
+      if (reasons.length <= 1) {
+        reasons.push(`The market prices this at ${priceCents}% probability. Binary markets systematically misprice tail events — real probability is often 2-3x what the market implies at these levels.`);
+      }
+
       const thesis = reasons.join(" ");
 
       return {
