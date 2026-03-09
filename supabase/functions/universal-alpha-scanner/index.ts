@@ -445,10 +445,10 @@ Deno.serve(async (req) => {
         open_interest: oi,
         close_time: m.close_time || m.expiration_time,
         subtitle: m.subtitle || "",
-        alpha_type: alpha?.type || null,
-        alpha_signal: alpha?.signal || null,
+        alpha_type: alpha.type,
+        alpha_signal: alpha.signal,
         alpha_score: alphaScore,
-        alpha_reasoning: alpha?.reasoning || null,
+        alpha_reasoning: alpha.reasoning,
         suggested_bet: computeBetSize(alphaScore, confidence),
       };
     });
