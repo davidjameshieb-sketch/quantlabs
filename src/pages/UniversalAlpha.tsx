@@ -335,7 +335,9 @@ export default function UniversalAlpha() {
                 const countdown = formatCountdown(m.time_to_event_hours);
                 return (
                   <a key={m.ticker} href={kalshiUrl(m)} target="_blank" rel="noopener noreferrer" className="block group">
-                    <Card className={`border-[hsl(var(--nexus-border))] hover:border-purple-500/50 transition-all h-full ${
+                    <Card className={`border-[hsl(var(--nexus-border))] hover:border-fuchsia-500/50 transition-all h-full ${
+                      m.alpha_type === "PRE_MOMENTUM_LOTTO" ? "bg-fuchsia-500/8 border-fuchsia-500/40" :
+                      m.alpha_type === "ASYMMETRIC_LOTTO" ? "bg-amber-500/5 border-amber-500/30" :
                       m.alpha_type === "GHOST_VOLUME" ? "bg-purple-500/5 border-purple-500/30" : "bg-[hsl(var(--nexus-surface))]"
                     }`}>
                       <CardContent className="p-4 space-y-3">
