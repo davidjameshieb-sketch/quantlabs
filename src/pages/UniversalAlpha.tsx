@@ -321,11 +321,11 @@ export default function UniversalAlpha() {
         {bestBets.length > 0 && (
           <section>
             <h2 className="text-lg font-bold font-[family-name:var(--font-mono)] mb-1 flex items-center gap-2">
-              <Zap className="w-5 h-5 text-purple-400" />
-              Sniper Entries
+              <Zap className="w-5 h-5 text-fuchsia-400" />
+              🔮 Lotto Snipes
             </h2>
             <p className="text-xs text-[hsl(var(--nexus-text-muted))] font-mono mb-4">
-              Pre-momentum ghost volume + high-alpha lottos + arbitrage
+              Pre-momentum ghost volume + asymmetric lottos — cheap contracts with smart money positioning
             </p>
 
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
