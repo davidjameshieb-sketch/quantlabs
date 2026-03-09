@@ -353,7 +353,7 @@ export default function UniversalAlpha() {
                     const maxROI = m.yes_price > 0 ? ((1 / m.yes_price - 1) * 100).toFixed(0) : "∞";
                     return (
                       <TableRow key={m.ticker} className="border-[hsl(var(--nexus-border))] hover:bg-[hsl(var(--nexus-surface-raised))] cursor-pointer group"
-                        onClick={() => window.open(kalshiUrl(m.series_ticker, m.event_ticker), "_blank")}>
+                        onClick={() => window.open(kalshiUrl(m.event_ticker), "_blank")}>
                         <TableCell className="max-w-[350px]">
                           <div className="flex items-center gap-2">
                             <span className="text-base shrink-0">{m.icon}</span>
