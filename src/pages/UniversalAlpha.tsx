@@ -277,9 +277,9 @@ export default function UniversalAlpha() {
                           </div>
                         </div>
 
-                        {/* Why */}
-                        <p className="text-[11px] font-mono text-[hsl(var(--nexus-text-muted))] leading-relaxed">
-                          {v.explanation}
+                        {/* Strategy */}
+                        <p className="text-[11px] font-mono text-emerald-300/80 leading-relaxed font-semibold">
+                          {m.alpha_strategy || v.explanation}
                         </p>
 
                         {/* CTA */}
