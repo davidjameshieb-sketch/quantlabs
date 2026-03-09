@@ -235,7 +235,7 @@ export default function UniversalAlpha() {
                 return (
                   <a
                     key={m.ticker}
-                    href={kalshiUrl(m.event_ticker)}
+                    href={kalshiUrl(m)}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="block group"
