@@ -48,6 +48,27 @@ const PRE_MOMENTUM_TARGETS = [
   "winner",
 ];
 
+// ─── High-Profile Event Keywords (the "Amazon" events) ─────────
+// These are the events everyone watches but where underdogs get mispriced
+const HIGH_PROFILE_KEYWORDS = [
+  // Major sports finals / playoffs
+  "championship", "playoff", "finals", "super bowl", "world series",
+  "stanley cup", "march madness", "grand slam", "masters", "open",
+  // Major politics
+  "president", "election", "primary", "debate", "impeach", "senate race",
+  "governor", "swing state",
+  // Economics
+  "fed rate", "cpi", "gdp", "recession", "jobs report", "unemployment",
+  "inflation", "s&p 500", "nasdaq", "dow",
+  // Crypto
+  "bitcoin", "ethereum", "btc", "eth", "crypto",
+  // Culture
+  "oscar", "grammy", "emmy", "super bowl", "world cup",
+  // Individual fame (big-name underdogs)
+  "mvp", "rookie of the year", "scoring leader", "batting",
+  "home run", "touchdown", "triple double",
+];
+
 interface ClassifiedMarket {
   ticker: string;
   event_ticker: string;
