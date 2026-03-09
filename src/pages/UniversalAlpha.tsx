@@ -129,6 +129,13 @@ const EDGE_SOURCE: Record<string, { label: string; color: string; desc: string }
   SWEEP_SIGNAL:        { label: "🎯 Sweep Signal", color: "text-cyan-400", desc: "Early sweep signal detected in recovery zone" },
   UNDERDOG_VALUE:      { label: "🔥 Underdog Value", color: "text-emerald-400", desc: "Mispriced underdog with 500%+ ROI potential and active market" },
   STALE_PRICING:       { label: "⚠️ Stale Pricing", color: "text-red-400", desc: "No active market — zero volume with open interest, DO NOT ENTRY" },
+  VALUE_ZONE:          { label: "💎 Value Zone", color: "text-cyan-400", desc: "15-40¢ range with volume — 150-500% ROI potential" },
+  COIN_FLIP:           { label: "🎲 Coin Flip", color: "text-yellow-400", desc: "40-60¢ range — near 50/50, watch for volume catalysts" },
+  FAVORITE:            { label: "📊 Favorite", color: "text-blue-400", desc: "60-85¢ — likely winner but limited upside" },
+  HEAVY_FAVORITE:      { label: "🔒 Heavy Favorite", color: "text-slate-400", desc: "85-95¢ — near-settled, minimal edge" },
+  SETTLED:             { label: "✅ Settled", color: "text-slate-500", desc: "95¢+ — outcome essentially decided, zero ROI" },
+  DEAD:                { label: "💀 Dead", color: "text-slate-500", desc: "0¢ — no market, dead contract" },
+  LOW_LIQUIDITY:       { label: "🕳️ Low Liquidity", color: "text-orange-400", desc: "Thin market — high ROI potential but hard to execute" },
 };
 
 function getEdgeSource(type: string | null): { label: string; color: string; desc: string } {
