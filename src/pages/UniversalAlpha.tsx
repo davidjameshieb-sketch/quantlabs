@@ -411,13 +411,24 @@ export default function UniversalAlpha() {
                         <p className="text-xs font-mono text-[hsl(var(--nexus-text-muted))]">Suggested Bet</p>
                         <p className="text-lg font-bold font-mono text-cyan-400">${alert.bet.toFixed(2)}</p>
                       </div>
-                      {market && alert.signal !== "DO_NOT_ENTRY" && (
-                        <Button size="sm" onClick={() => logPosition(market)}
-                          className="bg-emerald-600 hover:bg-emerald-700 text-white font-mono">
-                          <DollarSign className="w-4 h-4 mr-1" />
-                          BUY
-                        </Button>
-                      )}
+                      <div className="flex items-center gap-2">
+                        {market && alert.signal !== "DO_NOT_ENTRY" && (
+                          <Button size="sm" onClick={() => logPosition(market)}
+                            className="bg-emerald-600 hover:bg-emerald-700 text-white font-mono">
+                            <DollarSign className="w-4 h-4 mr-1" />
+                            BUY
+                          </Button>
+                        )}
+                        <a
+                          href={`https://kalshi.com/markets/${alert.ticker.toLowerCase()}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 px-3 py-1.5 rounded-md bg-[hsl(var(--nexus-card))]/80 border border-[hsl(var(--nexus-border))] text-cyan-400 hover:text-cyan-300 hover:border-cyan-500/50 transition-colors font-mono text-xs"
+                        >
+                          <ExternalLink className="w-3 h-3" />
+                          Kalshi
+                        </a>
+                      </div>
                     </div>
                   </CardContent>
                 </Card>
