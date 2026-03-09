@@ -384,7 +384,9 @@ export default function UniversalAlpha() {
                           </div>
                         </div>
 
-                        <p className="text-[11px] font-mono text-purple-300/80 leading-relaxed font-semibold">
+                        <p className={`text-[11px] font-mono leading-relaxed font-semibold ${
+                          m.alpha_type === "PRE_MOMENTUM_LOTTO" ? "text-fuchsia-300/80" : "text-purple-300/80"
+                        }`}>
                           {m.alpha_strategy || v.explanation}
                         </p>
 
