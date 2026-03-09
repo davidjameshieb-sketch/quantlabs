@@ -141,7 +141,7 @@ function getVerdict(type: string | null, score: number, price: number): { label:
 
 function tierBadge(tier: string | null, recoveryTag: string | null): { label: string; className: string } | null {
   if (recoveryTag === "ACCELERATOR" || tier === "ACCELERATOR") {
-    return { label: "🚀 ACCELERATOR", className: "bg-emerald-500/20 text-emerald-400 border-emerald-500/40" };
+    return { label: "🚀 ACCELERATOR", className: "bg-fuchsia-500/20 text-fuchsia-400 border-fuchsia-500/40" };
   }
   if (recoveryTag === "FLOOR_DEFENSE" || tier === "FLOOR_DEFENSE") {
     return { label: "🛡️ FLOOR DEFENSE", className: "bg-slate-500/20 text-slate-400 border-slate-500/40" };
