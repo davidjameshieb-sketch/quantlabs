@@ -122,15 +122,19 @@ function qualityStars(score: number): string {
 }
 
 function kalshiUrl(market: MarketRow): string {
-  // Kalshi uses series_ticker for market pages (verified working)
+  // Kalshi URL format: /markets/{SERIES_TICKER}/{EVENT_TICKER} (uppercase)
+  const et = market.event_ticker || "";
   const st = market.series_ticker || "";
+  if (st && et) {
+    return `https://kalshi.com/markets/${st}/${et}`;
+  }
   if (st) {
-    return `https://kalshi.com/markets/${st.toLowerCase()}`;
+    return `https://kalshi.com/markets/${st}`;
   }
   // Fallback: extract series from event_ticker
-  const match = (market.event_ticker || "").match(/^([A-Z0-9]+)-/i);
+  const match = et.match(/^([A-Z0-9]+)-/i);
   if (match) {
-    return `https://kalshi.com/markets/${match[1].toLowerCase()}`;
+    return `https://kalshi.com/markets/${match[1].toUpperCase()}/${et.toUpperCase()}`;
   }
   return `https://kalshi.com/markets`;
 }
