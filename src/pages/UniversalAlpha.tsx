@@ -221,6 +221,7 @@ export default function UniversalAlpha() {
   });
 
   const bestBets = markets.filter(m => 
+    m.alpha_type === "PENNY_AMAZON" ||
     m.alpha_type === "PRE_MOMENTUM_LOTTO" ||
     m.alpha_type === "ASYMMETRIC_LOTTO" ||
     m.alpha_type === "GHOST_VOLUME" || 
