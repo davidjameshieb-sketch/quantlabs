@@ -527,8 +527,10 @@ export default function UniversalAlpha() {
                           )}
                         </TableCell>
                         <TableCell className="max-w-[200px]">
-                          <p className="font-mono text-[10px] text-[hsl(var(--nexus-text-muted))] leading-snug line-clamp-2">
-                            {m.alpha_strategy || m.alpha_reasoning || v.explanation}
+                          <p className={`font-mono text-[10px] leading-snug ${
+                            m.alpha_type === "PENNY_AMAZON" ? "text-yellow-200/80 line-clamp-4" : "text-[hsl(var(--nexus-text-muted))] line-clamp-2"
+                          }`}>
+                            {m.alpha_type === "PENNY_AMAZON" ? (m.alpha_reasoning || m.alpha_strategy || v.explanation) : (m.alpha_strategy || m.alpha_reasoning || v.explanation)}
                           </p>
                         </TableCell>
                         <TableCell className="text-right">
