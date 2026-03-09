@@ -87,39 +87,81 @@ function computePoliticsEdge(market: any): { type: string; signal: string; score
   // Politics markets: low price + high volume = momentum play
   const price = (market.yes_ask || market.last_price || 0) / 100;
   const vol = market.volume_24h || market.volume || 0;
-  if (price > 0 && price < 0.10 && vol > 50) {
-    const score = Math.min(1, (0.10 - price) / 0.10 + (vol / 500));
+  
+  // LIQUIDITY GATE: Filter out > 95¢ (zero ROI potential)
+  if (price > 0.95) return null;
+  
+  // STALE PRICE FILTER: No volume + high OI = stale pricing
+  if (vol === 0 && (market.open_interest || 0) > 100) {
+    return {
+      type: "STALE_PRICING",
+      signal: "DO_NOT_ENTRY",
+      score: 0,
+      reasoning: `STALE PRICING — ${(price * 100).toFixed(0)}¢ with 0 volume but ${market.open_interest} OI. No active market.`,
+    };
+  }
+  
+  // VEGAS RECOVERY: Prioritize < 15¢ for 300%+ ROI potential
+  if (price > 0 && price < 0.15 && vol > 50) {
+    const score = Math.min(1, (0.15 - price) / 0.15 + (vol / 500));
     return {
       type: "MOMENTUM_LOAD",
       signal: "MICRO_LOAD",
       score: +score.toFixed(3),
-      reasoning: `Price ${(price * 100).toFixed(0)}¢ with ${vol} volume — under 10¢ threshold with active trading. Potential 10x if trend confirms.`,
+      reasoning: `Price ${(price * 100).toFixed(0)}¢ with ${vol} volume — under 15¢ threshold with active trading. 500%+ ROI potential if trend confirms.`,
     };
   }
-  // High confidence mispricing: price 10-30¢ with very high volume
-  if (price >= 0.10 && price < 0.30 && vol > 200) {
-    const score = (0.30 - price) * 2;
+  
+  // Moderate recovery zone: 15-25¢ with volume
+  if (price >= 0.15 && price < 0.25 && vol > 100) {
+    const score = (0.25 - price) * 2.5;
     return {
       type: "TREND_CONFIRM",
       signal: "ANCHOR_BUY",
       score: +score.toFixed(3),
-      reasoning: `Price ${(price * 100).toFixed(0)}¢ with ${vol} 24h volume — sentiment lagging behind data flow.`,
+      reasoning: `Price ${(price * 100).toFixed(0)}¢ with ${vol} 24h volume — 300%+ ROI zone, sentiment lagging data flow.`,
     };
   }
+  
   return null;
 }
 
 function computeCultureEdge(market: any): { type: string; signal: string; score: number; reasoning: string } | null {
   const price = (market.yes_ask || market.last_price || 0) / 100;
   const vol = market.volume_24h || market.volume || 0;
-  // Sleeper signal: moderate price with volume spike
-  if (price > 0 && price < 0.40 && vol > 100) {
+  
+  // LIQUIDITY GATE: Filter out > 95¢
+  if (price > 0.95) return null;
+  
+  // STALE PRICE FILTER
+  if (vol === 0 && (market.open_interest || 0) > 100) {
+    return {
+      type: "STALE_PRICING",
+      signal: "DO_NOT_ENTRY",
+      score: 0,
+      reasoning: `STALE PRICING — ${(price * 100).toFixed(0)}¢ with 0 volume but ${market.open_interest} OI.`,
+    };
+  }
+  
+  // VEGAS RECOVERY: < 15¢ priority
+  if (price > 0 && price < 0.15 && vol > 50) {
+    const score = (0.15 - price) * 4;
+    return {
+      type: "SWEEP_SIGNAL",
+      signal: "ANCHOR_BUY",
+      score: +score.toFixed(3),
+      reasoning: `${(price * 100).toFixed(0)}¢ with ${vol} volume — early sweep signal at 500%+ ROI zone.`,
+    };
+  }
+  
+  // Moderate sleeper: 15-40¢ with volume
+  if (price >= 0.15 && price < 0.40 && vol > 100) {
     const score = (0.40 - price) * 1.5;
     return {
       type: "SWEEP_SIGNAL",
       signal: "ANCHOR_BUY",
       score: +score.toFixed(3),
-      reasoning: `${(price * 100).toFixed(0)}¢ with ${vol} volume — early category wins may signal sweep. Buy before consensus forms.`,
+      reasoning: `${(price * 100).toFixed(0)}¢ with ${vol} volume — early category wins may signal sweep.`,
     };
   }
   return null;
@@ -129,10 +171,25 @@ function computeVolatilityEdge(market: any): { type: string; signal: string; sco
   const price = (market.yes_ask || market.last_price || 0) / 100;
   const vol = market.volume_24h || 0;
   const totalVol = market.volume || 0;
+  
+  // LIQUIDITY GATE: Filter out > 95¢
+  if (price > 0.95) return null;
+  
+  // STALE PRICE FILTER
+  if (vol === 0 && (market.open_interest || 0) > 100) {
+    return {
+      type: "STALE_PRICING",
+      signal: "DO_NOT_ENTRY",
+      score: 0,
+      reasoning: `STALE PRICING — ${(price * 100).toFixed(0)}¢ with 0 volume but ${market.open_interest} OI.`,
+    };
+  }
+  
   // Volume precedes price: high recent volume but price hasn't moved
   if (vol > 100 && totalVol > 0) {
     const volRatio = vol / Math.max(totalVol / 30, 1); // vs daily avg
-    if (volRatio > 2 && price > 0.30 && price < 0.70) {
+    // Only flag if price is in actionable range (1-85¢)
+    if (volRatio > 2 && price >= 0.01 && price <= 0.85) {
       const score = Math.min(1, (volRatio - 2) * 0.3);
       return {
         type: "VOLUME_SPIKE",
@@ -160,25 +217,31 @@ function computeMathematicalDeath(market: any): { type: string; signal: string; 
 }
 
 function computeGeneralEdge(price: number, vol24h: number, openInterest: number): { type: string; signal: string; score: number; reasoning: string } | null {
-  // Mispriced underdog: very low price with meaningful activity
-  if (price > 0 && price < 0.05 && vol24h > 20 && openInterest > 10) {
-    const score = Math.min(1, (0.05 - price) / 0.05 + vol24h / 200);
+  // LIQUIDITY GATE: Filter out > 95¢
+  if (price > 0.95) return null;
+  
+  // STALE PRICE FILTER
+  if (vol24h === 0 && openInterest > 100) {
+    return {
+      type: "STALE_PRICING",
+      signal: "DO_NOT_ENTRY",
+      score: 0,
+      reasoning: `STALE PRICING — ${(price * 100).toFixed(0)}¢ with 0 volume but ${openInterest} OI. No active market.`,
+    };
+  }
+  
+  // VEGAS RECOVERY: Mispriced underdog < 15¢ (500%+ ROI potential)
+  if (price > 0 && price < 0.15 && vol24h > 20 && openInterest > 10) {
+    const score = Math.min(1, (0.15 - price) / 0.15 + vol24h / 200);
     return {
       type: "UNDERDOG_VALUE",
       signal: "MICRO_LOAD",
       score: +score.toFixed(3),
-      reasoning: `${(price * 100).toFixed(1)}¢ with ${vol24h} volume and ${openInterest} OI — mispriced underdog with active market.`,
+      reasoning: `${(price * 100).toFixed(1)}¢ with ${vol24h} volume and ${openInterest} OI — mispriced underdog with 500%+ ROI potential.`,
     };
   }
-  // Overpriced favorite showing cracks: high price with no volume
-  if (price > 0.85 && vol24h < 5 && openInterest > 50) {
-    return {
-      type: "STALE_FAVORITE",
-      signal: "FADE_NO",
-      score: +((price - 0.85) * 3).toFixed(3),
-      reasoning: `${(price * 100).toFixed(0)}¢ with only ${vol24h} 24h vol but ${openInterest} OI — stale pricing, consider No position.`,
-    };
-  }
+  
+  // Don't flag overpriced favorites > 85¢ (limited upside)
   return null;
 }
 
