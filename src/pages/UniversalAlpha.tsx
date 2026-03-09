@@ -74,6 +74,7 @@ interface RecoveryStats {
   best_roi_pct: number;
   ghost_volume_count: number;
   lotto_count: number;
+  penny_amazon_count: number;
 }
 
 interface ScannerData {
