@@ -365,7 +365,8 @@ export default function UniversalAlpha() {
                         <div className="flex items-end justify-between">
                           <div>
                             <p className="text-xs text-[hsl(var(--nexus-text-muted))] font-mono mb-0.5">Price</p>
-                            <p className={`text-2xl font-bold font-mono ${
+                          <p className={`text-2xl font-bold font-mono ${
+                              m.alpha_type === "PRE_MOMENTUM_LOTTO" ? "text-fuchsia-400" :
                               m.alpha_type === "GHOST_VOLUME" ? "text-purple-400" : "text-emerald-400"
                             }`}>
                               {(m.yes_price * 100).toFixed(0)}¢
