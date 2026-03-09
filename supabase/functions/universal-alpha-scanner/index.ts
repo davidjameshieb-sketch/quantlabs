@@ -352,6 +352,17 @@ function allocateBudget(opportunities: ClassifiedMarket[], dailyBudget: number, 
   }));
 }
 
+// Extract series ticker from event_ticker (e.g., "KXNCAAMBSPREAD-26MAR09FURETSU" → "KXNCAAMBSPREAD")
+function extractSeriesTicker(eventTicker: string): string {
+  if (!eventTicker) return "";
+  // Series ticker is the part before the date segment (e.g., -26MAR09, -25DEC31)
+  const match = eventTicker.match(/^([A-Z]+)-\d{2}[A-Z]{3}\d{2}/);
+  if (match) return match[1];
+  // Fallback: take first segment before any dash followed by digits
+  const parts = eventTicker.split("-");
+  return parts[0] || eventTicker;
+}
+
 // ─── Main ───────────────────────────────────────────────────────
 
 Deno.serve(async (req) => {
