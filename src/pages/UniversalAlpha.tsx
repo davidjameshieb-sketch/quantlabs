@@ -121,19 +121,13 @@ function qualityStars(score: number): string {
   return "☆☆☆☆☆";
 }
 
-function kalshiUrl(seriesTicker: string, eventTicker: string): string {
-  // Use series_ticker if available
-  if (seriesTicker) {
-    return `https://kalshi.com/markets/${seriesTicker.toLowerCase()}`;
+function kalshiUrl(eventTicker: string): string {
+  // Kalshi uses event_ticker in lowercase for specific market pages
+  // e.g. kalshi.com/markets/kxatpmatch-26mar10fonsin
+  if (eventTicker) {
+    return `https://kalshi.com/markets/${eventTicker.toLowerCase()}`;
   }
-  // Fallback: extract series from event_ticker (before date segment)
-  const match = eventTicker.match(/^([A-Z0-9]+)-\d{2}[A-Z]{3}\d{2}/i);
-  if (match) {
-    return `https://kalshi.com/markets/${match[1].toLowerCase()}`;
-  }
-  // Last resort: first segment
-  const first = eventTicker.split("-")[0];
-  return `https://kalshi.com/markets/${first.toLowerCase()}`;
+  return "https://kalshi.com/markets";
 }
 
 // ─── Component ──────────────────────────────────────────────────
