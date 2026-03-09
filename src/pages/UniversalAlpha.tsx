@@ -37,6 +37,7 @@ interface EdgeAlert {
 
 interface MarketRow {
   ticker: string;
+  event_ticker: string;
   title: string;
   event_title: string;
   asset_class: string;
