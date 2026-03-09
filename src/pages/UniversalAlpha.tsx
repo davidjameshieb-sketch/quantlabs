@@ -658,12 +658,22 @@ export default function UniversalAlpha() {
                           {m.suggested_bet > 0 ? `$${m.suggested_bet.toFixed(2)}` : "—"}
                         </TableCell>
                         <TableCell>
-                          {m.alpha_score > 0 && m.alpha_signal !== "DO_NOT_ENTRY" && (
-                            <Button size="sm" onClick={() => logPosition(m)}
-                              className="bg-emerald-600 hover:bg-emerald-700 text-white font-mono text-xs">
-                              BUY
-                            </Button>
-                          )}
+                          <div className="flex items-center gap-1.5">
+                            {m.alpha_score > 0 && m.alpha_signal !== "DO_NOT_ENTRY" && (
+                              <Button size="sm" onClick={() => logPosition(m)}
+                                className="bg-emerald-600 hover:bg-emerald-700 text-white font-mono text-xs">
+                                BUY
+                              </Button>
+                            )}
+                            <a
+                              href={`https://kalshi.com/markets/${m.ticker.toLowerCase()}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1 px-2 py-1 rounded bg-[hsl(var(--nexus-card))]/80 border border-[hsl(var(--nexus-border))] text-cyan-400 hover:text-cyan-300 hover:border-cyan-500/50 transition-colors text-[10px] font-mono"
+                            >
+                              <ExternalLink className="w-3 h-3" />
+                            </a>
+                          </div>
                         </TableCell>
                       </TableRow>
                     );
