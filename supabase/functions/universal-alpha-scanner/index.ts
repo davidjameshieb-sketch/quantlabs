@@ -191,41 +191,42 @@ function detectEdge(m: any, yesPrice: number, noPrice: number, vol24h: number, o
   }
 
   // ══════════════════════════════════════════════════════════════
-  // RULE 3: ASYMMETRIC LOTTO TIER (1-7¢ with Alpha > 0.40)
+  // RULE 3: EXPANDED LOTTO TIER (1-15¢ with Alpha > 0.25)
+  // Wider net, lower threshold — we want to see more lottos
   // ══════════════════════════════════════════════════════════════
-  if (yesPrice > 0 && yesPrice <= 0.07) {
-    // Calculate alpha based on OI, volume, and target relevance
+  if (yesPrice > 0 && yesPrice <= 0.15) {
+    const roi = Math.round(maxROI * 100);
     const lottoAlpha = Math.min(1, 
-      (oi > 50 ? 0.2 : 0) + 
-      (vol24h > 10 ? 0.15 : 0) + 
-      (isPreMomentumTarget(title) ? 0.25 : 0) + 
-      (oi > 100 ? 0.1 : 0) +
+      (oi > 20 ? 0.15 : 0) + 
+      (oi > 100 ? 0.15 : 0) +
+      (vol24h > 5 ? 0.1 : 0) + 
       (vol24h > 50 ? 0.1 : 0) +
-      (spread < 0.05 ? 0.05 : 0)
+      (isPreMomentumTarget(title) ? 0.2 : 0) + 
+      (spread < 0.05 ? 0.05 : 0) +
+      (yesPrice <= 0.07 ? 0.1 : 0) + // cheaper = more asymmetric
+      (hoursLeft !== null && hoursLeft >= 12 && hoursLeft <= 72 ? 0.1 : 0) // timing bonus
     );
 
-    if (lottoAlpha >= 0.40) {
-      const roi = Math.round(maxROI * 100);
+    if (lottoAlpha >= 0.25) {
       return {
         type: "ASYMMETRIC_LOTTO",
         signal: "LOTTO_LIMIT_ONLY",
         score: +lottoAlpha.toFixed(3),
-        reasoning: `🎰 ASYMMETRIC LOTTO: ${priceCents}¢ = ${roi}% ROI. Alpha Score: ${(lottoAlpha * 100).toFixed(0)}%. ${oi > 0 ? `${oi} OI shows positioning.` : ""} Historical patterns suggest this type of market hits more than ${priceCents}% of the time.`,
-        strategy: `LIMIT ORDER ONLY: Place $1.00-$2.50 limit at ${priceCents}¢. NEVER market buy a lotto. At ${roi}% ROI, you only need to win 1 in ${Math.round(1/yesPrice)} to break even.`,
+        reasoning: `🎰 LOTTO: ${priceCents}¢ = ${roi}% ROI. Alpha: ${(lottoAlpha * 100).toFixed(0)}%. ${oi > 0 ? `${oi} OI.` : ""} ${vol24h > 0 ? `${vol24h} vol.` : ""} Win 1 in ${Math.round(1/yesPrice)} to break even.`,
+        strategy: `$1-2.50 LIMIT at ${priceCents}¢. ${roi}% payout. NEVER market buy.`,
         tier: roi > 500 ? "ACCELERATOR" : "LOTTO",
         recovery_tag: roi > 500 ? "ACCELERATOR" : null,
       };
     }
 
-    // Low-alpha lottos — still show but mark as speculative
+    // Low-alpha but still show if any activity
     if (oi > 0 || vol24h > 0) {
-      const roi = Math.round(maxROI * 100);
       return {
         type: "LOW_ALPHA_LOTTO",
         signal: "SPECULATIVE_LOTTO",
         score: +lottoAlpha.toFixed(3),
-        reasoning: `${priceCents}¢ lotto — ${roi}% ROI but Alpha only ${(lottoAlpha * 100).toFixed(0)}%. Below our 40% threshold. ${oi > 0 ? `${oi} OI.` : "No positioning."}`,
-        strategy: `SKIP or $1 max: Alpha too low for confident entry. If you play, limit order only at ${priceCents}¢.`,
+        reasoning: `${priceCents}¢ — ${roi}% ROI. Alpha ${(lottoAlpha * 100).toFixed(0)}% (below 25%). ${oi > 0 ? `${oi} OI.` : ""}`,
+        strategy: `SKIP or $1 max at ${priceCents}¢. Low conviction.`,
         tier: "LOTTO",
         recovery_tag: null,
       };
