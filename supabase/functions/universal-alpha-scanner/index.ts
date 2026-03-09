@@ -45,6 +45,7 @@ const CATEGORY_MAP: Record<string, { class: string; icon: string }> = {
 interface ClassifiedMarket {
   ticker: string;
   event_ticker: string;
+  series_ticker: string;
   title: string;
   event_title: string;
   asset_class: string;
