@@ -350,8 +350,8 @@ export default function UniversalAlpha() {
                   <TableRow className="border-[hsl(var(--nexus-border))] hover:bg-transparent">
                     <TableHead className="font-mono text-[11px] text-[hsl(var(--nexus-text-muted))] font-semibold">MARKET</TableHead>
                     <TableHead className="font-mono text-[11px] text-[hsl(var(--nexus-text-muted))] font-semibold text-right">PRICE</TableHead>
-                    <TableHead className="font-mono text-[11px] text-[hsl(var(--nexus-text-muted))] font-semibold">VERDICT</TableHead>
-                    <TableHead className="font-mono text-[11px] text-[hsl(var(--nexus-text-muted))] font-semibold text-center">QUALITY</TableHead>
+                    <TableHead className="font-mono text-[11px] text-[hsl(var(--nexus-text-muted))] font-semibold">EDGE</TableHead>
+                    <TableHead className="font-mono text-[11px] text-[hsl(var(--nexus-text-muted))] font-semibold">STRATEGY</TableHead>
                     <TableHead className="font-mono text-[11px] text-[hsl(var(--nexus-text-muted))] font-semibold text-right">MAX ROI</TableHead>
                     <TableHead className="font-mono text-[11px] text-[hsl(var(--nexus-text-muted))] font-semibold text-right">ACTIVITY</TableHead>
                     <TableHead className="font-mono text-[11px] text-[hsl(var(--nexus-text-muted))] font-semibold w-[60px]"></TableHead>
