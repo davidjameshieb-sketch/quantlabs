@@ -7,6 +7,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert";
 import { Slider } from "@/components/ui/slider";
 import { Progress } from "@/components/ui/progress";
+import { Switch } from "@/components/ui/switch";
 import {
   RefreshCw, Zap, Activity, AlertTriangle, Loader2,
   TrendingUp, Shield, Skull, DollarSign, Target, Flame
@@ -106,6 +107,7 @@ function signalColor(signal: string | null): string {
     case "VOLATILITY_ENTRY": return "bg-amber-500/20 text-amber-400 border-amber-500/30";
     case "INSTANT_LIQUIDATION": return "bg-red-500/20 text-red-400 border-red-500/30";
     case "FADE_NO": return "bg-purple-500/20 text-purple-400 border-purple-500/30";
+    case "DO_NOT_ENTRY": return "bg-red-500/20 text-red-400 border-red-500/30";
     default: return "bg-blue-500/20 text-blue-400 border-blue-500/30";
   }
 }
@@ -115,6 +117,23 @@ function alphaBar(score: number): string {
   if (score >= 0.3) return "bg-cyan-500";
   if (score >= 0.15) return "bg-amber-500";
   return "bg-muted";
+}
+
+// ─── Edge Source Labels ─────────────────────────────────────────
+
+const EDGE_SOURCE: Record<string, { label: string; color: string; desc: string }> = {
+  MOMENTUM_LOAD:       { label: "📉 Price Momentum", color: "text-emerald-400", desc: "Price under 15¢ with active volume — momentum loading zone, 500%+ ROI potential" },
+  TREND_CONFIRM:       { label: "🔄 Trend Confirmation", color: "text-cyan-400", desc: "Price 15-25¢ with volume — 300%+ ROI zone, sentiment lagging data" },
+  VOLUME_SPIKE:        { label: "⚡ Volume Spike", color: "text-amber-400", desc: "Volume exceeds daily avg 2×+ at actionable price — breakout incoming" },
+  MATHEMATICAL_DEATH:  { label: "☠️ Dead Position", color: "text-red-400", desc: "Price ≤2¢ with open interest — liquidate to recover capital" },
+  SWEEP_SIGNAL:        { label: "🎯 Sweep Signal", color: "text-cyan-400", desc: "Early sweep signal detected in recovery zone" },
+  UNDERDOG_VALUE:      { label: "🔥 Underdog Value", color: "text-emerald-400", desc: "Mispriced underdog with 500%+ ROI potential and active market" },
+  STALE_PRICING:       { label: "⚠️ Stale Pricing", color: "text-red-400", desc: "No active market — zero volume with open interest, DO NOT ENTRY" },
+};
+
+function getEdgeSource(type: string | null): { label: string; color: string; desc: string } {
+  if (!type || !EDGE_SOURCE[type]) return { label: "📊 General Edge", color: "text-blue-400", desc: "General alpha opportunity detected" };
+  return EDGE_SOURCE[type];
 }
 
 // ─── Component ──────────────────────────────────────────────────
@@ -128,6 +147,7 @@ export default function UniversalAlpha() {
   const [confidence, setConfidence] = useState(5);
   const [dailyBudget, setDailyBudget] = useState(25);
   const [positions, setPositions] = useState<LoggedPosition[]>(loadPositions);
+  const [hideDeadMoney, setHideDeadMoney] = useState(false);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -205,6 +225,14 @@ export default function UniversalAlpha() {
   const openPositions = positions.filter(p => p.status === "open");
   const closedPositions = positions.filter(p => p.status === "closed");
 
+  // Filter markets based on "Dead Money" toggle
+  const filteredMarkets = data?.markets.filter(m => {
+    if (!hideDeadMoney) return true;
+    const price = m.yes_price;
+    // Hide 0-5¢ and 95-100¢ (dead money)
+    return price > 0.05 && price < 0.95;
+  }) || [];
+
   return (
     <div className="min-h-screen bg-[hsl(var(--nexus-bg))] text-[hsl(var(--nexus-text-primary))]">
       {/* Sticky Header */}
@@ -264,6 +292,13 @@ export default function UniversalAlpha() {
               </Button>
             ))}
           </div>
+          <div className="flex items-center gap-3">
+            <span className="text-xs font-mono text-[hsl(var(--nexus-text-muted))] uppercase">Dead Money Filter</span>
+            <Switch checked={hideDeadMoney} onCheckedChange={setHideDeadMoney} />
+            <span className="text-xs font-mono text-amber-400">
+              {hideDeadMoney ? "ON" : "OFF"}
+            </span>
+          </div>
         </div>
       </div>
 
@@ -307,6 +342,7 @@ export default function UniversalAlpha() {
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
             {data?.alerts.slice(0, 6).map((alert, i) => {
               const market = data?.markets.find(m => m.ticker === alert.ticker);
+              const edgeSource = getEdgeSource(alert.type);
               return (
                 <Card key={i} className="bg-[hsl(var(--nexus-surface))] border-[hsl(var(--nexus-border))] hover:border-emerald-500/40 transition-all">
                   <CardHeader className="pb-3">
@@ -325,10 +361,20 @@ export default function UniversalAlpha() {
                     </div>
                   </CardHeader>
                   <CardContent className="space-y-3">
+                    {/* Edge Source Label */}
+                    <div className="p-2 rounded bg-[hsl(var(--nexus-bg))]/50 border-l-2 border-emerald-500">
+                      <p className={`text-xs font-mono font-bold ${edgeSource.color} mb-1`}>
+                        {edgeSource.label}
+                      </p>
+                      <p className="text-xs font-mono text-[hsl(var(--nexus-text-muted))] leading-relaxed">
+                        {edgeSource.desc}
+                      </p>
+                    </div>
+
                     {/* Price & Probability */}
                     <div className="flex items-center justify-between p-3 rounded bg-[hsl(var(--nexus-bg))]/50">
                       <div>
-                        <p className="text-xs font-mono text-[hsl(var(--nexus-text-muted))] uppercase mb-1">Current Price</p>
+                        <p className="text-xs font-mono text-[hsl(var(--nexus-text-muted))] uppercase mb-1">Market Price</p>
                         <p className="text-3xl font-bold font-mono text-emerald-400">
                           {(alert.price * 100).toFixed(0)}¢
                         </p>
@@ -337,7 +383,7 @@ export default function UniversalAlpha() {
                         </p>
                       </div>
                       <div className="text-right">
-                        <p className="text-xs font-mono text-[hsl(var(--nexus-text-muted))] uppercase mb-1">Alpha Score</p>
+                        <p className="text-xs font-mono text-[hsl(var(--nexus-text-muted))] uppercase mb-1">Edge Score</p>
                         <p className="text-2xl font-bold font-mono text-amber-400">
                           {(alert.score * 100).toFixed(1)}%
                         </p>
@@ -346,9 +392,11 @@ export default function UniversalAlpha() {
                     </div>
 
                     {/* Reasoning */}
-                    <p className="text-xs font-mono text-[hsl(var(--nexus-text-muted))] leading-relaxed">
-                      {alert.reasoning}
-                    </p>
+                    <div className="p-2 rounded bg-[hsl(var(--nexus-bg))]/30 border-l-2 border-amber-500">
+                      <p className="text-xs font-mono text-[hsl(var(--nexus-text-muted))] leading-relaxed">
+                        {alert.reasoning}
+                      </p>
+                    </div>
 
                     {/* Action */}
                     <div className="flex items-center justify-between pt-2 border-t border-[hsl(var(--nexus-border))]">
@@ -356,7 +404,7 @@ export default function UniversalAlpha() {
                         <p className="text-xs font-mono text-[hsl(var(--nexus-text-muted))]">Suggested Bet</p>
                         <p className="text-lg font-bold font-mono text-cyan-400">${alert.bet.toFixed(2)}</p>
                       </div>
-                      {market && (
+                      {market && alert.signal !== "DO_NOT_ENTRY" && (
                         <Button size="sm" onClick={() => logPosition(market)}
                           className="bg-emerald-600 hover:bg-emerald-700 text-white font-mono">
                           <DollarSign className="w-4 h-4 mr-1" />
@@ -537,6 +585,7 @@ export default function UniversalAlpha() {
                   <TableRow className="border-[hsl(var(--nexus-border))] hover:bg-transparent">
                     <TableHead className="font-mono text-xs text-[hsl(var(--nexus-text-muted))]"></TableHead>
                     <TableHead className="font-mono text-xs text-[hsl(var(--nexus-text-muted))]">MARKET</TableHead>
+                    <TableHead className="font-mono text-xs text-[hsl(var(--nexus-text-muted))]">EDGE SOURCE</TableHead>
                     <TableHead className="font-mono text-xs text-[hsl(var(--nexus-text-muted))] text-right">YES</TableHead>
                     <TableHead className="font-mono text-xs text-[hsl(var(--nexus-text-muted))] text-right">VOL 24H</TableHead>
                     <TableHead className="font-mono text-xs text-[hsl(var(--nexus-text-muted))] text-center">SIGNAL</TableHead>
@@ -546,53 +595,61 @@ export default function UniversalAlpha() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {data?.markets.slice(0, 50).map((m) => (
-                    <TableRow key={m.ticker} className="border-[hsl(var(--nexus-border))] hover:bg-[hsl(var(--nexus-surface-raised))]">
-                      <TableCell className="text-lg">{m.icon}</TableCell>
-                      <TableCell>
-                        <p className="font-mono text-sm font-semibold truncate max-w-[300px]">{m.title}</p>
-                        <p className="font-mono text-xs text-[hsl(var(--nexus-text-muted))] truncate max-w-[300px]">{m.ticker}</p>
-                      </TableCell>
-                      <TableCell className="text-right font-mono font-bold text-emerald-400">
-                        {(m.yes_price * 100).toFixed(0)}¢
-                      </TableCell>
-                      <TableCell className="text-right font-mono text-sm text-[hsl(var(--nexus-text-muted))]">
-                        {m.volume_24h.toLocaleString()}
-                      </TableCell>
-                      <TableCell className="text-center">
-                        {m.alpha_signal ? (
-                          <Badge className={`text-xs font-mono ${signalColor(m.alpha_signal)}`}>{m.alpha_signal}</Badge>
-                        ) : (
-                          <span className="text-xs text-[hsl(var(--nexus-text-muted))]">—</span>
-                        )}
-                      </TableCell>
-                      <TableCell className="text-right font-mono font-bold text-sm">
-                        {m.alpha_score > 0 ? (
-                          <span className="text-emerald-400">{(m.alpha_score * 100).toFixed(1)}%</span>
-                        ) : (
-                          <span className="text-[hsl(var(--nexus-text-muted))]">0</span>
-                        )}
-                      </TableCell>
-                      <TableCell className="text-right font-mono text-sm text-cyan-400">
-                        {m.suggested_bet > 0 ? `$${m.suggested_bet.toFixed(2)}` : "—"}
-                      </TableCell>
-                      <TableCell>
-                        {m.alpha_score > 0 && (
-                          <Button size="sm" onClick={() => logPosition(m)}
-                            className="bg-emerald-600 hover:bg-emerald-700 text-white font-mono text-xs">
-                            BUY
-                          </Button>
-                        )}
-                      </TableCell>
-                    </TableRow>
-                  ))}
+                  {filteredMarkets.slice(0, 50).map((m) => {
+                    const edgeSource = getEdgeSource(m.alpha_type);
+                    return (
+                      <TableRow key={m.ticker} className="border-[hsl(var(--nexus-border))] hover:bg-[hsl(var(--nexus-surface-raised))]">
+                        <TableCell className="text-lg">{m.icon}</TableCell>
+                        <TableCell>
+                          <p className="font-mono text-sm font-semibold truncate max-w-[300px]">{m.title}</p>
+                          <p className="font-mono text-xs text-[hsl(var(--nexus-text-muted))] truncate max-w-[300px]">{m.ticker}</p>
+                        </TableCell>
+                        <TableCell>
+                          <p className={`font-mono text-xs font-bold ${edgeSource.color}`}>{edgeSource.label}</p>
+                        </TableCell>
+                        <TableCell className="text-right font-mono font-bold text-emerald-400">
+                          {(m.yes_price * 100).toFixed(0)}¢
+                        </TableCell>
+                        <TableCell className="text-right font-mono text-sm text-[hsl(var(--nexus-text-muted))]">
+                          {m.volume_24h.toLocaleString()}
+                        </TableCell>
+                        <TableCell className="text-center">
+                          {m.alpha_signal ? (
+                            <Badge className={`text-xs font-mono ${signalColor(m.alpha_signal)}`}>{m.alpha_signal}</Badge>
+                          ) : (
+                            <span className="text-xs text-[hsl(var(--nexus-text-muted))]">—</span>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-right font-mono font-bold text-sm">
+                          {m.alpha_score > 0 ? (
+                            <span className="text-emerald-400">{(m.alpha_score * 100).toFixed(1)}%</span>
+                          ) : (
+                            <span className="text-[hsl(var(--nexus-text-muted))]">0</span>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-right font-mono text-sm text-cyan-400">
+                          {m.suggested_bet > 0 ? `$${m.suggested_bet.toFixed(2)}` : "—"}
+                        </TableCell>
+                        <TableCell>
+                          {m.alpha_score > 0 && m.alpha_signal !== "DO_NOT_ENTRY" && (
+                            <Button size="sm" onClick={() => logPosition(m)}
+                              className="bg-emerald-600 hover:bg-emerald-700 text-white font-mono text-xs">
+                              BUY
+                            </Button>
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
                 </TableBody>
               </Table>
             </div>
           </Card>
 
-          {data?.markets.length === 0 && (
-            <p className="text-center text-[hsl(var(--nexus-text-muted))] font-mono py-8">No markets found</p>
+          {filteredMarkets.length === 0 && (
+            <p className="text-center text-[hsl(var(--nexus-text-muted))] font-mono py-8">
+              {hideDeadMoney ? "No markets in actionable range (5¢-95¢)" : "No markets found"}
+            </p>
           )}
         </section>
 
