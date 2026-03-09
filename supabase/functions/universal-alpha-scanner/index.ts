@@ -495,11 +495,19 @@ Deno.serve(async (req) => {
       filtered = classified.filter(m => m.asset_class === filterClass);
     }
 
-    // Sort: GHOST_VOLUME and ACCELERATOR first, then by alpha score
+    // Sort: PRE_MOMENTUM_LOTTO first, then ASYMMETRIC_LOTTO, then GHOST_VOLUME, then ACCELERATOR
+    const typePriority = (m: ClassifiedMarket) => {
+      if (m.alpha_type === "PRE_MOMENTUM_LOTTO") return 200;
+      if (m.alpha_type === "ASYMMETRIC_LOTTO") return 150;
+      if (m.alpha_type === "GHOST_VOLUME") return 100;
+      if (m.alpha_type === "SPREAD_ARB") return 90;
+      if (m.recovery_tag === "ACCELERATOR") return 50;
+      if (m.alpha_type === "MICRO_VALUE") return 40;
+      return 0;
+    };
     filtered.sort((a, b) => {
-      const aPrio = a.alpha_type === "GHOST_VOLUME" ? 100 : a.recovery_tag === "ACCELERATOR" ? 50 : 0;
-      const bPrio = b.alpha_type === "GHOST_VOLUME" ? 100 : b.recovery_tag === "ACCELERATOR" ? 50 : 0;
-      if (aPrio !== bPrio) return bPrio - aPrio;
+      const pDiff = typePriority(b) - typePriority(a);
+      if (pDiff !== 0) return pDiff;
       return (b.alpha_score - a.alpha_score) || (b.volume_24h - a.volume_24h);
     });
 
