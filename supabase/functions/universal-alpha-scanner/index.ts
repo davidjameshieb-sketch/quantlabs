@@ -430,6 +430,7 @@ Deno.serve(async (req) => {
       return {
         ticker: m.ticker,
         event_ticker: m.event_ticker,
+        series_ticker: m.series_ticker || event.series_ticker || "",
         title: m.title || m.subtitle || m.ticker,
         event_title: event.title || "",
         asset_class: assetClass,
