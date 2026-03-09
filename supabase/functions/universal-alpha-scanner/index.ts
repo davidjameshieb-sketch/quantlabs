@@ -127,22 +127,47 @@ function detectEdge(m: any, yesPrice: number, noPrice: number, vol24h: number, o
   const title = (m.title || m.subtitle || "").toLowerCase();
 
   // ══════════════════════════════════════════════════════════════
-  // RULE 1: GHOST-VOLUME SNIPER (Pre-Momentum Early Entry)
-  // Low volume (<500) but meaningful OI (>250) = smart money positioning
+  // RULE 1: PRE-MOMENTUM LOTTO SNIPER (Ghost Volume + Cheap = Gold)
+  // OI > 50 with low volume = positioning before retail arrives
+  // Under 15¢ = lotto territory with massive ROI
   // ══════════════════════════════════════════════════════════════
-  if (vol24h < 500 && oi > 250 && yesPrice > 0.01 && yesPrice < 0.85) {
+  
+  // 1A: PRE-MOMENTUM LOTTO — Ghost volume on cheap contracts (the sweet spot)
+  if (vol24h < 1000 && oi > 50 && yesPrice > 0.005 && yesPrice <= 0.15) {
     const isTarget = isPreMomentumTarget(title);
     const oiVolRatio = oi / Math.max(vol24h, 1);
-    const score = Math.min(0.95, 0.4 + (oiVolRatio > 10 ? 0.3 : oiVolRatio * 0.03) + (isTarget ? 0.2 : 0));
-    const earlyHours = hoursLeft !== null && hoursLeft >= 24 && hoursLeft <= 72;
+    const cheapBonus = yesPrice <= 0.07 ? 0.2 : 0.1; // extra score for sub-7¢
+    const oiBonus = oi > 200 ? 0.25 : oi > 100 ? 0.15 : 0.05;
+    const score = Math.min(0.99, 0.3 + cheapBonus + oiBonus + (isTarget ? 0.2 : 0) + (oiVolRatio > 5 ? 0.15 : 0));
+    const earlyHours = hoursLeft !== null && hoursLeft >= 12 && hoursLeft <= 96;
     const finalScore = earlyHours ? Math.min(0.99, score + 0.1) : score;
+    const roi = Math.round(maxROI * 100);
+
+    return {
+      type: "PRE_MOMENTUM_LOTTO",
+      signal: "LOTTO_SNIPE",
+      score: +finalScore.toFixed(3),
+      reasoning: `🔮 PRE-MOMENTUM LOTTO: ${priceCents}¢ with ${oi} OI but only ${vol24h} vol. ${roi}% ROI. Smart money positioned, retail hasn't arrived. ${isTarget ? "🎯 HIGH-VALUE TARGET." : ""} ${earlyHours ? `⏰ ${hoursLeft?.toFixed(0)}h out — EARLY ENTRY.` : ""}`,
+      strategy: `LOTTO SNIPE: $1-2.50 LIMIT at ${priceCents}¢. ${oi} contracts held but ${vol24h} traded = ghost volume. ${roi}% ROI if it hits. Get in before the volume spike.`,
+      tier: "ACCELERATOR",
+      recovery_tag: "ACCELERATOR",
+    };
+  }
+
+  // 1B: GHOST VOLUME on mid-priced contracts (15-85¢)
+  if (vol24h < 1000 && oi > 100 && yesPrice > 0.15 && yesPrice < 0.85) {
+    const isTarget = isPreMomentumTarget(title);
+    const oiVolRatio = oi / Math.max(vol24h, 1);
+    const score = Math.min(0.85, 0.3 + (oiVolRatio > 10 ? 0.25 : oiVolRatio * 0.025) + (isTarget ? 0.15 : 0));
+    const earlyHours = hoursLeft !== null && hoursLeft >= 24 && hoursLeft <= 72;
+    const finalScore = earlyHours ? Math.min(0.95, score + 0.1) : score;
 
     return {
       type: "GHOST_VOLUME",
       signal: "PRE_MOMENTUM_SNIPE",
       score: +finalScore.toFixed(3),
-      reasoning: `👻 Ghost Volume: ${oi} OI but only ${vol24h} trades. Smart money is already positioned. ${isTarget ? "HIGH-VALUE TARGET market." : ""} ${earlyHours ? `⏰ ${hoursLeft?.toFixed(0)}h to event — EARLY ENTRY WINDOW.` : ""}`,
-      strategy: `PRE-MOMENTUM SNIPE: Place a $1-2 LIMIT ORDER at ${priceCents}¢. Big players holding ${oi} contracts but retail hasn't arrived. Get in 24-48h early before the volume spike gaps the price up.`,
+      reasoning: `👻 Ghost Volume: ${oi} OI / ${vol24h} vol. Smart money positioned. ${isTarget ? "TARGET market." : ""} ${earlyHours ? `⏰ ${hoursLeft?.toFixed(0)}h — entry window.` : ""}`,
+      strategy: `LIMIT ORDER at ${priceCents}¢. ${oi} contracts held, retail not yet in.`,
       tier: maxROI > 5 ? "ACCELERATOR" : "EARLY_ENTRY",
       recovery_tag: maxROI > 5 ? "ACCELERATOR" : null,
     };
