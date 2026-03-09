@@ -628,11 +628,15 @@ export default function UniversalAlpha() {
                           )}
                         </TableCell>
                         <TableCell className="text-right font-mono font-bold text-sm">
-                          {m.alpha_score > 0 ? (
-                            <span className="text-emerald-400">{(m.alpha_score * 100).toFixed(1)}%</span>
-                          ) : (
-                            <span className="text-[hsl(var(--nexus-text-muted))]">0</span>
-                          )}
+                          <span className={
+                            m.alpha_score >= 0.5 ? "text-emerald-400" :
+                            m.alpha_score >= 0.3 ? "text-cyan-400" :
+                            m.alpha_score >= 0.15 ? "text-amber-400" :
+                            m.alpha_score > 0 ? "text-[hsl(var(--nexus-text-muted))]" :
+                            "text-red-400"
+                          }>
+                            {(m.alpha_score * 100).toFixed(1)}%
+                          </span>
                         </TableCell>
                         <TableCell className="text-right font-mono text-sm text-cyan-400">
                           {m.suggested_bet > 0 ? `$${m.suggested_bet.toFixed(2)}` : "—"}
