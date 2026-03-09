@@ -275,32 +275,40 @@ export default function UniversalAlpha() {
 
         {/* ─── RECOVERY TRACKER ─── */}
         {recovery && (
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+            <Card className="bg-yellow-500/10 border-yellow-500/30">
+              <CardContent className="p-3 text-center">
+                <p className="text-[10px] font-mono text-yellow-300 uppercase">💎 Penny Amazons</p>
+                <p className="text-2xl font-bold font-mono text-yellow-400">{recovery.penny_amazon_count || 0}</p>
+                <p className="text-[9px] font-mono text-yellow-300/60">≤10¢ hidden gems</p>
+              </CardContent>
+            </Card>
+            <Card className="bg-fuchsia-500/10 border-fuchsia-500/30">
+              <CardContent className="p-3 text-center">
+                <p className="text-[10px] font-mono text-fuchsia-300 uppercase">🎰 All Lottos</p>
+                <p className="text-2xl font-bold font-mono text-fuchsia-400">{recovery.lotto_count}</p>
+                <p className="text-[9px] font-mono text-fuchsia-300/60">Asymmetric bets</p>
+              </CardContent>
+            </Card>
             <Card className="bg-purple-500/10 border-purple-500/30">
               <CardContent className="p-3 text-center">
-                <p className="text-[10px] font-mono text-purple-300 uppercase">Recovery Goal</p>
-                <p className="text-2xl font-bold font-mono text-purple-400">${recovery.goal.toFixed(0)}</p>
+                <p className="text-[10px] font-mono text-purple-300 uppercase">👻 Ghost Volume</p>
+                <p className="text-2xl font-bold font-mono text-purple-400">{recovery.ghost_volume_count}</p>
+                <p className="text-[9px] font-mono text-purple-300/60">Smart money</p>
               </CardContent>
             </Card>
             <Card className="bg-emerald-500/10 border-emerald-500/30">
               <CardContent className="p-3 text-center">
-                <p className="text-[10px] font-mono text-emerald-300 uppercase">Accelerators</p>
+                <p className="text-[10px] font-mono text-emerald-300 uppercase">🚀 Accelerators</p>
                 <p className="text-2xl font-bold font-mono text-emerald-400">{recovery.accelerator_count}</p>
                 <p className="text-[9px] font-mono text-emerald-300/60">ROI &gt;500%</p>
               </CardContent>
             </Card>
-            <Card className="bg-purple-500/10 border-purple-500/30">
+            <Card className="bg-red-500/10 border-red-500/30">
               <CardContent className="p-3 text-center">
-                <p className="text-[10px] font-mono text-purple-300 uppercase">Ghost Volume</p>
-                <p className="text-2xl font-bold font-mono text-purple-400">{recovery.ghost_volume_count}</p>
-                <p className="text-[9px] font-mono text-purple-300/60">Pre-momentum</p>
-              </CardContent>
-            </Card>
-            <Card className="bg-amber-500/10 border-amber-500/30">
-              <CardContent className="p-3 text-center">
-                <p className="text-[10px] font-mono text-amber-300 uppercase">Alpha Lottos</p>
-                <p className="text-2xl font-bold font-mono text-amber-400">{recovery.lotto_count}</p>
-                <p className="text-[9px] font-mono text-amber-300/60">Score &gt;40%</p>
+                <p className="text-[10px] font-mono text-red-300 uppercase">🎯 Recovery</p>
+                <p className="text-2xl font-bold font-mono text-red-400">${recovery.goal.toFixed(0)}</p>
+                <p className="text-[9px] font-mono text-red-300/60">Target</p>
               </CardContent>
             </Card>
           </div>
