@@ -612,7 +612,12 @@ export default function UniversalAlpha() {
                           <p className="font-mono text-xs text-[hsl(var(--nexus-text-muted))] truncate max-w-[300px]">{m.ticker}</p>
                         </TableCell>
                         <TableCell>
-                          <p className={`font-mono text-xs font-bold ${edgeSource.color}`}>{edgeSource.label}</p>
+                          <div className="flex flex-col gap-1 max-w-[280px]">
+                            <p className={`font-mono text-xs font-bold ${edgeSource.color}`}>{edgeSource.label}</p>
+                            <p className="font-mono text-[10px] text-[hsl(var(--nexus-text-muted))] line-clamp-2">
+                              {m.alpha_reasoning}
+                            </p>
+                          </div>
                         </TableCell>
                         <TableCell className="text-right font-mono font-bold text-emerald-400">
                           {(m.yes_price * 100).toFixed(0)}¢
