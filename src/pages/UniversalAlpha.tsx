@@ -178,11 +178,11 @@ export default function UniversalAlpha() {
   // Filter markets
   const markets = (data?.markets || []).filter(m => {
     if (!hideJunk) return true;
-    // Hide dead/settled/stale markets
-    return m.alpha_type !== "DEAD" && m.alpha_type !== "SETTLED" && m.alpha_type !== "STALE_PRICING" && m.alpha_type !== "MATHEMATICAL_DEATH" && m.yes_price > 0.03 && m.yes_price < 0.95;
+    // Hide only truly dead/settled markets
+    return m.alpha_type !== "DEAD" && m.alpha_type !== "SETTLED" && m.yes_price > 0.01 && m.yes_price < 0.97;
   });
 
-  const bestBets = markets.filter(m => m.alpha_score >= 0.15).slice(0, 8);
+  const bestBets = markets.filter(m => m.alpha_score >= 0.05).slice(0, 8);
   const deadPositions = (data?.markets || []).filter(m => m.alpha_type === "MATHEMATICAL_DEATH");
 
   return (
