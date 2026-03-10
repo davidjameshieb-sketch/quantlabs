@@ -556,8 +556,7 @@ export default function UniversalAlpha() {
                 const isWhale = tape?.isWhale || false;
                 const priceDelta = tape?.priceDelta ?? null;
                 const volSpike = tape?.volSpike ?? null;
-                const isExpanded = expandedTicker === m.ticker;
-
+                const isExpanded = isTickerExpanded(m.ticker);
                 return (
                   <>
                     <tr
