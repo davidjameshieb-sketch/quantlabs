@@ -350,6 +350,50 @@ export default function UniversalAlpha() {
           </Card>
         )}
 
+        {/* ─── DEBUG: Board Sample (when no anomalies) ─── */}
+        {stats?.totalAnomalies === 0 && data?.debug_sample && data.debug_sample.length > 0 && (
+          <Card className="bg-[hsl(var(--nexus-surface))] border-[hsl(var(--nexus-border))] mb-6">
+            <CardContent className="p-4">
+              <div className="flex items-center gap-2 mb-3">
+                <Info className="w-4 h-4 text-[hsl(var(--nexus-text-muted))]" />
+                <p className="text-xs font-mono text-[hsl(var(--nexus-text-muted))] uppercase tracking-wider">
+                  Board Sample — Top {data.debug_sample.length} Markets by Spread Width
+                </p>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs font-mono">
+                  <thead>
+                    <tr className="text-[hsl(var(--nexus-text-muted))] border-b border-[hsl(var(--nexus-border))]">
+                      <th className="text-left p-1">League</th>
+                      <th className="text-left p-1">Market</th>
+                      <th className="text-right p-1">Bid</th>
+                      <th className="text-right p-1">Ask</th>
+                      <th className="text-right p-1">Spread</th>
+                      <th className="text-right p-1">Vol24h</th>
+                      <th className="text-right p-1">OI</th>
+                      <th className="text-right p-1">Hours</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.debug_sample.map((row, i) => (
+                      <tr key={i} className="border-b border-[hsl(var(--nexus-border))]/30 hover:bg-[hsl(var(--nexus-surface-bright))]/50">
+                        <td className="p-1">{leagueIcon(row.league)} {row.league}</td>
+                        <td className="p-1 max-w-[200px] truncate">{row.title}</td>
+                        <td className="p-1 text-right">{row.bid}</td>
+                        <td className="p-1 text-right">{row.ask}</td>
+                        <td className="p-1 text-right text-cyan-400 font-bold">{row.spread}</td>
+                        <td className="p-1 text-right">{row.vol24h}</td>
+                        <td className="p-1 text-right">{row.oi}</td>
+                        <td className="p-1 text-right">{row.hours !== null ? formatTimeTo(row.hours) : "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
         {/* ─── STATS BAR ─── */}
         {stats && (
           <div className="grid grid-cols-5 gap-3 mb-6">
