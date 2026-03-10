@@ -4,62 +4,78 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert";
 import {
-  RefreshCw, Loader2, AlertTriangle, Timer, CheckCircle2, Radar
+  RefreshCw, Loader2, AlertTriangle, Timer, TrendingUp, ArrowUpDown
 } from "lucide-react";
 
 // ─── Types ──────────────────────────────────────────────────────
 
-interface BreakingNewsRow {
-  league: string; market: string; start_time: string | null; url: string;
-  resolution: string; kalshi_ask_cents: number; real_world_cents: number | null;
-  vol_oi_ratio: string; context: string; time_flag: string | null;
+interface BoardMarket {
+  ticker: string;
+  event_ticker: string;
+  title: string;
+  category: string;
+  icon: string;
+  url: string;
+  yes_bid: number;
+  yes_ask: number;
+  midpoint: number;
+  spread: number;
+  last_price: number;
+  vol24h: number;
+  oi: number;
+  hours_left: number | null;
+  close_time: string | null;
+  vol_oi_ratio: number;
+  has_orderbook: boolean;
 }
 
-interface WholesaleRow {
-  league: string; market: string; start_time: string | null; url: string;
-  resolution: string; kalshi_bid_cents: number; kalshi_ask_cents: number;
-  real_world_cents: number | null; spread_width: number; time_flag: string | null;
-}
-
-interface NarrativeRow {
-  league: string; market: string; start_time: string | null; url: string;
-  resolution: string; team_win_cents: number; player_prop_cents: number;
-  real_world_cents: number | null; price_gap: number; time_flag: string | null;
-}
-
-interface DebugRow {
-  ticker?: string; league: string; title: string; url?: string;
-  bid: number; ask: number; midpoint?: number; spread: number;
-  vol24h: number; oi: number; hours: number | null; flag: string | null;
+interface CategorySummary {
+  category: string;
+  icon: string;
+  count: number;
+  volume: number;
+  oi: number;
 }
 
 interface FeedData {
-  breaking_news: BreakingNewsRow[];
-  wholesale_spreads: WholesaleRow[];
-  narrative_correlation: NarrativeRow[];
-  debug_board: DebugRow[];
+  hot_markets: BoardMarket[];
+  wide_spreads: BoardMarket[];
+  vol_spikes: BoardMarket[];
+  categories: CategorySummary[];
   stats: {
-    totalScanned: number; whitelistedCount: number;
-    breakingNewsCount: number; wholesaleSpreadCount: number;
-    narrativeCorrelationCount: number; totalAnomalies: number;
+    totalFetched: number;
+    totalBoard: number;
+    hotCount: number;
+    wideSpreadCount: number;
+    volSpikeCount: number;
+    categoryCount: number;
   };
-  next_catalyst: { close_time: string; league: string; hours_left: number } | null;
-  leagues: string[];
+  next_catalyst: { close_time: string; category: string; hours_left: number } | null;
   timestamp: string;
 }
 
-// ─── 10-Minute Tape Types ───────────────────────────────────────
+// ─── 10-Minute Tape ─────────────────────────────────────────────
 
-interface TapeSnapshot {
-  midpoint: number;
-  vol24h: number;
-  ts: number; // Date.now()
-}
+interface TapeSnapshot { midpoint: number; vol24h: number; ts: number; }
+interface TapeMetrics { priceDelta: number | null; volSpike: number | null; isWhale: boolean; }
 
-interface TapeMetrics {
-  priceDelta: number | null;  // cents moved in 10 min
-  volSpike: number | null;    // contracts in 10 min window
-  isWhale: boolean;           // |Δ| >= 3 AND volSpike >= 500
+const TAPE_WINDOW_MS = 10 * 60 * 1000;
+
+function computeTape(
+  ticker: string,
+  currentMid: number,
+  currentVol: number,
+  history: Map<string, TapeSnapshot[]>
+): TapeMetrics {
+  const h = history.get(ticker);
+  if (!h || h.length < 2) return { priceDelta: null, volSpike: null, isWhale: false };
+  const cutoff = Date.now() - TAPE_WINDOW_MS;
+  const old = h.filter(s => s.ts <= cutoff + 15000);
+  const oldest = old.length > 0 ? old[old.length - 1] : h[0];
+  const priceDelta = currentMid - oldest.midpoint;
+  const volSpike = currentVol - oldest.vol24h;
+  const vs = volSpike > 0 ? volSpike : 0;
+  return { priceDelta, volSpike: vs, isWhale: Math.abs(priceDelta) >= 3 && vs >= 500 };
 }
 
 // ─── Helpers ────────────────────────────────────────────────────
@@ -71,37 +87,14 @@ function fmtTime(iso: string | null): string {
   });
 }
 
-function leagueIcon(l: string): string {
-  return l === "NBA" ? "🏀" : l === "PGA" ? "⛳" : l === "NRL" ? "🏉" : "🏆";
+function fmtHours(h: number | null): string {
+  if (h === null) return "—";
+  if (h < 1) return `${Math.round(h * 60)}m`;
+  if (h < 24) return `${Math.round(h)}h`;
+  return `${Math.floor(h / 24)}d ${Math.round(h % 24)}h`;
 }
 
-const TAPE_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
-
-function computeTapeMetrics(
-  ticker: string,
-  currentMidpoint: number,
-  currentVol: number,
-  tapeHistory: Map<string, TapeSnapshot[]>
-): TapeMetrics {
-  const history = tapeHistory.get(ticker);
-  if (!history || history.length < 2) return { priceDelta: null, volSpike: null, isWhale: false };
-
-  const now = Date.now();
-  const cutoff = now - TAPE_WINDOW_MS;
-
-  // Find oldest snapshot within window
-  const oldSnapshots = history.filter(s => s.ts <= cutoff + 15000); // 15s grace
-  const oldest = oldSnapshots.length > 0 ? oldSnapshots[oldSnapshots.length - 1] : history[0];
-
-  const priceDelta = currentMidpoint - oldest.midpoint;
-  const volSpike = currentVol - oldest.vol24h;
-
-  const isWhale = Math.abs(priceDelta) >= 3 && volSpike >= 500;
-
-  return { priceDelta, volSpike: volSpike > 0 ? volSpike : 0, isWhale };
-}
-
-// ─── Countdown Hook ─────────────────────────────────────────────
+// ─── Countdown ──────────────────────────────────────────────────
 
 function useCountdown(targetTime: string | null): string {
   const [display, setDisplay] = useState("—");
@@ -125,17 +118,20 @@ function useCountdown(targetTime: string | null): string {
 
 // ─── Component ──────────────────────────────────────────────────
 
+type TabKey = "hot" | "spreads" | "spikes";
+type SortKey = "volume" | "spread" | "oi" | "hours" | "vol_oi";
+
 export default function UniversalAlpha() {
   const [data, setData] = useState<FeedData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastRefresh, setLastRefresh] = useState("");
-  const [activeLeague, setActiveLeague] = useState("All");
+  const [activeCategory, setActiveCategory] = useState("All");
+  const [activeTab, setActiveTab] = useState<TabKey>("hot");
+  const [sortBy, setSortBy] = useState<SortKey>("volume");
   const [pollCount, setPollCount] = useState(0);
 
-  // Rolling 10-minute tape: ticker -> array of snapshots
-  const tapeHistoryRef = useRef<Map<string, TapeSnapshot[]>>(new Map());
-  // Computed metrics per ticker
+  const tapeRef = useRef<Map<string, TapeSnapshot[]>>(new Map());
   const [tapeMetrics, setTapeMetrics] = useState<Map<string, TapeMetrics>>(new Map());
 
   const countdown = useCountdown(data?.next_catalyst?.close_time || null);
@@ -145,36 +141,29 @@ export default function UniversalAlpha() {
     setError(null);
     try {
       const { data: res, error: err } = await supabase.functions.invoke("universal-alpha-scanner", {
-        body: { league: activeLeague },
+        body: { category: activeCategory, sort: sortBy },
       });
       if (err) throw err;
       if (res?.error) throw new Error(res.error);
       setData(res);
       setLastRefresh(new Date().toLocaleTimeString());
 
-      // ─── Record tape snapshot ─────────────────────────────
+      // Record tape snapshots
       const now = Date.now();
-      const tape = tapeHistoryRef.current;
+      const tape = tapeRef.current;
       const newMetrics = new Map<string, TapeMetrics>();
+      const allMarkets = [...(res?.hot_markets || []), ...(res?.wide_spreads || []), ...(res?.vol_spikes || [])];
+      const seen = new Set<string>();
 
-      if (res?.debug_board) {
-        for (const row of res.debug_board as DebugRow[]) {
-          if (!row.ticker) continue;
-          const midpoint = row.midpoint ?? Math.round((row.bid + row.ask) / 2);
-          const snapshot: TapeSnapshot = { midpoint, vol24h: row.vol24h, ts: now };
-
-          // Append to history
-          const history = tape.get(row.ticker) || [];
-          history.push(snapshot);
-
-          // Prune snapshots older than 12 minutes (keep buffer)
-          const cutoff = now - 12 * 60 * 1000;
-          const pruned = history.filter(s => s.ts >= cutoff);
-          tape.set(row.ticker, pruned);
-
-          // Compute metrics
-          newMetrics.set(row.ticker, computeTapeMetrics(row.ticker, midpoint, row.vol24h, tape));
-        }
+      for (const m of allMarkets) {
+        if (!m.ticker || seen.has(m.ticker)) continue;
+        seen.add(m.ticker);
+        const snapshot: TapeSnapshot = { midpoint: m.midpoint, vol24h: m.vol24h, ts: now };
+        const history = tape.get(m.ticker) || [];
+        history.push(snapshot);
+        const cutoff = now - 12 * 60 * 1000;
+        tape.set(m.ticker, history.filter(s => s.ts >= cutoff));
+        newMetrics.set(m.ticker, computeTape(m.ticker, m.midpoint, m.vol24h, tape));
       }
 
       setTapeMetrics(newMetrics);
@@ -185,11 +174,9 @@ export default function UniversalAlpha() {
     } finally {
       setLoading(false);
     }
-  }, [activeLeague]);
+  }, [activeCategory, sortBy]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
-
-  // Poll every 60 seconds for the tape
   useEffect(() => {
     const iv = setInterval(fetchData, 60000);
     return () => clearInterval(iv);
@@ -197,58 +184,36 @@ export default function UniversalAlpha() {
 
   const stats = data?.stats;
   const nc = data?.next_catalyst;
-
-  const cellClass = "p-1.5 text-left whitespace-nowrap";
-  const headerClass = "p-1.5 text-left font-bold text-[hsl(var(--nexus-text-muted))] uppercase tracking-wider";
-
-  // Count whale alerts
   const whaleCount = Array.from(tapeMetrics.values()).filter(m => m.isWhale).length;
 
-  // Helper to get tape metrics for a ticker
-  const getTape = (ticker?: string): TapeMetrics | null => {
-    if (!ticker) return null;
-    return tapeMetrics.get(ticker) || null;
-  };
+  const getTape = (ticker?: string): TapeMetrics | null => ticker ? tapeMetrics.get(ticker) || null : null;
 
-  // Format delta with color
-  const fmtDelta = (delta: number | null) => {
-    if (delta === null) return <span className="text-[hsl(var(--nexus-text-muted))]">…</span>;
-    const color = delta > 0 ? "text-emerald-400" : delta < 0 ? "text-red-400" : "text-[hsl(var(--nexus-text-muted))]";
-    const sign = delta > 0 ? "+" : "";
-    return <span className={`font-bold ${color}`}>{sign}{delta}¢</span>;
-  };
+  const activeMarkets: BoardMarket[] = activeTab === "hot" ? (data?.hot_markets || [])
+    : activeTab === "spreads" ? (data?.wide_spreads || [])
+    : (data?.vol_spikes || []);
 
-  const fmtVolSpike = (vol: number | null) => {
-    if (vol === null) return <span className="text-[hsl(var(--nexus-text-muted))]">…</span>;
-    return <span className={`font-bold ${vol >= 500 ? "text-amber-400" : "text-[hsl(var(--nexus-text-primary))]"}`}>{vol.toLocaleString()}</span>;
-  };
+  const cellClass = "p-1.5 text-left whitespace-nowrap text-[10px]";
+  const headerClass = "p-1.5 text-left font-bold text-[hsl(var(--nexus-text-muted))] uppercase tracking-wider text-[9px] cursor-pointer hover:text-[hsl(var(--nexus-text-primary))] select-none";
 
   return (
     <div className="min-h-screen bg-[hsl(var(--nexus-bg))] text-[hsl(var(--nexus-text-primary))] font-mono text-xs">
       {/* ─── HEADER ─── */}
       <div className="sticky top-0 z-50 backdrop-blur-xl bg-[hsl(var(--nexus-bg))]/90 border-b border-[hsl(var(--nexus-border))] px-4 py-3">
-        <div className="max-w-[1800px] mx-auto flex items-center justify-between gap-4 flex-wrap">
+        <div className="max-w-[1920px] mx-auto flex items-center justify-between gap-4 flex-wrap">
           <div>
             <h1 className="text-base font-bold flex items-center gap-2">
-              <Radar className="w-4 h-4 text-amber-400" />
-              Machine-Readable Intelligence Feed
+              <TrendingUp className="w-4 h-4 text-emerald-400" />
+              Kalshi Full Board
             </h1>
             <p className="text-[10px] text-[hsl(var(--nexus-text-muted))]">
-              48h window + Smart Money • {stats?.whitelistedCount || 0} tracked • {stats?.totalAnomalies || 0} triggers
-              {whaleCount > 0 && <span className="text-red-400 font-bold ml-2">🐋 {whaleCount} WHALE ALERT{whaleCount > 1 ? "S" : ""}</span>}
+              {stats?.totalBoard || 0} active markets • {stats?.hotCount || 0} with volume
+              {whaleCount > 0 && <span className="text-red-400 font-bold ml-2">🐋 {whaleCount} WHALE{whaleCount > 1 ? "S" : ""}</span>}
               <span className="ml-2">• Poll #{pollCount} • {lastRefresh || "—"}</span>
             </p>
           </div>
           <div className="flex items-center gap-2">
-            {["All", "NBA", "PGA", "NRL"].map(league => (
-              <Button key={league} size="sm" variant={activeLeague === league ? "default" : "outline"}
-                onClick={() => setActiveLeague(league)}
-                className={`text-[10px] h-7 font-mono ${activeLeague === league ? "bg-amber-600 text-white hover:bg-amber-700" : "border-[hsl(var(--nexus-border))] text-[hsl(var(--nexus-text-muted))]"}`}>
-                {league === "All" ? "" : leagueIcon(league) + " "}{league}
-              </Button>
-            ))}
             <Button size="sm" onClick={fetchData} disabled={loading}
-              className="bg-amber-600 hover:bg-amber-700 text-white font-mono h-7 text-[10px] ml-2">
+              className="bg-emerald-600 hover:bg-emerald-700 text-white font-mono h-7 text-[10px]">
               {loading ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
               <span className="ml-1">Scan</span>
             </Button>
@@ -257,262 +222,174 @@ export default function UniversalAlpha() {
       </div>
 
       {error && (
-        <Alert className="m-4 max-w-[1800px] mx-auto bg-red-500/10 border-red-500/40">
+        <Alert className="m-4 max-w-[1920px] mx-auto bg-red-500/10 border-red-500/40">
           <AlertTriangle className="h-4 w-4 text-red-400" />
           <AlertTitle className="text-red-400 font-mono text-xs">Error</AlertTitle>
           <AlertDescription className="text-red-300 font-mono text-[10px]">{error}</AlertDescription>
         </Alert>
       )}
 
-      <div className="max-w-[1800px] mx-auto p-4 space-y-6">
+      <div className="max-w-[1920px] mx-auto p-4 space-y-4">
         {/* ─── COUNTDOWN ─── */}
-        {data && (
-          <div className="border border-[hsl(var(--nexus-border))] p-3 rounded">
-            {nc ? (
-              <div className="flex items-center gap-4">
-                <Timer className="w-5 h-5 text-amber-400 animate-pulse shrink-0" />
-                <div>
-                  <span className="text-[10px] text-amber-300/70 uppercase">Next Tip-Off / Tee Time</span>
-                  <span className="text-lg font-bold text-amber-400 tabular-nums ml-3">{countdown}</span>
-                  <span className="ml-3 text-[10px] text-[hsl(var(--nexus-text-muted))]">
-                    {leagueIcon(nc.league)} {nc.league} — {fmtTime(nc.close_time)}
-                  </span>
-                </div>
-              </div>
-            ) : (
-              <div className="flex items-center gap-3">
-                <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
-                <span className="text-emerald-400 font-bold">Radar Clear: Awaiting Volume Catalysts</span>
-                <span className="text-[hsl(var(--nexus-text-muted))]">
-                  — Scanning {stats?.totalScanned || 0} markets. No qualifying NBA/PGA/NRL events in window.
-                </span>
-              </div>
-            )}
+        {nc && (
+          <div className="border border-[hsl(var(--nexus-border))] p-2 rounded flex items-center gap-4">
+            <Timer className="w-4 h-4 text-amber-400 animate-pulse shrink-0" />
+            <span className="text-[10px] text-amber-300/70 uppercase">Next Settlement</span>
+            <span className="text-sm font-bold text-amber-400 tabular-nums">{countdown}</span>
+            <span className="text-[10px] text-[hsl(var(--nexus-text-muted))]">{nc.category} — {fmtTime(nc.close_time)}</span>
           </div>
         )}
 
         {/* ─── TAPE STATUS ─── */}
         {pollCount > 0 && (
           <div className="flex items-center gap-4 text-[10px] text-[hsl(var(--nexus-text-muted))] border border-[hsl(var(--nexus-border))]/50 p-2 rounded">
-            <span className="text-emerald-400 font-bold">📼 10-MIN TAPE ACTIVE</span>
-            <span>Polling every 60s • {pollCount} snapshot{pollCount !== 1 ? "s" : ""} recorded</span>
-            <span>• {tapeHistoryRef.current.size} tickers tracked</span>
-            {pollCount < 10 && <span className="text-amber-400">• Warming up ({Math.min(10, Math.round(pollCount * 60 / 60))} of 10 min)</span>}
+            <span className="text-emerald-400 font-bold">📼 10-MIN TAPE</span>
+            <span>{pollCount} snapshots • {tapeRef.current.size} tickers</span>
+            {pollCount < 10 && <span className="text-amber-400">Warming ({Math.min(10, pollCount)} of 10 polls)</span>}
           </div>
         )}
 
-        {/* ─── STATS ─── */}
-        {stats && (
-          <div className="flex gap-6 text-[10px] text-[hsl(var(--nexus-text-muted))] border-b border-[hsl(var(--nexus-border))] pb-2">
-            <span>Scanned: <strong className="text-[hsl(var(--nexus-text-primary))]">{stats.totalScanned}</strong></span>
-            <span>Whitelisted: <strong className="text-emerald-400">{stats.whitelistedCount}</strong></span>
-            <span>Breaking News: <strong className="text-red-400">{stats.breakingNewsCount}</strong></span>
-            <span>Wholesale: <strong className="text-cyan-400">{stats.wholesaleSpreadCount}</strong></span>
-            <span>Narrative: <strong className="text-amber-400">{stats.narrativeCorrelationCount}</strong></span>
+        {/* ─── CATEGORY PILLS ─── */}
+        {data?.categories && (
+          <div className="flex flex-wrap gap-1.5">
+            <Button size="sm" variant={activeCategory === "All" ? "default" : "outline"}
+              onClick={() => setActiveCategory("All")}
+              className={`text-[10px] h-6 font-mono px-2 ${activeCategory === "All" ? "bg-emerald-600 text-white hover:bg-emerald-700" : "border-[hsl(var(--nexus-border))] text-[hsl(var(--nexus-text-muted))]"}`}>
+              All ({stats?.totalBoard || 0})
+            </Button>
+            {data.categories.map(cat => (
+              <Button key={cat.category} size="sm" variant={activeCategory === cat.category ? "default" : "outline"}
+                onClick={() => setActiveCategory(cat.category)}
+                className={`text-[10px] h-6 font-mono px-2 ${activeCategory === cat.category ? "bg-emerald-600 text-white hover:bg-emerald-700" : "border-[hsl(var(--nexus-border))] text-[hsl(var(--nexus-text-muted))]"}`}>
+                {cat.icon} {cat.category} ({cat.count})
+              </Button>
+            ))}
           </div>
         )}
 
-        {/* ─── TABLE 1: BREAKING NEWS FEED ─── */}
-        <div>
-          <h2 className="text-sm font-bold text-red-400 mb-2 border-b border-red-500/30 pb-1">
-            TABLE 1: Breaking News Feed — 24h Vol &gt; 100% OI, Ask &lt; 50¢
-          </h2>
-          {data?.breaking_news && data.breaking_news.length > 0 ? (
-            <div className="overflow-x-auto">
-              <table className="w-full border-collapse">
-                <thead>
-                  <tr className="border-b border-[hsl(var(--nexus-border))] text-[10px]">
-                    <th className={headerClass}>League</th>
-                    <th className={headerClass}>Market Name</th>
-                    <th className={headerClass}>Bid/Ask</th>
-                    <th className={headerClass}>10m Δ</th>
-                    <th className={headerClass}>10m Vol</th>
-                    <th className={headerClass}>OI</th>
-                    <th className={headerClass}>Start Time</th>
-                    <th className={headerClass}>URL</th>
-                    <th className={headerClass}>Vol/OI</th>
-                    <th className={headerClass}>Context</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.breaking_news.map((r, i) => {
-                    // Try to find tape metrics via matching debug board ticker
-                    const matchingDebug = data.debug_board?.find(d => d.title === r.market);
-                    const tape = getTape(matchingDebug?.ticker);
-                    const isWhale = tape?.isWhale || false;
-                    return (
-                      <tr key={i} className={`border-b border-[hsl(var(--nexus-border))]/20 hover:bg-[hsl(var(--nexus-surface))] ${isWhale ? "bg-red-500/10 border-l-2 border-l-red-500" : ""}`}>
-                        <td className={cellClass}>
-                          {leagueIcon(r.league)} {r.league}
-                          {isWhale && <Badge className="ml-1 bg-red-600 text-white text-[8px] px-1 py-0">🐋 WHALE</Badge>}
-                        </td>
-                        <td className={`${cellClass} max-w-[200px] truncate`}>{r.market}{r.time_flag ? ` [${r.time_flag}]` : ""}</td>
-                        <td className={`${cellClass} font-bold`}>{r.kalshi_ask_cents}¢</td>
-                        <td className={cellClass}>{fmtDelta(tape?.priceDelta ?? null)}</td>
-                        <td className={cellClass}>{fmtVolSpike(tape?.volSpike ?? null)}</td>
-                        <td className={cellClass}>{matchingDebug?.oi?.toLocaleString() || "—"}</td>
-                        <td className={cellClass}>{fmtTime(r.start_time)}</td>
-                        <td className={cellClass}><a href={r.url} target="_blank" rel="noopener noreferrer" className="text-cyan-400 hover:underline">Link</a></td>
-                        <td className={`${cellClass} text-red-400 font-bold`}>{r.vol_oi_ratio}</td>
-                        <td className={`${cellClass} max-w-[200px] truncate text-[hsl(var(--nexus-text-muted))]`}>{r.context}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <p className="text-[hsl(var(--nexus-text-muted))] py-2">No triggers.</p>
-          )}
+        {/* ─── VIEW TABS ─── */}
+        <div className="flex gap-1 border-b border-[hsl(var(--nexus-border))] pb-2">
+          {([
+            { key: "hot" as TabKey, label: "🔥 Hot Markets", count: stats?.hotCount },
+            { key: "spreads" as TabKey, label: "📏 Wide Spreads", count: stats?.wideSpreadCount },
+            { key: "spikes" as TabKey, label: "⚡ Volume Spikes", count: stats?.volSpikeCount },
+          ]).map(tab => (
+            <Button key={tab.key} size="sm" variant={activeTab === tab.key ? "default" : "ghost"}
+              onClick={() => setActiveTab(tab.key)}
+              className={`text-[10px] h-7 font-mono ${activeTab === tab.key ? "bg-[hsl(var(--nexus-surface))] text-[hsl(var(--nexus-text-primary))]" : "text-[hsl(var(--nexus-text-muted))]"}`}>
+              {tab.label} ({tab.count || 0})
+            </Button>
+          ))}
         </div>
 
-        {/* ─── TABLE 2: WHOLESALE SPREAD FEED ─── */}
-        <div>
-          <h2 className="text-sm font-bold text-cyan-400 mb-2 border-b border-cyan-500/30 pb-1">
-            TABLE 2: Wholesale Spread Feed — OI &gt; 1,000, Vol &lt; 500, Spread &gt; 4¢
-          </h2>
-          {data?.wholesale_spreads && data.wholesale_spreads.length > 0 ? (
-            <div className="overflow-x-auto">
-              <table className="w-full border-collapse">
-                <thead>
-                  <tr className="border-b border-[hsl(var(--nexus-border))] text-[10px]">
-                    <th className={headerClass}>League</th>
-                    <th className={headerClass}>Market Name</th>
-                    <th className={headerClass}>Bid/Ask</th>
-                    <th className={headerClass}>10m Δ</th>
-                    <th className={headerClass}>10m Vol</th>
-                    <th className={headerClass}>OI</th>
-                    <th className={headerClass}>Start Time</th>
-                    <th className={headerClass}>URL</th>
-                    <th className={headerClass}>Spread</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.wholesale_spreads.map((r, i) => {
-                    const matchingDebug = data.debug_board?.find(d => d.title === r.market);
-                    const tape = getTape(matchingDebug?.ticker);
-                    const isWhale = tape?.isWhale || false;
-                    return (
-                      <tr key={i} className={`border-b border-[hsl(var(--nexus-border))]/20 hover:bg-[hsl(var(--nexus-surface))] ${isWhale ? "bg-red-500/10 border-l-2 border-l-red-500" : ""}`}>
-                        <td className={cellClass}>
-                          {leagueIcon(r.league)} {r.league}
-                          {isWhale && <Badge className="ml-1 bg-red-600 text-white text-[8px] px-1 py-0">🐋 WHALE</Badge>}
-                        </td>
-                        <td className={`${cellClass} max-w-[200px] truncate`}>{r.market}{r.time_flag ? ` [${r.time_flag}]` : ""}</td>
-                        <td className={`${cellClass} font-bold`}>{r.kalshi_bid_cents}/{r.kalshi_ask_cents}¢</td>
-                        <td className={cellClass}>{fmtDelta(tape?.priceDelta ?? null)}</td>
-                        <td className={cellClass}>{fmtVolSpike(tape?.volSpike ?? null)}</td>
-                        <td className={cellClass}>{matchingDebug?.oi?.toLocaleString() || "—"}</td>
-                        <td className={cellClass}>{fmtTime(r.start_time)}</td>
-                        <td className={cellClass}><a href={r.url} target="_blank" rel="noopener noreferrer" className="text-cyan-400 hover:underline">Link</a></td>
-                        <td className={`${cellClass} text-cyan-400 font-bold`}>{r.spread_width}¢</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <p className="text-[hsl(var(--nexus-text-muted))] py-2">No triggers.</p>
-          )}
+        {/* ─── SORT ROW ─── */}
+        <div className="flex items-center gap-2 text-[10px] text-[hsl(var(--nexus-text-muted))]">
+          <ArrowUpDown className="w-3 h-3" />
+          <span>Sort:</span>
+          {([
+            { key: "volume" as SortKey, label: "Volume" },
+            { key: "spread" as SortKey, label: "Spread" },
+            { key: "oi" as SortKey, label: "OI" },
+            { key: "vol_oi" as SortKey, label: "Turnover" },
+            { key: "hours" as SortKey, label: "Soonest" },
+          ]).map(s => (
+            <button key={s.key} onClick={() => setSortBy(s.key)}
+              className={`px-2 py-0.5 rounded text-[10px] font-mono transition-colors ${sortBy === s.key ? "bg-emerald-600/30 text-emerald-400" : "hover:text-[hsl(var(--nexus-text-primary))]"}`}>
+              {s.label}
+            </button>
+          ))}
         </div>
 
-        {/* ─── TABLE 3: NARRATIVE CORRELATION FEED ─── */}
-        <div>
-          <h2 className="text-sm font-bold text-amber-400 mb-2 border-b border-amber-500/30 pb-1">
-            TABLE 3: Narrative Correlation Feed — Team &gt; 70¢, Player Prop &lt; 40¢
-          </h2>
-          {data?.narrative_correlation && data.narrative_correlation.length > 0 ? (
-            <div className="overflow-x-auto">
-              <table className="w-full border-collapse">
-                <thead>
-                  <tr className="border-b border-[hsl(var(--nexus-border))] text-[10px]">
-                    <th className={headerClass}>League</th>
-                    <th className={headerClass}>Market Name</th>
-                    <th className={headerClass}>Start Time</th>
-                    <th className={headerClass}>URL</th>
-                    <th className={headerClass}>Resolution</th>
-                    <th className={headerClass}>Team Win ¢</th>
-                    <th className={headerClass}>Player Prop ¢</th>
-                    <th className={headerClass}>Real-World ¢</th>
-                    <th className={headerClass}>Price Gap</th>
+        {/* ─── MAIN TABLE ─── */}
+        <div className="overflow-x-auto">
+          <table className="w-full border-collapse">
+            <thead>
+              <tr className="border-b border-[hsl(var(--nexus-border))]">
+                <th className={headerClass}>#</th>
+                <th className={headerClass}>Cat</th>
+                <th className={headerClass} style={{ minWidth: 280 }}>Market</th>
+                <th className={headerClass}>Bid</th>
+                <th className={headerClass}>Ask</th>
+                <th className={headerClass}>Mid</th>
+                <th className={headerClass}>Spread</th>
+                <th className={headerClass}>10m Δ</th>
+                <th className={headerClass}>10m Vol</th>
+                <th className={headerClass}>Vol 24h</th>
+                <th className={headerClass}>OI</th>
+                <th className={headerClass}>Vol/OI</th>
+                <th className={headerClass}>Settles</th>
+              </tr>
+            </thead>
+            <tbody>
+              {activeMarkets.map((m, i) => {
+                const tape = getTape(m.ticker);
+                const isWhale = tape?.isWhale || false;
+                const priceDelta = tape?.priceDelta ?? null;
+                const volSpike = tape?.volSpike ?? null;
+
+                return (
+                  <tr key={m.ticker} className={`border-b border-[hsl(var(--nexus-border))]/20 hover:bg-[hsl(var(--nexus-surface))] ${isWhale ? "bg-red-500/10 border-l-2 border-l-red-500" : ""}`}>
+                    <td className={`${cellClass} text-[hsl(var(--nexus-text-muted))]`}>{i + 1}</td>
+                    <td className={cellClass} title={m.category}>
+                      {m.icon}
+                      {isWhale && <Badge className="ml-1 bg-red-600 text-white text-[8px] px-1 py-0 leading-none">🐋</Badge>}
+                    </td>
+                    <td className={`${cellClass} max-w-[300px]`}>
+                      <a href={m.url} target="_blank" rel="noopener noreferrer"
+                        className="text-cyan-400 hover:underline truncate block" title={m.title}>
+                        {m.title}
+                      </a>
+                    </td>
+                    <td className={cellClass}>{m.yes_bid > 0 ? `${m.yes_bid}¢` : "—"}</td>
+                    <td className={cellClass}>{m.yes_ask > 0 ? `${m.yes_ask}¢` : "—"}</td>
+                    <td className={`${cellClass} font-bold`}>{m.midpoint}¢</td>
+                    <td className={`${cellClass} ${m.spread >= 6 ? "text-amber-400 font-bold" : m.spread >= 4 ? "text-cyan-400" : ""}`}>
+                      {m.spread > 0 ? `${m.spread}¢` : "—"}
+                    </td>
+                    <td className={cellClass}>
+                      {priceDelta !== null ? (
+                        <span className={`font-bold ${priceDelta > 0 ? "text-emerald-400" : priceDelta < 0 ? "text-red-400" : "text-[hsl(var(--nexus-text-muted))]"}`}>
+                          {priceDelta > 0 ? "+" : ""}{priceDelta}¢
+                        </span>
+                      ) : <span className="text-[hsl(var(--nexus-text-muted))]">…</span>}
+                    </td>
+                    <td className={cellClass}>
+                      {volSpike !== null ? (
+                        <span className={`font-bold ${volSpike >= 500 ? "text-red-400" : volSpike > 0 ? "text-[hsl(var(--nexus-text-primary))]" : "text-[hsl(var(--nexus-text-muted))]"}`}>
+                          {volSpike.toLocaleString()}
+                        </span>
+                      ) : <span className="text-[hsl(var(--nexus-text-muted))]">…</span>}
+                    </td>
+                    <td className={`${cellClass} font-bold ${m.vol24h >= 1000 ? "text-emerald-400" : m.vol24h >= 100 ? "text-[hsl(var(--nexus-text-primary))]" : "text-[hsl(var(--nexus-text-muted))]"}`}>
+                      {m.vol24h.toLocaleString()}
+                    </td>
+                    <td className={`${cellClass} ${m.oi >= 5000 ? "text-amber-400 font-bold" : ""}`}>
+                      {m.oi.toLocaleString()}
+                    </td>
+                    <td className={`${cellClass} ${m.vol_oi_ratio > 2 ? "text-red-400 font-bold" : m.vol_oi_ratio > 1 ? "text-amber-400" : ""}`}>
+                      {m.vol_oi_ratio > 0 ? `${m.vol_oi_ratio}x` : "—"}
+                    </td>
+                    <td className={`${cellClass} ${(m.hours_left ?? 999) < 24 ? "text-amber-400" : ""}`}>
+                      {fmtHours(m.hours_left)}
+                    </td>
                   </tr>
-                </thead>
-                <tbody>
-                  {data.narrative_correlation.map((r, i) => (
-                    <tr key={i} className="border-b border-[hsl(var(--nexus-border))]/20 hover:bg-[hsl(var(--nexus-surface))]">
-                      <td className={cellClass}>{leagueIcon(r.league)} {r.league}</td>
-                      <td className={`${cellClass} max-w-[250px] truncate`}>{r.market}{r.time_flag ? ` [${r.time_flag}]` : ""}</td>
-                      <td className={cellClass}>{fmtTime(r.start_time)}</td>
-                      <td className={cellClass}><a href={r.url} target="_blank" rel="noopener noreferrer" className="text-cyan-400 hover:underline">Link</a></td>
-                      <td className={`${cellClass} max-w-[150px] truncate`}>{r.resolution || "—"}</td>
-                      <td className={`${cellClass} font-bold`}>{r.team_win_cents}¢</td>
-                      <td className={`${cellClass} font-bold`}>{r.player_prop_cents}¢</td>
-                      <td className={`${cellClass} font-bold text-amber-400`}>{r.real_world_cents !== null ? `${r.real_world_cents}¢` : "—"}</td>
-                      <td className={`${cellClass} text-amber-400 font-bold`}>{r.price_gap}¢</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <p className="text-[hsl(var(--nexus-text-muted))] py-2">No triggers.</p>
-          )}
+                );
+              })}
+              {activeMarkets.length === 0 && (
+                <tr>
+                  <td colSpan={13} className="p-4 text-center text-[hsl(var(--nexus-text-muted))]">
+                    No markets in this view. Try a different category or tab.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
         </div>
 
-        {/* ─── DEBUG BOARD (with 10-min tape) ─── */}
-        {data?.debug_board && data.debug_board.length > 0 && (
-          <div>
-            <h2 className="text-[10px] font-bold text-[hsl(var(--nexus-text-muted))] mb-2 border-b border-[hsl(var(--nexus-border))] pb-1 uppercase tracking-wider">
-              Board Sample — Top {data.debug_board.length} Whitelisted Markets by Spread
-            </h2>
-            <div className="overflow-x-auto">
-              <table className="w-full border-collapse text-[10px]">
-                <thead>
-                  <tr className="border-b border-[hsl(var(--nexus-border))]">
-                    <th className={headerClass}>League</th>
-                    <th className={headerClass}>Market</th>
-                    <th className={headerClass}>Bid/Ask ¢</th>
-                    <th className={headerClass}>Mid ¢</th>
-                    <th className={headerClass}>10m Δ</th>
-                    <th className={headerClass}>10m Vol</th>
-                    <th className={headerClass}>Spread ¢</th>
-                    <th className={headerClass}>OI</th>
-                    <th className={headerClass}>Hours</th>
-                    <th className={headerClass}>Flag</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.debug_board.map((r, i) => {
-                    const tape = getTape(r.ticker);
-                    const isWhale = tape?.isWhale || false;
-                    return (
-                      <tr key={i} className={`border-b border-[hsl(var(--nexus-border))]/20 hover:bg-[hsl(var(--nexus-surface))] ${isWhale ? "bg-red-500/10" : ""}`}>
-                        <td className={cellClass}>
-                          {leagueIcon(r.league)} {r.league}
-                          {isWhale && <Badge className="ml-1 bg-red-600 text-white text-[8px] px-1 py-0">🐋</Badge>}
-                        </td>
-                        <td className={`${cellClass} max-w-[250px] truncate`}>
-                          {r.url ? (
-                            <a href={r.url} target="_blank" rel="noopener noreferrer" className="text-cyan-400 hover:underline">{r.title}</a>
-                          ) : r.title}
-                        </td>
-                        <td className={cellClass}>{r.bid}/{r.ask}¢</td>
-                        <td className={`${cellClass} font-bold`}>{r.midpoint ?? Math.round((r.bid + r.ask) / 2)}¢</td>
-                        <td className={cellClass}>{fmtDelta(tape?.priceDelta ?? null)}</td>
-                        <td className={cellClass}>{fmtVolSpike(tape?.volSpike ?? null)}</td>
-                        <td className={`${cellClass} text-cyan-400 font-bold`}>{r.spread}¢</td>
-                        <td className={cellClass}>{r.oi.toLocaleString()}</td>
-                        <td className={cellClass}>{r.hours !== null ? (r.hours < 24 ? `${Math.round(r.hours)}h` : `${Math.floor(r.hours / 24)}d`) : "—"}</td>
-                        <td className={cellClass}>{isWhale ? <span className="text-red-400 font-bold">🐋 WHALE ALERT</span> : (r.flag || "—")}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
+        {/* ─── MARKET COUNT ─── */}
+        <div className="text-[10px] text-[hsl(var(--nexus-text-muted))] text-right">
+          Showing {activeMarkets.length} markets • Total on board: {stats?.totalBoard || 0}
+        </div>
       </div>
     </div>
   );
