@@ -102,8 +102,8 @@ Deno.serve(async (req) => {
 
     // Fetch real events and markets from Kalshi
     const [events, markets] = await Promise.all([
-      fetchKalshiEvents(),
-      fetchKalshiMarkets(),
+      fetchAllKalshiEvents(),
+      fetchAllKalshiMarkets(),
     ]);
 
     console.log(`Fetched ${events.length} events, ${markets.length} markets from Kalshi`);
