@@ -226,7 +226,7 @@ function detectEdge(m: any, yesPrice: number, noPrice: number, vol24h: number, o
     if (hasTwoSidedBook) score += 0.05;
     score = Math.min(0.99, score);
 
-    const arbLabel = arbEdgePct >= 40 ? "🔥 MASSIVE ARB" : arbEdgePct >= 20 ? "💰 STRONG ARB" : "📊 VALUE ARB";
+    const arbLabel = arbEdgePct >= 30 ? "🔥 MASSIVE ARB" : arbEdgePct >= 15 ? "💰 STRONG ARB" : arbEdgePct >= 8 ? "📊 VALUE ARB" : "📊 EDGE";
     const settleLabel = within24h ? "TONIGHT" : within48h ? `${cashHours}h` : `${Math.round((hoursLeft || 0) / 24)}d`;
 
     return {
