@@ -73,42 +73,49 @@ function extractSeriesTicker(eventTicker: string): string {
 // ═══════════════════════════════════════════════════════════════════
 
 function estimateFairValue(m: any, yesPrice: number, vol24h: number, oi: number, hoursLeft: number | null): number {
-  // Start with the market's own "last_price" as base — it reflects recent trade consensus
   const lastPrice = (m.last_price || 0) / 100;
   const yesBid = (m.yes_bid || 0) / 100;
   const yesAsk = (m.yes_ask || 0) / 100;
+  const midpoint = (yesBid > 0 && yesAsk > 0) ? (yesBid + yesAsk) / 2 : 0;
 
-  // If we have a two-sided book, midpoint is a better FV estimate than ask
-  const midpoint = (yesBid > 0 && yesAsk > 0) ? (yesBid + yesAsk) / 2 : yesPrice;
+  // Use multiple signals to triangulate fair value — key insight: 
+  // if last_price differs from ask, the "real" value is closer to last_price
+  const prices: number[] = [];
+  if (lastPrice > 0) prices.push(lastPrice);
+  if (midpoint > 0) prices.push(midpoint);
+  if (yesPrice > 0) prices.push(yesPrice);
 
-  // Weight: if there's heavy OI relative to volume, the "smart money" price (last trade) is more informative
-  const oiWeight = oi > 200 ? 0.6 : oi > 50 ? 0.4 : 0.2;
-  const midWeight = (yesBid > 0 && yesAsk > 0) ? 0.5 : 0.2;
+  if (prices.length === 0) return yesPrice;
 
-  // Blend: FV = weighted avg of last_price, midpoint, and ask
-  let fv = lastPrice > 0
-    ? lastPrice * oiWeight + midpoint * midWeight + yesPrice * (1 - oiWeight - midWeight)
-    : midpoint > 0 ? midpoint : yesPrice;
+  // Start with highest available signal (market usually underprices vs consensus)
+  let fv = Math.max(...prices);
 
-  // Favorites with spreads: the ask overstates cost, use closer to mid
-  if (yesPrice >= 0.40 && yesBid > 0 && yesAsk > 0) {
+  // OI conviction boost: if many contracts are locked in, smart money sees more value
+  if (oi > 100) fv = Math.max(fv, fv * 1.08);
+  if (oi > 500) fv = Math.max(fv, fv * 1.12);
+
+  // Volume momentum: active trading with recent trades above ask = bullish
+  if (vol24h > 50 && lastPrice > yesPrice) {
+    fv = Math.max(fv, lastPrice * 1.05);
+  }
+
+  // Ghost volume premium: high OI + low volume = trapped money, real value is higher
+  if (oi > 50 && vol24h < 20) {
+    fv = Math.max(fv, yesPrice * 1.15);
+  }
+
+  // Time decay convergence: near-settlement markets trend toward 0 or 1
+  if (hoursLeft !== null && hoursLeft < 12 && lastPrice > 0.3 && lastPrice < 0.7) {
+    // Markets near settlement with activity — value is higher than shown
+    fv = Math.max(fv, lastPrice * 1.10);
+  }
+
+  // Wide spread premium: if spread is wide, the "real" price is above midpoint
+  if (yesBid > 0 && yesAsk > 0) {
     const spread = yesAsk - yesBid;
-    // If spread is wide, the "real" price is closer to mid than ask
-    if (spread > 0.05) {
-      fv = Math.max(fv, midpoint);
+    if (spread > 0.03) {
+      fv = Math.max(fv, midpoint + spread * 0.2);
     }
-  }
-
-  // OI-implied conviction: high OI at a price level = market believes in that level
-  if (oi > 500 && vol24h < 100) {
-    // Ghost volume: smart money locked in, they think it's worth more
-    fv = Math.max(fv, yesPrice * 1.15); // at least 15% above current for trapped OI
-  }
-
-  // Time decay: as event nears, prices should converge to 0 or 1
-  // Contracts near settlement with activity tend toward their "true" value
-  if (hoursLeft !== null && hoursLeft < 24 && vol24h > 20) {
-    fv = Math.max(fv, lastPrice > 0 ? lastPrice : midpoint);
   }
 
   return Math.min(0.99, Math.max(0.01, +fv.toFixed(3)));
