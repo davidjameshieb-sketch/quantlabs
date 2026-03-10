@@ -210,7 +210,7 @@ function detectEdge(m: any, yesPrice: number, noPrice: number, vol24h: number, o
       }
       
       // 4. The timing case
-      if (earlyWindow && hoursLeft !== null) {
+      if (hoursLeft !== null && hoursLeft > 0) {
         if (hoursLeft <= 24) {
           reasons.push(`Event is ${hoursLeft.toFixed(0)}h away — last chance for early entry before the final price run.`);
         } else if (hoursLeft <= 72) {
