@@ -147,376 +147,34 @@ function detectEdge(m: any, yesPrice: number, noPrice: number, vol24h: number, o
   const priceCents = Math.round(yesPrice * 100);
   const title = (m.title || m.subtitle || "").toLowerCase();
 
-  // ═══ GLOBAL TIME GATE: Skip contracts more than 7 days out ═══
-  // Only Binary Cliff (capital protection) and settled/dead bypass this
-  const MAX_HOURS = 168; // 7 days
-  if (hoursLeft !== null && hoursLeft > MAX_HOURS) {
-    return {
-      type: "TOO_FAR_OUT",
-      signal: "NO_EDGE",
-      score: 0,
-      reasoning: `${Math.round(hoursLeft / 24)}d out — too far. We only surface contracts within 7 days.`,
-      strategy: "SKIP: Wait until this is within 7 days.",
-      tier: null,
-      recovery_tag: null,
-    };
-  }
+  // ═══ VELOCITY-1st: GLOBAL 36-HOUR GATE ═══
+  // Only same-day / next-day cash turnover. Everything else demoted to zero.
+  const VELOCITY_MAX_HOURS = 36;
+  const within36h = hoursLeft !== null && hoursLeft > 0 && hoursLeft <= VELOCITY_MAX_HOURS;
+  const within24h = hoursLeft !== null && hoursLeft > 0 && hoursLeft <= 24;
+  const within6h = hoursLeft !== null && hoursLeft > 0 && hoursLeft <= 6;
 
-  // ═══ GLOBAL LIQUIDITY GATE: Skip contracts without REAL liquidity ═══
-  // A stale bid alone doesn't mean you can trade it. Require actual participation.
-  const hasRealOI = oi >= 5;
-  const hasRealVolume = vol24h >= 5;
-  const hasTwoSidedBook = yesBid > 0 && yesAsk > 0 && (yesAsk - yesBid) < 0.15; // tight spread = real MM
-  const hasRealLiquidity = hasRealOI || hasRealVolume || (hasTwoSidedBook && oi > 0);
-  if (!hasRealLiquidity) {
-    return {
-      type: "NO_ORDERBOOK",
-      signal: "SKIP",
-      score: 0,
-      reasoning: `${priceCents}¢ — OI:${oi}, Vol24h:${vol24h}. Not enough liquidity to enter or exit.`,
-      strategy: "SKIP: No real orderbook. Need OI≥5 or Vol≥5 to be tradeable.",
-      tier: null,
-      recovery_tag: null,
-    };
-  }
-
-  // Helper: is this a high-profile event where underdogs get mispriced?
-  const isHighProfile = HIGH_PROFILE_KEYWORDS.some(k => title.includes(k) || (m.event_title || "").toLowerCase().includes(k));
-  const eventTitle = (m.event_title || "").toLowerCase();
-
-  // ══════════════════════════════════════════════════════════════
-  // RULE 0: "PENNY AMAZON" — The Crown Jewel
-  // Cheap (≤10¢) + MUST have liquidity or proximity + high-profile = hidden gem
-  // Hard filters: must be ≤7 days out AND have real orderbook activity
-  // ══════════════════════════════════════════════════════════════
-  if (yesPrice > 0.005 && yesPrice <= 0.10) {
-    const roi = Math.round(maxROI * 100);
-    const hasLife = oi > 0 || vol24h > 0;
-    const hasConviction = oi > 20 || vol24h > 10;
-    const hasSmartMoney = oi > 100 && vol24h < 500;
-    const within72h = hoursLeft !== null && hoursLeft > 0 && hoursLeft <= 72;
-    const within7d = hoursLeft !== null && hoursLeft > 0 && hoursLeft <= 168;
-    const isTarget = isPreMomentumTarget(title);
-
-    // HARD GATE: must be within 7 days AND have some sign of life (OI or volume)
-    // OR be a high-profile event within 72h
-    const passesGate = (within7d && hasLife) || (within72h && isHighProfile) || (within72h && isTarget);
-
-    if (passesGate) {
-      // Penny Amazon Score
-      let gemScore = 0.20;
-      if (yesPrice <= 0.05) gemScore += 0.1;
-      if (yesPrice <= 0.03) gemScore += 0.05;
-      if (isHighProfile) gemScore += 0.2;
-      if (hasSmartMoney) gemScore += 0.2;
-      if (hasConviction) gemScore += 0.1;
-      else if (hasLife) gemScore += 0.05;
-      if (isTarget) gemScore += 0.1;
-      if (within72h) gemScore += 0.15; // proximity bonus
-      else if (within7d) gemScore += 0.05;
-      if (oi > 200) gemScore += 0.05;
-      if (vol24h > 0 && vol24h < 100) gemScore += 0.05;
-      gemScore = Math.min(0.99, gemScore);
-
-      if (gemScore >= 0.25) {
-      const amazonTag = gemScore >= 0.5 ? "🏆 HIDDEN GEM" : gemScore >= 0.35 ? "💎 PENNY ALPHA" : "🌱 SEEDLING";
-
-      // Build a specific investment thesis — WHY this is worth buying
-      const reasons: string[] = [];
-      
-      // 1. The math case
-      reasons.push(`At ${priceCents}¢, you risk $1 to make $${(maxROI + 1).toFixed(0)}. You only need to win 1 in ${Math.round(1/yesPrice)} for this bet to be profitable.`);
-      
-      // 2. The positioning case
-      if (hasSmartMoney) {
-        reasons.push(`${oi} contracts are already held but only ${vol24h} traded recently — that's "ghost volume." Someone with conviction bought and is holding. Retail hasn't noticed yet.`);
-      } else if (oi > 0) {
-        reasons.push(`${oi} open interest means real money is already committed at this level. These aren't empty markets.`);
-      }
-      if (vol24h > 0 && vol24h < 200) {
-        reasons.push(`Only ${vol24h} traded today — this is pre-discovery phase. When volume arrives, the price gaps up.`);
-      }
-      
-      // 3. The event case
-      if (isHighProfile) {
-        reasons.push(`This is on a HIGH-PROFILE event where the public overreacts to favorites. Underdogs consistently get mispriced on big stages.`);
-      }
-      
-      // 4. The timing case
-      if (hoursLeft !== null && hoursLeft > 0) {
-        if (hoursLeft <= 24) {
-          reasons.push(`Event is ${hoursLeft.toFixed(0)}h away — last chance for early entry before the final price run.`);
-        } else if (hoursLeft <= 72) {
-          reasons.push(`${hoursLeft.toFixed(0)}h to event — sweet spot for entry. Early enough to capture the full move, close enough that catalysts are forming.`);
-        } else {
-          reasons.push(`${Math.round(hoursLeft / 24)}d out — maximum early-mover advantage. Price will re-rate as the event approaches.`);
-        }
-      }
-
-      // 5. The asymmetry case
-      if (yesPrice <= 0.03) {
-        reasons.push(`Sub-3¢ means the market thinks this is "impossible." But binary events have fat tails — the market systematically underprices 2-5% probability outcomes.`);
-      } else if (yesPrice <= 0.07) {
-        reasons.push(`Sub-7¢ territory — these contracts regularly 3-5x when any positive news hits. One headline shifts this.`);
-      }
-
-      // 6. The target-specific case
-      if (isTarget) {
-        reasons.push(`This is a high-value target category (scorer props, round leaders, weekly mentions) where pricing lags behind actual probability.`);
-      }
-
-      // 7. Fallback — if no specific signals, the pure math is the thesis
-      if (reasons.length <= 1) {
-        reasons.push(`The market prices this at ${priceCents}% probability. Binary markets systematically misprice tail events — real probability is often 2-3x what the market implies at these levels.`);
-      }
-
-      const thesis = reasons.join(" ");
-
-      return {
-        type: "PENNY_AMAZON",
-        signal: "ASYMMETRIC_BET",
-        score: +gemScore.toFixed(3),
-        reasoning: `${amazonTag}: ${thesis}`,
-        strategy: `$1-3 LIMIT at ${priceCents}¢. NEVER market buy. ${roi >= 1000 ? `This is a ${Math.round(roi/100)}x bagger if it hits.` : `${roi}% return on a $1 bet.`}`,
-        tier: "ACCELERATOR",
-        recovery_tag: "ACCELERATOR",
-      };
-      }
-    }
-  }
-
-  // ══════════════════════════════════════════════════════════════
-  // RULE 1: PRE-MOMENTUM LOTTO SNIPER (Ghost Volume + Cheap = Gold)
-  // OI > 50 with low volume = positioning before retail arrives
-  // Under 15¢ = lotto territory with massive ROI
-  // ══════════════════════════════════════════════════════════════
-  
-  // 1A: PRE-MOMENTUM LOTTO — Ghost volume on cheap contracts (the sweet spot)
-  if (vol24h < 1000 && oi > 50 && yesPrice > 0.10 && yesPrice <= 0.20) {
-    const isTarget = isPreMomentumTarget(title);
-    const oiVolRatio = oi / Math.max(vol24h, 1);
-    const oiBonus = oi > 200 ? 0.25 : oi > 100 ? 0.15 : 0.05;
-    const score = Math.min(0.99, 0.3 + oiBonus + (isTarget ? 0.2 : 0) + (oiVolRatio > 5 ? 0.15 : 0) + (isHighProfile ? 0.15 : 0));
-    const earlyHours = hoursLeft !== null && hoursLeft >= 12 && hoursLeft <= 96;
-    const finalScore = earlyHours ? Math.min(0.99, score + 0.1) : score;
-    const roi = Math.round(maxROI * 100);
-
-    return {
-      type: "PRE_MOMENTUM_LOTTO",
-      signal: "LOTTO_SNIPE",
-      score: +finalScore.toFixed(3),
-      reasoning: `🔮 PRE-MOMENTUM: ${priceCents}¢ with ${oi} OI / ${vol24h} vol. ${roi}% ROI. ${isHighProfile ? "🔥 Big event." : ""} ${earlyHours ? `⏰ ${hoursLeft?.toFixed(0)}h out.` : ""}`,
-      strategy: `$1-3 LIMIT at ${priceCents}¢. ${oi} positioned, ${vol24h} traded. ${roi}% if it hits.`,
-      tier: "ACCELERATOR",
-      recovery_tag: "ACCELERATOR",
-    };
-  }
-
-  // 1B: GHOST VOLUME on mid-priced contracts (20-85¢)
-  if (vol24h < 1000 && oi > 100 && yesPrice > 0.20 && yesPrice < 0.85) {
-    const isTarget = isPreMomentumTarget(title);
-    const oiVolRatio = oi / Math.max(vol24h, 1);
-    const score = Math.min(0.85, 0.3 + (oiVolRatio > 10 ? 0.25 : oiVolRatio * 0.025) + (isTarget ? 0.15 : 0));
-    const earlyHours = hoursLeft !== null && hoursLeft >= 24 && hoursLeft <= 72;
-    const finalScore = earlyHours ? Math.min(0.95, score + 0.1) : score;
-
-    return {
-      type: "GHOST_VOLUME",
-      signal: "PRE_MOMENTUM_SNIPE",
-      score: +finalScore.toFixed(3),
-      reasoning: `👻 Ghost Volume: ${oi} OI / ${vol24h} vol. ${isTarget ? "TARGET." : ""} ${earlyHours ? `⏰ ${hoursLeft?.toFixed(0)}h.` : ""}`,
-      strategy: `LIMIT at ${priceCents}¢. ${oi} contracts held, retail not in yet.`,
-      tier: maxROI > 5 ? "ACCELERATOR" : "EARLY_ENTRY",
-      recovery_tag: maxROI > 5 ? "ACCELERATOR" : null,
-    };
-  }
-
-  // ══════════════════════════════════════════════════════════════
-  // RULE 2: BINARY CLIFF KILL-SWITCH (Capital Protection)
-  // 85¢+ in final phase = TAKE PROFIT NOW
-  // ══════════════════════════════════════════════════════════════
+  // Binary Cliff still applies regardless of time gate (capital protection)
   if (yesPrice >= 0.85 && hoursLeft !== null && hoursLeft <= 4) {
-    const profitPct = Math.round((yesPrice - 0.10) / 0.10 * 100); // assuming ~10¢ entry
+    const profitPct = Math.round((yesPrice - 0.10) / 0.10 * 100);
     return {
       type: "BINARY_CLIFF",
       signal: "IMMEDIATE_LIQUIDATION",
       score: 0.01,
-      reasoning: `🚨 BINARY CLIFF: ${priceCents}¢ with only ${hoursLeft.toFixed(1)}h left. You've captured the move. Take 75% off now — the remaining 15¢ upside isn't worth the Black Swan risk.`,
-      strategy: `SELL 75% NOW: Lock in your ${profitPct > 0 ? `~${profitPct}%` : ""} gain. Leave 25% as a free-roll. At 85¢+ in the final phase, the risk/reward has flipped against you.`,
+      reasoning: `🚨 BINARY CLIFF: ${priceCents}¢ with only ${hoursLeft.toFixed(1)}h left. Take 75% off NOW.`,
+      strategy: `SELL 75% NOW: Lock gains. Leave 25% as free-roll.`,
       tier: "FLOOR_DEFENSE",
       recovery_tag: "FLOOR_DEFENSE",
     };
   }
 
-  // ══════════════════════════════════════════════════════════════
-  // RULE 3: EXPANDED LOTTO TIER (1-15¢ with Alpha > 0.25)
-  // Wider net, lower threshold — we want to see more lottos
-  // ══════════════════════════════════════════════════════════════
-  if (yesPrice > 0 && yesPrice <= 0.15) {
-    const roi = Math.round(maxROI * 100);
-    const lottoAlpha = Math.min(1, 
-      (oi > 20 ? 0.15 : 0) + 
-      (oi > 100 ? 0.15 : 0) +
-      (vol24h > 5 ? 0.1 : 0) + 
-      (vol24h > 50 ? 0.1 : 0) +
-      (isPreMomentumTarget(title) ? 0.2 : 0) + 
-      (spread < 0.05 ? 0.05 : 0) +
-      (yesPrice <= 0.07 ? 0.1 : 0) + // cheaper = more asymmetric
-      (hoursLeft !== null && hoursLeft >= 12 && hoursLeft <= 72 ? 0.1 : 0) // timing bonus
-    );
-
-    if (lottoAlpha >= 0.25) {
-      return {
-        type: "ASYMMETRIC_LOTTO",
-        signal: "LOTTO_LIMIT_ONLY",
-        score: +lottoAlpha.toFixed(3),
-        reasoning: `🎰 LOTTO: ${priceCents}¢ = ${roi}% ROI. Alpha: ${(lottoAlpha * 100).toFixed(0)}%. ${oi > 0 ? `${oi} OI.` : ""} ${vol24h > 0 ? `${vol24h} vol.` : ""} Win 1 in ${Math.round(1/yesPrice)} to break even.`,
-        strategy: `$1-2.50 LIMIT at ${priceCents}¢. ${roi}% payout. NEVER market buy.`,
-        tier: roi > 500 ? "ACCELERATOR" : "LOTTO",
-        recovery_tag: roi > 500 ? "ACCELERATOR" : null,
-      };
-    }
-
-    // Low-alpha but still show if any activity
-    if (oi > 0 || vol24h > 0) {
-      return {
-        type: "LOW_ALPHA_LOTTO",
-        signal: "SPECULATIVE_LOTTO",
-        score: +lottoAlpha.toFixed(3),
-        reasoning: `${priceCents}¢ — ${roi}% ROI. Alpha ${(lottoAlpha * 100).toFixed(0)}% (below 25%). ${oi > 0 ? `${oi} OI.` : ""}`,
-        strategy: `SKIP or $1 max at ${priceCents}¢. Low conviction.`,
-        tier: "LOTTO",
-        recovery_tag: null,
-      };
-    }
+  // Settled / Dead bypass time gate
+  if (yesPrice > 0.95) {
+    return { type: "SETTLED", signal: "NO_EDGE", score: 0, reasoning: `${priceCents}¢ — done.`, strategy: "NO TRADE.", tier: "FLOOR_DEFENSE", recovery_tag: "FLOOR_DEFENSE" };
   }
-
-  // ══════════════════════════════════════════════════════════════
-  // RULE 4: REVENGE RECOVERY MULTIPLIER (ROI > 500% = ACCELERATOR)
-  // ══════════════════════════════════════════════════════════════
-  // This is applied as a tag overlay — check maxROI for any non-dead market
-
-  // ── SPREAD ARBITRAGE ──
-  if (yesAsk > 0 && noAsk > 0 && (yesAsk + noAsk) < 0.95) {
-    const arb = 1 - (yesAsk + noAsk);
-    const score = Math.min(1, arb * 5);
-    return {
-      type: "SPREAD_ARB",
-      signal: "BUY_BOTH",
-      score: +score.toFixed(3),
-      reasoning: `💰 GUARANTEED PROFIT: Yes ${Math.round(yesAsk * 100)}¢ + No ${Math.round(noAsk * 100)}¢ = ${Math.round((yesAsk + noAsk) * 100)}¢. Buy both for ${Math.round(arb * 100)}¢ risk-free.`,
-      strategy: "ARBITRAGE: Buy Yes AND No. Combined cost < $1 payout. Guaranteed profit no matter who wins.",
-      tier: "ACCELERATOR",
-      recovery_tag: "ACCELERATOR",
-    };
+  if (yesPrice <= 0) {
+    return { type: "DEAD", signal: "NO_EDGE", score: 0, reasoning: "0¢ — dead.", strategy: "NO TRADE.", tier: null, recovery_tag: null };
   }
-
-  // ── WIDE SPREAD SNIPE ──
-  if (spread >= 0.08 && yesPrice >= 0.05 && yesPrice <= 0.90) {
-    const mid = (yesBid + yesAsk) / 2;
-    const edgeCents = Math.round(spread * 50);
-    const score = Math.min(0.8, spread * 3);
-    return {
-      type: "WIDE_SPREAD",
-      signal: "LIMIT_SNIPE",
-      score: +score.toFixed(3),
-      reasoning: `🎯 Bid ${Math.round(yesBid * 100)}¢ / Ask ${Math.round(yesAsk * 100)}¢ — ${Math.round(spread * 100)}¢ spread. Midpoint limit = ~${edgeCents}¢ instant edge.`,
-      strategy: `LIMIT ORDER at ${Math.round(mid * 100)}¢. Don't market buy. ${edgeCents}¢ edge vs ask.`,
-      tier: maxROI > 5 ? "ACCELERATOR" : null,
-      recovery_tag: maxROI > 5 ? "ACCELERATOR" : null,
-    };
-  }
-
-  // ── MICRO VALUE (8-15¢) ──
-  if (yesPrice > 0.07 && yesPrice < 0.15 && (vol24h > 0 || oi > 5)) {
-    const roi = Math.round(maxROI * 100);
-    const score = Math.min(1, (0.15 - yesPrice) / 0.15 * 0.6 + Math.min(vol24h, 200) / 500);
-    return {
-      type: "MICRO_VALUE",
-      signal: "LOTTO_BUY",
-      score: +score.toFixed(3),
-      reasoning: `${priceCents}¢ — ${roi}% ROI. ${vol24h > 0 ? `${vol24h} traded today.` : `${oi} OI.`}`,
-      strategy: `Risk $1-2 for up to $${(maxROI + 1).toFixed(0)} payout. Limit order only.`,
-      tier: roi > 500 ? "ACCELERATOR" : "VALUE",
-      recovery_tag: roi > 500 ? "ACCELERATOR" : null,
-    };
-  }
-
-  // ── VALUE ZONE (15-40¢) ──
-  if (yesPrice >= 0.15 && yesPrice < 0.40 && (vol24h > 10 || oi > 20)) {
-    const roi = Math.round(maxROI * 100);
-    const score = Math.min(0.7, (0.40 - yesPrice) / 0.25 * 0.4 + Math.min(vol24h, 300) / 800);
-    return {
-      type: "VALUE_ZONE",
-      signal: "ANCHOR_BUY",
-      score: +score.toFixed(3),
-      reasoning: `${priceCents}¢ with ${vol24h > 0 ? `${vol24h} vol` : `${oi} OI`} — ${roi}% max ROI.`,
-      strategy: `VALUE BET: Risk $2-5. Market says ${priceCents}% but activity says higher.`,
-      tier: roi > 500 ? "ACCELERATOR" : "VALUE",
-      recovery_tag: roi > 500 ? "ACCELERATOR" : null,
-    };
-  }
-
-  // ── VOLUME SPIKE ──
-  if (vol24h > 50 && m.volume > 0) {
-    const avgDaily = Math.max(m.volume / 30, 1);
-    const ratio = vol24h / avgDaily;
-    if (ratio > 2 && yesPrice >= 0.05 && yesPrice <= 0.90) {
-      const score = Math.min(0.7, (ratio - 2) * 0.15);
-      return {
-        type: "VOLUME_SPIKE",
-        signal: "MOMENTUM_ENTRY",
-        score: +score.toFixed(3),
-        reasoning: `📊 ${ratio.toFixed(1)}x normal volume at ${priceCents}¢. Someone knows something.`,
-        strategy: `FOLLOW THE MONEY: Smart money loading up. Get in before the crowd.`,
-        tier: maxROI > 5 ? "ACCELERATOR" : null,
-        recovery_tag: maxROI > 5 ? "ACCELERATOR" : null,
-      };
-    }
-  }
-
-  // ── COIN FLIP (40-60¢) ──
-  if (yesPrice >= 0.40 && yesPrice <= 0.60) {
-    return {
-      type: "COIN_FLIP",
-      signal: "NEUTRAL",
-      score: vol24h > 50 ? 0.1 : 0.03,
-      reasoning: `${priceCents}¢ — coin flip. ${vol24h > 50 ? `Active (${vol24h} vol).` : "Low activity."}`,
-      strategy: `50/50: Only play with an edge the market doesn't see.`,
-      tier: null,
-      recovery_tag: null,
-    };
-  }
-
-  // ── FAVORITE (60-85¢) ──
-  if (yesPrice > 0.60 && yesPrice <= 0.85) {
-    const roi = Math.round(maxROI * 100);
-    return {
-      type: "FAVORITE",
-      signal: "LOW_UPSIDE",
-      score: vol24h > 100 ? 0.05 : 0.02,
-      reasoning: `${priceCents}¢ — probably wins, ${roi}% return. ${vol24h > 0 ? `${vol24h} vol.` : ""}`,
-      strategy: `SAFE BET: Only ${roi}¢/dollar. Better as a parlay leg.`,
-      tier: null,
-      recovery_tag: null,
-    };
-  }
-
-  // ── HEAVY FAVORITE (85-95¢) — FLOOR DEFENSE ──
-  if (yesPrice > 0.85 && yesPrice <= 0.95) {
-    const roi = Math.round(maxROI * 100);
-    return {
-      type: "HEAVY_FAVORITE",
-      signal: "MINIMAL_EDGE",
-      score: 0.01,
-      reasoning: `${priceCents}¢ — near certain. Only ${roi}% return.`,
-      strategy: `CASH EQUIVALENT: ${roi}% return. Only for large positions.`,
-      tier: "FLOOR_DEFENSE",
-      recovery_tag: "FLOOR_DEFENSE",
-    };
-  }
-
-  // ── MATHEMATICAL DEATH (≤2¢) ──
   if (yesPrice > 0 && yesPrice <= 0.02 && oi > 0) {
     return {
       type: "MATHEMATICAL_DEATH",
@@ -529,22 +187,196 @@ function detectEdge(m: any, yesPrice: number, noPrice: number, vol24h: number, o
     };
   }
 
-  // ── SETTLED / DEAD ──
-  if (yesPrice > 0.95) {
-    return { type: "SETTLED", signal: "NO_EDGE", score: 0, reasoning: `${priceCents}¢ — done.`, strategy: "NO TRADE.", tier: "FLOOR_DEFENSE", recovery_tag: "FLOOR_DEFENSE" };
+  // ═══ VELOCITY GATE: Demote anything > 36 hours ═══
+  if (!within36h) {
+    return {
+      type: "TOO_FAR_OUT",
+      signal: "NO_EDGE",
+      score: 0,
+      reasoning: `${hoursLeft !== null ? Math.round(hoursLeft) + 'h' : '?'} out — outside 36h velocity window. We only trade same-day cash turnover.`,
+      strategy: "SKIP: Wait until < 36h for velocity plays.",
+      tier: null,
+      recovery_tag: null,
+    };
   }
-  if (yesPrice <= 0) {
-    return { type: "DEAD", signal: "NO_EDGE", score: 0, reasoning: "0¢ — dead.", strategy: "NO TRADE.", tier: null, recovery_tag: null };
+
+  // ═══ LIQUIDITY GATE ═══
+  const hasRealOI = oi >= 5;
+  const hasRealVolume = vol24h >= 5;
+  const hasTwoSidedBook = yesBid > 0 && yesAsk > 0 && (yesAsk - yesBid) < 0.15;
+  const hasRealLiquidity = hasRealOI || hasRealVolume || (hasTwoSidedBook && oi > 0);
+  if (!hasRealLiquidity) {
+    return {
+      type: "NO_ORDERBOOK",
+      signal: "SKIP",
+      score: 0,
+      reasoning: `${priceCents}¢ — OI:${oi}, Vol24h:${vol24h}. Not enough liquidity.`,
+      strategy: "SKIP: No real orderbook.",
+      tier: null,
+      recovery_tag: null,
+    };
+  }
+
+  const isHighProfile = HIGH_PROFILE_KEYWORDS.some(k => title.includes(k) || (m.event_title || "").toLowerCase().includes(k));
+  const cashHours = hoursLeft !== null ? hoursLeft.toFixed(0) : "?";
+
+  // ══════════════════════════════════════════════════════════════
+  // VELOCITY RULE 1: "WHOLESALE SPREAD" — Cash Arbitrage
+  // Bid/Ask spread > 15¢ = buy wholesale, sell at settle price
+  // ══════════════════════════════════════════════════════════════
+  if (spread >= 0.15 && yesBid > 0 && yesAsk > 0 && yesPrice >= 0.05 && yesPrice <= 0.90) {
+    const midpoint = (yesBid + yesAsk) / 2;
+    const limitPrice = yesBid + 0.01; // 1¢ above best bid
+    const limitCents = Math.round(limitPrice * 100);
+    const midCents = Math.round(midpoint * 100);
+    const spreadCents = Math.round(spread * 100);
+    const edgeCents = Math.round((midpoint - limitPrice) * 100);
+    const turnoverROI = yesPrice > 0 ? Math.round((1 / limitPrice - 1) * 100) : 0;
+
+    let score = 0.5;
+    if (spread >= 0.25) score += 0.15;
+    if (within6h) score += 0.2;
+    else if (within24h) score += 0.1;
+    if (oi > 100) score += 0.1;
+    if (vol24h < 50 && oi > 50) score += 0.1; // liquidity trap bonus
+    score = Math.min(0.99, score);
+
+    return {
+      type: "CASH_ARBITRAGE",
+      signal: "WHOLESALE_SPREAD",
+      score: +score.toFixed(3),
+      reasoning: `💰 CASH ARB: ${spreadCents}¢ spread (Bid ${Math.round(yesBid*100)}¢ / Ask ${Math.round(yesAsk*100)}¢). Buy wholesale at ${limitCents}¢ (1¢ above bid). Settles in ${cashHours}h — capital back by ${within24h ? 'tonight' : 'tomorrow'}. ${oi > 100 ? `${oi} OI trapped.` : ''}`,
+      strategy: `LIMIT ORDER: ${limitCents}¢ (wholesale). Mid=${midCents}¢. ${edgeCents}¢ instant edge. ${turnoverROI}% ROI in ${cashHours}h.`,
+      tier: "ACCELERATOR",
+      recovery_tag: "ACCELERATOR",
+    };
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // VELOCITY RULE 2: "LIQUIDITY TRAP" — Ghost Volume Catalyst
+  // OI > 500 but 24h Vol < 50 = money is trapped, name your price
+  // ══════════════════════════════════════════════════════════════
+  if (oi > 500 && vol24h < 50 && yesPrice >= 0.03 && yesPrice <= 0.90) {
+    const limitPrice = yesBid > 0 ? yesBid + 0.01 : yesPrice;
+    const limitCents = Math.round(limitPrice * 100);
+    const turnoverROI = Math.round((1 / limitPrice - 1) * 100);
+
+    let score = 0.55;
+    if (oi > 1000) score += 0.15;
+    if (vol24h === 0) score += 0.1; // completely dead volume = max trap
+    if (within6h) score += 0.15;
+    else if (within24h) score += 0.1;
+    if (spread >= 0.10) score += 0.1; // wide spread + trapped = goldmine
+    score = Math.min(0.99, score);
+
+    return {
+      type: "LIQUIDITY_TRAP",
+      signal: "GHOST_CATALYST",
+      score: +score.toFixed(3),
+      reasoning: `🕳️ LIQUIDITY TRAP: ${oi} OI trapped but only ${vol24h} traded in 24h. Money locked in — nobody trading. YOU name the price with a limit order. Settles in ${cashHours}h.`,
+      strategy: `LIMIT SNIPE: ${limitCents}¢. ${oi} contracts trapped. ${turnoverROI}% ROI. Cash back in ${cashHours}h.`,
+      tier: "ACCELERATOR",
+      recovery_tag: "ACCELERATOR",
+    };
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // VELOCITY RULE 3: Combined — cheap + fast settle = velocity penny
+  // ══════════════════════════════════════════════════════════════
+  if (yesPrice > 0.005 && yesPrice <= 0.15) {
+    const roi = Math.round(maxROI * 100);
+    const hasSmartMoney = oi > 100 && vol24h < 500;
+    const isTarget = isPreMomentumTarget(title);
+
+    let score = 0.25;
+    if (yesPrice <= 0.05) score += 0.15;
+    if (yesPrice <= 0.03) score += 0.1;
+    if (within6h) score += 0.2;
+    else if (within24h) score += 0.1;
+    if (isHighProfile) score += 0.15;
+    if (hasSmartMoney) score += 0.15;
+    if (oi > 20) score += 0.05;
+    if (isTarget) score += 0.1;
+    if (spread >= 0.10) score += 0.05; // wholesale opportunity
+    score = Math.min(0.99, score);
+
+    const tag = score >= 0.6 ? "🏆 HIDDEN GEM" : score >= 0.4 ? "💎 PENNY ALPHA" : "🌱 SEEDLING";
+
+    return {
+      type: "VELOCITY_PENNY",
+      signal: "FAST_TURNOVER",
+      score: +score.toFixed(3),
+      reasoning: `${tag}: ${priceCents}¢ settling in ${cashHours}h. Risk $1 to make $${(maxROI + 1).toFixed(0)}. ${hasSmartMoney ? `${oi} OI / ${vol24h} vol — ghost volume.` : oi > 0 ? `${oi} OI.` : ''} Cash back ${within24h ? 'TONIGHT' : 'tomorrow'}.`,
+      strategy: `$1-3 LIMIT at ${priceCents}¢. ${roi}% ROI. Capital returns in ${cashHours}h.`,
+      tier: "ACCELERATOR",
+      recovery_tag: "ACCELERATOR",
+    };
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // Spread Arb (guaranteed profit — always show if within velocity window)
+  // ══════════════════════════════════════════════════════════════
+  if (yesAsk > 0 && noAsk > 0 && (yesAsk + noAsk) < 0.95) {
+    const arb = 1 - (yesAsk + noAsk);
+    const score = Math.min(1, arb * 5 + (within24h ? 0.2 : 0));
+    return {
+      type: "SPREAD_ARB",
+      signal: "BUY_BOTH",
+      score: +score.toFixed(3),
+      reasoning: `💰 GUARANTEED PROFIT: Yes ${Math.round(yesAsk * 100)}¢ + No ${Math.round(noAsk * 100)}¢ = ${Math.round((yesAsk + noAsk) * 100)}¢. ${Math.round(arb * 100)}¢ risk-free. Settles in ${cashHours}h.`,
+      strategy: "ARBITRAGE: Buy both sides. Guaranteed profit. Cash back in " + cashHours + "h.",
+      tier: "ACCELERATOR",
+      recovery_tag: "ACCELERATOR",
+    };
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // Velocity Value plays (15-85¢ within 36h with liquidity)
+  // ══════════════════════════════════════════════════════════════
+  if (yesPrice >= 0.15 && yesPrice < 0.85) {
+    const roi = Math.round(maxROI * 100);
+    let score = 0.1;
+    if (vol24h > 50) score += 0.1;
+    if (oi > 100) score += 0.1;
+    if (within6h) score += 0.15;
+    if (spread >= 0.08) score += 0.1; // wide spread = limit snipe opportunity
+    score = Math.min(0.8, score);
+
+    const limitEntry = yesBid > 0 ? Math.round((yesBid + 0.01) * 100) : priceCents;
+
+    return {
+      type: "VELOCITY_VALUE",
+      signal: "FAST_VALUE",
+      score: +score.toFixed(3),
+      reasoning: `⚡ VELOCITY: ${priceCents}¢, settles in ${cashHours}h. ${roi}% ROI. ${vol24h > 0 ? `${vol24h} vol.` : ''} ${oi > 0 ? `${oi} OI.` : ''} ${spread >= 0.08 ? `${Math.round(spread * 100)}¢ spread — limit snipe.` : ''}`,
+      strategy: `LIMIT at ${limitEntry}¢. ${roi}% return. Cash back in ${cashHours}h.`,
+      tier: roi > 200 ? "ACCELERATOR" : "VALUE",
+      recovery_tag: roi > 200 ? "ACCELERATOR" : null,
+    };
+  }
+
+  // Favorites within velocity window
+  if (yesPrice >= 0.85 && yesPrice <= 0.95) {
+    const roi = Math.round(maxROI * 100);
+    return {
+      type: "VELOCITY_SAFE",
+      signal: "SAFE_TURNOVER",
+      score: 0.05,
+      reasoning: `${priceCents}¢ — near certain. ${roi}% in ${cashHours}h.`,
+      strategy: `Safe ${roi}% return. Cash back in ${cashHours}h.`,
+      tier: "FLOOR_DEFENSE",
+      recovery_tag: "FLOOR_DEFENSE",
+    };
   }
 
   return {
     type: "LOW_LIQUIDITY",
     signal: "SPECULATIVE",
     score: 0.02,
-    reasoning: `${priceCents}¢ — low liquidity.`,
-    strategy: `SPECULATIVE: Hard to trade. Only enter with strong conviction.`,
+    reasoning: `${priceCents}¢ — low liquidity. ${cashHours}h to settle.`,
+    strategy: `SPECULATIVE: Hard to trade.`,
     tier: null,
-    recovery_tag: maxROI > 5 ? "ACCELERATOR" : null,
+    recovery_tag: null,
   };
 }
 
