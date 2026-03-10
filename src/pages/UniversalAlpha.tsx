@@ -4,8 +4,10 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert";
 import {
-  RefreshCw, Loader2, AlertTriangle, Timer, TrendingUp, ArrowUpDown
+  RefreshCw, Loader2, AlertTriangle, Timer, TrendingUp, ArrowUpDown,
+  ChevronDown, ChevronRight, BarChart3
 } from "lucide-react";
+import { createChart, ColorType, CandlestickSeries, HistogramSeries, LineSeries } from "lightweight-charts";
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -30,11 +32,7 @@ interface BoardMarket {
 }
 
 interface CategorySummary {
-  category: string;
-  icon: string;
-  count: number;
-  volume: number;
-  oi: number;
+  category: string; icon: string; count: number; volume: number; oi: number;
 }
 
 interface FeedData {
@@ -43,15 +41,17 @@ interface FeedData {
   vol_spikes: BoardMarket[];
   categories: CategorySummary[];
   stats: {
-    totalFetched: number;
-    totalBoard: number;
-    hotCount: number;
-    wideSpreadCount: number;
-    volSpikeCount: number;
-    categoryCount: number;
+    totalFetched: number; totalBoard: number; hotCount: number;
+    wideSpreadCount: number; volSpikeCount: number; categoryCount: number;
   };
   next_catalyst: { close_time: string; category: string; hours_left: number } | null;
   timestamp: string;
+}
+
+interface Candle {
+  time: string;
+  open: number; high: number; low: number; close: number;
+  volume: number; oi: number;
 }
 
 // ─── 10-Minute Tape ─────────────────────────────────────────────
@@ -62,9 +62,7 @@ interface TapeMetrics { priceDelta: number | null; volSpike: number | null; isWh
 const TAPE_WINDOW_MS = 10 * 60 * 1000;
 
 function computeTape(
-  ticker: string,
-  currentMid: number,
-  currentVol: number,
+  ticker: string, currentMid: number, currentVol: number,
   history: Map<string, TapeSnapshot[]>
 ): TapeMetrics {
   const h = history.get(ticker);
@@ -94,8 +92,6 @@ function fmtHours(h: number | null): string {
   return `${Math.floor(h / 24)}d ${Math.round(h % 24)}h`;
 }
 
-// ─── Countdown ──────────────────────────────────────────────────
-
 function useCountdown(targetTime: string | null): string {
   const [display, setDisplay] = useState("—");
   useEffect(() => {
@@ -116,7 +112,230 @@ function useCountdown(targetTime: string | null): string {
   return display;
 }
 
-// ─── Component ──────────────────────────────────────────────────
+// ─── Chart Component ────────────────────────────────────────────
+
+function MarketChart({ ticker, title }: { ticker: string; title: string }) {
+  const chartContainerRef = useRef<HTMLDivElement>(null);
+  const [candles, setCandles] = useState<Candle[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [period, setPeriod] = useState(60); // 1=1min, 60=1hr, 1440=1day
+  const chartRef = useRef<ReturnType<typeof createChart> | null>(null);
+
+  // Fetch candle data
+  useEffect(() => {
+    let cancelled = false;
+    async function fetchCandles() {
+      setLoading(true);
+      setError(null);
+      try {
+        const { data, error: err } = await supabase.functions.invoke("kalshi-chart", {
+          body: { ticker, period },
+        });
+        if (cancelled) return;
+        if (err) throw err;
+        if (data?.error && data.candles?.length === 0) {
+          setError(data.error);
+          setCandles([]);
+        } else {
+          setCandles(data?.candles || []);
+        }
+      } catch (e: any) {
+        if (!cancelled) setError(e.message || "Failed to load chart");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+    fetchCandles();
+    return () => { cancelled = true; };
+  }, [ticker, period]);
+
+  // Render chart
+  useEffect(() => {
+    if (!chartContainerRef.current || candles.length === 0) return;
+
+    // Clean up previous chart
+    if (chartRef.current) {
+      chartRef.current.remove();
+      chartRef.current = null;
+    }
+
+    const container = chartContainerRef.current;
+    const chart = createChart(container, {
+      layout: {
+        background: { type: ColorType.Solid, color: "transparent" },
+        textColor: "#9ca3af",
+        fontSize: 10,
+      },
+      grid: {
+        vertLines: { color: "rgba(255,255,255,0.04)" },
+        horzLines: { color: "rgba(255,255,255,0.04)" },
+      },
+      width: container.clientWidth,
+      height: 280,
+      timeScale: {
+        timeVisible: true,
+        secondsVisible: false,
+        borderColor: "rgba(255,255,255,0.1)",
+      },
+      rightPriceScale: {
+        borderColor: "rgba(255,255,255,0.1)",
+      },
+      crosshair: {
+        mode: 0,
+      },
+    });
+
+    chartRef.current = chart;
+
+    // Format candle data for lightweight-charts
+    const formattedCandles = candles.map(c => ({
+      time: Math.floor(new Date(c.time).getTime() / 1000) as any,
+      open: c.open,
+      high: c.high,
+      low: c.low,
+      close: c.close,
+    }));
+
+    // Dedupe and sort by time
+    const seen = new Set<number>();
+    const deduped = formattedCandles.filter(c => {
+      if (seen.has(c.time)) return false;
+      seen.add(c.time);
+      return true;
+    }).sort((a, b) => a.time - b.time);
+
+    if (deduped.length > 0) {
+      // Decide: use candlestick if we have OHLC variance, else line
+      const hasOHLC = deduped.some(c => c.high !== c.low);
+
+      if (hasOHLC) {
+        const candleSeries = chart.addSeries(CandlestickSeries, {
+          upColor: "#10b981",
+          downColor: "#ef4444",
+          borderUpColor: "#10b981",
+          borderDownColor: "#ef4444",
+          wickUpColor: "#10b981",
+          wickDownColor: "#ef4444",
+        });
+        candleSeries.setData(deduped);
+      } else {
+        const lineSeries = chart.addSeries(LineSeries, {
+          color: "#10b981",
+          lineWidth: 2,
+        });
+        lineSeries.setData(deduped.map(c => ({ time: c.time, value: c.close })));
+      }
+
+      // Volume histogram
+      const volumeData = candles.map(c => ({
+        time: Math.floor(new Date(c.time).getTime() / 1000) as any,
+        value: c.volume,
+        color: c.close >= c.open ? "rgba(16,185,129,0.3)" : "rgba(239,68,68,0.3)",
+      }));
+
+      const seenVol = new Set<number>();
+      const dedupedVol = volumeData.filter(v => {
+        if (seenVol.has(v.time)) return false;
+        seenVol.add(v.time);
+        return true;
+      }).sort((a, b) => a.time - b.time);
+
+      if (dedupedVol.some(v => v.value > 0)) {
+        const volSeries = chart.addSeries(HistogramSeries, {
+          priceFormat: { type: "volume" },
+          priceScaleId: "vol",
+        });
+        volSeries.setData(dedupedVol);
+        chart.priceScale("vol").applyOptions({
+          scaleMargins: { top: 0.8, bottom: 0 },
+        });
+      }
+    }
+
+    chart.timeScale().fitContent();
+
+    // Resize handler
+    const handleResize = () => {
+      if (container && chart) chart.applyOptions({ width: container.clientWidth });
+    };
+    const ro = new ResizeObserver(handleResize);
+    ro.observe(container);
+
+    return () => {
+      ro.disconnect();
+      chart.remove();
+      chartRef.current = null;
+    };
+  }, [candles]);
+
+  return (
+    <div className="bg-[hsl(var(--nexus-bg))] border border-[hsl(var(--nexus-border))] rounded p-3 space-y-2">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <BarChart3 className="w-3.5 h-3.5 text-emerald-400" />
+          <span className="text-[10px] font-bold text-[hsl(var(--nexus-text-primary))] truncate max-w-[400px]">{title}</span>
+          <span className="text-[9px] text-[hsl(var(--nexus-text-muted))] font-mono">{ticker}</span>
+        </div>
+        <div className="flex items-center gap-1">
+          {([
+            { val: 1, label: "1m" },
+            { val: 60, label: "1H" },
+            { val: 1440, label: "1D" },
+          ] as const).map(p => (
+            <button
+              key={p.val}
+              onClick={() => setPeriod(p.val)}
+              className={`px-2 py-0.5 rounded text-[9px] font-mono transition-colors ${
+                period === p.val
+                  ? "bg-emerald-600/30 text-emerald-400"
+                  : "text-[hsl(var(--nexus-text-muted))] hover:text-[hsl(var(--nexus-text-primary))]"
+              }`}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {loading && (
+        <div className="h-[280px] flex items-center justify-center">
+          <Loader2 className="w-5 h-5 animate-spin text-emerald-400" />
+          <span className="ml-2 text-[10px] text-[hsl(var(--nexus-text-muted))]">Loading chart data…</span>
+        </div>
+      )}
+
+      {error && !loading && (
+        <div className="h-[280px] flex items-center justify-center">
+          <span className="text-[10px] text-[hsl(var(--nexus-text-muted))]">{error}</span>
+        </div>
+      )}
+
+      {!loading && !error && candles.length === 0 && (
+        <div className="h-[280px] flex items-center justify-center">
+          <span className="text-[10px] text-[hsl(var(--nexus-text-muted))]">No chart data available for this market yet.</span>
+        </div>
+      )}
+
+      {!loading && candles.length > 0 && (
+        <>
+          <div ref={chartContainerRef} className="w-full" />
+          <div className="flex items-center justify-between text-[9px] text-[hsl(var(--nexus-text-muted))]">
+            <span>{candles.length} candles</span>
+            <span>
+              O: {(candles[candles.length - 1]?.open * 100).toFixed(0)}¢ 
+              H: {(candles[candles.length - 1]?.high * 100).toFixed(0)}¢ 
+              L: {(candles[candles.length - 1]?.low * 100).toFixed(0)}¢ 
+              C: {(candles[candles.length - 1]?.close * 100).toFixed(0)}¢
+            </span>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ─── Main Component ─────────────────────────────────────────────
 
 type TabKey = "hot" | "spreads" | "spikes";
 type SortKey = "volume" | "spread" | "oi" | "hours" | "vol_oi";
@@ -130,6 +349,7 @@ export default function UniversalAlpha() {
   const [activeTab, setActiveTab] = useState<TabKey>("hot");
   const [sortBy, setSortBy] = useState<SortKey>("volume");
   const [pollCount, setPollCount] = useState(0);
+  const [expandedTicker, setExpandedTicker] = useState<string | null>(null);
 
   const tapeRef = useRef<Map<string, TapeSnapshot[]>>(new Map());
   const [tapeMetrics, setTapeMetrics] = useState<Map<string, TapeMetrics>>(new Map());
@@ -148,13 +368,11 @@ export default function UniversalAlpha() {
       setData(res);
       setLastRefresh(new Date().toLocaleTimeString());
 
-      // Record tape snapshots
       const now = Date.now();
       const tape = tapeRef.current;
       const newMetrics = new Map<string, TapeMetrics>();
       const allMarkets = [...(res?.hot_markets || []), ...(res?.wide_spreads || []), ...(res?.vol_spikes || [])];
       const seen = new Set<string>();
-
       for (const m of allMarkets) {
         if (!m.ticker || seen.has(m.ticker)) continue;
         seen.add(m.ticker);
@@ -162,10 +380,9 @@ export default function UniversalAlpha() {
         const history = tape.get(m.ticker) || [];
         history.push(snapshot);
         const cutoff = now - 12 * 60 * 1000;
-        tape.set(m.ticker, history.filter(s => s.ts >= cutoff));
+        tape.set(m.ticker, history.filter((s: TapeSnapshot) => s.ts >= cutoff));
         newMetrics.set(m.ticker, computeTape(m.ticker, m.midpoint, m.vol24h, tape));
       }
-
       setTapeMetrics(newMetrics);
       setPollCount(c => c + 1);
     } catch (e: any) {
@@ -185,7 +402,6 @@ export default function UniversalAlpha() {
   const stats = data?.stats;
   const nc = data?.next_catalyst;
   const whaleCount = Array.from(tapeMetrics.values()).filter(m => m.isWhale).length;
-
   const getTape = (ticker?: string): TapeMetrics | null => ticker ? tapeMetrics.get(ticker) || null : null;
 
   const activeMarkets: BoardMarket[] = activeTab === "hot" ? (data?.hot_markets || [])
@@ -193,7 +409,11 @@ export default function UniversalAlpha() {
     : (data?.vol_spikes || []);
 
   const cellClass = "p-1.5 text-left whitespace-nowrap text-[10px]";
-  const headerClass = "p-1.5 text-left font-bold text-[hsl(var(--nexus-text-muted))] uppercase tracking-wider text-[9px] cursor-pointer hover:text-[hsl(var(--nexus-text-primary))] select-none";
+  const headerClass = "p-1.5 text-left font-bold text-[hsl(var(--nexus-text-muted))] uppercase tracking-wider text-[9px] select-none";
+
+  const toggleChart = (ticker: string) => {
+    setExpandedTicker(prev => prev === ticker ? null : ticker);
+  };
 
   return (
     <div className="min-h-screen bg-[hsl(var(--nexus-bg))] text-[hsl(var(--nexus-text-primary))] font-mono text-xs">
@@ -212,6 +432,7 @@ export default function UniversalAlpha() {
             </p>
           </div>
           <div className="flex items-center gap-2">
+            <span className="text-[9px] text-[hsl(var(--nexus-text-muted))]">Click any row for chart</span>
             <Button size="sm" onClick={fetchData} disabled={loading}
               className="bg-emerald-600 hover:bg-emerald-700 text-white font-mono h-7 text-[10px]">
               {loading ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
@@ -305,6 +526,7 @@ export default function UniversalAlpha() {
           <table className="w-full border-collapse">
             <thead>
               <tr className="border-b border-[hsl(var(--nexus-border))]">
+                <th className={headerClass} style={{ width: 24 }}></th>
                 <th className={headerClass}>#</th>
                 <th className={headerClass}>Cat</th>
                 <th className={headerClass} style={{ minWidth: 280 }}>Market</th>
@@ -326,58 +548,79 @@ export default function UniversalAlpha() {
                 const isWhale = tape?.isWhale || false;
                 const priceDelta = tape?.priceDelta ?? null;
                 const volSpike = tape?.volSpike ?? null;
+                const isExpanded = expandedTicker === m.ticker;
 
                 return (
-                  <tr key={m.ticker} className={`border-b border-[hsl(var(--nexus-border))]/20 hover:bg-[hsl(var(--nexus-surface))] ${isWhale ? "bg-red-500/10 border-l-2 border-l-red-500" : ""}`}>
-                    <td className={`${cellClass} text-[hsl(var(--nexus-text-muted))]`}>{i + 1}</td>
-                    <td className={cellClass} title={m.category}>
-                      {m.icon}
-                      {isWhale && <Badge className="ml-1 bg-red-600 text-white text-[8px] px-1 py-0 leading-none">🐋</Badge>}
-                    </td>
-                    <td className={`${cellClass} max-w-[300px]`}>
-                      <a href={m.url} target="_blank" rel="noopener noreferrer"
-                        className="text-cyan-400 hover:underline truncate block" title={m.title}>
-                        {m.title}
-                      </a>
-                    </td>
-                    <td className={cellClass}>{m.yes_bid > 0 ? `${m.yes_bid}¢` : "—"}</td>
-                    <td className={cellClass}>{m.yes_ask > 0 ? `${m.yes_ask}¢` : "—"}</td>
-                    <td className={`${cellClass} font-bold`}>{m.midpoint}¢</td>
-                    <td className={`${cellClass} ${m.spread >= 6 ? "text-amber-400 font-bold" : m.spread >= 4 ? "text-cyan-400" : ""}`}>
-                      {m.spread > 0 ? `${m.spread}¢` : "—"}
-                    </td>
-                    <td className={cellClass}>
-                      {priceDelta !== null ? (
-                        <span className={`font-bold ${priceDelta > 0 ? "text-emerald-400" : priceDelta < 0 ? "text-red-400" : "text-[hsl(var(--nexus-text-muted))]"}`}>
-                          {priceDelta > 0 ? "+" : ""}{priceDelta}¢
-                        </span>
-                      ) : <span className="text-[hsl(var(--nexus-text-muted))]">…</span>}
-                    </td>
-                    <td className={cellClass}>
-                      {volSpike !== null ? (
-                        <span className={`font-bold ${volSpike >= 500 ? "text-red-400" : volSpike > 0 ? "text-[hsl(var(--nexus-text-primary))]" : "text-[hsl(var(--nexus-text-muted))]"}`}>
-                          {volSpike.toLocaleString()}
-                        </span>
-                      ) : <span className="text-[hsl(var(--nexus-text-muted))]">…</span>}
-                    </td>
-                    <td className={`${cellClass} font-bold ${m.vol24h >= 1000 ? "text-emerald-400" : m.vol24h >= 100 ? "text-[hsl(var(--nexus-text-primary))]" : "text-[hsl(var(--nexus-text-muted))]"}`}>
-                      {m.vol24h.toLocaleString()}
-                    </td>
-                    <td className={`${cellClass} ${m.oi >= 5000 ? "text-amber-400 font-bold" : ""}`}>
-                      {m.oi.toLocaleString()}
-                    </td>
-                    <td className={`${cellClass} ${m.vol_oi_ratio > 2 ? "text-red-400 font-bold" : m.vol_oi_ratio > 1 ? "text-amber-400" : ""}`}>
-                      {m.vol_oi_ratio > 0 ? `${m.vol_oi_ratio}x` : "—"}
-                    </td>
-                    <td className={`${cellClass} ${(m.hours_left ?? 999) < 24 ? "text-amber-400" : ""}`}>
-                      {fmtHours(m.hours_left)}
-                    </td>
-                  </tr>
+                  <>
+                    <tr
+                      key={m.ticker}
+                      onClick={() => toggleChart(m.ticker)}
+                      className={`border-b border-[hsl(var(--nexus-border))]/20 hover:bg-[hsl(var(--nexus-surface))] cursor-pointer transition-colors ${isWhale ? "bg-red-500/10 border-l-2 border-l-red-500" : ""} ${isExpanded ? "bg-[hsl(var(--nexus-surface))]" : ""}`}
+                    >
+                      <td className={cellClass}>
+                        {isExpanded
+                          ? <ChevronDown className="w-3 h-3 text-emerald-400" />
+                          : <ChevronRight className="w-3 h-3 text-[hsl(var(--nexus-text-muted))]" />}
+                      </td>
+                      <td className={`${cellClass} text-[hsl(var(--nexus-text-muted))]`}>{i + 1}</td>
+                      <td className={cellClass} title={m.category}>
+                        {m.icon}
+                        {isWhale && <Badge className="ml-1 bg-red-600 text-white text-[8px] px-1 py-0 leading-none">🐋</Badge>}
+                      </td>
+                      <td className={`${cellClass} max-w-[300px]`}>
+                        <a href={m.url} target="_blank" rel="noopener noreferrer"
+                          className="text-cyan-400 hover:underline truncate block"
+                          title={m.title}
+                          onClick={(e) => e.stopPropagation()}>
+                          {m.title}
+                        </a>
+                      </td>
+                      <td className={cellClass}>{m.yes_bid > 0 ? `${m.yes_bid}¢` : "—"}</td>
+                      <td className={cellClass}>{m.yes_ask > 0 ? `${m.yes_ask}¢` : "—"}</td>
+                      <td className={`${cellClass} font-bold`}>{m.midpoint}¢</td>
+                      <td className={`${cellClass} ${m.spread >= 6 ? "text-amber-400 font-bold" : m.spread >= 4 ? "text-cyan-400" : ""}`}>
+                        {m.spread > 0 ? `${m.spread}¢` : "—"}
+                      </td>
+                      <td className={cellClass}>
+                        {priceDelta !== null ? (
+                          <span className={`font-bold ${priceDelta > 0 ? "text-emerald-400" : priceDelta < 0 ? "text-red-400" : "text-[hsl(var(--nexus-text-muted))]"}`}>
+                            {priceDelta > 0 ? "+" : ""}{priceDelta}¢
+                          </span>
+                        ) : <span className="text-[hsl(var(--nexus-text-muted))]">…</span>}
+                      </td>
+                      <td className={cellClass}>
+                        {volSpike !== null ? (
+                          <span className={`font-bold ${volSpike >= 500 ? "text-red-400" : volSpike > 0 ? "text-[hsl(var(--nexus-text-primary))]" : "text-[hsl(var(--nexus-text-muted))]"}`}>
+                            {volSpike.toLocaleString()}
+                          </span>
+                        ) : <span className="text-[hsl(var(--nexus-text-muted))]">…</span>}
+                      </td>
+                      <td className={`${cellClass} font-bold ${m.vol24h >= 1000 ? "text-emerald-400" : m.vol24h >= 100 ? "text-[hsl(var(--nexus-text-primary))]" : "text-[hsl(var(--nexus-text-muted))]"}`}>
+                        {m.vol24h.toLocaleString()}
+                      </td>
+                      <td className={`${cellClass} ${m.oi >= 5000 ? "text-amber-400 font-bold" : ""}`}>
+                        {m.oi.toLocaleString()}
+                      </td>
+                      <td className={`${cellClass} ${m.vol_oi_ratio > 2 ? "text-red-400 font-bold" : m.vol_oi_ratio > 1 ? "text-amber-400" : ""}`}>
+                        {m.vol_oi_ratio > 0 ? `${m.vol_oi_ratio}x` : "—"}
+                      </td>
+                      <td className={`${cellClass} ${(m.hours_left ?? 999) < 24 ? "text-amber-400" : ""}`}>
+                        {fmtHours(m.hours_left)}
+                      </td>
+                    </tr>
+                    {isExpanded && (
+                      <tr key={`${m.ticker}-chart`}>
+                        <td colSpan={14} className="p-2">
+                          <MarketChart ticker={m.ticker} title={m.title} />
+                        </td>
+                      </tr>
+                    )}
+                  </>
                 );
               })}
               {activeMarkets.length === 0 && (
                 <tr>
-                  <td colSpan={13} className="p-4 text-center text-[hsl(var(--nexus-text-muted))]">
+                  <td colSpan={14} className="p-4 text-center text-[hsl(var(--nexus-text-muted))]">
                     No markets in this view. Try a different category or tab.
                   </td>
                 </tr>
@@ -386,7 +629,6 @@ export default function UniversalAlpha() {
           </table>
         </div>
 
-        {/* ─── MARKET COUNT ─── */}
         <div className="text-[10px] text-[hsl(var(--nexus-text-muted))] text-right">
           Showing {activeMarkets.length} markets • Total on board: {stats?.totalBoard || 0}
         </div>
