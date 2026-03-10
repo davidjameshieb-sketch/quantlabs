@@ -528,16 +528,20 @@ function extractSeriesTicker(eventTicker: string): string {
   return parts[0] || eventTicker;
 }
 
-// ─── Paginated Fetchers ─────────────────────────────────────────
+// ─── Paginated Fetchers (rate-limit safe) ───────────────────────
+
+const delay = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 async function fetchAllEvents(): Promise<any[]> {
   const all: any[] = [];
   let cursor: string | null = null;
-  const maxPages = 10; // safety cap
+  const maxPages = 3; // keep small to avoid 429
   for (let page = 0; page < maxPages; page++) {
+    if (page > 0) await delay(350); // throttle between pages
     const params = new URLSearchParams({ limit: "200", status: "open" });
     if (cursor) params.set("cursor", cursor);
     const res = await fetch(`${KALSHI_API}/events?${params}`, { headers: { Accept: "application/json" } });
+    if (res.status === 429) { console.warn(`Events 429 on page ${page}, stopping`); break; }
     if (!res.ok) throw new Error(`Kalshi events: ${res.status}`);
     const data = await res.json();
     const events = data.events || [];
@@ -551,11 +555,13 @@ async function fetchAllEvents(): Promise<any[]> {
 async function fetchAllMarkets(): Promise<any[]> {
   const all: any[] = [];
   let cursor: string | null = null;
-  const maxPages = 15; // more pages for markets (thousands exist)
+  const maxPages = 5; // cap at ~1000 markets
   for (let page = 0; page < maxPages; page++) {
+    if (page > 0) await delay(350);
     const params = new URLSearchParams({ limit: "200", status: "open" });
     if (cursor) params.set("cursor", cursor);
     const res = await fetch(`${KALSHI_API}/markets?${params}`, { headers: { Accept: "application/json" } });
+    if (res.status === 429) { console.warn(`Markets 429 on page ${page}, stopping`); break; }
     if (!res.ok) throw new Error(`Kalshi markets: ${res.status}`);
     const data = await res.json();
     const markets = data.markets || [];
