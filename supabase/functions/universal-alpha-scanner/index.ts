@@ -185,11 +185,11 @@ function detectEdge(m: any, yesPrice: number, noPrice: number, vol24h: number, o
     return noResult("TOO_FAR_OUT", `${Math.round(hoursLeft / 24)}d out — outside 7d window.`);
   }
 
-  // Liquidity gate
-  const hasRealOI = oi >= 5;
-  const hasRealVolume = vol24h >= 5;
-  const hasTwoSidedBook = yesBid > 0 && yesAsk > 0 && spread < 0.20;
-  const hasRealLiquidity = hasRealOI || hasRealVolume || (hasTwoSidedBook && oi > 0);
+  // Liquidity gate — very relaxed to surface opportunities
+  const hasRealOI = oi >= 1;
+  const hasRealVolume = vol24h >= 1;
+  const hasTwoSidedBook = yesBid > 0 && yesAsk > 0;
+  const hasRealLiquidity = hasRealOI || hasRealVolume || hasTwoSidedBook;
   if (!hasRealLiquidity) {
     return noResult("NO_ORDERBOOK", `${priceCents}¢ — OI:${oi}, Vol:${vol24h}. No liquidity.`);
   }
