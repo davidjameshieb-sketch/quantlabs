@@ -534,8 +534,9 @@ Deno.serve(async (req) => {
 
     // Top picks — the "manifest"
     const actionable = classified.filter(m =>
-      m.alpha_score > 0.01 && m.alpha_type !== "TOO_FAR_OUT" && m.alpha_type !== "NO_ORDERBOOK" &&
-      m.alpha_type !== "SETTLED" && m.alpha_type !== "DEAD"
+      m.alpha_score > 0.01 && m.alpha_type !== "NO_ORDERBOOK" &&
+      m.alpha_type !== "SETTLED" && m.alpha_type !== "DEAD" &&
+      m.time_to_event_hours !== null && m.time_to_event_hours <= 72
     );
     const alerts = actionable
       .sort((a, b) => {
