@@ -223,6 +223,7 @@ export default function UniversalAlpha() {
     m.alpha_type === "LIQUIDITY_TRAP" ||
     m.alpha_type === "VELOCITY_PENNY" ||
     m.alpha_type === "SPREAD_ARB" ||
+    m.alpha_type === "WIDE_SPREAD" ||
     m.alpha_score >= 0.15
   ).slice(0, 12);
 
