@@ -265,7 +265,7 @@ function detectEdge(m: any, yesPrice: number, noPrice: number, vol24h: number, o
   // ══════════════════════════════════════════════════════════════
   // TIER 4: LIQUIDITY TRAP — High OI, dead volume, name your price
   // ══════════════════════════════════════════════════════════════
-  if (oi > 150 && vol24h < 50 && yesPrice >= 0.03 && yesPrice <= 0.90) {
+  if (oi > 30 && vol24h < oi * 0.5 && yesPrice >= 0.02 && yesPrice <= 0.95) {
     const limitCents = yesBid > 0 ? Math.round((yesBid + 0.01) * 100) : priceCents;
     const roi = Math.round((1 / (yesBid > 0 ? yesBid + 0.01 : yesPrice) - 1) * 100);
 
