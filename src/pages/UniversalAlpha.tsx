@@ -355,7 +355,11 @@ export default function UniversalAlpha() {
                   {data.debug_board.map((r, i) => (
                     <tr key={i} className="border-b border-[hsl(var(--nexus-border))]/20 hover:bg-[hsl(var(--nexus-surface))]">
                       <td className={cellClass}>{leagueIcon(r.league)} {r.league}</td>
-                      <td className={`${cellClass} max-w-[250px] truncate`}>{r.title}</td>
+                      <td className={`${cellClass} max-w-[250px] truncate`}>
+                        {r.url ? (
+                          <a href={r.url} target="_blank" rel="noopener noreferrer" className="text-cyan-400 hover:underline">{r.title}</a>
+                        ) : r.title}
+                      </td>
                       <td className={cellClass}>{r.bid}¢</td>
                       <td className={cellClass}>{r.ask}¢</td>
                       <td className={`${cellClass} text-cyan-400 font-bold`}>{r.spread}¢</td>
