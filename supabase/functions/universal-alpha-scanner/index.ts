@@ -201,23 +201,26 @@ function runRadarModules(
     };
   }
 
-  // MODULE C: 'Narrative Mismatch' — Team >75¢ but star prop <45¢
-  if (isProp && yesPrice < 0.45) {
+  // MODULE C: 'Narrative Mismatch' — Team ≥65¢ but star prop <50¢
+  if (isProp && yesPrice < 0.50) {
     const eventTicker = m.event_ticker || "";
     const teamFavorites = allMarkets.filter((other: any) =>
       other.event_ticker === eventTicker &&
       other.ticker !== m.ticker &&
       !isPlayerProp(other.title || other.subtitle || "") &&
-      ((other.yes_ask || other.last_price || 0) / 100) >= 0.75
+      ((other.yes_ask || other.last_price || 0) / 100) >= 0.65
     );
 
     if (teamFavorites.length > 0) {
       const teamPrice = Math.round(((teamFavorites[0].yes_ask || teamFavorites[0].last_price || 0) / 100) * 100);
+      const severity = teamPrice >= 75 ? "GAME SCRIPT MISMATCH" : "NARRATIVE DIVERGENCE";
       return {
         module: "NARRATIVE_MISMATCH",
-        label: "GAME SCRIPT MISMATCH",
-        action: "High correlation edge. Verify player status.",
-        tooltip: `Team is priced for a blowout (${teamPrice}¢), but player prop is priced like a coin-flip (${priceCents}¢). High correlation edge.`,
+        label: severity,
+        action: severity === "GAME SCRIPT MISMATCH"
+          ? "High correlation edge. Verify player status."
+          : "Moderate mismatch. Cross-reference game script.",
+        tooltip: `Team is priced at ${teamPrice}¢ but player prop is only ${priceCents}¢. ${teamPrice >= 75 ? "High correlation edge — blowout pricing doesn't match prop." : "Notable divergence worth monitoring."}`,
         fair_value: fv,
         spread_cents: spreadCents,
       };
