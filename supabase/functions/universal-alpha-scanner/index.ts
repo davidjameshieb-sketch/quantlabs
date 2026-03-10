@@ -344,19 +344,19 @@ Deno.serve(async (req) => {
 
     console.log(`Whitelisted ${whitelisted.length} markets passing time filter`);
 
-    // ─── TABLE 1: Breaking News (Smoke Alarm) ───────────────────
-    // Trigger: 24h Vol > 300% of OI AND Ask < 50¢
+    // ─── TABLE 1: Breaking News (Momentum vs Reality) ─────────
+    // STRESS TEST: Vol > 100% of OI AND Ask < 50¢
     const table1_raw = whitelisted.filter(m => {
       if (m.yes_ask_cents >= 50) return false;
       if (m.oi <= 0) return false;
       const volRatio = m.vol24h / m.oi;
-      return volRatio > 3.0 && m.vol24h >= 30;
+      return volRatio > 1.0 && m.vol24h >= 10;
     });
 
-    // ─── TABLE 2: Wholesale Spread ──────────────────────────────
-    // Trigger: OI > 2000, 24h Vol < 500, Spread > 6¢
+    // ─── TABLE 2: Wholesale Spread (Liquidity Traps) ────────────
+    // STRESS TEST: OI > 1,000, Vol < 500, Spread > 4¢
     const table2_raw = whitelisted.filter(m => {
-      return m.oi > 2000 && m.vol24h < 500 && m.spread_cents > 6;
+      return m.oi > 1000 && m.vol24h < 500 && m.spread_cents > 4;
     });
 
     // ─── TABLE 3: Narrative Correlation ─────────────────────────
