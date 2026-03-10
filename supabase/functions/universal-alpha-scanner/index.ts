@@ -574,7 +574,7 @@ Deno.serve(async (req) => {
       heatmap: heatmapArr,
       alerts,
       liquidations,
-      markets: filtered.slice(0, 100),
+      markets: filtered.slice(0, 200),
       recovery: recoveryStats,
       stats: {
         totalMarkets: classified.length,
