@@ -153,33 +153,39 @@ function detectEdge(m: any, yesPrice: number, noPrice: number, vol24h: number, o
 
   // ══════════════════════════════════════════════════════════════
   // RULE 0: "PENNY AMAZON" — The Crown Jewel
-  // Cheap (≤10¢) + high-profile event + ANY sign of life = hidden gem
-  // These are the bets that look "impossible" but have real upside
+  // Cheap (≤10¢) + MUST have liquidity or proximity + high-profile = hidden gem
+  // Hard filters: must be ≤7 days out AND have real orderbook activity
   // ══════════════════════════════════════════════════════════════
   if (yesPrice > 0.005 && yesPrice <= 0.10) {
     const roi = Math.round(maxROI * 100);
     const hasLife = oi > 0 || vol24h > 0;
     const hasConviction = oi > 20 || vol24h > 10;
     const hasSmartMoney = oi > 100 && vol24h < 500;
-    const earlyWindow = hoursLeft !== null && hoursLeft >= 6 && hoursLeft <= 168;
+    const within72h = hoursLeft !== null && hoursLeft > 0 && hoursLeft <= 72;
+    const within7d = hoursLeft !== null && hoursLeft > 0 && hoursLeft <= 168;
     const isTarget = isPreMomentumTarget(title);
 
-    // Penny Amazon Score — BASE SCORE just for being cheap (asymmetry IS the edge)
-    let gemScore = 0.15; // every ≤10¢ contract starts with a base score
-    if (yesPrice <= 0.05) gemScore += 0.1; // cheaper = more asymmetric
-    if (yesPrice <= 0.03) gemScore += 0.05; // extreme asymmetry bonus
-    if (isHighProfile) gemScore += 0.2;
-    if (hasSmartMoney) gemScore += 0.2;
-    if (hasConviction) gemScore += 0.1;
-    else if (hasLife) gemScore += 0.05;
-    if (isTarget) gemScore += 0.1;
-    if (earlyWindow) gemScore += 0.1;
-    if (oi > 200) gemScore += 0.05;
-    if (vol24h > 0 && vol24h < 100) gemScore += 0.05;
-    gemScore = Math.min(0.99, gemScore);
+    // HARD GATE: must be within 7 days AND have some sign of life (OI or volume)
+    // OR be a high-profile event within 72h
+    const passesGate = (within7d && hasLife) || (within72h && isHighProfile) || (within72h && isTarget);
 
-    // Show ALL penny contracts — the asymmetry alone is the thesis
-    if (gemScore >= 0.15) {
+    if (passesGate) {
+      // Penny Amazon Score
+      let gemScore = 0.20;
+      if (yesPrice <= 0.05) gemScore += 0.1;
+      if (yesPrice <= 0.03) gemScore += 0.05;
+      if (isHighProfile) gemScore += 0.2;
+      if (hasSmartMoney) gemScore += 0.2;
+      if (hasConviction) gemScore += 0.1;
+      else if (hasLife) gemScore += 0.05;
+      if (isTarget) gemScore += 0.1;
+      if (within72h) gemScore += 0.15; // proximity bonus
+      else if (within7d) gemScore += 0.05;
+      if (oi > 200) gemScore += 0.05;
+      if (vol24h > 0 && vol24h < 100) gemScore += 0.05;
+      gemScore = Math.min(0.99, gemScore);
+
+      if (gemScore >= 0.25) {
       const amazonTag = gemScore >= 0.5 ? "🏆 HIDDEN GEM" : gemScore >= 0.35 ? "💎 PENNY ALPHA" : "🌱 SEEDLING";
 
       // Build a specific investment thesis — WHY this is worth buying
