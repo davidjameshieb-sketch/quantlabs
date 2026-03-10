@@ -346,6 +346,10 @@ Deno.serve(async (req) => {
 
     // Classify and filter SPORTS ONLY
     const sportsMarkets: any[] = [];
+    let debugSamples: string[] = [];
+    let sportDetectedCount = 0;
+    let timeFilteredCount = 0;
+    let skipCount = 0;
 
     for (const m of rawMarkets) {
       const event = eventMap.get(m.event_ticker) || {};
@@ -356,7 +360,12 @@ Deno.serve(async (req) => {
         event.category || ""
       );
 
+      if (debugSamples.length < 10) {
+        debugSamples.push(`ticker=${m.ticker} title="${title.slice(0,60)}" cat="${event.category || 'none'}" detected=${detected ? detected.sport : 'null'}`);
+      }
+
       if (!detected) continue; // NOT a sport — skip entirely
+      sportDetectedCount++;
 
       const yesPrice = (m.yes_ask || m.last_price || 0) / 100;
       const vol24h = m.volume_24h || 0;
