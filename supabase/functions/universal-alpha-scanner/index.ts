@@ -586,11 +586,10 @@ Deno.serve(async (req) => {
     const dailyBudget = body.daily_budget || 25.00;
     const recoveryGoal = body.recovery_goal || 130.00;
 
-    // Paginate through ALL Kalshi events and markets
-    const [events, markets] = await Promise.all([
-      fetchAllEvents(),
-      fetchAllMarkets(),
-    ]);
+    // Fetch events first, then markets (sequential to avoid 429)
+    const events = await fetchAllEvents();
+    await delay(500); // breathing room between endpoints
+    const markets = await fetchAllMarkets();
 
     console.log(`Fetched ${events.length} events, ${markets.length} markets`);
 
