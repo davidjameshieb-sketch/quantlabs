@@ -147,6 +147,21 @@ function detectEdge(m: any, yesPrice: number, noPrice: number, vol24h: number, o
   const priceCents = Math.round(yesPrice * 100);
   const title = (m.title || m.subtitle || "").toLowerCase();
 
+  // ═══ GLOBAL TIME GATE: Skip contracts more than 7 days out ═══
+  // Only Binary Cliff (capital protection) and settled/dead bypass this
+  const MAX_HOURS = 168; // 7 days
+  if (hoursLeft !== null && hoursLeft > MAX_HOURS) {
+    return {
+      type: "TOO_FAR_OUT",
+      signal: "NO_EDGE",
+      score: 0,
+      reasoning: `${Math.round(hoursLeft / 24)}d out — too far. We only surface contracts within 7 days.`,
+      strategy: "SKIP: Wait until this is within 7 days.",
+      tier: null,
+      recovery_tag: null,
+    };
+  }
+
   // Helper: is this a high-profile event where underdogs get mispriced?
   const isHighProfile = HIGH_PROFILE_KEYWORDS.some(k => title.includes(k) || (m.event_title || "").toLowerCase().includes(k));
   const eventTitle = (m.event_title || "").toLowerCase();
