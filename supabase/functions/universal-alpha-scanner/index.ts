@@ -558,12 +558,12 @@ Deno.serve(async (req) => {
       top_signal: d.topSignal,
     })).sort((a, b) => b.avg_alpha - a.avg_alpha);
 
-    // Edge alerts — top opportunities prioritizing pre-momentum
+    // Edge alerts — top velocity opportunities
     const alerts = classified
-      .filter(m => m.alpha_score > 0.05 || m.alpha_type === "GHOST_VOLUME" || m.alpha_type === "BINARY_CLIFF")
+      .filter(m => m.alpha_score > 0.05 || m.alpha_type === "CASH_ARBITRAGE" || m.alpha_type === "LIQUIDITY_TRAP" || m.alpha_type === "BINARY_CLIFF")
       .sort((a, b) => {
-        const aPrio = a.alpha_type === "GHOST_VOLUME" ? 100 : a.alpha_type === "BINARY_CLIFF" ? 90 : a.recovery_tag === "ACCELERATOR" ? 50 : 0;
-        const bPrio = b.alpha_type === "GHOST_VOLUME" ? 100 : b.alpha_type === "BINARY_CLIFF" ? 90 : b.recovery_tag === "ACCELERATOR" ? 50 : 0;
+        const aPrio = a.alpha_type === "CASH_ARBITRAGE" ? 200 : a.alpha_type === "LIQUIDITY_TRAP" ? 150 : a.alpha_type === "BINARY_CLIFF" ? 90 : a.recovery_tag === "ACCELERATOR" ? 50 : 0;
+        const bPrio = b.alpha_type === "CASH_ARBITRAGE" ? 200 : b.alpha_type === "LIQUIDITY_TRAP" ? 150 : b.alpha_type === "BINARY_CLIFF" ? 90 : b.recovery_tag === "ACCELERATOR" ? 50 : 0;
         if (aPrio !== bPrio) return bPrio - aPrio;
         return b.alpha_score - a.alpha_score;
       })
@@ -601,15 +601,16 @@ Deno.serve(async (req) => {
         type: m.alpha_type,
       }));
 
-    // Recovery stats
+    // Recovery stats — velocity mode
     const accelerators = classified.filter(m => m.recovery_tag === "ACCELERATOR");
     const recoveryStats = {
       goal: recoveryGoal,
       accelerator_count: accelerators.length,
       best_roi_pct: accelerators.length > 0 ? Math.max(...accelerators.map(m => m.yes_price > 0 ? (1 / m.yes_price - 1) * 100 : 0)) : 0,
-      ghost_volume_count: classified.filter(m => m.alpha_type === "GHOST_VOLUME" || m.alpha_type === "PRE_MOMENTUM_LOTTO" || m.alpha_type === "PENNY_AMAZON").length,
-      lotto_count: classified.filter(m => m.alpha_type === "ASYMMETRIC_LOTTO" || m.alpha_type === "PRE_MOMENTUM_LOTTO" || m.alpha_type === "LOW_ALPHA_LOTTO" || m.alpha_type === "PENNY_AMAZON").length,
-      penny_amazon_count: classified.filter(m => m.alpha_type === "PENNY_AMAZON").length,
+      cash_arb_count: classified.filter(m => m.alpha_type === "CASH_ARBITRAGE").length,
+      liquidity_trap_count: classified.filter(m => m.alpha_type === "LIQUIDITY_TRAP").length,
+      velocity_penny_count: classified.filter(m => m.alpha_type === "VELOCITY_PENNY").length,
+      spread_arb_count: classified.filter(m => m.alpha_type === "SPREAD_ARB").length,
     };
 
     return new Response(JSON.stringify({
