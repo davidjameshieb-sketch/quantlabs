@@ -306,10 +306,10 @@ async function fetchAllEvents(): Promise<any[]> {
 async function fetchAllMarkets(): Promise<any[]> {
   const all: any[] = [];
   let cursor: string | null = null;
-  const maxCloseTs = Math.floor((Date.now() + 48 * 3600 * 1000) / 1000); // 48h window
+  const maxCloseTs = Math.floor((Date.now() + 72 * 3600 * 1000) / 1000); // 72h window
   for (let page = 0; page < 5; page++) {
     if (page > 0) await delay(350);
-    const params = new URLSearchParams({ limit: "200", max_close_ts: String(maxCloseTs) });
+    const params = new URLSearchParams({ limit: "200", status: "open", max_close_ts: String(maxCloseTs) });
     if (cursor) params.set("cursor", cursor);
     const res = await fetch(`${KALSHI_API}/markets?${params}`, { headers: { Accept: "application/json" } });
     if (res.status === 429) { console.warn(`Markets 429 on page ${page}`); break; }
@@ -320,7 +320,12 @@ async function fetchAllMarkets(): Promise<any[]> {
     cursor = data.cursor || null;
     if (!cursor || markets.length < 200) break;
   }
-  console.log(`Fetched ${all.length} markets within 48h window`);
+  // Log first 3 market tickers for debugging
+  if (all.length > 0) {
+    const samples = all.slice(0, 3).map((m: any) => `${m.ticker}|title=${(m.title||'').slice(0,40)}|cat=${m.category||'none'}`);
+    console.log(`Market samples: ${samples.join(' /// ')}`);
+  }
+  console.log(`Fetched ${all.length} markets within 72h window (maxTs=${maxCloseTs})`);
   return all;
 }
 
