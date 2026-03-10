@@ -104,11 +104,10 @@ Deno.serve(async (req) => {
     const body = await req.json().catch(() => ({}));
     const filterSport = body.sport || null;
 
-    // Fetch real events and markets from Kalshi
-    const [events, markets] = await Promise.all([
-      fetchAllKalshiEvents(),
-      fetchAllKalshiMarkets(),
-    ]);
+    // Fetch events first, then markets with a gap to avoid 429
+    const events = await fetchAllKalshiEvents();
+    await delay(500);
+    const markets = await fetchAllKalshiMarkets();
 
     console.log(`Fetched ${events.length} events, ${markets.length} markets from Kalshi`);
 
