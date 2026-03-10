@@ -522,15 +522,15 @@ Deno.serve(async (req) => {
       filtered = classified.filter(m => m.asset_class === filterClass);
     }
 
-    // Sort: PENNY_AMAZON first, then lotto plays, then ghost volume
+    // Sort: VELOCITY-1st — Cash Arbitrage > Liquidity Trap > Velocity Penny > Spread Arb
     const typePriority = (m: ClassifiedMarket) => {
-      if (m.alpha_type === "PENNY_AMAZON") return 300;
-      if (m.alpha_type === "PRE_MOMENTUM_LOTTO") return 200;
-      if (m.alpha_type === "ASYMMETRIC_LOTTO") return 150;
-      if (m.alpha_type === "GHOST_VOLUME") return 100;
-      if (m.alpha_type === "SPREAD_ARB") return 90;
+      if (m.alpha_type === "CASH_ARBITRAGE") return 400;
+      if (m.alpha_type === "LIQUIDITY_TRAP") return 350;
+      if (m.alpha_type === "SPREAD_ARB") return 300;
+      if (m.alpha_type === "VELOCITY_PENNY") return 250;
+      if (m.alpha_type === "VELOCITY_VALUE") return 100;
+      if (m.alpha_type === "BINARY_CLIFF") return 90;
       if (m.recovery_tag === "ACCELERATOR") return 50;
-      if (m.alpha_type === "MICRO_VALUE") return 40;
       return 0;
     };
     filtered.sort((a, b) => {
