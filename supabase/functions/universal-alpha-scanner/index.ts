@@ -162,17 +162,19 @@ function detectEdge(m: any, yesPrice: number, noPrice: number, vol24h: number, o
     };
   }
 
-  // ═══ GLOBAL LIQUIDITY GATE: Skip contracts with NO orderbook ═══
-  // Must have at least SOME open interest OR recent volume to be actionable
-  const hasBid = yesBid > 0 || noBid > 0;
-  const hasAnyLife = oi > 0 || vol24h > 0 || hasBid;
-  if (!hasAnyLife) {
+  // ═══ GLOBAL LIQUIDITY GATE: Skip contracts without REAL liquidity ═══
+  // A stale bid alone doesn't mean you can trade it. Require actual participation.
+  const hasRealOI = oi >= 5;
+  const hasRealVolume = vol24h >= 5;
+  const hasTwoSidedBook = yesBid > 0 && yesAsk > 0 && (yesAsk - yesBid) < 0.15; // tight spread = real MM
+  const hasRealLiquidity = hasRealOI || hasRealVolume || (hasTwoSidedBook && oi > 0);
+  if (!hasRealLiquidity) {
     return {
       type: "NO_ORDERBOOK",
       signal: "SKIP",
       score: 0,
-      reasoning: `${priceCents}¢ — zero OI, zero volume, no bids. Ghost market with no participants.`,
-      strategy: "SKIP: No orderbook. Cannot trade what doesn't exist.",
+      reasoning: `${priceCents}¢ — OI:${oi}, Vol24h:${vol24h}. Not enough liquidity to enter or exit.`,
+      strategy: "SKIP: No real orderbook. Need OI≥5 or Vol≥5 to be tradeable.",
       tier: null,
       recovery_tag: null,
     };
