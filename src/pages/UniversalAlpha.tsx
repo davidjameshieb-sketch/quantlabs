@@ -37,10 +37,24 @@ interface AnomalyRow {
   spread_cents: number;
 }
 
+interface DebugRow {
+  ticker: string;
+  title: string;
+  league: string;
+  spread: string;
+  bid: string;
+  ask: string;
+  vol24h: number;
+  oi: number;
+  hours: number | null;
+  isProp: boolean;
+}
+
 interface RadarData {
   wholesale_gaps: AnomalyRow[];
   smoke_alarms: AnomalyRow[];
   narrative_mismatches: AnomalyRow[];
+  debug_sample?: DebugRow[];
   stats: {
     totalScanned: number;
     whitelistedCount: number;
