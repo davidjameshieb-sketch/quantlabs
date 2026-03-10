@@ -230,27 +230,26 @@ function detectEdge(m: any, yesPrice: number, noPrice: number, vol24h: number, o
   // ══════════════════════════════════════════════════════════════
   if (spread >= 0.15 && yesBid > 0 && yesAsk > 0 && yesPrice >= 0.05 && yesPrice <= 0.90) {
     const midpoint = (yesBid + yesAsk) / 2;
-    const limitPrice = yesBid + 0.01; // 1¢ above best bid
+    const limitPrice = yesBid + 0.01;
     const limitCents = Math.round(limitPrice * 100);
     const midCents = Math.round(midpoint * 100);
     const spreadCents = Math.round(spread * 100);
     const edgeCents = Math.round((midpoint - limitPrice) * 100);
     const turnoverROI = yesPrice > 0 ? Math.round((1 / limitPrice - 1) * 100) : 0;
 
-    let score = 0.5;
+    let score = 0.4 + velocityBonus;
     if (spread >= 0.25) score += 0.15;
-    if (within6h) score += 0.2;
-    else if (within24h) score += 0.1;
     if (oi > 100) score += 0.1;
-    if (vol24h < 50 && oi > 50) score += 0.1; // liquidity trap bonus
+    if (vol24h < 50 && oi > 50) score += 0.1;
     score = Math.min(0.99, score);
 
+    const cashLabel = within24h ? 'tonight' : within36h ? 'tomorrow' : `${cashHours}h`;
     return {
       type: "CASH_ARBITRAGE",
       signal: "WHOLESALE_SPREAD",
       score: +score.toFixed(3),
-      reasoning: `💰 CASH ARB: ${spreadCents}¢ spread (Bid ${Math.round(yesBid*100)}¢ / Ask ${Math.round(yesAsk*100)}¢). Buy wholesale at ${limitCents}¢ (1¢ above bid). Settles in ${cashHours}h — capital back by ${within24h ? 'tonight' : 'tomorrow'}. ${oi > 100 ? `${oi} OI trapped.` : ''}`,
-      strategy: `LIMIT ORDER: ${limitCents}¢ (wholesale). Mid=${midCents}¢. ${edgeCents}¢ instant edge. ${turnoverROI}% ROI in ${cashHours}h.`,
+      reasoning: `💰 CASH ARB: ${spreadCents}¢ spread (Bid ${Math.round(yesBid*100)}¢ / Ask ${Math.round(yesAsk*100)}¢). Buy wholesale at ${limitCents}¢. Settles in ${cashHours}h — capital back ${cashLabel}. ${oi > 100 ? `${oi} OI trapped.` : ''}`,
+      strategy: `LIMIT ORDER: ${limitCents}¢ (wholesale). Mid=${midCents}¢. ${edgeCents}¢ edge. ${turnoverROI}% ROI in ${cashHours}h.`,
       tier: "ACCELERATOR",
       recovery_tag: "ACCELERATOR",
     };
@@ -258,26 +257,26 @@ function detectEdge(m: any, yesPrice: number, noPrice: number, vol24h: number, o
 
   // ══════════════════════════════════════════════════════════════
   // VELOCITY RULE 2: "LIQUIDITY TRAP" — Ghost Volume Catalyst
-  // OI > 500 but 24h Vol < 50 = money is trapped, name your price
+  // OI > 200 but 24h Vol < 50 = money is trapped, name your price
+  // (Lowered from 500 to 200 to surface more traps)
   // ══════════════════════════════════════════════════════════════
-  if (oi > 500 && vol24h < 50 && yesPrice >= 0.03 && yesPrice <= 0.90) {
+  if (oi > 200 && vol24h < 50 && yesPrice >= 0.03 && yesPrice <= 0.90) {
     const limitPrice = yesBid > 0 ? yesBid + 0.01 : yesPrice;
     const limitCents = Math.round(limitPrice * 100);
     const turnoverROI = Math.round((1 / limitPrice - 1) * 100);
 
-    let score = 0.55;
+    let score = 0.4 + velocityBonus;
     if (oi > 1000) score += 0.15;
-    if (vol24h === 0) score += 0.1; // completely dead volume = max trap
-    if (within6h) score += 0.15;
-    else if (within24h) score += 0.1;
-    if (spread >= 0.10) score += 0.1; // wide spread + trapped = goldmine
+    else if (oi > 500) score += 0.1;
+    if (vol24h === 0) score += 0.1;
+    if (spread >= 0.10) score += 0.1;
     score = Math.min(0.99, score);
 
     return {
       type: "LIQUIDITY_TRAP",
       signal: "GHOST_CATALYST",
       score: +score.toFixed(3),
-      reasoning: `🕳️ LIQUIDITY TRAP: ${oi} OI trapped but only ${vol24h} traded in 24h. Money locked in — nobody trading. YOU name the price with a limit order. Settles in ${cashHours}h.`,
+      reasoning: `🕳️ LIQUIDITY TRAP: ${oi} OI trapped but only ${vol24h} traded in 24h. YOU name the price. Settles in ${cashHours}h. ${within36h ? '⚡ VELOCITY — fast cash turnover.' : ''}`,
       strategy: `LIMIT SNIPE: ${limitCents}¢. ${oi} contracts trapped. ${turnoverROI}% ROI. Cash back in ${cashHours}h.`,
       tier: "ACCELERATOR",
       recovery_tag: "ACCELERATOR",
@@ -285,44 +284,45 @@ function detectEdge(m: any, yesPrice: number, noPrice: number, vol24h: number, o
   }
 
   // ══════════════════════════════════════════════════════════════
-  // VELOCITY RULE 3: Combined — cheap + fast settle = velocity penny
+  // VELOCITY RULE 3: Velocity Penny — cheap + settle within window
   // ══════════════════════════════════════════════════════════════
   if (yesPrice > 0.005 && yesPrice <= 0.15) {
     const roi = Math.round(maxROI * 100);
     const hasSmartMoney = oi > 100 && vol24h < 500;
     const isTarget = isPreMomentumTarget(title);
 
-    let score = 0.25;
+    let score = 0.15 + velocityBonus;
     if (yesPrice <= 0.05) score += 0.15;
     if (yesPrice <= 0.03) score += 0.1;
-    if (within6h) score += 0.2;
-    else if (within24h) score += 0.1;
     if (isHighProfile) score += 0.15;
     if (hasSmartMoney) score += 0.15;
     if (oi > 20) score += 0.05;
     if (isTarget) score += 0.1;
-    if (spread >= 0.10) score += 0.05; // wholesale opportunity
+    if (spread >= 0.10) score += 0.05;
     score = Math.min(0.99, score);
 
-    const tag = score >= 0.6 ? "🏆 HIDDEN GEM" : score >= 0.4 ? "💎 PENNY ALPHA" : "🌱 SEEDLING";
+    if (score >= 0.2) {
+      const tag = score >= 0.6 ? "🏆 HIDDEN GEM" : score >= 0.4 ? "💎 PENNY ALPHA" : "🌱 SEEDLING";
+      const speedLabel = within36h ? "⚡ VELOCITY — " : "";
 
-    return {
-      type: "VELOCITY_PENNY",
-      signal: "FAST_TURNOVER",
-      score: +score.toFixed(3),
-      reasoning: `${tag}: ${priceCents}¢ settling in ${cashHours}h. Risk $1 to make $${(maxROI + 1).toFixed(0)}. ${hasSmartMoney ? `${oi} OI / ${vol24h} vol — ghost volume.` : oi > 0 ? `${oi} OI.` : ''} Cash back ${within24h ? 'TONIGHT' : 'tomorrow'}.`,
-      strategy: `$1-3 LIMIT at ${priceCents}¢. ${roi}% ROI. Capital returns in ${cashHours}h.`,
-      tier: "ACCELERATOR",
-      recovery_tag: "ACCELERATOR",
-    };
+      return {
+        type: "VELOCITY_PENNY",
+        signal: "FAST_TURNOVER",
+        score: +score.toFixed(3),
+        reasoning: `${tag}: ${speedLabel}${priceCents}¢ settling in ${cashHours}h. Risk $1 to make $${(maxROI + 1).toFixed(0)}. ${hasSmartMoney ? `${oi} OI / ${vol24h} vol — ghost volume.` : oi > 0 ? `${oi} OI.` : ''}`,
+        strategy: `$1-3 LIMIT at ${priceCents}¢. ${roi}% ROI. Capital returns in ${cashHours}h.`,
+        tier: "ACCELERATOR",
+        recovery_tag: "ACCELERATOR",
+      };
+    }
   }
 
   // ══════════════════════════════════════════════════════════════
-  // Spread Arb (guaranteed profit — always show if within velocity window)
+  // Spread Arb (guaranteed profit)
   // ══════════════════════════════════════════════════════════════
   if (yesAsk > 0 && noAsk > 0 && (yesAsk + noAsk) < 0.95) {
     const arb = 1 - (yesAsk + noAsk);
-    const score = Math.min(1, arb * 5 + (within24h ? 0.2 : 0));
+    const score = Math.min(1, arb * 5 + velocityBonus);
     return {
       type: "SPREAD_ARB",
       signal: "BUY_BOTH",
@@ -335,15 +335,33 @@ function detectEdge(m: any, yesPrice: number, noPrice: number, vol24h: number, o
   }
 
   // ══════════════════════════════════════════════════════════════
-  // Velocity Value plays (15-85¢ within 36h with liquidity)
+  // Wide spread snipe (8¢+)
+  // ══════════════════════════════════════════════════════════════
+  if (spread >= 0.08 && yesPrice >= 0.05 && yesPrice <= 0.90) {
+    const mid = (yesBid + yesAsk) / 2;
+    const limitCents = Math.round((yesBid + 0.01) * 100);
+    const edgeCents = Math.round(spread * 50);
+    let score = Math.min(0.8, spread * 3 + velocityBonus);
+    return {
+      type: "WIDE_SPREAD",
+      signal: "LIMIT_SNIPE",
+      score: +score.toFixed(3),
+      reasoning: `🎯 Bid ${Math.round(yesBid*100)}¢ / Ask ${Math.round(yesAsk*100)}¢ — ${Math.round(spread*100)}¢ spread. Limit at ${limitCents}¢. ${cashHours}h to settle.`,
+      strategy: `LIMIT at ${limitCents}¢. ${edgeCents}¢ edge vs ask. Cash back in ${cashHours}h.`,
+      tier: maxROI > 5 ? "ACCELERATOR" : null,
+      recovery_tag: maxROI > 5 ? "ACCELERATOR" : null,
+    };
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // Value plays (15-85¢ with liquidity)
   // ══════════════════════════════════════════════════════════════
   if (yesPrice >= 0.15 && yesPrice < 0.85) {
     const roi = Math.round(maxROI * 100);
-    let score = 0.1;
+    let score = 0.1 + velocityBonus;
     if (vol24h > 50) score += 0.1;
     if (oi > 100) score += 0.1;
-    if (within6h) score += 0.15;
-    if (spread >= 0.08) score += 0.1; // wide spread = limit snipe opportunity
+    if (spread >= 0.08) score += 0.1;
     score = Math.min(0.8, score);
 
     const limitEntry = yesBid > 0 ? Math.round((yesBid + 0.01) * 100) : priceCents;
@@ -352,20 +370,20 @@ function detectEdge(m: any, yesPrice: number, noPrice: number, vol24h: number, o
       type: "VELOCITY_VALUE",
       signal: "FAST_VALUE",
       score: +score.toFixed(3),
-      reasoning: `⚡ VELOCITY: ${priceCents}¢, settles in ${cashHours}h. ${roi}% ROI. ${vol24h > 0 ? `${vol24h} vol.` : ''} ${oi > 0 ? `${oi} OI.` : ''} ${spread >= 0.08 ? `${Math.round(spread * 100)}¢ spread — limit snipe.` : ''}`,
+      reasoning: `⚡ ${priceCents}¢, settles in ${cashHours}h. ${roi}% ROI. ${vol24h > 0 ? `${vol24h} vol.` : ''} ${oi > 0 ? `${oi} OI.` : ''} ${within36h ? 'FAST TURNOVER.' : ''}`,
       strategy: `LIMIT at ${limitEntry}¢. ${roi}% return. Cash back in ${cashHours}h.`,
       tier: roi > 200 ? "ACCELERATOR" : "VALUE",
       recovery_tag: roi > 200 ? "ACCELERATOR" : null,
     };
   }
 
-  // Favorites within velocity window
+  // Favorites
   if (yesPrice >= 0.85 && yesPrice <= 0.95) {
     const roi = Math.round(maxROI * 100);
     return {
       type: "VELOCITY_SAFE",
       signal: "SAFE_TURNOVER",
-      score: 0.05,
+      score: +(0.05 + velocityBonus * 0.5).toFixed(3),
       reasoning: `${priceCents}¢ — near certain. ${roi}% in ${cashHours}h.`,
       strategy: `Safe ${roi}% return. Cash back in ${cashHours}h.`,
       tier: "FLOOR_DEFENSE",
