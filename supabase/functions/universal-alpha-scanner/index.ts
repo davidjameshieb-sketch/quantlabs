@@ -464,6 +464,9 @@ Deno.serve(async (req) => {
       .filter(m => m.catalyst_type === "BINARY_CLIFF")
       .map(m => ({ ticker: m.ticker, title: m.title, price: m.yes_price, hours: m.time_to_event_hours }));
 
+    console.log(`DEBUG: sportDetected=${sportDetectedCount}, timeFiltered=${timeFilteredCount}, skipCount=${skipCount}, final=${sportsMarkets.length}`);
+    console.log(`DEBUG samples: ${debugSamples.join(' | ')}`);
+
     return new Response(JSON.stringify({
       markets: filtered.slice(0, 150),
       sport_summary: sportSummary,
