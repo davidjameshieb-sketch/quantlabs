@@ -241,7 +241,7 @@ function detectEdge(m: any, yesPrice: number, noPrice: number, vol24h: number, o
   // ══════════════════════════════════════════════════════════════
   // TIER 3: WHOLESALE SPREAD — Wide bid/ask = buy at wholesale
   // ══════════════════════════════════════════════════════════════
-  if (spread >= 0.12 && yesBid > 0 && yesAsk > 0 && yesPrice >= 0.05 && yesPrice <= 0.90) {
+  if (spread >= 0.04 && yesBid > 0 && yesAsk > 0 && yesPrice >= 0.03 && yesPrice <= 0.95) {
     const limitPrice = yesBid + 0.01;
     const limitCents = Math.round(limitPrice * 100);
     const spreadCents = Math.round(spread * 100);
