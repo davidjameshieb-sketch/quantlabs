@@ -528,6 +528,44 @@ function extractSeriesTicker(eventTicker: string): string {
   return parts[0] || eventTicker;
 }
 
+// ─── Paginated Fetchers ─────────────────────────────────────────
+
+async function fetchAllEvents(): Promise<any[]> {
+  const all: any[] = [];
+  let cursor: string | null = null;
+  const maxPages = 10; // safety cap
+  for (let page = 0; page < maxPages; page++) {
+    const params = new URLSearchParams({ limit: "200", status: "open" });
+    if (cursor) params.set("cursor", cursor);
+    const res = await fetch(`${KALSHI_API}/events?${params}`, { headers: { Accept: "application/json" } });
+    if (!res.ok) throw new Error(`Kalshi events: ${res.status}`);
+    const data = await res.json();
+    const events = data.events || [];
+    all.push(...events);
+    cursor = data.cursor || null;
+    if (!cursor || events.length < 200) break;
+  }
+  return all;
+}
+
+async function fetchAllMarkets(): Promise<any[]> {
+  const all: any[] = [];
+  let cursor: string | null = null;
+  const maxPages = 15; // more pages for markets (thousands exist)
+  for (let page = 0; page < maxPages; page++) {
+    const params = new URLSearchParams({ limit: "200", status: "open" });
+    if (cursor) params.set("cursor", cursor);
+    const res = await fetch(`${KALSHI_API}/markets?${params}`, { headers: { Accept: "application/json" } });
+    if (!res.ok) throw new Error(`Kalshi markets: ${res.status}`);
+    const data = await res.json();
+    const markets = data.markets || [];
+    all.push(...markets);
+    cursor = data.cursor || null;
+    if (!cursor || markets.length < 200) break;
+  }
+  return all;
+}
+
 // ─── Main ───────────────────────────────────────────────────────
 
 Deno.serve(async (req) => {
@@ -542,17 +580,11 @@ Deno.serve(async (req) => {
     const dailyBudget = body.daily_budget || 25.00;
     const recoveryGoal = body.recovery_goal || 130.00;
 
-    const [eventsRes, marketsRes] = await Promise.all([
-      fetch(`${KALSHI_API}/events?limit=200&status=open`, { headers: { Accept: "application/json" } }),
-      fetch(`${KALSHI_API}/markets?limit=200&status=open&mve_filter=exclude`, { headers: { Accept: "application/json" } }),
+    // Paginate through ALL Kalshi events and markets
+    const [events, markets] = await Promise.all([
+      fetchAllEvents(),
+      fetchAllMarkets(),
     ]);
-
-    if (!eventsRes.ok) throw new Error(`Kalshi events: ${eventsRes.status}`);
-    if (!marketsRes.ok) throw new Error(`Kalshi markets: ${marketsRes.status}`);
-
-    const [eventsData, marketsData] = await Promise.all([eventsRes.json(), marketsRes.json()]);
-    const events = eventsData.events || [];
-    const markets = marketsData.markets || [];
 
     console.log(`Fetched ${events.length} events, ${markets.length} markets`);
 
