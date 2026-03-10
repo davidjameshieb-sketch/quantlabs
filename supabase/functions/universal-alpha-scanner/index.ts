@@ -488,9 +488,12 @@ Deno.serve(async (req) => {
       };
     });
 
-    let filtered = classified;
+    // Hard cap: only markets settling within 72 hours (3 days)
+    let filtered = classified.filter(m =>
+      m.time_to_event_hours !== null && m.time_to_event_hours <= 72
+    );
     if (filterClass && filterClass !== "All") {
-      filtered = classified.filter(m => m.asset_class === filterClass);
+      filtered = filtered.filter(m => m.asset_class === filterClass);
     }
 
     // Sort: Arb edge first, then score, then velocity
