@@ -364,8 +364,8 @@ Deno.serve(async (req) => {
       const closeTime = m.close_time || m.expiration_time || null;
       const hoursLeft = hoursUntilClose(closeTime);
 
-      // Hard 48h filter
-      if (hoursLeft === null || hoursLeft > 48 || hoursLeft <= 0) continue;
+      // 72h velocity window — covers today + tomorrow + day-after buffer
+      if (hoursLeft === null || hoursLeft > 72 || hoursLeft <= 0) continue;
 
       const catalyst = detectCatalyst(m, yesPrice, vol24h, oi, hoursLeft, detected.sport, title, rawMarkets);
 
