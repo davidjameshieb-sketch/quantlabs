@@ -53,50 +53,42 @@ function categorizeEvent(event: any): string {
   return category || "Other";
 }
 
-async function fetchKalshiEvents(sport?: string) {
-  // Fetch events - sports category
-  const params = new URLSearchParams({
-    limit: "200",
-    status: "open",
-  });
-
-  const eventsUrl = `${KALSHI_API}/events?${params}`;
-  console.log("Fetching Kalshi events:", eventsUrl);
-
-  const response = await fetch(eventsUrl, {
-    headers: { "Accept": "application/json" },
-  });
-
-  if (!response.ok) {
-    const errText = await response.text();
-    console.error("Kalshi API error:", response.status, errText);
-    throw new Error(`Kalshi API returned ${response.status}`);
+async function fetchAllKalshiEvents() {
+  const all: any[] = [];
+  let cursor: string | null = null;
+  for (let page = 0; page < 10; page++) {
+    const params = new URLSearchParams({ limit: "200", status: "open" });
+    if (cursor) params.set("cursor", cursor);
+    const res = await fetch(`${KALSHI_API}/events?${params}`, {
+      headers: { "Accept": "application/json" },
+    });
+    if (!res.ok) throw new Error(`Kalshi API returned ${res.status}`);
+    const data = await res.json();
+    const events = data.events || [];
+    all.push(...events);
+    cursor = data.cursor || null;
+    if (!cursor || events.length < 200) break;
   }
-
-  const data = await response.json();
-  return data.events || [];
+  return all;
 }
 
-async function fetchKalshiMarkets(eventTicker?: string) {
-  const params = new URLSearchParams({
-    limit: "200",
-    status: "open",
-  });
-  if (eventTicker) params.set("event_ticker", eventTicker);
-
-  const url = `${KALSHI_API}/markets?${params}`;
-  const response = await fetch(url, {
-    headers: { "Accept": "application/json" },
-  });
-
-  if (!response.ok) {
-    const errText = await response.text();
-    console.error("Kalshi markets error:", response.status, errText);
-    throw new Error(`Kalshi markets API returned ${response.status}`);
+async function fetchAllKalshiMarkets() {
+  const all: any[] = [];
+  let cursor: string | null = null;
+  for (let page = 0; page < 15; page++) {
+    const params = new URLSearchParams({ limit: "200", status: "open" });
+    if (cursor) params.set("cursor", cursor);
+    const res = await fetch(`${KALSHI_API}/markets?${params}`, {
+      headers: { "Accept": "application/json" },
+    });
+    if (!res.ok) throw new Error(`Kalshi markets API returned ${res.status}`);
+    const data = await res.json();
+    const markets = data.markets || [];
+    all.push(...markets);
+    cursor = data.cursor || null;
+    if (!cursor || markets.length < 200) break;
   }
-
-  const data = await response.json();
-  return data.markets || [];
+  return all;
 }
 
 Deno.serve(async (req) => {
