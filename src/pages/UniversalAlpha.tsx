@@ -347,9 +347,10 @@ export default function UniversalAlpha() {
   const [lastRefresh, setLastRefresh] = useState("");
   const [activeCategory, setActiveCategory] = useState("All");
   const [activeTab, setActiveTab] = useState<TabKey>("hot");
-  const [sortBy, setSortBy] = useState<SortKey>("volume");
+  const [sortBy, setSortBy] = useState<SortKey>("oi");
   const [pollCount, setPollCount] = useState(0);
-  const [expandedTicker, setExpandedTicker] = useState<string | null>(null);
+  const [allExpanded, setAllExpanded] = useState(true);
+  const [collapsedTickers, setCollapsedTickers] = useState<Set<string>>(new Set());
 
   const tapeRef = useRef<Map<string, TapeSnapshot[]>>(new Map());
   const [tapeMetrics, setTapeMetrics] = useState<Map<string, TapeMetrics>>(new Map());

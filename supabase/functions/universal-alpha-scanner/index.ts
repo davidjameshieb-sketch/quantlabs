@@ -251,7 +251,7 @@ Deno.serve(async (req) => {
     // ─── Hot Markets: volume > 0, sorted by 24h volume ────────────
     const hotMarkets = filtered
       .filter(m => m.vol24h > 0 && m.has_orderbook)
-      .slice(0, 100);
+      .slice(0, 200);
 
     // ─── Wide Spreads: spread >= 4, has OI ────────────────────────
     const wideSpreads = filtered

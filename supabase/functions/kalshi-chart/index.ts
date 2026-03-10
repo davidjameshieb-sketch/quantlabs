@@ -22,14 +22,21 @@ Deno.serve(async (req) => {
       });
     }
 
-    // Derive series ticker if not provided
     const seriesTicker = series_ticker || extractSeries(ticker);
     // period_interval: 1 (1min), 60 (1hr), 1440 (1day)
     const periodInterval = period || 60;
 
-    // Fetch candlesticks
+    // Kalshi requires start_ts — go back based on period
+    const lookbackMs = periodInterval === 1 ? 6 * 3600 * 1000       // 6h for 1min candles
+      : periodInterval === 60 ? 14 * 24 * 3600 * 1000               // 14d for 1hr candles
+      : 90 * 24 * 3600 * 1000;                                       // 90d for daily candles
+    const startTs = Math.floor((Date.now() - lookbackMs) / 1000);
+    const endTs = Math.floor(Date.now() / 1000);
+
     const params = new URLSearchParams({
       period_interval: String(periodInterval),
+      start_ts: String(startTs),
+      end_ts: String(endTs),
     });
 
     const url = `${KALSHI_API}/series/${seriesTicker}/markets/${ticker}/candlesticks?${params}`;
@@ -43,9 +50,7 @@ Deno.serve(async (req) => {
       const errText = await res.text();
       console.error(`Kalshi candlestick error ${res.status}: ${errText}`);
 
-      // Fallback: try without series ticker using the market ticker directly
-      // Some endpoints accept just the ticker
-      if (res.status === 404) {
+      if (res.status === 404 || res.status === 400) {
         return new Response(JSON.stringify({
           candles: [],
           ticker,
@@ -71,7 +76,6 @@ Deno.serve(async (req) => {
       oi: c.open_interest || 0,
     }));
 
-    // Sort by time ascending
     candles.sort((a: any, b: any) => new Date(a.time).getTime() - new Date(b.time).getTime());
 
     return new Response(JSON.stringify({
@@ -93,8 +97,6 @@ Deno.serve(async (req) => {
 });
 
 function extractSeries(ticker: string): string {
-  // Event tickers look like "KXMHPFL-25MAR12-B3" or "NBA-BLAHBLAH"
-  // Series ticker is the prefix before the first dash usually
   const match = ticker.match(/^([A-Z0-9]+)-/);
   return match ? match[1] : ticker;
 }
