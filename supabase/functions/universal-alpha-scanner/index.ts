@@ -374,11 +374,11 @@ Deno.serve(async (req) => {
       const hoursLeft = hoursUntilClose(closeTime);
 
       // 72h velocity window — covers today + tomorrow + day-after buffer
-      if (hoursLeft === null || hoursLeft > 72 || hoursLeft <= 0) continue;
+      if (hoursLeft === null || hoursLeft > 72 || hoursLeft <= 0) { timeFilteredCount++; continue; }
 
       const catalyst = detectCatalyst(m, yesPrice, vol24h, oi, hoursLeft, detected.sport, title, rawMarkets);
 
-      if (catalyst.type === "SKIP") continue;
+      if (catalyst.type === "SKIP") { skipCount++; continue; }
 
       sportsMarkets.push({
         ticker: m.ticker,
