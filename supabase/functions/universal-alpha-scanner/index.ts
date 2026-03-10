@@ -147,12 +147,13 @@ function detectEdge(m: any, yesPrice: number, noPrice: number, vol24h: number, o
   const priceCents = Math.round(yesPrice * 100);
   const title = (m.title || m.subtitle || "").toLowerCase();
 
-  // ═══ VELOCITY-1st: GLOBAL 36-HOUR GATE ═══
-  // Only same-day / next-day cash turnover. Everything else demoted to zero.
-  const VELOCITY_MAX_HOURS = 36;
-  const within36h = hoursLeft !== null && hoursLeft > 0 && hoursLeft <= VELOCITY_MAX_HOURS;
-  const within24h = hoursLeft !== null && hoursLeft > 0 && hoursLeft <= 24;
+  // ═══ VELOCITY-1st: Time tiers — fastest settle = highest priority ═══
+  const MAX_HOURS = 168; // 7 day outer limit
   const within6h = hoursLeft !== null && hoursLeft > 0 && hoursLeft <= 6;
+  const within24h = hoursLeft !== null && hoursLeft > 0 && hoursLeft <= 24;
+  const within36h = hoursLeft !== null && hoursLeft > 0 && hoursLeft <= 36;
+  const within72h = hoursLeft !== null && hoursLeft > 0 && hoursLeft <= 72;
+  const within7d = hoursLeft !== null && hoursLeft > 0 && hoursLeft <= MAX_HOURS;
 
   // Binary Cliff still applies regardless of time gate (capital protection)
   if (yesPrice >= 0.85 && hoursLeft !== null && hoursLeft <= 4) {
@@ -187,18 +188,21 @@ function detectEdge(m: any, yesPrice: number, noPrice: number, vol24h: number, o
     };
   }
 
-  // ═══ VELOCITY GATE: Demote anything > 36 hours ═══
-  if (!within36h) {
+  // ═══ TIME GATE: 7 days max, but velocity bonus for < 36h ═══
+  if (hoursLeft !== null && hoursLeft > MAX_HOURS) {
     return {
       type: "TOO_FAR_OUT",
       signal: "NO_EDGE",
       score: 0,
-      reasoning: `${hoursLeft !== null ? Math.round(hoursLeft) + 'h' : '?'} out — outside 36h velocity window. We only trade same-day cash turnover.`,
-      strategy: "SKIP: Wait until < 36h for velocity plays.",
+      reasoning: `${Math.round(hoursLeft / 24)}d out — outside 7d window.`,
+      strategy: "SKIP: Wait until closer.",
       tier: null,
       recovery_tag: null,
     };
   }
+
+  // Velocity bonus multiplier: closer = better cash turnover
+  const velocityBonus = within6h ? 0.25 : within24h ? 0.2 : within36h ? 0.15 : within72h ? 0.05 : 0;
 
   // ═══ LIQUIDITY GATE ═══
   const hasRealOI = oi >= 5;
