@@ -126,12 +126,12 @@ function kalshiUrl(eventTicker: string, seriesTicker: string): string {
 
 function passesTimeFilter(hoursLeft: number | null, oi: number): { pass: boolean; flag?: string } {
   if (hoursLeft === null || hoursLeft <= 0) return { pass: false };
+  if (hoursLeft > MAX_HOURS_FETCH) return { pass: false }; // hard cap at 7 days
   if (hoursLeft <= MAX_HOURS_DEFAULT) return { pass: true };
-  // Smart Money Exception: OI > 5000 AND > 4 days away
-  if (oi >= SMART_MONEY_MIN_OI && hoursLeft >= SMART_MONEY_MIN_DAYS * 24) {
-    return { pass: true, flag: "Early Accumulation" };
-  }
-  return { pass: false };
+  // Beyond 48h: always allow for board visibility, flag as Early Accumulation
+  // Smart Money (OI > 5000) gets special flag
+  const flag = oi >= SMART_MONEY_MIN_OI ? "Early Accumulation (Smart Money)" : "Early Accumulation";
+  return { pass: true, flag };
 }
 
 // ─── Web Scraping (Firecrawl) ───────────────────────────────────
