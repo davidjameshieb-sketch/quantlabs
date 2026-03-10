@@ -175,27 +175,32 @@ function runRadarModules(
 
   const isProp = isPlayerProp(title);
 
-  // MODULE A: 'The Wholesale Gap' — Spread > 12¢ on NBA/NRL
-  if ((league === "NBA" || league === "NRL") && yesBid > 0 && yesAsk > 0 && spreadCents > 12) {
+  // MODULE A: 'The Wholesale Gap' — Spread ≥ 6¢ (any whitelisted league)
+  if (yesBid > 0 && yesAsk > 0 && spreadCents >= 6) {
     const midCents = Math.round(midpoint * 100);
+    const tier = spreadCents >= 12 ? "WIDE" : "MODERATE";
     return {
       module: "WHOLESALE_GAP",
-      label: "WHOLESALE GAP",
+      label: tier === "WIDE" ? "WHOLESALE GAP" : "SPREAD OPPORTUNITY",
       action: `Place Limit Order at Midpoint (${midCents}¢)`,
-      tooltip: `Bid/Ask spread is ${spreadCents}¢ wide. Market maker gap detected. Place a limit order at the ${midCents}¢ midpoint to get filled at wholesale.`,
+      tooltip: `Bid/Ask spread is ${spreadCents}¢ wide (${tier}). Place a limit order at the ${midCents}¢ midpoint to get filled at wholesale.`,
       fair_value: fv,
       spread_cents: spreadCents,
     };
   }
 
-  // MODULE B: 'The Smoke Alarm' — Volume spike on cheap NBA prop
-  if (league === "NBA" && isProp && yesPrice < 0.40 && oi > 0 && vol24h > oi * 3 && vol24h >= 30) {
-    const volRatio = Math.round((vol24h / Math.max(oi, 1)) * 100);
+  // MODULE B: 'The Smoke Alarm' — Volume spike on cheap prop (any league)
+  const volRatioThreshold = oi > 0 ? vol24h / oi : 0;
+  if (isProp && yesPrice < 0.50 && oi > 0 && volRatioThreshold > 1.5 && vol24h >= 10) {
+    const volRatio = Math.round(volRatioThreshold * 100);
+    const tier = volRatioThreshold >= 3 ? "BREAKING NEWS PROXY" : "VOLUME SURGE";
     return {
       module: "SMOKE_ALARM",
-      label: "BREAKING NEWS PROXY",
-      action: "Check NBA injury reports immediately before buying.",
-      tooltip: `Massive volume spike detected on cheap contract. ${vol24h} contracts traded vs ${oi} OI (${volRatio}% velocity). Check NBA injury reports immediately before buying.`,
+      label: tier,
+      action: tier === "BREAKING NEWS PROXY"
+        ? "Check injury reports immediately before buying."
+        : "Unusual volume detected. Verify news catalysts.",
+      tooltip: `${vol24h} contracts traded vs ${oi} OI (${volRatio}% velocity). ${tier === "BREAKING NEWS PROXY" ? "Massive spike — check injury reports." : "Above-average flow on cheap contract."}`,
       fair_value: fv,
       spread_cents: spreadCents,
     };
