@@ -440,7 +440,10 @@ export default function UniversalAlpha() {
             </p>
           </div>
           <div className="flex items-center gap-2">
-            <span className="text-[9px] text-[hsl(var(--nexus-text-muted))]">Click any row for chart</span>
+            <Button size="sm" onClick={() => { setAllExpanded(p => !p); setCollapsedTickers(new Set()); }}
+              className="border-[hsl(var(--nexus-border))] text-[hsl(var(--nexus-text-muted))] font-mono h-7 text-[10px]" variant="outline">
+              {allExpanded ? "Collapse All" : "Expand All"}
+            </Button>
             <Button size="sm" onClick={fetchData} disabled={loading}
               className="bg-emerald-600 hover:bg-emerald-700 text-white font-mono h-7 text-[10px]">
               {loading ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
