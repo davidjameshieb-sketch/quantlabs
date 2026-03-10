@@ -7,57 +7,107 @@ const corsHeaders = {
 const KALSHI_API = "https://api.elections.kalshi.com/trade-api/v2";
 
 // ═══════════════════════════════════════════════════════════════
-// RESTRICTED ACCESS PROTOCOL — WHITELIST ONLY
-// NBA, PGA, NRL. Everything else is HARD-BLOCKED.
+// RESTRICTED ACCESS PROTOCOL — NBA · PGA · NRL ONLY
+// 7-day tracking window. Keyword-based classification.
 // ═══════════════════════════════════════════════════════════════
 
-const WHITELISTED_LEAGUES: Record<string, { league: string; icon: string }> = {
-  NBA: { league: "NBA", icon: "🏀" },
-  WNBA: { league: "NBA", icon: "🏀" },
-  CBB: { league: "NBA", icon: "🏀" },
-  PGA: { league: "PGA", icon: "⛳" },
-  GOLF: { league: "PGA", icon: "⛳" },
-  LPGA: { league: "PGA", icon: "⛳" },
-  MASTERS: { league: "PGA", icon: "⛳" },
-  NRL: { league: "NRL", icon: "🏉" },
-  RUGBY: { league: "NRL", icon: "🏉" },
-  AFL: { league: "NRL", icon: "🏉" },
-};
+const MAX_HOURS = 168; // 7 days
 
-// Non-sport noise to reject before league detection
+// ─── Keyword Dictionary ─────────────────────────────────────────
+// Kalshi uses opaque tickers (e.g. KXMVECROSSCATEGORY). We detect
+// league membership via title/subtitle keywords instead.
+
+const NBA_TEAMS = [
+  "lakers", "celtics", "knicks", "nets", "warriors", "clippers",
+  "bulls", "heat", "bucks", "76ers", "sixers", "suns", "mavericks",
+  "mavs", "nuggets", "timberwolves", "wolves", "grizzlies", "pelicans",
+  "cavaliers", "cavs", "thunder", "rockets", "pacers", "hawks",
+  "raptors", "kings", "magic", "spurs", "trail blazers", "blazers",
+  "pistons", "hornets", "wizards", "jazz",
+];
+
+const NBA_KEYWORDS = [
+  "nba", "basketball", "points", "rebounds", "assists", "three-pointers",
+  "3-pointers", "steals", "blocks", "double-double", "triple-double",
+  "free throws", "turnovers",
+  // Star players
+  "lebron", "jokic", "brunson", "tatum", "luka", "doncic", "curry",
+  "durant", "giannis", "antetokounmpo", "embiid", "morant", "edwards",
+  "mitchell", "booker", "sga", "gilgeous", "haliburton", "fox",
+  "lillard", "wembanyama", "cade cunningham", "trae young", "oubre",
+  "sarr", "jaylen brown", "mccollum", "okongwu", "jaylen wells",
+  "davion mitchell",
+];
+
+const PGA_KEYWORDS = [
+  "pga", "golf", "lpga", "masters", "round 1 leader", "round 2 leader",
+  "round 3 leader", "round 4 leader", "cut line", "tee time",
+  "the players", "us open golf", "british open", "the open",
+  "ryder cup", "tour championship", "fedex", "birdies", "bogeys",
+  "under par", "over par", "hole-in-one",
+  // Star players
+  "scheffler", "bhatia", "berger", "rahm", "mcilroy", "rory",
+  "koepka", "spieth", "thomas", "morikawa", "hovland", "cantlay",
+  "clark", "fleetwood", "schauffele", "woodland", "finau", "homa",
+  "aberg", "kim", "matsuyama",
+];
+
+const NRL_KEYWORDS = [
+  "nrl", "rugby league", "rugby", "afl",
+  "try scorer", "first try", "anytime try", "last try",
+  "total tries", "to win nrl",
+  // NRL Teams
+  "broncos", "bulldogs", "cowboys", "dolphins nrl", "dragons",
+  "eels", "knights", "panthers", "rabbitohs", "raiders",
+  "roosters", "sea eagles", "sharks", "storm", "titans",
+  "warriors nrl", "wests tigers",
+];
+
+// Hard-block keywords — if ANY of these appear, skip the market
 const NON_SPORT_KEYWORDS = [
-  "temperature", "weather", "climate", "nasdaq", "s&p", "bitcoin", "ethereum",
-  "crypto", "treasury", "cpi", "gdp", "inflation", "jobless", "unemployment",
-  "fed ", "fomc", "president", "congress", "senate", "governor", "election",
-  "spotify", "oscar", "emmy", "grammy", "survivor", "bachelor", "reality",
-  "stock", "index", "bond", "yield", "rate ", "tariff", "trade war",
-  "baseball", "mlb", "world baseball", "soccer", "premier league", "mls",
-  "tennis", "atp", "wta", "nfl", "football", "nhl", "hockey", "nascar",
-  "f1", "formula", "cricket", "ipl", "fifa", "ucl", "epl",
+  "temperature", "weather", "climate", "nasdaq", "s&p", "bitcoin",
+  "ethereum", "crypto", "treasury", "cpi", "gdp", "inflation",
+  "jobless", "unemployment", "fed ", "fomc", "president", "congress",
+  "senate", "governor", "election", "spotify", "oscar", "emmy",
+  "grammy", "survivor", "bachelor", "reality", "stock", "index",
+  "bond", "yield", "rate ", "tariff", "trade war",
+  // Blocked sports
+  "baseball", "mlb", "world baseball", "soccer", "premier league",
+  "mls", "tennis", "atp", "wta", "nfl", "american football",
+  "nhl", "hockey", "nascar", "f1", "formula", "cricket", "ipl",
+  "fifa", "ucl", "epl", "serie a", "la liga", "bundesliga",
+  "ligue 1", "brasileirao", "argentine",
 ];
 
 function detectLeague(ticker: string, title: string, category: string): { league: string; icon: string } | null {
-  const combined = `${ticker} ${title} ${category}`.toUpperCase();
-  const titleLower = title.toLowerCase();
+  const titleLower = (title || "").toLowerCase();
+  const tickerLower = (ticker || "").toLowerCase();
+  const combined = `${tickerLower} ${titleLower} ${(category || "").toLowerCase()}`;
 
-  // Reject non-sport / blocked-sport markets
+  // Step 1: Hard-block non-sport / blocked-sport markets
   for (const kw of NON_SPORT_KEYWORDS) {
-    if (titleLower.includes(kw)) return null;
+    if (combined.includes(kw)) return null;
   }
 
-  // Only match whitelisted leagues
-  for (const [key, val] of Object.entries(WHITELISTED_LEAGUES)) {
-    if (key.length <= 3) {
-      if (ticker.toUpperCase().includes(key) || title.toUpperCase().includes(key + " ") || title.toUpperCase().includes(key + "-")) return val;
-    } else {
-      if (combined.includes(key)) return val;
-    }
+  // Step 2: Keyword dictionary match (title + ticker)
+  for (const kw of NBA_KEYWORDS) {
+    if (combined.includes(kw)) return { league: "NBA", icon: "🏀" };
+  }
+  for (const team of NBA_TEAMS) {
+    if (combined.includes(team)) return { league: "NBA", icon: "🏀" };
+  }
+  for (const kw of PGA_KEYWORDS) {
+    if (combined.includes(kw)) return { league: "PGA", icon: "⛳" };
+  }
+  for (const kw of NRL_KEYWORDS) {
+    if (combined.includes(kw)) return { league: "NRL", icon: "🏉" };
   }
 
-  // Fuzzy title match — whitelist only
-  if (titleLower.includes("basketball") || titleLower.includes(" nba ")) return { league: "NBA", icon: "🏀" };
-  if (titleLower.includes("rugby") || titleLower.includes(" nrl ")) return { league: "NRL", icon: "🏉" };
-  if (titleLower.includes("golf") || titleLower.includes(" pga ") || titleLower.includes("masters")) return { league: "PGA", icon: "⛳" };
+  // Step 3: Check category field as fallback
+  const catLower = (category || "").toLowerCase();
+  if (catLower === "basketball") return { league: "NBA", icon: "🏀" };
+  if (catLower === "golf") return { league: "PGA", icon: "⛳" };
+  if (catLower === "rugby" || catLower === "rugby league") return { league: "NRL", icon: "🏉" };
 
   return null; // HARD-BLOCKED
 }
@@ -81,7 +131,8 @@ function isPlayerProp(title: string): boolean {
     "points", "rebounds", "assists", "touchdowns", "yards", "tries",
     "try scorer", "goals", "aces", "birdies", "bogeys", "leader",
     "top ", "over ", "under ", "30+", "20+", "25+", "40+", "50+",
-    "most", "first", "last", "anytime", "mvp",
+    "most", "first", "last", "anytime", "mvp", "three-pointers",
+    "3-pointers", "steals", "blocks", "double-double",
   ];
   const lower = title.toLowerCase();
   return propKeywords.some(k => lower.includes(k));
@@ -118,15 +169,13 @@ function runRadarModules(
   const priceCents = Math.round(yesPrice * 100);
 
   // HARD GATES
-  if (hoursLeft > 48 || hoursLeft <= 0) return null; // 48h max
-  if (priceCents <= 2) return null; // Lotto ban: hide 1¢ and 2¢
-  if (yesPrice > 0.95 || yesPrice <= 0) return null; // dead contracts
+  if (hoursLeft > MAX_HOURS || hoursLeft <= 0) return null;
+  if (priceCents <= 2) return null; // Lotto ban
+  if (yesPrice > 0.95 || yesPrice <= 0) return null;
 
   const isProp = isPlayerProp(title);
 
-  // ══════════════════════════════════════════════════════════════
   // MODULE A: 'The Wholesale Gap' — Spread > 12¢ on NBA/NRL
-  // ══════════════════════════════════════════════════════════════
   if ((league === "NBA" || league === "NRL") && yesBid > 0 && yesAsk > 0 && spreadCents > 12) {
     const midCents = Math.round(midpoint * 100);
     return {
@@ -139,10 +188,7 @@ function runRadarModules(
     };
   }
 
-  // ══════════════════════════════════════════════════════════════
   // MODULE B: 'The Smoke Alarm' — Volume spike on cheap NBA prop
-  // Vol24h > OI * 3 (300%), prop < 40¢, NBA only
-  // ══════════════════════════════════════════════════════════════
   if (league === "NBA" && isProp && yesPrice < 0.40 && oi > 0 && vol24h > oi * 3 && vol24h >= 30) {
     const volRatio = Math.round((vol24h / Math.max(oi, 1)) * 100);
     return {
@@ -155,9 +201,7 @@ function runRadarModules(
     };
   }
 
-  // ══════════════════════════════════════════════════════════════
   // MODULE C: 'Narrative Mismatch' — Team >75¢ but star prop <45¢
-  // ══════════════════════════════════════════════════════════════
   if (isProp && yesPrice < 0.45) {
     const eventTicker = m.event_ticker || "";
     const teamFavorites = allMarkets.filter((other: any) =>
@@ -180,7 +224,7 @@ function runRadarModules(
     }
   }
 
-  return null; // No anomaly detected
+  return null;
 }
 
 // ─── Paginated Fetchers ─────────────────────────────────────────
@@ -209,7 +253,7 @@ async function fetchAllEvents(): Promise<any[]> {
 async function fetchAllMarkets(): Promise<any[]> {
   const all: any[] = [];
   let cursor: string | null = null;
-  const maxCloseTs = Math.floor((Date.now() + 48 * 3600 * 1000) / 1000); // 48h strict
+  const maxCloseTs = Math.floor((Date.now() + MAX_HOURS * 3600 * 1000) / 1000); // 7-day window
   for (let page = 0; page < 5; page++) {
     if (page > 0) await delay(350);
     const params = new URLSearchParams({ limit: "200", status: "open", max_close_ts: String(maxCloseTs) });
@@ -223,7 +267,7 @@ async function fetchAllMarkets(): Promise<any[]> {
     cursor = data.cursor || null;
     if (!cursor || markets.length < 200) break;
   }
-  console.log(`Fetched ${all.length} markets within 48h window`);
+  console.log(`Fetched ${all.length} markets within 7-day window`);
   return all;
 }
 
@@ -247,25 +291,37 @@ Deno.serve(async (req) => {
     const eventMap = new Map<string, any>();
     for (const e of events) eventMap.set(e.event_ticker, e);
 
-    // Buckets for the 3 modules
     const wholesaleGaps: any[] = [];
     const smokeAlarms: any[] = [];
     const narrativeMismatches: any[] = [];
+
+    // Track all whitelisted markets for the "next catalyst" countdown
+    let nearestCloseTime: string | null = null;
+    let nearestLeague: string | null = null;
+    let whitelistedCount = 0;
 
     for (const m of rawMarkets) {
       const event = eventMap.get(m.event_ticker) || {};
       const title = `${m.title || ""} ${m.subtitle || ""} ${event.title || ""}`;
       const detected = detectLeague(m.ticker || "", title, event.category || "");
 
-      if (!detected) continue; // HARD-BLOCKED — not NBA/PGA/NRL
+      if (!detected) continue;
+      whitelistedCount++;
+
+      const closeTime = m.close_time || m.expiration_time || null;
+      const hoursLeft = hoursUntilClose(closeTime);
+
+      // Track nearest event for countdown
+      if (closeTime && (!nearestCloseTime || new Date(closeTime) < new Date(nearestCloseTime))) {
+        nearestCloseTime = closeTime;
+        nearestLeague = detected.league;
+      }
+
+      if (hoursLeft === null || hoursLeft > MAX_HOURS || hoursLeft <= 0) continue;
 
       const yesPrice = (m.yes_ask || m.last_price || 0) / 100;
       const vol24h = m.volume_24h || 0;
       const oi = m.open_interest || 0;
-      const closeTime = m.close_time || m.expiration_time || null;
-      const hoursLeft = hoursUntilClose(closeTime);
-
-      if (hoursLeft === null || hoursLeft > 48 || hoursLeft <= 0) continue;
 
       const anomaly = runRadarModules(m, yesPrice, vol24h, oi, hoursLeft, detected.league, title, rawMarkets);
       if (!anomaly) continue;
@@ -299,13 +355,11 @@ Deno.serve(async (req) => {
       else if (anomaly.module === "NARRATIVE_MISMATCH") narrativeMismatches.push(row);
     }
 
-    // Sort each bucket by hours_left (soonest first)
     const sortByTime = (a: any, b: any) => (a.hours_left || 999) - (b.hours_left || 999);
     wholesaleGaps.sort(sortByTime);
     smokeAlarms.sort(sortByTime);
     narrativeMismatches.sort(sortByTime);
 
-    // Filter by league if requested
     const filterFn = (arr: any[]) =>
       filterLeague && filterLeague !== "All" ? arr.filter((m: any) => m.league === filterLeague) : arr;
 
@@ -315,24 +369,30 @@ Deno.serve(async (req) => {
       narrative_mismatches: filterFn(narrativeMismatches),
       stats: {
         totalScanned: rawMarkets.length,
+        whitelistedCount,
         wholesaleGapCount: wholesaleGaps.length,
         smokeAlarmCount: smokeAlarms.length,
         narrativeMismatchCount: narrativeMismatches.length,
         totalAnomalies: wholesaleGaps.length + smokeAlarms.length + narrativeMismatches.length,
       },
+      next_catalyst: nearestCloseTime ? {
+        close_time: nearestCloseTime,
+        league: nearestLeague,
+        hours_left: hoursUntilClose(nearestCloseTime),
+      } : null,
       leagues: ["NBA", "PGA", "NRL"],
-      source: "anomaly_radar_v2",
+      source: "anomaly_radar_v3",
       timestamp: new Date().toISOString(),
     };
 
-    console.log(`Anomaly Radar: ${result.stats.totalAnomalies} anomalies (${wholesaleGaps.length} gaps, ${smokeAlarms.length} alarms, ${narrativeMismatches.length} mismatches)`);
+    console.log(`Anomaly Radar v3: ${whitelistedCount} whitelisted, ${result.stats.totalAnomalies} anomalies (${wholesaleGaps.length} gaps, ${smokeAlarms.length} alarms, ${narrativeMismatches.length} mismatches). Next catalyst: ${nearestCloseTime || "none"}`);
 
     return new Response(JSON.stringify(result), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (error) {
     console.error("Anomaly Radar error:", error);
-    return new Response(JSON.stringify({ error: error.message, source: "anomaly_radar_v2" }), {
+    return new Response(JSON.stringify({ error: error.message, source: "anomaly_radar_v3" }), {
       status: 500,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });

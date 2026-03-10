@@ -1,13 +1,14 @@
 import { useState, useEffect, useCallback } from "react";
 import { supabase } from "@/integrations/supabase/client";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   RefreshCw, Loader2, ExternalLink, AlertTriangle,
-  Clock, Radar, ArrowRightLeft, Volume2, GitCompareArrows, Info
+  Clock, Radar, ArrowRightLeft, Volume2, GitCompareArrows, Info,
+  Timer, CheckCircle2
 } from "lucide-react";
 
 // ─── Types ──────────────────────────────────────────────────────
@@ -42,11 +43,17 @@ interface RadarData {
   narrative_mismatches: AnomalyRow[];
   stats: {
     totalScanned: number;
+    whitelistedCount: number;
     wholesaleGapCount: number;
     smokeAlarmCount: number;
     narrativeMismatchCount: number;
     totalAnomalies: number;
   };
+  next_catalyst: {
+    close_time: string;
+    league: string;
+    hours_left: number;
+  } | null;
   leagues: string[];
   timestamp: string;
 }
@@ -73,6 +80,41 @@ function kalshiUrl(market: { event_ticker: string; series_ticker: string }): str
   return `https://kalshi.com/markets`;
 }
 
+function leagueIcon(league: string): string {
+  if (league === "NBA") return "🏀";
+  if (league === "PGA") return "⛳";
+  if (league === "NRL") return "🏉";
+  return "🏆";
+}
+
+// ─── Countdown Hook ─────────────────────────────────────────────
+
+function useCountdown(targetTime: string | null): string {
+  const [display, setDisplay] = useState("—");
+
+  useEffect(() => {
+    if (!targetTime) { setDisplay("—"); return; }
+
+    const tick = () => {
+      const diff = new Date(targetTime).getTime() - Date.now();
+      if (diff <= 0) { setDisplay("LIVE NOW"); return; }
+      const d = Math.floor(diff / 86400000);
+      const h = Math.floor((diff % 86400000) / 3600000);
+      const m = Math.floor((diff % 3600000) / 60000);
+      const s = Math.floor((diff % 60000) / 1000);
+      if (d > 0) setDisplay(`${d}d ${h}h ${m}m ${s}s`);
+      else if (h > 0) setDisplay(`${h}h ${m}m ${s}s`);
+      else setDisplay(`${m}m ${s}s`);
+    };
+
+    tick();
+    const iv = setInterval(tick, 1000);
+    return () => clearInterval(iv);
+  }, [targetTime]);
+
+  return display;
+}
+
 // ─── Anomaly Card ───────────────────────────────────────────────
 
 function AnomalyCard({ m }: { m: AnomalyRow }) {
@@ -83,7 +125,6 @@ function AnomalyCard({ m }: { m: AnomalyRow }) {
     <a href={kalshiUrl(m)} target="_blank" rel="noopener noreferrer" className="block group">
       <Card className="bg-[hsl(var(--nexus-surface))] border-[hsl(var(--nexus-border))] hover:border-[hsl(var(--nexus-text-muted))] transition-all h-full">
         <CardContent className="p-4 space-y-3">
-          {/* League + Time */}
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <span className="text-lg">{m.icon}</span>
@@ -97,11 +138,9 @@ function AnomalyCard({ m }: { m: AnomalyRow }) {
             </span>
           </div>
 
-          {/* Title */}
           <p className="font-mono text-sm font-semibold leading-tight line-clamp-2">{m.title}</p>
           <p className="font-mono text-[10px] text-[hsl(var(--nexus-text-muted))] truncate">{m.event_title}</p>
 
-          {/* Price row */}
           <div className="flex items-end justify-between">
             <div>
               <p className="text-[10px] text-[hsl(var(--nexus-text-muted))] font-mono">Price</p>
@@ -117,13 +156,11 @@ function AnomalyCard({ m }: { m: AnomalyRow }) {
             </div>
           </div>
 
-          {/* Vol / OI */}
           <div className="flex gap-4 text-[10px] font-mono text-[hsl(var(--nexus-text-muted))]">
             <span>Vol: {m.volume_24h > 0 ? m.volume_24h.toLocaleString() : "—"}</span>
             <span>OI: {m.open_interest > 0 ? m.open_interest.toLocaleString() : "—"}</span>
           </div>
 
-          {/* Action */}
           <div className="flex items-center justify-between pt-2 border-t border-[hsl(var(--nexus-border))]">
             <TooltipProvider>
               <Tooltip>
@@ -150,17 +187,9 @@ function AnomalyCard({ m }: { m: AnomalyRow }) {
 // ─── Module Column ──────────────────────────────────────────────
 
 function ModuleColumn({
-  title,
-  icon,
-  color,
-  description,
-  items,
+  title, icon, color, description, items,
 }: {
-  title: string;
-  icon: React.ReactNode;
-  color: string;
-  description: string;
-  items: AnomalyRow[];
+  title: string; icon: React.ReactNode; color: string; description: string; items: AnomalyRow[];
 }) {
   return (
     <div className="space-y-3">
@@ -198,6 +227,9 @@ export default function UniversalAlpha() {
   const [error, setError] = useState<string | null>(null);
   const [lastRefresh, setLastRefresh] = useState("");
   const [activeLeague, setActiveLeague] = useState("All");
+
+  const nextCatalyst = data?.next_catalyst;
+  const countdown = useCountdown(nextCatalyst?.close_time || null);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -237,16 +269,15 @@ export default function UniversalAlpha() {
               Anomaly Radar
             </h1>
             <p className="text-xs text-[hsl(var(--nexus-text-muted))] font-mono">
-              NBA · PGA · NRL only • 48h window • {stats?.totalAnomalies || 0} anomalies detected • Updated {lastRefresh || "—"}
+              NBA · PGA · NRL only • 7-day window • {stats?.whitelistedCount || 0} tracked • {stats?.totalAnomalies || 0} anomalies • Updated {lastRefresh || "—"}
             </p>
           </div>
           <div className="flex items-center gap-2">
-            {/* League filters */}
             {["All", "NBA", "PGA", "NRL"].map(league => (
               <Button key={league} size="sm" variant={activeLeague === league ? "default" : "outline"}
                 onClick={() => setActiveLeague(league)}
                 className={`text-xs font-mono ${activeLeague === league ? "bg-amber-600 text-white hover:bg-amber-700" : "border-[hsl(var(--nexus-border))] text-[hsl(var(--nexus-text-muted))]"}`}>
-                {league === "NBA" ? "🏀" : league === "PGA" ? "⛳" : league === "NRL" ? "🏉" : ""} {league}
+                {league === "All" ? "" : leagueIcon(league) + " "}{league}
               </Button>
             ))}
             <Button size="sm" onClick={fetchData} disabled={loading}
@@ -267,13 +298,57 @@ export default function UniversalAlpha() {
       )}
 
       <div className="max-w-[1600px] mx-auto p-4">
+        {/* ─── NEXT CATALYST COUNTDOWN ─── */}
+        {data && (
+          <Card className="mb-6 border-amber-500/30 bg-amber-500/5">
+            <CardContent className="p-4">
+              {nextCatalyst ? (
+                <div className="flex items-center justify-between flex-wrap gap-3">
+                  <div className="flex items-center gap-3">
+                    <Timer className="w-6 h-6 text-amber-400 animate-pulse" />
+                    <div>
+                      <p className="text-[10px] font-mono text-amber-300/70 uppercase tracking-wider">Next Tip-Off / Tee Time</p>
+                      <p className="text-2xl font-bold font-mono text-amber-400 tabular-nums">{countdown}</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-lg">{leagueIcon(nextCatalyst.league)}</span>
+                    <Badge className="bg-amber-600/20 text-amber-300 border-amber-500/40 font-mono text-xs">
+                      {nextCatalyst.league}
+                    </Badge>
+                    <span className="text-xs font-mono text-[hsl(var(--nexus-text-muted))]">
+                      {new Date(nextCatalyst.close_time).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}
+                    </span>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex items-center gap-3">
+                  <CheckCircle2 className="w-6 h-6 text-emerald-400" />
+                  <div>
+                    <p className="text-sm font-bold font-mono text-emerald-400">Radar Clear: Awaiting Volume Catalysts</p>
+                    <p className="text-xs font-mono text-[hsl(var(--nexus-text-muted))]">
+                      Engine is scanning {stats?.totalScanned || 0} markets across NBA, PGA, NRL. No qualifying events in the 7-day window. Check back when games are scheduled.
+                    </p>
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
+
         {/* ─── STATS BAR ─── */}
         {stats && (
-          <div className="grid grid-cols-4 gap-3 mb-6">
+          <div className="grid grid-cols-5 gap-3 mb-6">
             <Card className="bg-[hsl(var(--nexus-surface))] border-[hsl(var(--nexus-border))]">
               <CardContent className="p-3 text-center">
                 <p className="text-[10px] font-mono text-[hsl(var(--nexus-text-muted))] uppercase">Scanned</p>
                 <p className="text-2xl font-bold font-mono">{stats.totalScanned}</p>
+              </CardContent>
+            </Card>
+            <Card className="bg-[hsl(var(--nexus-surface))] border-[hsl(var(--nexus-border))]">
+              <CardContent className="p-3 text-center">
+                <p className="text-[10px] font-mono text-[hsl(var(--nexus-text-muted))] uppercase">Tracked</p>
+                <p className="text-2xl font-bold font-mono text-emerald-400">{stats.whitelistedCount}</p>
               </CardContent>
             </Card>
             <Card className="bg-cyan-500/10 border-cyan-500/30">
@@ -321,12 +396,6 @@ export default function UniversalAlpha() {
             items={data?.narrative_mismatches || []}
           />
         </div>
-
-        {data && stats?.totalAnomalies === 0 && (
-          <p className="text-center text-[hsl(var(--nexus-text-muted))] font-mono py-12 text-sm">
-            No order-book anomalies detected across NBA, PGA, NRL in the 48h window. Check back closer to game time.
-          </p>
-        )}
       </div>
     </div>
   );
