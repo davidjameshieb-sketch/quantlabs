@@ -8,7 +8,7 @@ import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert";
 import { Switch } from "@/components/ui/switch";
 import {
   RefreshCw, Loader2, ExternalLink, AlertTriangle,
-  TrendingUp, ArrowUpRight, Clock, Target, Zap, Shield
+  TrendingUp, ArrowUpRight, Clock, Target, Zap, Shield, Timer, DollarSign
 } from "lucide-react";
 
 // ─── Types ──────────────────────────────────────────────────────
@@ -54,6 +54,8 @@ interface MarketRow {
   icon: string;
   yes_price: number;
   no_price: number;
+  yes_bid: number;
+  yes_ask: number;
   volume_24h: number;
   open_interest: number;
   alpha_type: string | null;
@@ -72,9 +74,10 @@ interface RecoveryStats {
   goal: number;
   accelerator_count: number;
   best_roi_pct: number;
-  ghost_volume_count: number;
-  lotto_count: number;
-  penny_amazon_count: number;
+  cash_arb_count: number;
+  liquidity_trap_count: number;
+  velocity_penny_count: number;
+  spread_arb_count: number;
 }
 
 interface ScannerData {
@@ -102,34 +105,20 @@ function getVerdict(type: string | null, score: number, price: number): { label:
   const maxROI = price > 0 ? ((1 / price - 1) * 100).toFixed(0) : "∞";
 
   switch (type) {
-    case "PENNY_AMAZON":
-      return { label: "💎 Penny Amazon", color: "text-yellow-400", emoji: "💎", explanation: `Cheap contract on a big event — massive asymmetric upside. The market is sleeping on this.` };
-    case "PRE_MOMENTUM_LOTTO":
-      return { label: "🔮 Pre-Mo Lotto", color: "text-fuchsia-400", emoji: "🔮", explanation: `Ghost volume on a cheap contract — the sweet spot. Limit order only.` };
-    case "GHOST_VOLUME":
-      return { label: "👻 Pre-Momentum", color: "text-purple-400", emoji: "👻", explanation: `Smart money positioned but retail hasn't arrived. EARLY ENTRY.` };
-    case "BINARY_CLIFF":
-      return { label: "🚨 TAKE PROFIT", color: "text-red-400", emoji: "🚨", explanation: `85¢+ in final phase — sell 75% NOW. Lock in gains.` };
-    case "ASYMMETRIC_LOTTO":
-      return { label: "🎰 Alpha Lotto", color: "text-emerald-400", emoji: "🎰", explanation: `${priceCents}¢ with high alpha score. Limit order $1-2.50 only.` };
-    case "LOW_ALPHA_LOTTO":
-      return { label: "🎲 Weak Lotto", color: "text-yellow-500", emoji: "🎲", explanation: `${priceCents}¢ but alpha below threshold. Skip or $1 max.` };
+    case "CASH_ARBITRAGE":
+      return { label: "💰 Cash Arb", color: "text-emerald-400", emoji: "💰", explanation: `Wide spread = buy wholesale, settle for profit. Same-day cash.` };
+    case "LIQUIDITY_TRAP":
+      return { label: "🕳️ Liquidity Trap", color: "text-purple-400", emoji: "🕳️", explanation: `${priceCents}¢ — high OI, zero volume. Name your price with a limit.` };
+    case "VELOCITY_PENNY":
+      return { label: "⚡ Velocity Penny", color: "text-yellow-400", emoji: "⚡", explanation: `Cheap + fast settle = rapid cash turnover.` };
     case "SPREAD_ARB":
-      return { label: "💰 Arbitrage!", color: "text-emerald-400", emoji: "💰", explanation: `Buy both sides for guaranteed profit.` };
-    case "WIDE_SPREAD":
-      return { label: "🎯 Limit Snipe", color: "text-emerald-400", emoji: "🎯", explanation: `Wide spread = free edge. Limit order at midpoint.` };
-    case "MICRO_VALUE":
-      return { label: "Lotto Play", color: "text-emerald-400", emoji: "🎰", explanation: `${priceCents}¢ — ${maxROI}% ROI.` };
-    case "VALUE_ZONE":
-      return { label: "Value Bet", color: "text-cyan-400", emoji: "🔵", explanation: `${priceCents}¢ = ${priceCents}% implied. May be underpriced.` };
-    case "VOLUME_SPIKE":
-      return { label: "📊 Smart Money", color: "text-amber-400", emoji: "📊", explanation: `Unusual volume spike — someone loading up.` };
-    case "COIN_FLIP":
-      return { label: "50/50", color: "text-yellow-400", emoji: "🟡", explanation: `Only bet with an info edge.` };
-    case "FAVORITE":
-      return { label: "Likely Winner", color: "text-blue-400", emoji: "🔷", explanation: `${priceCents}¢ — ${maxROI}% return.` };
-    case "HEAVY_FAVORITE":
-      return { label: "⚪ Floor Defense", color: "text-slate-400", emoji: "⚪", explanation: `Near certain. ${maxROI}% return.` };
+      return { label: "💰 Guaranteed Arb", color: "text-emerald-400", emoji: "💰", explanation: `Buy both sides for guaranteed profit.` };
+    case "VELOCITY_VALUE":
+      return { label: "⚡ Velocity Value", color: "text-cyan-400", emoji: "⚡", explanation: `${priceCents}¢ — settles soon. ${maxROI}% ROI.` };
+    case "VELOCITY_SAFE":
+      return { label: "🛡️ Safe Turnover", color: "text-slate-400", emoji: "🛡️", explanation: `Near certain. Quick cash return.` };
+    case "BINARY_CLIFF":
+      return { label: "🚨 TAKE PROFIT", color: "text-red-400", emoji: "🚨", explanation: `85¢+ in final phase — sell 75% NOW.` };
     case "MATHEMATICAL_DEATH":
       return { label: "💀 Dead — Sell", color: "text-red-400", emoji: "💀", explanation: `${priceCents}¢ — liquidate now.` };
     case "SETTLED":
@@ -144,28 +133,34 @@ function getVerdict(type: string | null, score: number, price: number): { label:
 
 function tierBadge(tier: string | null, recoveryTag: string | null): { label: string; className: string } | null {
   if (recoveryTag === "ACCELERATOR" || tier === "ACCELERATOR") {
-    return { label: "🚀 ACCELERATOR", className: "bg-fuchsia-500/20 text-fuchsia-400 border-fuchsia-500/40" };
+    return { label: "⚡ VELOCITY", className: "bg-fuchsia-500/20 text-fuchsia-400 border-fuchsia-500/40" };
   }
   if (recoveryTag === "FLOOR_DEFENSE" || tier === "FLOOR_DEFENSE") {
     return { label: "🛡️ FLOOR DEFENSE", className: "bg-slate-500/20 text-slate-400 border-slate-500/40" };
   }
-  if (tier === "EARLY_ENTRY") {
-    return { label: "👻 EARLY ENTRY", className: "bg-purple-500/20 text-purple-400 border-purple-500/40" };
-  }
-  if (tier === "LOTTO") {
-    return { label: "🎰 LOTTO", className: "bg-amber-500/20 text-amber-400 border-amber-500/40" };
+  if (tier === "VALUE") {
+    return { label: "📊 VALUE", className: "bg-cyan-500/20 text-cyan-400 border-cyan-500/40" };
   }
   return null;
 }
 
-function formatCountdown(hours: number | null): string {
-  if (hours === null || hours === undefined) return "";
-  if (hours <= 0) return "LIVE NOW";
+function formatTimeToCash(hours: number | null): string {
+  if (hours === null || hours === undefined) return "—";
+  if (hours <= 0) return "NOW";
   if (hours < 1) return `${Math.round(hours * 60)}m`;
   if (hours < 24) return `${hours.toFixed(0)}h`;
   const days = Math.floor(hours / 24);
   const rem = Math.round(hours % 24);
   return `${days}d ${rem}h`;
+}
+
+function formatTurnoverRate(hours: number | null): string {
+  if (hours === null || hours === undefined) return "—";
+  if (hours <= 0) return "Instant";
+  if (hours < 1) return `~${Math.round(hours * 60)}m`;
+  if (hours < 6) return `~${hours.toFixed(0)}h`;
+  if (hours < 24) return `~${hours.toFixed(0)}h`;
+  return `~${Math.round(hours / 24)}d`;
 }
 
 function kalshiUrl(market: { event_ticker: string; series_ticker: string }): string {
@@ -215,19 +210,17 @@ export default function UniversalAlpha() {
 
   const markets = (data?.markets || []).filter(m => {
     if (!hideJunk) return true;
-    if (m.alpha_type === "PENNY_AMAZON") return true; // ALWAYS show penny amazons
+    if (m.alpha_type === "CASH_ARBITRAGE" || m.alpha_type === "LIQUIDITY_TRAP" || m.alpha_type === "VELOCITY_PENNY") return true;
     if (m.alpha_type === "BINARY_CLIFF") return true;
     if (m.recovery_tag === "FLOOR_DEFENSE" && hideJunk) return false;
-    return m.alpha_type !== "DEAD" && m.alpha_type !== "SETTLED" && m.yes_price > 0.01 && m.yes_price < 0.97;
+    return m.alpha_type !== "DEAD" && m.alpha_type !== "SETTLED" && m.alpha_type !== "TOO_FAR_OUT" && m.alpha_type !== "NO_ORDERBOOK" && m.yes_price > 0.01 && m.yes_price < 0.97;
   });
 
-  const bestBets = markets.filter(m => 
-    m.alpha_type === "PENNY_AMAZON" ||
-    m.alpha_type === "PRE_MOMENTUM_LOTTO" ||
-    m.alpha_type === "ASYMMETRIC_LOTTO" ||
-    m.alpha_type === "GHOST_VOLUME" || 
+  const bestBets = markets.filter(m =>
+    m.alpha_type === "CASH_ARBITRAGE" ||
+    m.alpha_type === "LIQUIDITY_TRAP" ||
+    m.alpha_type === "VELOCITY_PENNY" ||
     m.alpha_type === "SPREAD_ARB" ||
-    m.alpha_type === "MICRO_VALUE" ||
     m.alpha_score >= 0.15
   ).slice(0, 12);
 
@@ -242,11 +235,11 @@ export default function UniversalAlpha() {
         <div className="max-w-[1400px] mx-auto flex items-center justify-between gap-4 flex-wrap">
           <div>
             <h1 className="text-xl font-bold font-[family-name:var(--font-mono)] tracking-tight flex items-center gap-2">
-              <Target className="w-5 h-5 text-yellow-400" />
-              Penny Amazon Scanner
+              <Zap className="w-5 h-5 text-emerald-400" />
+              Velocity Scanner
             </h1>
             <p className="text-xs text-[hsl(var(--nexus-text-muted))] font-mono">
-              {data?.stats.totalMarkets || 0} scanned • {recovery?.penny_amazon_count || 0} penny gems • {recovery?.lotto_count || 0} lottos • Updated {lastRefresh || "—"}
+              ≤36h settle only • {recovery?.cash_arb_count || 0} cash arbs • {recovery?.liquidity_trap_count || 0} traps • {recovery?.velocity_penny_count || 0} pennies • Updated {lastRefresh || "—"}
             </p>
           </div>
 
@@ -256,7 +249,7 @@ export default function UniversalAlpha() {
               <Switch checked={hideJunk} onCheckedChange={setHideJunk} />
             </label>
             <Button size="sm" onClick={fetchData} disabled={loading}
-              className="bg-purple-600 hover:bg-purple-700 text-white font-mono">
+              className="bg-emerald-600 hover:bg-emerald-700 text-white font-mono">
               {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
               <span className="ml-1.5 text-xs">Scan</span>
             </Button>
@@ -274,35 +267,35 @@ export default function UniversalAlpha() {
 
       <div className="max-w-[1400px] mx-auto p-4 space-y-6">
 
-        {/* ─── RECOVERY TRACKER ─── */}
+        {/* ─── VELOCITY DASHBOARD ─── */}
         {recovery && (
           <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
-            <Card className="bg-yellow-500/10 border-yellow-500/30">
+            <Card className="bg-emerald-500/10 border-emerald-500/30">
               <CardContent className="p-3 text-center">
-                <p className="text-[10px] font-mono text-yellow-300 uppercase">💎 Penny Amazons</p>
-                <p className="text-2xl font-bold font-mono text-yellow-400">{recovery.penny_amazon_count || 0}</p>
-                <p className="text-[9px] font-mono text-yellow-300/60">≤10¢ hidden gems</p>
-              </CardContent>
-            </Card>
-            <Card className="bg-fuchsia-500/10 border-fuchsia-500/30">
-              <CardContent className="p-3 text-center">
-                <p className="text-[10px] font-mono text-fuchsia-300 uppercase">🎰 All Lottos</p>
-                <p className="text-2xl font-bold font-mono text-fuchsia-400">{recovery.lotto_count}</p>
-                <p className="text-[9px] font-mono text-fuchsia-300/60">Asymmetric bets</p>
+                <p className="text-[10px] font-mono text-emerald-300 uppercase">💰 Cash Arbs</p>
+                <p className="text-2xl font-bold font-mono text-emerald-400">{recovery.cash_arb_count || 0}</p>
+                <p className="text-[9px] font-mono text-emerald-300/60">Wholesale spreads</p>
               </CardContent>
             </Card>
             <Card className="bg-purple-500/10 border-purple-500/30">
               <CardContent className="p-3 text-center">
-                <p className="text-[10px] font-mono text-purple-300 uppercase">👻 Ghost Volume</p>
-                <p className="text-2xl font-bold font-mono text-purple-400">{recovery.ghost_volume_count}</p>
-                <p className="text-[9px] font-mono text-purple-300/60">Smart money</p>
+                <p className="text-[10px] font-mono text-purple-300 uppercase">🕳️ Liquidity Traps</p>
+                <p className="text-2xl font-bold font-mono text-purple-400">{recovery.liquidity_trap_count || 0}</p>
+                <p className="text-[9px] font-mono text-purple-300/60">OI trapped, name price</p>
               </CardContent>
             </Card>
-            <Card className="bg-emerald-500/10 border-emerald-500/30">
+            <Card className="bg-yellow-500/10 border-yellow-500/30">
               <CardContent className="p-3 text-center">
-                <p className="text-[10px] font-mono text-emerald-300 uppercase">🚀 Accelerators</p>
-                <p className="text-2xl font-bold font-mono text-emerald-400">{recovery.accelerator_count}</p>
-                <p className="text-[9px] font-mono text-emerald-300/60">ROI &gt;500%</p>
+                <p className="text-[10px] font-mono text-yellow-300 uppercase">⚡ Velocity Pennies</p>
+                <p className="text-2xl font-bold font-mono text-yellow-400">{recovery.velocity_penny_count || 0}</p>
+                <p className="text-[9px] font-mono text-yellow-300/60">≤15¢ fast settle</p>
+              </CardContent>
+            </Card>
+            <Card className="bg-fuchsia-500/10 border-fuchsia-500/30">
+              <CardContent className="p-3 text-center">
+                <p className="text-[10px] font-mono text-fuchsia-300 uppercase">🚀 All Velocity</p>
+                <p className="text-2xl font-bold font-mono text-fuchsia-400">{recovery.accelerator_count}</p>
+                <p className="text-[9px] font-mono text-fuchsia-300/60">Same-day turnover</p>
               </CardContent>
             </Card>
             <Card className="bg-red-500/10 border-red-500/30">
@@ -324,65 +317,69 @@ export default function UniversalAlpha() {
             </AlertTitle>
             <AlertDescription className="text-red-300/80 font-mono text-xs mt-1 space-y-1">
               {killSwitchAlerts.map(d => (
-                <p key={d.ticker}>{d.title} — {(d.yes_price * 100).toFixed(0)}¢ with {formatCountdown(d.time_to_event_hours)} left</p>
+                <p key={d.ticker}>{d.title} — {(d.yes_price * 100).toFixed(0)}¢ with {formatTimeToCash(d.time_to_event_hours)} left</p>
               ))}
             </AlertDescription>
           </Alert>
         )}
 
-        {/* ─── BEST SNIPER ENTRIES ─── */}
+        {/* ─── TOP VELOCITY PLAYS ─── */}
         {bestBets.length > 0 && (
           <section>
             <h2 className="text-lg font-bold font-[family-name:var(--font-mono)] mb-1 flex items-center gap-2">
-              <Zap className="w-5 h-5 text-yellow-400" />
-              💎 Penny Amazon Picks
+              <DollarSign className="w-5 h-5 text-emerald-400" />
+              Top Velocity Plays
             </h2>
             <p className="text-xs text-[hsl(var(--nexus-text-muted))] font-mono mb-4">
-              Cheap contracts on big events — the market is sleeping. $1-3 limit orders for 10x-100x upside.
+              All settle in &lt;36h. Cash arbs, liquidity traps, and fast-turnover pennies.
             </p>
 
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
               {bestBets.map((m) => {
                 const v = getVerdict(m.alpha_type, m.alpha_score, m.yes_price);
                 const tb = tierBadge(m.alpha_tier, m.recovery_tag);
-                const countdown = formatCountdown(m.time_to_event_hours);
+                const timeToCash = formatTimeToCash(m.time_to_event_hours);
+                const turnover = formatTurnoverRate(m.time_to_event_hours);
                 return (
                   <a key={m.ticker} href={kalshiUrl(m)} target="_blank" rel="noopener noreferrer" className="block group">
-                    <Card className={`border-[hsl(var(--nexus-border))] hover:border-yellow-500/50 transition-all h-full ${
-                      m.alpha_type === "PENNY_AMAZON" ? "bg-yellow-500/8 border-yellow-500/40 ring-1 ring-yellow-500/20" :
-                      m.alpha_type === "PRE_MOMENTUM_LOTTO" ? "bg-fuchsia-500/8 border-fuchsia-500/40" :
-                      m.alpha_type === "ASYMMETRIC_LOTTO" ? "bg-amber-500/5 border-amber-500/30" :
-                      m.alpha_type === "GHOST_VOLUME" ? "bg-purple-500/5 border-purple-500/30" : "bg-[hsl(var(--nexus-surface))]"
+                    <Card className={`border-[hsl(var(--nexus-border))] hover:border-emerald-500/50 transition-all h-full ${
+                      m.alpha_type === "CASH_ARBITRAGE" ? "bg-emerald-500/8 border-emerald-500/40 ring-1 ring-emerald-500/20" :
+                      m.alpha_type === "LIQUIDITY_TRAP" ? "bg-purple-500/8 border-purple-500/40 ring-1 ring-purple-500/20" :
+                      m.alpha_type === "VELOCITY_PENNY" ? "bg-yellow-500/8 border-yellow-500/40" :
+                      m.alpha_type === "SPREAD_ARB" ? "bg-emerald-500/5 border-emerald-500/30" : "bg-[hsl(var(--nexus-surface))]"
                     }`}>
                       <CardContent className="p-4 space-y-3">
                         <div className="flex items-center justify-between">
                           <Badge variant="outline" className="font-mono text-[10px] border-[hsl(var(--nexus-border))] text-[hsl(var(--nexus-text-muted))]">
                             {m.icon} {m.asset_class}
                           </Badge>
-                          <div className="flex items-center gap-1.5">
-                            {countdown && (
-                              <span className="text-[10px] font-mono text-amber-400 flex items-center gap-0.5">
-                                <Clock className="w-3 h-3" /> {countdown}
-                              </span>
-                            )}
+                          <div className="flex items-center gap-2">
+                            <span className="text-[10px] font-mono text-emerald-400 flex items-center gap-0.5 bg-emerald-500/10 px-1.5 py-0.5 rounded">
+                              <Timer className="w-3 h-3" /> {timeToCash}
+                            </span>
                           </div>
                         </div>
 
                         <p className="font-mono text-sm font-semibold leading-tight line-clamp-2">{m.title}</p>
 
-                        {tb && (
-                          <Badge variant="outline" className={`font-mono text-[10px] ${tb.className}`}>
-                            {tb.label}
-                          </Badge>
-                        )}
+                        <div className="flex items-center gap-2">
+                          {tb && (
+                            <Badge variant="outline" className={`font-mono text-[10px] ${tb.className}`}>
+                              {tb.label}
+                            </Badge>
+                          )}
+                          <span className="text-[10px] font-mono text-[hsl(var(--nexus-text-muted))]">
+                            Turnover: {turnover}
+                          </span>
+                        </div>
 
                         <div className="flex items-end justify-between">
                           <div>
                             <p className="text-xs text-[hsl(var(--nexus-text-muted))] font-mono mb-0.5">Price</p>
-                          <p className={`text-2xl font-bold font-mono ${
-                              m.alpha_type === "PENNY_AMAZON" ? "text-yellow-400" :
-                              m.alpha_type === "PRE_MOMENTUM_LOTTO" ? "text-fuchsia-400" :
-                              m.alpha_type === "GHOST_VOLUME" ? "text-purple-400" : "text-emerald-400"
+                            <p className={`text-2xl font-bold font-mono ${
+                              m.alpha_type === "CASH_ARBITRAGE" ? "text-emerald-400" :
+                              m.alpha_type === "LIQUIDITY_TRAP" ? "text-purple-400" :
+                              m.alpha_type === "VELOCITY_PENNY" ? "text-yellow-400" : "text-cyan-400"
                             }`}>
                               {(m.yes_price * 100).toFixed(0)}¢
                             </p>
@@ -399,16 +396,17 @@ export default function UniversalAlpha() {
                           </div>
                         </div>
 
-                        <p className={`text-[11px] font-mono leading-relaxed ${
-                          m.alpha_type === "PENNY_AMAZON" ? "text-yellow-200/90 line-clamp-6" :
-                          m.alpha_type === "PRE_MOMENTUM_LOTTO" ? "text-fuchsia-300/80 line-clamp-2" : "text-purple-300/80 line-clamp-2"
+                        <p className={`text-[11px] font-mono leading-relaxed line-clamp-4 ${
+                          m.alpha_type === "CASH_ARBITRAGE" ? "text-emerald-200/90" :
+                          m.alpha_type === "LIQUIDITY_TRAP" ? "text-purple-200/90" :
+                          m.alpha_type === "VELOCITY_PENNY" ? "text-yellow-200/90" : "text-cyan-200/80"
                         }`}>
-                          {m.alpha_type === "PENNY_AMAZON" ? (m.alpha_reasoning || v.explanation) : (m.alpha_strategy || v.explanation)}
+                          {m.alpha_reasoning || m.alpha_strategy || v.explanation}
                         </p>
 
                         <div className="flex items-center justify-between pt-2 border-t border-[hsl(var(--nexus-border))]">
                           <span className="text-[10px] font-mono text-[hsl(var(--nexus-text-muted))]">
-                            {m.suggested_bet > 0 ? `Bet: $${m.suggested_bet.toFixed(2)}` : ""} 
+                            {m.suggested_bet > 0 ? `Bet: $${m.suggested_bet.toFixed(2)}` : ""}
                             {m.volume_24h > 0 ? ` • ${m.volume_24h} vol` : ""}
                           </span>
                           <span className="text-xs font-mono text-cyan-400 group-hover:text-cyan-300 flex items-center gap-1">
@@ -443,13 +441,13 @@ export default function UniversalAlpha() {
           <div className="flex flex-wrap gap-2">
             <Button size="sm" variant={activeClass === "All" ? "default" : "outline"}
               onClick={() => setActiveClass("All")}
-              className={`text-xs font-mono ${activeClass === "All" ? "bg-purple-600 text-white hover:bg-purple-700" : "border-[hsl(var(--nexus-border))] text-[hsl(var(--nexus-text-muted))]"}`}>
+              className={`text-xs font-mono ${activeClass === "All" ? "bg-emerald-600 text-white hover:bg-emerald-700" : "border-[hsl(var(--nexus-border))] text-[hsl(var(--nexus-text-muted))]"}`}>
               All ({data?.stats.totalMarkets || 0})
             </Button>
             {data?.heatmap.map(h => (
               <Button key={h.asset_class} size="sm" variant={activeClass === h.asset_class ? "default" : "outline"}
                 onClick={() => setActiveClass(h.asset_class)}
-                className={`text-xs font-mono ${activeClass === h.asset_class ? "bg-purple-600 text-white hover:bg-purple-700" : "border-[hsl(var(--nexus-border))] text-[hsl(var(--nexus-text-muted))]"}`}>
+                className={`text-xs font-mono ${activeClass === h.asset_class ? "bg-emerald-600 text-white hover:bg-emerald-700" : "border-[hsl(var(--nexus-border))] text-[hsl(var(--nexus-text-muted))]"}`}>
                 {h.icon} {h.asset_class} ({h.count})
               </Button>
             ))}
@@ -458,9 +456,9 @@ export default function UniversalAlpha() {
 
         {/* ─── ALL MARKETS TABLE ─── */}
         <section>
-          <h2 className="text-lg font-bold font-[family-name:var(--font-mono)] mb-1">All Markets</h2>
+          <h2 className="text-lg font-bold font-[family-name:var(--font-mono)] mb-1">All Velocity Markets</h2>
           <p className="text-xs text-[hsl(var(--nexus-text-muted))] font-mono mb-4">
-            {markets.length} markets • Click to trade on Kalshi
+            {markets.length} markets settling in &lt;36h • Click to trade on Kalshi
           </p>
 
           <Card className="bg-[hsl(var(--nexus-surface))] border-[hsl(var(--nexus-border))]">
@@ -471,9 +469,9 @@ export default function UniversalAlpha() {
                     <TableHead className="font-mono text-[11px] text-[hsl(var(--nexus-text-muted))] font-semibold">MARKET</TableHead>
                     <TableHead className="font-mono text-[11px] text-[hsl(var(--nexus-text-muted))] font-semibold text-right">PRICE</TableHead>
                     <TableHead className="font-mono text-[11px] text-[hsl(var(--nexus-text-muted))] font-semibold">EDGE</TableHead>
-                    <TableHead className="font-mono text-[11px] text-[hsl(var(--nexus-text-muted))] font-semibold">TIER</TableHead>
                     <TableHead className="font-mono text-[11px] text-[hsl(var(--nexus-text-muted))] font-semibold">STRATEGY</TableHead>
-                    <TableHead className="font-mono text-[11px] text-[hsl(var(--nexus-text-muted))] font-semibold text-right">⏱ TIME</TableHead>
+                    <TableHead className="font-mono text-[11px] text-emerald-400 font-semibold text-right">⏱ TIME TO CASH</TableHead>
+                    <TableHead className="font-mono text-[11px] text-emerald-400 font-semibold text-right">🔄 TURNOVER</TableHead>
                     <TableHead className="font-mono text-[11px] text-[hsl(var(--nexus-text-muted))] font-semibold text-right">OI</TableHead>
                     <TableHead className="font-mono text-[11px] text-[hsl(var(--nexus-text-muted))] font-semibold text-right">ROI</TableHead>
                     <TableHead className="font-mono text-[11px] text-[hsl(var(--nexus-text-muted))] font-semibold w-[40px]"></TableHead>
@@ -484,14 +482,14 @@ export default function UniversalAlpha() {
                     const v = getVerdict(m.alpha_type, m.alpha_score, m.yes_price);
                     const tb = tierBadge(m.alpha_tier, m.recovery_tag);
                     const maxROI = m.yes_price > 0 ? ((1 / m.yes_price - 1) * 100).toFixed(0) : "∞";
-                    const countdown = formatCountdown(m.time_to_event_hours);
-                    const isGhost = m.alpha_type === "GHOST_VOLUME";
+                    const timeToCash = formatTimeToCash(m.time_to_event_hours);
+                    const turnover = formatTurnoverRate(m.time_to_event_hours);
                     return (
                       <TableRow key={m.ticker}
                         className={`border-[hsl(var(--nexus-border))] hover:bg-[hsl(var(--nexus-surface-raised))] cursor-pointer group ${
-                          m.alpha_type === "PENNY_AMAZON" ? "bg-yellow-500/5" :
-                          m.alpha_type === "PRE_MOMENTUM_LOTTO" ? "bg-fuchsia-500/5" :
-                          isGhost ? "bg-purple-500/5" : ""
+                          m.alpha_type === "CASH_ARBITRAGE" ? "bg-emerald-500/5" :
+                          m.alpha_type === "LIQUIDITY_TRAP" ? "bg-purple-500/5" :
+                          m.alpha_type === "VELOCITY_PENNY" ? "bg-yellow-500/5" : ""
                         }`}
                         onClick={() => window.open(kalshiUrl(m), "_blank")}>
                         <TableCell className="max-w-[280px]">
@@ -505,9 +503,9 @@ export default function UniversalAlpha() {
                         </TableCell>
                         <TableCell className="text-right">
                           <span className={`font-mono text-base font-bold ${
-                            m.alpha_type === "PENNY_AMAZON" ? "text-yellow-400" :
-                            m.alpha_type === "PRE_MOMENTUM_LOTTO" ? "text-fuchsia-400" :
-                            isGhost ? "text-purple-400" : "text-emerald-400"
+                            m.alpha_type === "CASH_ARBITRAGE" ? "text-emerald-400" :
+                            m.alpha_type === "LIQUIDITY_TRAP" ? "text-purple-400" :
+                            m.alpha_type === "VELOCITY_PENNY" ? "text-yellow-400" : "text-cyan-400"
                           }`}>
                             {(m.yes_price * 100).toFixed(0)}¢
                           </span>
@@ -518,38 +516,34 @@ export default function UniversalAlpha() {
                             <span className={`font-mono text-xs font-semibold ${v.color}`}>{v.label}</span>
                           </div>
                         </TableCell>
-                        <TableCell>
-                          {tb ? (
-                            <Badge variant="outline" className={`font-mono text-[9px] ${tb.className}`}>
-                              {tb.label}
-                            </Badge>
-                          ) : (
-                            <span className="text-[10px] font-mono text-[hsl(var(--nexus-text-muted))]">—</span>
-                          )}
-                        </TableCell>
                         <TableCell className="max-w-[200px]">
-                          <p className={`font-mono text-[10px] leading-snug ${
-                            m.alpha_type === "PENNY_AMAZON" ? "text-yellow-200/80 line-clamp-4" : "text-[hsl(var(--nexus-text-muted))] line-clamp-2"
+                          <p className={`font-mono text-[10px] leading-snug line-clamp-2 ${
+                            m.alpha_type === "CASH_ARBITRAGE" ? "text-emerald-200/80" :
+                            m.alpha_type === "LIQUIDITY_TRAP" ? "text-purple-200/80" : "text-[hsl(var(--nexus-text-muted))]"
                           }`}>
-                            {m.alpha_type === "PENNY_AMAZON" ? (m.alpha_reasoning || m.alpha_strategy || v.explanation) : (m.alpha_strategy || m.alpha_reasoning || v.explanation)}
+                            {m.alpha_strategy || m.alpha_reasoning || v.explanation}
                           </p>
                         </TableCell>
                         <TableCell className="text-right">
-                          {countdown ? (
-                            <span className={`font-mono text-xs ${
-                              (m.time_to_event_hours || 999) <= 4 ? "text-red-400 font-bold" :
-                              (m.time_to_event_hours || 999) <= 48 ? "text-amber-400" :
-                              "text-[hsl(var(--nexus-text-muted))]"
-                            }`}>
-                              {countdown}
-                            </span>
-                          ) : (
-                            <span className="text-[10px] font-mono text-[hsl(var(--nexus-text-muted))]">—</span>
-                          )}
+                          <span className={`font-mono text-xs font-bold ${
+                            (m.time_to_event_hours || 999) <= 6 ? "text-emerald-400" :
+                            (m.time_to_event_hours || 999) <= 24 ? "text-amber-400" :
+                            "text-[hsl(var(--nexus-text-muted))]"
+                          }`}>
+                            {timeToCash}
+                          </span>
                         </TableCell>
                         <TableCell className="text-right">
                           <span className={`font-mono text-xs ${
-                            m.open_interest > 250 ? "text-purple-400 font-bold" : "text-[hsl(var(--nexus-text-muted))]"
+                            (m.time_to_event_hours || 999) <= 6 ? "text-emerald-400" : "text-[hsl(var(--nexus-text-muted))]"
+                          }`}>
+                            {turnover}
+                          </span>
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <span className={`font-mono text-xs ${
+                            m.open_interest > 500 ? "text-purple-400 font-bold" :
+                            m.open_interest > 100 ? "text-purple-400" : "text-[hsl(var(--nexus-text-muted))]"
                           }`}>
                             {m.open_interest > 0 ? m.open_interest.toLocaleString() : "—"}
                           </span>
@@ -579,7 +573,7 @@ export default function UniversalAlpha() {
 
           {markets.length === 0 && data && (
             <p className="text-center text-[hsl(var(--nexus-text-muted))] font-mono py-8 text-sm">
-              No markets to show. Try turning off "Hide junk" or selecting a different category.
+              No velocity markets found in the ≤36h window. Check back soon.
             </p>
           )}
         </section>
