@@ -462,11 +462,13 @@ Deno.serve(async (req) => {
       .sort((a, b) => b.spread_cents - a.spread_cents)
       .slice(0, 20)
       .map(r => ({
+        ticker: r.ticker,
         league: r.league,
         title: r.title,
         url: r.url,
         bid: r.yes_bid_cents,
         ask: r.yes_ask_cents,
+        midpoint: Math.round((r.yes_bid_cents + r.yes_ask_cents) / 2),
         spread: r.spread_cents,
         vol24h: r.vol24h,
         oi: r.oi,

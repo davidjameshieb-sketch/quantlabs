@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -28,7 +28,8 @@ interface NarrativeRow {
 }
 
 interface DebugRow {
-  league: string; title: string; url?: string; bid: number; ask: number; spread: number;
+  ticker?: string; league: string; title: string; url?: string;
+  bid: number; ask: number; midpoint?: number; spread: number;
   vol24h: number; oi: number; hours: number | null; flag: string | null;
 }
 
@@ -47,6 +48,20 @@ interface FeedData {
   timestamp: string;
 }
 
+// ─── 10-Minute Tape Types ───────────────────────────────────────
+
+interface TapeSnapshot {
+  midpoint: number;
+  vol24h: number;
+  ts: number; // Date.now()
+}
+
+interface TapeMetrics {
+  priceDelta: number | null;  // cents moved in 10 min
+  volSpike: number | null;    // contracts in 10 min window
+  isWhale: boolean;           // |Δ| >= 3 AND volSpike >= 500
+}
+
 // ─── Helpers ────────────────────────────────────────────────────
 
 function fmtTime(iso: string | null): string {
@@ -58,6 +73,32 @@ function fmtTime(iso: string | null): string {
 
 function leagueIcon(l: string): string {
   return l === "NBA" ? "🏀" : l === "PGA" ? "⛳" : l === "NRL" ? "🏉" : "🏆";
+}
+
+const TAPE_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
+
+function computeTapeMetrics(
+  ticker: string,
+  currentMidpoint: number,
+  currentVol: number,
+  tapeHistory: Map<string, TapeSnapshot[]>
+): TapeMetrics {
+  const history = tapeHistory.get(ticker);
+  if (!history || history.length < 2) return { priceDelta: null, volSpike: null, isWhale: false };
+
+  const now = Date.now();
+  const cutoff = now - TAPE_WINDOW_MS;
+
+  // Find oldest snapshot within window
+  const oldSnapshots = history.filter(s => s.ts <= cutoff + 15000); // 15s grace
+  const oldest = oldSnapshots.length > 0 ? oldSnapshots[oldSnapshots.length - 1] : history[0];
+
+  const priceDelta = currentMidpoint - oldest.midpoint;
+  const volSpike = currentVol - oldest.vol24h;
+
+  const isWhale = Math.abs(priceDelta) >= 3 && volSpike >= 500;
+
+  return { priceDelta, volSpike: volSpike > 0 ? volSpike : 0, isWhale };
 }
 
 // ─── Countdown Hook ─────────────────────────────────────────────
@@ -90,6 +131,12 @@ export default function UniversalAlpha() {
   const [error, setError] = useState<string | null>(null);
   const [lastRefresh, setLastRefresh] = useState("");
   const [activeLeague, setActiveLeague] = useState("All");
+  const [pollCount, setPollCount] = useState(0);
+
+  // Rolling 10-minute tape: ticker -> array of snapshots
+  const tapeHistoryRef = useRef<Map<string, TapeSnapshot[]>>(new Map());
+  // Computed metrics per ticker
+  const [tapeMetrics, setTapeMetrics] = useState<Map<string, TapeMetrics>>(new Map());
 
   const countdown = useCountdown(data?.next_catalyst?.close_time || null);
 
@@ -104,6 +151,34 @@ export default function UniversalAlpha() {
       if (res?.error) throw new Error(res.error);
       setData(res);
       setLastRefresh(new Date().toLocaleTimeString());
+
+      // ─── Record tape snapshot ─────────────────────────────
+      const now = Date.now();
+      const tape = tapeHistoryRef.current;
+      const newMetrics = new Map<string, TapeMetrics>();
+
+      if (res?.debug_board) {
+        for (const row of res.debug_board as DebugRow[]) {
+          if (!row.ticker) continue;
+          const midpoint = row.midpoint ?? Math.round((row.bid + row.ask) / 2);
+          const snapshot: TapeSnapshot = { midpoint, vol24h: row.vol24h, ts: now };
+
+          // Append to history
+          const history = tape.get(row.ticker) || [];
+          history.push(snapshot);
+
+          // Prune snapshots older than 12 minutes (keep buffer)
+          const cutoff = now - 12 * 60 * 1000;
+          const pruned = history.filter(s => s.ts >= cutoff);
+          tape.set(row.ticker, pruned);
+
+          // Compute metrics
+          newMetrics.set(row.ticker, computeTapeMetrics(row.ticker, midpoint, row.vol24h, tape));
+        }
+      }
+
+      setTapeMetrics(newMetrics);
+      setPollCount(c => c + 1);
     } catch (e: any) {
       console.error(e);
       setError(e.message || "Failed to load");
@@ -113,8 +188,10 @@ export default function UniversalAlpha() {
   }, [activeLeague]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
+
+  // Poll every 60 seconds for the tape
   useEffect(() => {
-    const iv = setInterval(fetchData, 90000);
+    const iv = setInterval(fetchData, 60000);
     return () => clearInterval(iv);
   }, [fetchData]);
 
@@ -123,6 +200,28 @@ export default function UniversalAlpha() {
 
   const cellClass = "p-1.5 text-left whitespace-nowrap";
   const headerClass = "p-1.5 text-left font-bold text-[hsl(var(--nexus-text-muted))] uppercase tracking-wider";
+
+  // Count whale alerts
+  const whaleCount = Array.from(tapeMetrics.values()).filter(m => m.isWhale).length;
+
+  // Helper to get tape metrics for a ticker
+  const getTape = (ticker?: string): TapeMetrics | null => {
+    if (!ticker) return null;
+    return tapeMetrics.get(ticker) || null;
+  };
+
+  // Format delta with color
+  const fmtDelta = (delta: number | null) => {
+    if (delta === null) return <span className="text-[hsl(var(--nexus-text-muted))]">…</span>;
+    const color = delta > 0 ? "text-emerald-400" : delta < 0 ? "text-red-400" : "text-[hsl(var(--nexus-text-muted))]";
+    const sign = delta > 0 ? "+" : "";
+    return <span className={`font-bold ${color}`}>{sign}{delta}¢</span>;
+  };
+
+  const fmtVolSpike = (vol: number | null) => {
+    if (vol === null) return <span className="text-[hsl(var(--nexus-text-muted))]">…</span>;
+    return <span className={`font-bold ${vol >= 500 ? "text-amber-400" : "text-[hsl(var(--nexus-text-primary))]"}`}>{vol.toLocaleString()}</span>;
+  };
 
   return (
     <div className="min-h-screen bg-[hsl(var(--nexus-bg))] text-[hsl(var(--nexus-text-primary))] font-mono text-xs">
@@ -135,7 +234,9 @@ export default function UniversalAlpha() {
               Machine-Readable Intelligence Feed
             </h1>
             <p className="text-[10px] text-[hsl(var(--nexus-text-muted))]">
-              48h window + Smart Money • {stats?.whitelistedCount || 0} tracked • {stats?.totalAnomalies || 0} triggers • {lastRefresh || "—"}
+              48h window + Smart Money • {stats?.whitelistedCount || 0} tracked • {stats?.totalAnomalies || 0} triggers
+              {whaleCount > 0 && <span className="text-red-400 font-bold ml-2">🐋 {whaleCount} WHALE ALERT{whaleCount > 1 ? "S" : ""}</span>}
+              <span className="ml-2">• Poll #{pollCount} • {lastRefresh || "—"}</span>
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -190,6 +291,16 @@ export default function UniversalAlpha() {
           </div>
         )}
 
+        {/* ─── TAPE STATUS ─── */}
+        {pollCount > 0 && (
+          <div className="flex items-center gap-4 text-[10px] text-[hsl(var(--nexus-text-muted))] border border-[hsl(var(--nexus-border))]/50 p-2 rounded">
+            <span className="text-emerald-400 font-bold">📼 10-MIN TAPE ACTIVE</span>
+            <span>Polling every 60s • {pollCount} snapshot{pollCount !== 1 ? "s" : ""} recorded</span>
+            <span>• {tapeHistoryRef.current.size} tickers tracked</span>
+            {pollCount < 10 && <span className="text-amber-400">• Warming up ({Math.min(10, Math.round(pollCount * 60 / 60))} of 10 min)</span>}
+          </div>
+        )}
+
         {/* ─── STATS ─── */}
         {stats && (
           <div className="flex gap-6 text-[10px] text-[hsl(var(--nexus-text-muted))] border-b border-[hsl(var(--nexus-border))] pb-2">
@@ -204,7 +315,7 @@ export default function UniversalAlpha() {
         {/* ─── TABLE 1: BREAKING NEWS FEED ─── */}
         <div>
           <h2 className="text-sm font-bold text-red-400 mb-2 border-b border-red-500/30 pb-1">
-            TABLE 1: Breaking News Feed — 24h Vol &gt; 300% OI, Ask &lt; 50¢
+            TABLE 1: Breaking News Feed — 24h Vol &gt; 100% OI, Ask &lt; 50¢
           </h2>
           {data?.breaking_news && data.breaking_news.length > 0 ? (
             <div className="overflow-x-auto">
@@ -213,29 +324,40 @@ export default function UniversalAlpha() {
                   <tr className="border-b border-[hsl(var(--nexus-border))] text-[10px]">
                     <th className={headerClass}>League</th>
                     <th className={headerClass}>Market Name</th>
+                    <th className={headerClass}>Bid/Ask</th>
+                    <th className={headerClass}>10m Δ</th>
+                    <th className={headerClass}>10m Vol</th>
+                    <th className={headerClass}>OI</th>
                     <th className={headerClass}>Start Time</th>
                     <th className={headerClass}>URL</th>
-                    <th className={headerClass}>Resolution</th>
-                    <th className={headerClass}>Kalshi Ask ¢</th>
-                    <th className={headerClass}>Real-World ¢</th>
                     <th className={headerClass}>Vol/OI</th>
                     <th className={headerClass}>Context</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {data.breaking_news.map((r, i) => (
-                    <tr key={i} className="border-b border-[hsl(var(--nexus-border))]/20 hover:bg-[hsl(var(--nexus-surface))]">
-                      <td className={cellClass}>{leagueIcon(r.league)} {r.league}</td>
-                      <td className={`${cellClass} max-w-[250px] truncate`}>{r.market}{r.time_flag ? ` [${r.time_flag}]` : ""}</td>
-                      <td className={cellClass}>{fmtTime(r.start_time)}</td>
-                      <td className={cellClass}><a href={r.url} target="_blank" rel="noopener noreferrer" className="text-cyan-400 hover:underline">Link</a></td>
-                      <td className={`${cellClass} max-w-[150px] truncate`}>{r.resolution || "—"}</td>
-                      <td className={`${cellClass} font-bold`}>{r.kalshi_ask_cents}¢</td>
-                      <td className={`${cellClass} font-bold text-amber-400`}>{r.real_world_cents !== null ? `${r.real_world_cents}¢` : "—"}</td>
-                      <td className={`${cellClass} text-red-400 font-bold`}>{r.vol_oi_ratio}</td>
-                      <td className={`${cellClass} max-w-[200px] truncate text-[hsl(var(--nexus-text-muted))]`}>{r.context}</td>
-                    </tr>
-                  ))}
+                  {data.breaking_news.map((r, i) => {
+                    // Try to find tape metrics via matching debug board ticker
+                    const matchingDebug = data.debug_board?.find(d => d.title === r.market);
+                    const tape = getTape(matchingDebug?.ticker);
+                    const isWhale = tape?.isWhale || false;
+                    return (
+                      <tr key={i} className={`border-b border-[hsl(var(--nexus-border))]/20 hover:bg-[hsl(var(--nexus-surface))] ${isWhale ? "bg-red-500/10 border-l-2 border-l-red-500" : ""}`}>
+                        <td className={cellClass}>
+                          {leagueIcon(r.league)} {r.league}
+                          {isWhale && <Badge className="ml-1 bg-red-600 text-white text-[8px] px-1 py-0">🐋 WHALE</Badge>}
+                        </td>
+                        <td className={`${cellClass} max-w-[200px] truncate`}>{r.market}{r.time_flag ? ` [${r.time_flag}]` : ""}</td>
+                        <td className={`${cellClass} font-bold`}>{r.kalshi_ask_cents}¢</td>
+                        <td className={cellClass}>{fmtDelta(tape?.priceDelta ?? null)}</td>
+                        <td className={cellClass}>{fmtVolSpike(tape?.volSpike ?? null)}</td>
+                        <td className={cellClass}>{matchingDebug?.oi?.toLocaleString() || "—"}</td>
+                        <td className={cellClass}>{fmtTime(r.start_time)}</td>
+                        <td className={cellClass}><a href={r.url} target="_blank" rel="noopener noreferrer" className="text-cyan-400 hover:underline">Link</a></td>
+                        <td className={`${cellClass} text-red-400 font-bold`}>{r.vol_oi_ratio}</td>
+                        <td className={`${cellClass} max-w-[200px] truncate text-[hsl(var(--nexus-text-muted))]`}>{r.context}</td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -247,7 +369,7 @@ export default function UniversalAlpha() {
         {/* ─── TABLE 2: WHOLESALE SPREAD FEED ─── */}
         <div>
           <h2 className="text-sm font-bold text-cyan-400 mb-2 border-b border-cyan-500/30 pb-1">
-            TABLE 2: Wholesale Spread Feed — OI &gt; 2,000, Vol &lt; 500, Spread &gt; 6¢
+            TABLE 2: Wholesale Spread Feed — OI &gt; 1,000, Vol &lt; 500, Spread &gt; 4¢
           </h2>
           {data?.wholesale_spreads && data.wholesale_spreads.length > 0 ? (
             <div className="overflow-x-auto">
@@ -256,29 +378,37 @@ export default function UniversalAlpha() {
                   <tr className="border-b border-[hsl(var(--nexus-border))] text-[10px]">
                     <th className={headerClass}>League</th>
                     <th className={headerClass}>Market Name</th>
+                    <th className={headerClass}>Bid/Ask</th>
+                    <th className={headerClass}>10m Δ</th>
+                    <th className={headerClass}>10m Vol</th>
+                    <th className={headerClass}>OI</th>
                     <th className={headerClass}>Start Time</th>
                     <th className={headerClass}>URL</th>
-                    <th className={headerClass}>Resolution</th>
-                    <th className={headerClass}>Kalshi Bid ¢</th>
-                    <th className={headerClass}>Kalshi Ask ¢</th>
-                    <th className={headerClass}>Real-World ¢</th>
                     <th className={headerClass}>Spread</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {data.wholesale_spreads.map((r, i) => (
-                    <tr key={i} className="border-b border-[hsl(var(--nexus-border))]/20 hover:bg-[hsl(var(--nexus-surface))]">
-                      <td className={cellClass}>{leagueIcon(r.league)} {r.league}</td>
-                      <td className={`${cellClass} max-w-[250px] truncate`}>{r.market}{r.time_flag ? ` [${r.time_flag}]` : ""}</td>
-                      <td className={cellClass}>{fmtTime(r.start_time)}</td>
-                      <td className={cellClass}><a href={r.url} target="_blank" rel="noopener noreferrer" className="text-cyan-400 hover:underline">Link</a></td>
-                      <td className={`${cellClass} max-w-[150px] truncate`}>{r.resolution || "—"}</td>
-                      <td className={`${cellClass} font-bold`}>{r.kalshi_bid_cents}¢</td>
-                      <td className={`${cellClass} font-bold`}>{r.kalshi_ask_cents}¢</td>
-                      <td className={`${cellClass} font-bold text-amber-400`}>{r.real_world_cents !== null ? `${r.real_world_cents}¢` : "—"}</td>
-                      <td className={`${cellClass} text-cyan-400 font-bold`}>{r.spread_width}¢</td>
-                    </tr>
-                  ))}
+                  {data.wholesale_spreads.map((r, i) => {
+                    const matchingDebug = data.debug_board?.find(d => d.title === r.market);
+                    const tape = getTape(matchingDebug?.ticker);
+                    const isWhale = tape?.isWhale || false;
+                    return (
+                      <tr key={i} className={`border-b border-[hsl(var(--nexus-border))]/20 hover:bg-[hsl(var(--nexus-surface))] ${isWhale ? "bg-red-500/10 border-l-2 border-l-red-500" : ""}`}>
+                        <td className={cellClass}>
+                          {leagueIcon(r.league)} {r.league}
+                          {isWhale && <Badge className="ml-1 bg-red-600 text-white text-[8px] px-1 py-0">🐋 WHALE</Badge>}
+                        </td>
+                        <td className={`${cellClass} max-w-[200px] truncate`}>{r.market}{r.time_flag ? ` [${r.time_flag}]` : ""}</td>
+                        <td className={`${cellClass} font-bold`}>{r.kalshi_bid_cents}/{r.kalshi_ask_cents}¢</td>
+                        <td className={cellClass}>{fmtDelta(tape?.priceDelta ?? null)}</td>
+                        <td className={cellClass}>{fmtVolSpike(tape?.volSpike ?? null)}</td>
+                        <td className={cellClass}>{matchingDebug?.oi?.toLocaleString() || "—"}</td>
+                        <td className={cellClass}>{fmtTime(r.start_time)}</td>
+                        <td className={cellClass}><a href={r.url} target="_blank" rel="noopener noreferrer" className="text-cyan-400 hover:underline">Link</a></td>
+                        <td className={`${cellClass} text-cyan-400 font-bold`}>{r.spread_width}¢</td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -330,7 +460,7 @@ export default function UniversalAlpha() {
           )}
         </div>
 
-        {/* ─── DEBUG BOARD ─── */}
+        {/* ─── DEBUG BOARD (with 10-min tape) ─── */}
         {data?.debug_board && data.debug_board.length > 0 && (
           <div>
             <h2 className="text-[10px] font-bold text-[hsl(var(--nexus-text-muted))] mb-2 border-b border-[hsl(var(--nexus-border))] pb-1 uppercase tracking-wider">
@@ -342,33 +472,42 @@ export default function UniversalAlpha() {
                   <tr className="border-b border-[hsl(var(--nexus-border))]">
                     <th className={headerClass}>League</th>
                     <th className={headerClass}>Market</th>
-                    <th className={headerClass}>Bid ¢</th>
-                    <th className={headerClass}>Ask ¢</th>
+                    <th className={headerClass}>Bid/Ask ¢</th>
+                    <th className={headerClass}>Mid ¢</th>
+                    <th className={headerClass}>10m Δ</th>
+                    <th className={headerClass}>10m Vol</th>
                     <th className={headerClass}>Spread ¢</th>
-                    <th className={headerClass}>Vol24h</th>
                     <th className={headerClass}>OI</th>
                     <th className={headerClass}>Hours</th>
                     <th className={headerClass}>Flag</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {data.debug_board.map((r, i) => (
-                    <tr key={i} className="border-b border-[hsl(var(--nexus-border))]/20 hover:bg-[hsl(var(--nexus-surface))]">
-                      <td className={cellClass}>{leagueIcon(r.league)} {r.league}</td>
-                      <td className={`${cellClass} max-w-[250px] truncate`}>
-                        {r.url ? (
-                          <a href={r.url} target="_blank" rel="noopener noreferrer" className="text-cyan-400 hover:underline">{r.title}</a>
-                        ) : r.title}
-                      </td>
-                      <td className={cellClass}>{r.bid}¢</td>
-                      <td className={cellClass}>{r.ask}¢</td>
-                      <td className={`${cellClass} text-cyan-400 font-bold`}>{r.spread}¢</td>
-                      <td className={cellClass}>{r.vol24h}</td>
-                      <td className={cellClass}>{r.oi}</td>
-                      <td className={cellClass}>{r.hours !== null ? (r.hours < 24 ? `${Math.round(r.hours)}h` : `${Math.floor(r.hours / 24)}d`) : "—"}</td>
-                      <td className={cellClass}>{r.flag || "—"}</td>
-                    </tr>
-                  ))}
+                  {data.debug_board.map((r, i) => {
+                    const tape = getTape(r.ticker);
+                    const isWhale = tape?.isWhale || false;
+                    return (
+                      <tr key={i} className={`border-b border-[hsl(var(--nexus-border))]/20 hover:bg-[hsl(var(--nexus-surface))] ${isWhale ? "bg-red-500/10" : ""}`}>
+                        <td className={cellClass}>
+                          {leagueIcon(r.league)} {r.league}
+                          {isWhale && <Badge className="ml-1 bg-red-600 text-white text-[8px] px-1 py-0">🐋</Badge>}
+                        </td>
+                        <td className={`${cellClass} max-w-[250px] truncate`}>
+                          {r.url ? (
+                            <a href={r.url} target="_blank" rel="noopener noreferrer" className="text-cyan-400 hover:underline">{r.title}</a>
+                          ) : r.title}
+                        </td>
+                        <td className={cellClass}>{r.bid}/{r.ask}¢</td>
+                        <td className={`${cellClass} font-bold`}>{r.midpoint ?? Math.round((r.bid + r.ask) / 2)}¢</td>
+                        <td className={cellClass}>{fmtDelta(tape?.priceDelta ?? null)}</td>
+                        <td className={cellClass}>{fmtVolSpike(tape?.volSpike ?? null)}</td>
+                        <td className={`${cellClass} text-cyan-400 font-bold`}>{r.spread}¢</td>
+                        <td className={cellClass}>{r.oi.toLocaleString()}</td>
+                        <td className={cellClass}>{r.hours !== null ? (r.hours < 24 ? `${Math.round(r.hours)}h` : `${Math.floor(r.hours / 24)}d`) : "—"}</td>
+                        <td className={cellClass}>{isWhale ? <span className="text-red-400 font-bold">🐋 WHALE ALERT</span> : (r.flag || "—")}</td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
