@@ -464,6 +464,7 @@ Deno.serve(async (req) => {
       .map(r => ({
         league: r.league,
         title: r.title,
+        url: r.url,
         bid: r.yes_bid_cents,
         ask: r.yes_ask_cents,
         spread: r.spread_cents,

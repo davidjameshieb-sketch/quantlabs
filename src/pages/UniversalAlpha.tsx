@@ -28,7 +28,7 @@ interface NarrativeRow {
 }
 
 interface DebugRow {
-  league: string; title: string; bid: number; ask: number; spread: number;
+  league: string; title: string; url?: string; bid: number; ask: number; spread: number;
   vol24h: number; oi: number; hours: number | null; flag: string | null;
 }
 
