@@ -308,6 +308,9 @@ Deno.serve(async (req) => {
     let nearestLeague: string | null = null;
     let whitelistedCount = 0;
 
+    // Collect all whitelisted market data for debug + module scanning
+    const whitelistedRows: any[] = [];
+
     for (const m of rawMarkets) {
       const event = eventMap.get(m.event_ticker) || {};
       const title = `${m.title || ""} ${m.subtitle || ""} ${event.title || ""}`;
@@ -325,11 +328,24 @@ Deno.serve(async (req) => {
         nearestLeague = detected.league;
       }
 
-      if (hoursLeft === null || hoursLeft > MAX_HOURS || hoursLeft <= 0) continue;
-
       const yesPrice = (m.yes_ask || m.last_price || 0) / 100;
+      const yesBid = (m.yes_bid || 0) / 100;
+      const yesAsk = (m.yes_ask || 0) / 100;
       const vol24h = m.volume_24h || 0;
       const oi = m.open_interest || 0;
+      const spreadCents = (yesBid > 0 && yesAsk > 0) ? Math.round((yesAsk - yesBid) * 100) : 0;
+
+      whitelistedRows.push({
+        ticker: m.ticker,
+        title: m.title || m.subtitle || m.ticker,
+        league: detected.league,
+        yesPrice, yesBid, yesAsk, spreadCents, vol24h, oi,
+        hoursLeft, closeTime,
+        isProp: isPlayerProp(title),
+        event_ticker: m.event_ticker,
+      });
+
+      if (hoursLeft === null || hoursLeft > MAX_HOURS || hoursLeft <= 0) continue;
 
       const anomaly = runRadarModules(m, yesPrice, vol24h, oi, hoursLeft, detected.league, title, rawMarkets);
       if (!anomaly) continue;
@@ -344,8 +360,8 @@ Deno.serve(async (req) => {
         icon: detected.icon,
         is_prop: isPlayerProp(title),
         yes_price: yesPrice,
-        yes_bid: (m.yes_bid || 0) / 100,
-        yes_ask: (m.yes_ask || 0) / 100,
+        yes_bid: yesBid,
+        yes_ask: yesAsk,
         volume_24h: vol24h,
         open_interest: oi,
         close_time: closeTime,
@@ -362,6 +378,23 @@ Deno.serve(async (req) => {
       else if (anomaly.module === "SMOKE_ALARM") smokeAlarms.push(row);
       else if (anomaly.module === "NARRATIVE_MISMATCH") narrativeMismatches.push(row);
     }
+
+    // Build debug sample: top 10 by widest spread so we can see actual values
+    const debugSample = whitelistedRows
+      .sort((a, b) => b.spreadCents - a.spreadCents)
+      .slice(0, 15)
+      .map(r => ({
+        ticker: r.ticker,
+        title: r.title,
+        league: r.league,
+        spread: r.spreadCents + "¢",
+        bid: Math.round(r.yesBid * 100) + "¢",
+        ask: Math.round(r.yesAsk * 100) + "¢",
+        vol24h: r.vol24h,
+        oi: r.oi,
+        hours: r.hoursLeft,
+        isProp: r.isProp,
+      }));
 
     const sortByTime = (a: any, b: any) => (a.hours_left || 999) - (b.hours_left || 999);
     wholesaleGaps.sort(sortByTime);
