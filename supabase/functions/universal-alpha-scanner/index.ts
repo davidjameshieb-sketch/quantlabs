@@ -17,6 +17,8 @@ const CATEGORY_MAP: Record<string, { class: string; icon: string }> = {
   ATP: { class: "Sports", icon: "🎾" }, WTA: { class: "Sports", icon: "🎾" },
   F1: { class: "Sports", icon: "🏎️" }, NASCAR: { class: "Sports", icon: "🏎️" },
   MLS: { class: "Sports", icon: "⚽" }, EPL: { class: "Sports", icon: "⚽" },
+  UCL: { class: "Sports", icon: "⚽" }, FIFA: { class: "Sports", icon: "⚽" },
+  CRICKET: { class: "Sports", icon: "🏏" }, IPL: { class: "Sports", icon: "🏏" },
   CONGRESS: { class: "Politics", icon: "🏛️" }, POTUS: { class: "Politics", icon: "🏛️" },
   SENATE: { class: "Politics", icon: "🏛️" }, HOUSE: { class: "Politics", icon: "🏛️" },
   ELECTION: { class: "Politics", icon: "🏛️" }, GOVERN: { class: "Politics", icon: "🏛️" },
@@ -38,68 +40,6 @@ const CATEGORY_MAP: Record<string, { class: string; icon: string }> = {
   CLIMATE: { class: "Climate", icon: "🌍" }, WEATHER: { class: "Climate", icon: "🌍" },
 };
 
-// ─── Pre-Momentum Target Keywords ──────────────────────────────
-const PRE_MOMENTUM_TARGETS = [
-  "try scorer", "tryscorer", "try_scorer",
-  "round 1 leader", "round leader", "r1 leader",
-  "weekly mentions", "mention",
-  "first goal", "anytime scorer", "anytime goal",
-  "top 5", "top 10", "top 20",
-  "winner",
-];
-
-// ─── High-Profile Event Keywords (the "Amazon" events) ─────────
-// These are the events everyone watches but where underdogs get mispriced
-const HIGH_PROFILE_KEYWORDS = [
-  // Major sports finals / playoffs
-  "championship", "playoff", "finals", "super bowl", "world series",
-  "stanley cup", "march madness", "grand slam", "masters", "open",
-  // Major politics
-  "president", "election", "primary", "debate", "impeach", "senate race",
-  "governor", "swing state",
-  // Economics
-  "fed rate", "cpi", "gdp", "recession", "jobs report", "unemployment",
-  "inflation", "s&p 500", "nasdaq", "dow",
-  // Crypto
-  "bitcoin", "ethereum", "btc", "eth", "crypto",
-  // Culture
-  "oscar", "grammy", "emmy", "super bowl", "world cup",
-  // Individual fame (big-name underdogs)
-  "mvp", "rookie of the year", "scoring leader", "batting",
-  "home run", "touchdown", "triple double",
-];
-
-interface ClassifiedMarket {
-  ticker: string;
-  event_ticker: string;
-  series_ticker: string;
-  title: string;
-  event_title: string;
-  asset_class: string;
-  icon: string;
-  yes_price: number;
-  no_price: number;
-  yes_bid: number;
-  yes_ask: number;
-  no_bid: number;
-  no_ask: number;
-  last_price: number;
-  volume: number;
-  volume_24h: number;
-  open_interest: number;
-  close_time: string;
-  subtitle: string;
-  alpha_type: string | null;
-  alpha_signal: string | null;
-  alpha_score: number;
-  alpha_reasoning: string | null;
-  alpha_strategy: string | null;
-  alpha_tier: string | null;
-  suggested_bet: number;
-  time_to_event_hours: number | null;
-  recovery_tag: string | null;
-}
-
 function classifyAssetClass(ticker: string, title: string, category: string): { class: string; icon: string } {
   const combined = `${ticker} ${title} ${category}`.toUpperCase();
   for (const [key, val] of Object.entries(CATEGORY_MAP)) {
@@ -111,8 +51,6 @@ function classifyAssetClass(ticker: string, title: string, category: string): { 
   return { class: "Other", icon: "📊" };
 }
 
-// ─── Time to Event ──────────────────────────────────────────────
-
 function hoursUntilClose(closeTime: string | null): number | null {
   if (!closeTime) return null;
   const diff = new Date(closeTime).getTime() - Date.now();
@@ -120,7 +58,65 @@ function hoursUntilClose(closeTime: string | null): number | null {
   return +(diff / 3600000).toFixed(1);
 }
 
-// ─── Early-Entry Sniper Engine ──────────────────────────────────
+function extractSeriesTicker(eventTicker: string): string {
+  if (!eventTicker) return "";
+  const match = eventTicker.match(/^([A-Z0-9]+)-\d{2}[A-Z]{3}\d{2}/);
+  if (match) return match[1];
+  const parts = eventTicker.split("-");
+  return parts[0] || eventTicker;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// FAIR VALUE ESTIMATOR
+// Uses market-structure signals to estimate what the "real" probability is,
+// then compares to Kalshi price to find arbitrage.
+// ═══════════════════════════════════════════════════════════════════
+
+function estimateFairValue(m: any, yesPrice: number, vol24h: number, oi: number, hoursLeft: number | null): number {
+  // Start with the market's own "last_price" as base — it reflects recent trade consensus
+  const lastPrice = (m.last_price || 0) / 100;
+  const yesBid = (m.yes_bid || 0) / 100;
+  const yesAsk = (m.yes_ask || 0) / 100;
+
+  // If we have a two-sided book, midpoint is a better FV estimate than ask
+  const midpoint = (yesBid > 0 && yesAsk > 0) ? (yesBid + yesAsk) / 2 : yesPrice;
+
+  // Weight: if there's heavy OI relative to volume, the "smart money" price (last trade) is more informative
+  const oiWeight = oi > 200 ? 0.6 : oi > 50 ? 0.4 : 0.2;
+  const midWeight = (yesBid > 0 && yesAsk > 0) ? 0.5 : 0.2;
+
+  // Blend: FV = weighted avg of last_price, midpoint, and ask
+  let fv = lastPrice > 0
+    ? lastPrice * oiWeight + midpoint * midWeight + yesPrice * (1 - oiWeight - midWeight)
+    : midpoint > 0 ? midpoint : yesPrice;
+
+  // Favorites with spreads: the ask overstates cost, use closer to mid
+  if (yesPrice >= 0.40 && yesBid > 0 && yesAsk > 0) {
+    const spread = yesAsk - yesBid;
+    // If spread is wide, the "real" price is closer to mid than ask
+    if (spread > 0.05) {
+      fv = Math.max(fv, midpoint);
+    }
+  }
+
+  // OI-implied conviction: high OI at a price level = market believes in that level
+  if (oi > 500 && vol24h < 100) {
+    // Ghost volume: smart money locked in, they think it's worth more
+    fv = Math.max(fv, yesPrice * 1.15); // at least 15% above current for trapped OI
+  }
+
+  // Time decay: as event nears, prices should converge to 0 or 1
+  // Contracts near settlement with activity tend toward their "true" value
+  if (hoursLeft !== null && hoursLeft < 24 && vol24h > 20) {
+    fv = Math.max(fv, lastPrice > 0 ? lastPrice : midpoint);
+  }
+
+  return Math.min(0.99, Math.max(0.01, +fv.toFixed(3)));
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// EDGE DETECTION ENGINE — Arb-First, Velocity-Prioritized
+// ═══════════════════════════════════════════════════════════════════
 
 interface EdgeResult {
   type: string;
@@ -130,11 +126,8 @@ interface EdgeResult {
   strategy: string;
   tier: string | null;
   recovery_tag: string | null;
-}
-
-function isPreMomentumTarget(title: string): boolean {
-  const lower = title.toLowerCase();
-  return PRE_MOMENTUM_TARGETS.some(t => lower.includes(t));
+  fair_value: number;
+  arb_edge_pct: number;
 }
 
 function detectEdge(m: any, yesPrice: number, noPrice: number, vol24h: number, oi: number, assetClass: string, hoursLeft: number | null): EdgeResult {
@@ -147,233 +140,195 @@ function detectEdge(m: any, yesPrice: number, noPrice: number, vol24h: number, o
   const priceCents = Math.round(yesPrice * 100);
   const title = (m.title || m.subtitle || "").toLowerCase();
 
-  // ═══ VELOCITY-1st: Time tiers — fastest settle = highest priority ═══
-  const MAX_HOURS = 168; // 7 day outer limit
+  const MAX_HOURS = 168;
   const within6h = hoursLeft !== null && hoursLeft > 0 && hoursLeft <= 6;
   const within24h = hoursLeft !== null && hoursLeft > 0 && hoursLeft <= 24;
-  const within36h = hoursLeft !== null && hoursLeft > 0 && hoursLeft <= 36;
-  const within72h = hoursLeft !== null && hoursLeft > 0 && hoursLeft <= 72;
+  const within48h = hoursLeft !== null && hoursLeft > 0 && hoursLeft <= 48;
   const within7d = hoursLeft !== null && hoursLeft > 0 && hoursLeft <= MAX_HOURS;
+  const cashHours = hoursLeft !== null ? hoursLeft.toFixed(0) : "?";
+  const velocityBonus = within6h ? 0.25 : within24h ? 0.2 : within48h ? 0.15 : within7d ? 0.05 : 0;
 
-  // Binary Cliff still applies regardless of time gate (capital protection)
+  // Fair value estimation
+  const fairValue = estimateFairValue(m, yesPrice, vol24h, oi, hoursLeft);
+  const arbEdge = yesPrice > 0 ? (fairValue - yesPrice) / yesPrice : 0;
+  const arbEdgePct = Math.round(arbEdge * 100);
+  const noResult = (type: string, reason: string): EdgeResult => ({
+    type, signal: "SKIP", score: 0, reasoning: reason, strategy: "NO TRADE.",
+    tier: null, recovery_tag: null, fair_value: fairValue, arb_edge_pct: arbEdgePct,
+  });
+
+  // ── Capital protection first ──
   if (yesPrice >= 0.85 && hoursLeft !== null && hoursLeft <= 4) {
-    const profitPct = Math.round((yesPrice - 0.10) / 0.10 * 100);
     return {
-      type: "BINARY_CLIFF",
-      signal: "IMMEDIATE_LIQUIDATION",
-      score: 0.01,
-      reasoning: `🚨 BINARY CLIFF: ${priceCents}¢ with only ${hoursLeft.toFixed(1)}h left. Take 75% off NOW.`,
-      strategy: `SELL 75% NOW: Lock gains. Leave 25% as free-roll.`,
-      tier: "FLOOR_DEFENSE",
-      recovery_tag: "FLOOR_DEFENSE",
+      type: "BINARY_CLIFF", signal: "IMMEDIATE_LIQUIDATION", score: 0.01,
+      reasoning: `🚨 ${priceCents}¢ with ${hoursLeft.toFixed(1)}h left. SELL 75% NOW.`,
+      strategy: `SELL 75%: Lock gains. Free-roll the rest.`,
+      tier: "FLOOR_DEFENSE", recovery_tag: "FLOOR_DEFENSE",
+      fair_value: fairValue, arb_edge_pct: 0,
     };
   }
-
-  // Settled / Dead bypass time gate
-  if (yesPrice > 0.95) {
-    return { type: "SETTLED", signal: "NO_EDGE", score: 0, reasoning: `${priceCents}¢ — done.`, strategy: "NO TRADE.", tier: "FLOOR_DEFENSE", recovery_tag: "FLOOR_DEFENSE" };
-  }
-  if (yesPrice <= 0) {
-    return { type: "DEAD", signal: "NO_EDGE", score: 0, reasoning: "0¢ — dead.", strategy: "NO TRADE.", tier: null, recovery_tag: null };
-  }
+  if (yesPrice > 0.95) return noResult("SETTLED", `${priceCents}¢ — settled.`);
+  if (yesPrice <= 0) return noResult("DEAD", "0¢ — dead.");
   if (yesPrice > 0 && yesPrice <= 0.02 && oi > 0) {
-    return {
-      type: "MATHEMATICAL_DEATH",
-      signal: "INSTANT_LIQUIDATION",
-      score: 0,
-      reasoning: `${priceCents}¢ with ${oi} OI — 0% probability. Sell to recover capital.`,
-      strategy: "LIQUIDATE: Dead position. Sell at any price.",
-      tier: null,
-      recovery_tag: null,
-    };
+    return { ...noResult("MATHEMATICAL_DEATH", `${priceCents}¢ / ${oi} OI — dead. Liquidate.`), strategy: "LIQUIDATE at any price." };
   }
 
-  // ═══ TIME GATE: 7 days max, but velocity bonus for < 36h ═══
+  // Time gate: 7 days max
   if (hoursLeft !== null && hoursLeft > MAX_HOURS) {
-    return {
-      type: "TOO_FAR_OUT",
-      signal: "NO_EDGE",
-      score: 0,
-      reasoning: `${Math.round(hoursLeft / 24)}d out — outside 7d window.`,
-      strategy: "SKIP: Wait until closer.",
-      tier: null,
-      recovery_tag: null,
-    };
+    return noResult("TOO_FAR_OUT", `${Math.round(hoursLeft / 24)}d out — outside 7d window.`);
   }
 
-  // Velocity bonus multiplier: closer = better cash turnover
-  const velocityBonus = within6h ? 0.25 : within24h ? 0.2 : within36h ? 0.15 : within72h ? 0.05 : 0;
-
-  // ═══ LIQUIDITY GATE ═══
+  // Liquidity gate
   const hasRealOI = oi >= 5;
   const hasRealVolume = vol24h >= 5;
-  const hasTwoSidedBook = yesBid > 0 && yesAsk > 0 && (yesAsk - yesBid) < 0.15;
+  const hasTwoSidedBook = yesBid > 0 && yesAsk > 0 && spread < 0.20;
   const hasRealLiquidity = hasRealOI || hasRealVolume || (hasTwoSidedBook && oi > 0);
   if (!hasRealLiquidity) {
+    return noResult("NO_ORDERBOOK", `${priceCents}¢ — OI:${oi}, Vol:${vol24h}. No liquidity.`);
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // TIER 1: GUARANTEED ARB — Buy Yes + No < $1
+  // ══════════════════════════════════════════════════════════════
+  if (yesAsk > 0 && noAsk > 0 && (yesAsk + noAsk) < 0.95) {
+    const arb = 1 - (yesAsk + noAsk);
+    const score = Math.min(0.99, arb * 5 + velocityBonus);
     return {
-      type: "NO_ORDERBOOK",
-      signal: "SKIP",
-      score: 0,
-      reasoning: `${priceCents}¢ — OI:${oi}, Vol24h:${vol24h}. Not enough liquidity.`,
-      strategy: "SKIP: No real orderbook.",
-      tier: null,
-      recovery_tag: null,
+      type: "GUARANTEED_ARB", signal: "BUY_BOTH", score: +score.toFixed(3),
+      reasoning: `💰 GUARANTEED: Yes ${Math.round(yesAsk*100)}¢ + No ${Math.round(noAsk*100)}¢ = ${Math.round((yesAsk+noAsk)*100)}¢. ${Math.round(arb*100)}¢ risk-free. Cash back in ${cashHours}h.`,
+      strategy: `BUY BOTH SIDES. ${Math.round(arb*100)}¢ guaranteed profit per contract.`,
+      tier: "ACCELERATOR", recovery_tag: "ACCELERATOR",
+      fair_value: fairValue, arb_edge_pct: 100,
     };
   }
 
-  const isHighProfile = HIGH_PROFILE_KEYWORDS.some(k => title.includes(k) || (m.event_title || "").toLowerCase().includes(k));
-  const cashHours = hoursLeft !== null ? hoursLeft.toFixed(0) : "?";
+  // ══════════════════════════════════════════════════════════════
+  // TIER 2: PRICE ARB — Fair Value significantly above Kalshi price
+  // The "Charlotte spread" and "Penrith Panthers" type plays
+  // ══════════════════════════════════════════════════════════════
+  if (arbEdge >= 0.10 && yesPrice >= 0.05 && yesPrice <= 0.85) {
+    const limitCents = yesBid > 0 ? Math.round((yesBid + 0.01) * 100) : priceCents;
+    const roi = Math.round(maxROI * 100);
+
+    let score = 0.3 + velocityBonus;
+    if (arbEdge >= 0.50) score += 0.3;      // massive arb like Panthers
+    else if (arbEdge >= 0.25) score += 0.2;  // strong arb like Charlotte
+    else if (arbEdge >= 0.15) score += 0.1;
+    if (oi > 100) score += 0.1;
+    if (vol24h > 20) score += 0.05;
+    if (hasTwoSidedBook) score += 0.05;
+    score = Math.min(0.99, score);
+
+    const arbLabel = arbEdgePct >= 40 ? "🔥 MASSIVE ARB" : arbEdgePct >= 20 ? "💰 STRONG ARB" : "📊 VALUE ARB";
+    const settleLabel = within24h ? "TONIGHT" : within48h ? `${cashHours}h` : `${Math.round((hoursLeft || 0) / 24)}d`;
+
+    return {
+      type: "PRICE_ARB", signal: "ARB_BUY", score: +score.toFixed(3),
+      reasoning: `${arbLabel}: Kalshi has this at ${priceCents}¢ (${priceCents}% implied) but fair value is ${Math.round(fairValue*100)}¢ (${Math.round(fairValue*100)}%). That's a ${arbEdgePct}% discount. ${oi > 0 ? `${oi} OI.` : ''} ${vol24h > 0 ? `${vol24h} vol.` : ''} Settles ${settleLabel}.`,
+      strategy: `LIMIT at ${limitCents}¢. FV=${Math.round(fairValue*100)}¢. ${arbEdgePct}% edge. ${roi}% max ROI. Cash back ${settleLabel}.`,
+      tier: "ACCELERATOR", recovery_tag: "ACCELERATOR",
+      fair_value: fairValue, arb_edge_pct: arbEdgePct,
+    };
+  }
 
   // ══════════════════════════════════════════════════════════════
-  // VELOCITY RULE 1: "WHOLESALE SPREAD" — Cash Arbitrage
-  // Bid/Ask spread > 15¢ = buy wholesale, sell at settle price
+  // TIER 3: WHOLESALE SPREAD — Wide bid/ask = buy at wholesale
   // ══════════════════════════════════════════════════════════════
-  if (spread >= 0.15 && yesBid > 0 && yesAsk > 0 && yesPrice >= 0.05 && yesPrice <= 0.90) {
-    const midpoint = (yesBid + yesAsk) / 2;
+  if (spread >= 0.12 && yesBid > 0 && yesAsk > 0 && yesPrice >= 0.05 && yesPrice <= 0.90) {
     const limitPrice = yesBid + 0.01;
     const limitCents = Math.round(limitPrice * 100);
-    const midCents = Math.round(midpoint * 100);
     const spreadCents = Math.round(spread * 100);
-    const edgeCents = Math.round((midpoint - limitPrice) * 100);
-    const turnoverROI = yesPrice > 0 ? Math.round((1 / limitPrice - 1) * 100) : 0;
+    const edgeCents = Math.round(((yesAsk + yesBid) / 2 - limitPrice) * 100);
 
-    let score = 0.4 + velocityBonus;
+    let score = 0.35 + velocityBonus;
     if (spread >= 0.25) score += 0.15;
     if (oi > 100) score += 0.1;
     if (vol24h < 50 && oi > 50) score += 0.1;
     score = Math.min(0.99, score);
 
-    const cashLabel = within24h ? 'tonight' : within36h ? 'tomorrow' : `${cashHours}h`;
     return {
-      type: "CASH_ARBITRAGE",
-      signal: "WHOLESALE_SPREAD",
-      score: +score.toFixed(3),
-      reasoning: `💰 CASH ARB: ${spreadCents}¢ spread (Bid ${Math.round(yesBid*100)}¢ / Ask ${Math.round(yesAsk*100)}¢). Buy wholesale at ${limitCents}¢. Settles in ${cashHours}h — capital back ${cashLabel}. ${oi > 100 ? `${oi} OI trapped.` : ''}`,
-      strategy: `LIMIT ORDER: ${limitCents}¢ (wholesale). Mid=${midCents}¢. ${edgeCents}¢ edge. ${turnoverROI}% ROI in ${cashHours}h.`,
-      tier: "ACCELERATOR",
-      recovery_tag: "ACCELERATOR",
+      type: "WHOLESALE_SPREAD", signal: "LIMIT_SNIPE", score: +score.toFixed(3),
+      reasoning: `🏪 WHOLESALE: ${spreadCents}¢ spread (Bid ${Math.round(yesBid*100)}¢ / Ask ${Math.round(yesAsk*100)}¢). Buy at ${limitCents}¢ — ${edgeCents}¢ below mid. ${oi > 50 ? `${oi} OI trapped.` : ''} Settles ${cashHours}h.`,
+      strategy: `LIMIT at ${limitCents}¢. ${edgeCents}¢ instant edge vs midpoint. Cash back ${cashHours}h.`,
+      tier: "ACCELERATOR", recovery_tag: "ACCELERATOR",
+      fair_value: fairValue, arb_edge_pct: arbEdgePct,
     };
   }
 
   // ══════════════════════════════════════════════════════════════
-  // VELOCITY RULE 2: "LIQUIDITY TRAP" — Ghost Volume Catalyst
-  // OI > 200 but 24h Vol < 50 = money is trapped, name your price
-  // (Lowered from 500 to 200 to surface more traps)
+  // TIER 4: LIQUIDITY TRAP — High OI, dead volume, name your price
   // ══════════════════════════════════════════════════════════════
-  if (oi > 200 && vol24h < 50 && yesPrice >= 0.03 && yesPrice <= 0.90) {
-    const limitPrice = yesBid > 0 ? yesBid + 0.01 : yesPrice;
-    const limitCents = Math.round(limitPrice * 100);
-    const turnoverROI = Math.round((1 / limitPrice - 1) * 100);
+  if (oi > 150 && vol24h < 50 && yesPrice >= 0.03 && yesPrice <= 0.90) {
+    const limitCents = yesBid > 0 ? Math.round((yesBid + 0.01) * 100) : priceCents;
+    const roi = Math.round((1 / (yesBid > 0 ? yesBid + 0.01 : yesPrice) - 1) * 100);
 
-    let score = 0.4 + velocityBonus;
-    if (oi > 1000) score += 0.15;
-    else if (oi > 500) score += 0.1;
+    let score = 0.3 + velocityBonus;
+    if (oi > 500) score += 0.15;
+    else if (oi > 200) score += 0.1;
     if (vol24h === 0) score += 0.1;
     if (spread >= 0.10) score += 0.1;
     score = Math.min(0.99, score);
 
     return {
-      type: "LIQUIDITY_TRAP",
-      signal: "GHOST_CATALYST",
-      score: +score.toFixed(3),
-      reasoning: `🕳️ LIQUIDITY TRAP: ${oi} OI trapped but only ${vol24h} traded in 24h. YOU name the price. Settles in ${cashHours}h. ${within36h ? '⚡ VELOCITY — fast cash turnover.' : ''}`,
-      strategy: `LIMIT SNIPE: ${limitCents}¢. ${oi} contracts trapped. ${turnoverROI}% ROI. Cash back in ${cashHours}h.`,
-      tier: "ACCELERATOR",
-      recovery_tag: "ACCELERATOR",
+      type: "LIQUIDITY_TRAP", signal: "GHOST_SNIPE", score: +score.toFixed(3),
+      reasoning: `🕳️ TRAP: ${oi} OI locked in but only ${vol24h} traded in 24h. Dead volume = you name the price. Settles ${cashHours}h. ${arbEdgePct > 10 ? `FV ${Math.round(fairValue*100)}¢ vs price ${priceCents}¢ = ${arbEdgePct}% edge.` : ''}`,
+      strategy: `LIMIT SNIPE at ${limitCents}¢. ${oi} contracts trapped. ${roi}% ROI. Cash back ${cashHours}h.`,
+      tier: "ACCELERATOR", recovery_tag: "ACCELERATOR",
+      fair_value: fairValue, arb_edge_pct: arbEdgePct,
     };
   }
 
   // ══════════════════════════════════════════════════════════════
-  // VELOCITY RULE 3: Velocity Penny — cheap + settle within window
+  // TIER 5: VELOCITY PENNY — Cheap + settles soon
+  // The "Akshay Bhatia" type plays — 2¢ with 50:1 leverage
   // ══════════════════════════════════════════════════════════════
   if (yesPrice > 0.005 && yesPrice <= 0.15) {
     const roi = Math.round(maxROI * 100);
-    const hasSmartMoney = oi > 100 && vol24h < 500;
-    const isTarget = isPreMomentumTarget(title);
+    const hasSmartMoney = oi > 50 && vol24h < 200;
 
     let score = 0.15 + velocityBonus;
     if (yesPrice <= 0.05) score += 0.15;
     if (yesPrice <= 0.03) score += 0.1;
-    if (isHighProfile) score += 0.15;
     if (hasSmartMoney) score += 0.15;
     if (oi > 20) score += 0.05;
-    if (isTarget) score += 0.1;
-    if (spread >= 0.10) score += 0.05;
+    if (arbEdge > 0.20) score += 0.1;
+    if (spread >= 0.08) score += 0.05;
     score = Math.min(0.99, score);
 
-    if (score >= 0.2) {
-      const tag = score >= 0.6 ? "🏆 HIDDEN GEM" : score >= 0.4 ? "💎 PENNY ALPHA" : "🌱 SEEDLING";
-      const speedLabel = within36h ? "⚡ VELOCITY — " : "";
-
+    if (score >= 0.15) {
+      const tag = score >= 0.6 ? "🏆 CONVICTION" : score >= 0.4 ? "💎 STRONG" : "🌱 SPECULATIVE";
       return {
-        type: "VELOCITY_PENNY",
-        signal: "FAST_TURNOVER",
-        score: +score.toFixed(3),
-        reasoning: `${tag}: ${speedLabel}${priceCents}¢ settling in ${cashHours}h. Risk $1 to make $${(maxROI + 1).toFixed(0)}. ${hasSmartMoney ? `${oi} OI / ${vol24h} vol — ghost volume.` : oi > 0 ? `${oi} OI.` : ''}`,
-        strategy: `$1-3 LIMIT at ${priceCents}¢. ${roi}% ROI. Capital returns in ${cashHours}h.`,
-        tier: "ACCELERATOR",
-        recovery_tag: "ACCELERATOR",
+        type: "VELOCITY_PENNY", signal: "PENNY_SNIPE", score: +score.toFixed(3),
+        reasoning: `${tag}: ${priceCents}¢ = $1 risk for $${(maxROI+1).toFixed(0)} payout (${roi}% ROI). ${hasSmartMoney ? `${oi} OI / ${vol24h} vol — ghost volume.` : oi > 0 ? `${oi} OI.` : ''} Settles ${cashHours}h. ${arbEdgePct > 10 ? `FV ${Math.round(fairValue*100)}¢ = ${arbEdgePct}% edge.` : ''}`,
+        strategy: `$1-3 LIMIT at ${priceCents}¢. ${roi}% ROI. Cash back ${cashHours}h.`,
+        tier: "ACCELERATOR", recovery_tag: "ACCELERATOR",
+        fair_value: fairValue, arb_edge_pct: arbEdgePct,
       };
     }
   }
 
   // ══════════════════════════════════════════════════════════════
-  // Spread Arb (guaranteed profit)
-  // ══════════════════════════════════════════════════════════════
-  if (yesAsk > 0 && noAsk > 0 && (yesAsk + noAsk) < 0.95) {
-    const arb = 1 - (yesAsk + noAsk);
-    const score = Math.min(1, arb * 5 + velocityBonus);
-    return {
-      type: "SPREAD_ARB",
-      signal: "BUY_BOTH",
-      score: +score.toFixed(3),
-      reasoning: `💰 GUARANTEED PROFIT: Yes ${Math.round(yesAsk * 100)}¢ + No ${Math.round(noAsk * 100)}¢ = ${Math.round((yesAsk + noAsk) * 100)}¢. ${Math.round(arb * 100)}¢ risk-free. Settles in ${cashHours}h.`,
-      strategy: "ARBITRAGE: Buy both sides. Guaranteed profit. Cash back in " + cashHours + "h.",
-      tier: "ACCELERATOR",
-      recovery_tag: "ACCELERATOR",
-    };
-  }
-
-  // ══════════════════════════════════════════════════════════════
-  // Wide spread snipe (8¢+)
-  // ══════════════════════════════════════════════════════════════
-  if (spread >= 0.08 && yesPrice >= 0.05 && yesPrice <= 0.90) {
-    const mid = (yesBid + yesAsk) / 2;
-    const limitCents = Math.round((yesBid + 0.01) * 100);
-    const edgeCents = Math.round(spread * 50);
-    let score = Math.min(0.8, spread * 3 + velocityBonus);
-    return {
-      type: "WIDE_SPREAD",
-      signal: "LIMIT_SNIPE",
-      score: +score.toFixed(3),
-      reasoning: `🎯 Bid ${Math.round(yesBid*100)}¢ / Ask ${Math.round(yesAsk*100)}¢ — ${Math.round(spread*100)}¢ spread. Limit at ${limitCents}¢. ${cashHours}h to settle.`,
-      strategy: `LIMIT at ${limitCents}¢. ${edgeCents}¢ edge vs ask. Cash back in ${cashHours}h.`,
-      tier: maxROI > 5 ? "ACCELERATOR" : null,
-      recovery_tag: maxROI > 5 ? "ACCELERATOR" : null,
-    };
-  }
-
-  // ══════════════════════════════════════════════════════════════
-  // Value plays (15-85¢ with liquidity)
+  // TIER 6: VELOCITY VALUE — 15-85¢ with edge
+  // The "Charlotte spread" type plays
   // ══════════════════════════════════════════════════════════════
   if (yesPrice >= 0.15 && yesPrice < 0.85) {
     const roi = Math.round(maxROI * 100);
-    let score = 0.1 + velocityBonus;
-    if (vol24h > 50) score += 0.1;
-    if (oi > 100) score += 0.1;
-    if (spread >= 0.08) score += 0.1;
+    let score = 0.05 + velocityBonus;
+    if (arbEdge >= 0.10) score += 0.15;
+    if (vol24h > 50) score += 0.05;
+    if (oi > 100) score += 0.05;
+    if (spread >= 0.08) score += 0.05;
     score = Math.min(0.8, score);
 
-    const limitEntry = yesBid > 0 ? Math.round((yesBid + 0.01) * 100) : priceCents;
+    const limitCents = yesBid > 0 ? Math.round((yesBid + 0.01) * 100) : priceCents;
 
     return {
-      type: "VELOCITY_VALUE",
-      signal: "FAST_VALUE",
-      score: +score.toFixed(3),
-      reasoning: `⚡ ${priceCents}¢, settles in ${cashHours}h. ${roi}% ROI. ${vol24h > 0 ? `${vol24h} vol.` : ''} ${oi > 0 ? `${oi} OI.` : ''} ${within36h ? 'FAST TURNOVER.' : ''}`,
-      strategy: `LIMIT at ${limitEntry}¢. ${roi}% return. Cash back in ${cashHours}h.`,
+      type: "VELOCITY_VALUE", signal: "VALUE_BUY", score: +score.toFixed(3),
+      reasoning: `⚡ ${priceCents}¢ (FV ${Math.round(fairValue*100)}¢, ${arbEdgePct > 0 ? '+' : ''}${arbEdgePct}% edge). ${vol24h > 0 ? `${vol24h} vol.` : ''} ${oi > 0 ? `${oi} OI.` : ''} Settles ${cashHours}h.`,
+      strategy: `LIMIT at ${limitCents}¢. ${roi}% ROI. Cash back ${cashHours}h.`,
       tier: roi > 200 ? "ACCELERATOR" : "VALUE",
       recovery_tag: roi > 200 ? "ACCELERATOR" : null,
+      fair_value: fairValue, arb_edge_pct: arbEdgePct,
     };
   }
 
@@ -381,45 +336,34 @@ function detectEdge(m: any, yesPrice: number, noPrice: number, vol24h: number, o
   if (yesPrice >= 0.85 && yesPrice <= 0.95) {
     const roi = Math.round(maxROI * 100);
     return {
-      type: "VELOCITY_SAFE",
-      signal: "SAFE_TURNOVER",
-      score: +(0.05 + velocityBonus * 0.5).toFixed(3),
-      reasoning: `${priceCents}¢ — near certain. ${roi}% in ${cashHours}h.`,
-      strategy: `Safe ${roi}% return. Cash back in ${cashHours}h.`,
-      tier: "FLOOR_DEFENSE",
-      recovery_tag: "FLOOR_DEFENSE",
+      type: "VELOCITY_SAFE", signal: "SAFE", score: 0.03,
+      reasoning: `${priceCents}¢ — ${roi}% return in ${cashHours}h.`,
+      strategy: `Safe ${roi}% return.`,
+      tier: "FLOOR_DEFENSE", recovery_tag: "FLOOR_DEFENSE",
+      fair_value: fairValue, arb_edge_pct: arbEdgePct,
     };
   }
 
   return {
-    type: "LOW_LIQUIDITY",
-    signal: "SPECULATIVE",
-    score: 0.02,
-    reasoning: `${priceCents}¢ — low liquidity. ${cashHours}h to settle.`,
-    strategy: `SPECULATIVE: Hard to trade.`,
-    tier: null,
-    recovery_tag: null,
+    type: "LOW_LIQUIDITY", signal: "SPECULATIVE", score: 0.02,
+    reasoning: `${priceCents}¢ — low liquidity. ${cashHours}h.`,
+    strategy: `SPECULATIVE.`,
+    tier: null, recovery_tag: null,
+    fair_value: fairValue, arb_edge_pct: arbEdgePct,
   };
 }
 
 // ─── Bet Sizing ─────────────────────────────────────────────────
 
-function computeBetSize(alphaScore: number, confidence: number, tier: string | null): number {
+function computeBetSize(alphaScore: number, confidence: number, tier: string | null, arbEdgePct: number): number {
+  // Higher arb edge = more conviction = bigger bet
   if (tier === "ACCELERATOR") {
-    // Recovery mode: slightly larger bets on high-conviction lottos
+    if (arbEdgePct >= 30) return Math.min(15.00, +(5.00 + arbEdgePct * 0.1).toFixed(2));
     const base = alphaScore >= 0.5 ? 5.00 : alphaScore >= 0.3 ? 3.50 : 2.50;
-    return Math.min(5.00, +(base * Math.min(confidence / 10, 1)).toFixed(2));
+    return Math.min(10.00, +(base * Math.min(confidence / 10, 1)).toFixed(2));
   }
-  const base = alphaScore >= 0.5 ? 5.00 : alphaScore >= 0.3 ? 3.00 : alphaScore >= 0.15 ? 2.00 : alphaScore >= 0.05 ? 1.00 : 0;
+  const base = alphaScore >= 0.5 ? 5.00 : alphaScore >= 0.3 ? 3.00 : alphaScore >= 0.15 ? 2.00 : 1.00;
   return Math.min(5.00, +(base * Math.min(confidence / 10, 1)).toFixed(2));
-}
-
-function extractSeriesTicker(eventTicker: string): string {
-  if (!eventTicker) return "";
-  const match = eventTicker.match(/^([A-Z0-9]+)-\d{2}[A-Z]{3}\d{2}/);
-  if (match) return match[1];
-  const parts = eventTicker.split("-");
-  return parts[0] || eventTicker;
 }
 
 // ─── Paginated Fetchers (rate-limit safe) ───────────────────────
@@ -429,13 +373,12 @@ const delay = (ms: number) => new Promise(r => setTimeout(r, ms));
 async function fetchAllEvents(): Promise<any[]> {
   const all: any[] = [];
   let cursor: string | null = null;
-  const maxPages = 3; // keep small to avoid 429
-  for (let page = 0; page < maxPages; page++) {
-    if (page > 0) await delay(350); // throttle between pages
+  for (let page = 0; page < 3; page++) {
+    if (page > 0) await delay(350);
     const params = new URLSearchParams({ limit: "200", status: "open" });
     if (cursor) params.set("cursor", cursor);
     const res = await fetch(`${KALSHI_API}/events?${params}`, { headers: { Accept: "application/json" } });
-    if (res.status === 429) { console.warn(`Events 429 on page ${page}, stopping`); break; }
+    if (res.status === 429) { console.warn(`Events 429 on page ${page}`); break; }
     if (!res.ok) throw new Error(`Kalshi events: ${res.status}`);
     const data = await res.json();
     const events = data.events || [];
@@ -449,13 +392,12 @@ async function fetchAllEvents(): Promise<any[]> {
 async function fetchAllMarkets(): Promise<any[]> {
   const all: any[] = [];
   let cursor: string | null = null;
-  const maxPages = 5; // cap at ~1000 markets
-  for (let page = 0; page < maxPages; page++) {
+  for (let page = 0; page < 5; page++) {
     if (page > 0) await delay(350);
     const params = new URLSearchParams({ limit: "200", status: "open" });
     if (cursor) params.set("cursor", cursor);
     const res = await fetch(`${KALSHI_API}/markets?${params}`, { headers: { Accept: "application/json" } });
-    if (res.status === 429) { console.warn(`Markets 429 on page ${page}, stopping`); break; }
+    if (res.status === 429) { console.warn(`Markets 429 on page ${page}`); break; }
     if (!res.ok) throw new Error(`Kalshi markets: ${res.status}`);
     const data = await res.json();
     const markets = data.markets || [];
@@ -476,13 +418,11 @@ Deno.serve(async (req) => {
   try {
     const body = await req.json().catch(() => ({}));
     const filterClass = body.asset_class || null;
-    const confidence = Math.max(1, Math.min(10, body.confidence || 5));
-    const dailyBudget = body.daily_budget || 25.00;
+    const confidence = Math.max(1, Math.min(10, body.confidence || 7));
     const recoveryGoal = body.recovery_goal || 130.00;
 
-    // Fetch events first, then markets (sequential to avoid 429)
     const events = await fetchAllEvents();
-    await delay(500); // breathing room between endpoints
+    await delay(500);
     const markets = await fetchAllMarkets();
 
     console.log(`Fetched ${events.length} events, ${markets.length} markets`);
@@ -490,7 +430,7 @@ Deno.serve(async (req) => {
     const eventMap = new Map<string, any>();
     for (const e of events) eventMap.set(e.event_ticker, e);
 
-    const classified: ClassifiedMarket[] = markets.map((m: any) => {
+    const classified = markets.map((m: any) => {
       const event = eventMap.get(m.event_ticker) || {};
       const { class: assetClass, icon } = classifyAssetClass(
         m.ticker || "",
@@ -533,7 +473,9 @@ Deno.serve(async (req) => {
         alpha_reasoning: edge.reasoning,
         alpha_strategy: edge.strategy,
         alpha_tier: edge.tier,
-        suggested_bet: computeBetSize(edge.score, confidence, edge.tier),
+        fair_value: edge.fair_value,
+        arb_edge_pct: edge.arb_edge_pct,
+        suggested_bet: computeBetSize(edge.score, confidence, edge.tier, edge.arb_edge_pct),
         time_to_event_hours: hoursLeft,
         recovery_tag: edge.recovery_tag,
       };
@@ -544,21 +486,24 @@ Deno.serve(async (req) => {
       filtered = classified.filter(m => m.asset_class === filterClass);
     }
 
-    // Sort: VELOCITY-1st — Cash Arbitrage > Liquidity Trap > Velocity Penny > Spread Arb
-    const typePriority = (m: ClassifiedMarket) => {
-      if (m.alpha_type === "CASH_ARBITRAGE") return 400;
-      if (m.alpha_type === "LIQUIDITY_TRAP") return 350;
-      if (m.alpha_type === "SPREAD_ARB") return 300;
-      if (m.alpha_type === "VELOCITY_PENNY") return 250;
-      if (m.alpha_type === "VELOCITY_VALUE") return 100;
-      if (m.alpha_type === "BINARY_CLIFF") return 90;
-      if (m.recovery_tag === "ACCELERATOR") return 50;
-      return 0;
-    };
+    // Sort: Arb edge first, then score, then velocity
     filtered.sort((a, b) => {
-      const pDiff = typePriority(b) - typePriority(a);
+      // Priority tiers
+      const tierPrio = (m: any) => {
+        if (m.alpha_type === "GUARANTEED_ARB") return 500;
+        if (m.alpha_type === "PRICE_ARB") return 400;
+        if (m.alpha_type === "WHOLESALE_SPREAD") return 350;
+        if (m.alpha_type === "LIQUIDITY_TRAP") return 300;
+        if (m.alpha_type === "VELOCITY_PENNY") return 250;
+        if (m.alpha_type === "VELOCITY_VALUE") return 100;
+        if (m.alpha_type === "BINARY_CLIFF") return 90;
+        return 0;
+      };
+      const pDiff = tierPrio(b) - tierPrio(a);
       if (pDiff !== 0) return pDiff;
-      return (b.alpha_score - a.alpha_score) || (b.volume_24h - a.volume_24h);
+      // Within same tier: sort by arb edge, then score
+      if (b.arb_edge_pct !== a.arb_edge_pct) return b.arb_edge_pct - a.arb_edge_pct;
+      return b.alpha_score - a.alpha_score;
     });
 
     // Build heatmap
@@ -572,67 +517,50 @@ Deno.serve(async (req) => {
       heatmap.set(m.asset_class, h);
     }
     const heatmapArr = Array.from(heatmap.entries()).map(([cls, d]) => ({
-      asset_class: cls,
-      icon: d.icon,
-      count: d.count,
-      volume: d.volume,
+      asset_class: cls, icon: d.icon, count: d.count, volume: d.volume,
       avg_alpha: d.count > 0 ? +(d.totalAlpha / d.count).toFixed(4) : 0,
       top_signal: d.topSignal,
     })).sort((a, b) => b.avg_alpha - a.avg_alpha);
 
-    // Edge alerts — top velocity opportunities
-    const alerts = classified
-      .filter(m => m.alpha_score > 0.05 || m.alpha_type === "CASH_ARBITRAGE" || m.alpha_type === "LIQUIDITY_TRAP" || m.alpha_type === "BINARY_CLIFF")
+    // Top picks — the "manifest"
+    const actionable = classified.filter(m =>
+      m.alpha_score > 0.05 && m.alpha_type !== "TOO_FAR_OUT" && m.alpha_type !== "NO_ORDERBOOK" &&
+      m.alpha_type !== "SETTLED" && m.alpha_type !== "DEAD"
+    );
+    const alerts = actionable
       .sort((a, b) => {
-        const aPrio = a.alpha_type === "CASH_ARBITRAGE" ? 200 : a.alpha_type === "LIQUIDITY_TRAP" ? 150 : a.alpha_type === "BINARY_CLIFF" ? 90 : a.recovery_tag === "ACCELERATOR" ? 50 : 0;
-        const bPrio = b.alpha_type === "CASH_ARBITRAGE" ? 200 : b.alpha_type === "LIQUIDITY_TRAP" ? 150 : b.alpha_type === "BINARY_CLIFF" ? 90 : b.recovery_tag === "ACCELERATOR" ? 50 : 0;
-        if (aPrio !== bPrio) return bPrio - aPrio;
+        if (b.arb_edge_pct !== a.arb_edge_pct) return b.arb_edge_pct - a.arb_edge_pct;
         return b.alpha_score - a.alpha_score;
       })
-      .slice(0, 12)
+      .slice(0, 15)
       .map(m => ({
-        ticker: m.ticker,
-        title: m.title,
-        event_title: m.event_title,
-        asset_class: m.asset_class,
-        icon: m.icon,
-        type: m.alpha_type,
-        signal: m.alpha_signal,
-        score: m.alpha_score,
-        reasoning: m.alpha_reasoning,
-        strategy: m.alpha_strategy,
-        price: m.yes_price,
-        bet: m.suggested_bet,
-        event_ticker: m.event_ticker,
-        series_ticker: m.series_ticker,
-        tier: m.alpha_tier,
-        recovery_tag: m.recovery_tag,
+        ticker: m.ticker, title: m.title, event_title: m.event_title,
+        asset_class: m.asset_class, icon: m.icon,
+        type: m.alpha_type, signal: m.alpha_signal, score: m.alpha_score,
+        reasoning: m.alpha_reasoning, strategy: m.alpha_strategy,
+        price: m.yes_price, bet: m.suggested_bet,
+        event_ticker: m.event_ticker, series_ticker: m.series_ticker,
+        tier: m.alpha_tier, recovery_tag: m.recovery_tag,
         time_to_event_hours: m.time_to_event_hours,
-        open_interest: m.open_interest,
-        volume_24h: m.volume_24h,
+        open_interest: m.open_interest, volume_24h: m.volume_24h,
+        fair_value: m.fair_value, arb_edge_pct: m.arb_edge_pct,
       }));
 
     const liquidations = classified
       .filter(m => m.alpha_type === "MATHEMATICAL_DEATH" || m.alpha_type === "BINARY_CLIFF")
-      .map(m => ({
-        ticker: m.ticker,
-        title: m.title,
-        price: m.yes_price,
-        open_interest: m.open_interest,
-        reasoning: m.alpha_reasoning,
-        type: m.alpha_type,
-      }));
+      .map(m => ({ ticker: m.ticker, title: m.title, price: m.yes_price, open_interest: m.open_interest, reasoning: m.alpha_reasoning, type: m.alpha_type }));
 
-    // Recovery stats — velocity mode
+    // Recovery stats
     const accelerators = classified.filter(m => m.recovery_tag === "ACCELERATOR");
     const recoveryStats = {
       goal: recoveryGoal,
       accelerator_count: accelerators.length,
-      best_roi_pct: accelerators.length > 0 ? Math.max(...accelerators.map(m => m.yes_price > 0 ? (1 / m.yes_price - 1) * 100 : 0)) : 0,
-      cash_arb_count: classified.filter(m => m.alpha_type === "CASH_ARBITRAGE").length,
-      liquidity_trap_count: classified.filter(m => m.alpha_type === "LIQUIDITY_TRAP").length,
-      velocity_penny_count: classified.filter(m => m.alpha_type === "VELOCITY_PENNY").length,
-      spread_arb_count: classified.filter(m => m.alpha_type === "SPREAD_ARB").length,
+      best_arb_pct: accelerators.length > 0 ? Math.max(...accelerators.map(m => m.arb_edge_pct)) : 0,
+      price_arb_count: classified.filter(m => m.alpha_type === "PRICE_ARB").length,
+      wholesale_count: classified.filter(m => m.alpha_type === "WHOLESALE_SPREAD").length,
+      trap_count: classified.filter(m => m.alpha_type === "LIQUIDITY_TRAP").length,
+      penny_count: classified.filter(m => m.alpha_type === "VELOCITY_PENNY").length,
+      guaranteed_arb_count: classified.filter(m => m.alpha_type === "GUARANTEED_ARB").length,
     };
 
     return new Response(JSON.stringify({
@@ -647,7 +575,6 @@ Deno.serve(async (req) => {
         totalEvents: events.length,
         assetClasses: heatmapArr.length,
         activeAlerts: alerts.length,
-        dailyBudget,
         confidence,
       },
       source: "kalshi_live",
