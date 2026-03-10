@@ -4,51 +4,47 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
-const KALSHI_API = "https://api.elections.kalshi.com/trade-api/v2"; // v2 endpoint
+const KALSHI_API = "https://api.elections.kalshi.com/trade-api/v2";
 
-// ─── Asset Class Categorization ─────────────────────────────────
+// ─── Sport Detection ────────────────────────────────────────────
 
-const CATEGORY_MAP: Record<string, { class: string; icon: string }> = {
-  NBA: { class: "Sports", icon: "🏀" }, WNBA: { class: "Sports", icon: "🏀" },
-  NFL: { class: "Sports", icon: "🏈" }, CFB: { class: "Sports", icon: "🏈" },
-  MLB: { class: "Sports", icon: "⚾" }, NHL: { class: "Sports", icon: "🏒" },
-  NRL: { class: "Sports", icon: "🏉" }, RUGBY: { class: "Sports", icon: "🏉" },
-  PGA: { class: "Sports", icon: "⛳" }, GOLF: { class: "Sports", icon: "⛳" },
-  ATP: { class: "Sports", icon: "🎾" }, WTA: { class: "Sports", icon: "🎾" },
-  F1: { class: "Sports", icon: "🏎️" }, NASCAR: { class: "Sports", icon: "🏎️" },
-  MLS: { class: "Sports", icon: "⚽" }, EPL: { class: "Sports", icon: "⚽" },
-  UCL: { class: "Sports", icon: "⚽" }, FIFA: { class: "Sports", icon: "⚽" },
-  CRICKET: { class: "Sports", icon: "🏏" }, IPL: { class: "Sports", icon: "🏏" },
-  CONGRESS: { class: "Politics", icon: "🏛️" }, POTUS: { class: "Politics", icon: "🏛️" },
-  SENATE: { class: "Politics", icon: "🏛️" }, HOUSE: { class: "Politics", icon: "🏛️" },
-  ELECTION: { class: "Politics", icon: "🏛️" }, GOVERN: { class: "Politics", icon: "🏛️" },
-  PARTY: { class: "Politics", icon: "🏛️" }, VOTE: { class: "Politics", icon: "🏛️" },
-  TRUMP: { class: "Politics", icon: "🏛️" }, BIDEN: { class: "Politics", icon: "🏛️" },
-  MENTION: { class: "Politics", icon: "🏛️" },
-  FED: { class: "Economics", icon: "📈" }, RATE: { class: "Economics", icon: "📈" },
-  CPI: { class: "Economics", icon: "📈" }, GDP: { class: "Economics", icon: "📈" },
-  JOBS: { class: "Economics", icon: "📈" }, INFLATION: { class: "Economics", icon: "📈" },
-  RECESSION: { class: "Economics", icon: "📈" }, TREASURY: { class: "Economics", icon: "📈" },
-  SP500: { class: "Economics", icon: "📈" }, NASDAQ: { class: "Economics", icon: "📈" },
-  BTC: { class: "Crypto", icon: "₿" }, BITCOIN: { class: "Crypto", icon: "₿" },
-  ETH: { class: "Crypto", icon: "₿" }, ETHEREUM: { class: "Crypto", icon: "₿" },
-  CRYPTO: { class: "Crypto", icon: "₿" },
-  OSCAR: { class: "Culture", icon: "🎬" }, GRAMMY: { class: "Culture", icon: "🎬" },
-  EMMY: { class: "Culture", icon: "🎬" }, GOLDEN: { class: "Culture", icon: "🎬" },
-  MOVIE: { class: "Culture", icon: "🎬" }, AWARD: { class: "Culture", icon: "🎬" },
-  TEMP: { class: "Climate", icon: "🌍" }, HURRICANE: { class: "Climate", icon: "🌍" },
-  CLIMATE: { class: "Climate", icon: "🌍" }, WEATHER: { class: "Climate", icon: "🌍" },
+const SPORT_MAP: Record<string, { sport: string; icon: string }> = {
+  NBA: { sport: "NBA", icon: "🏀" }, WNBA: { sport: "NBA", icon: "🏀" }, CBB: { sport: "NBA", icon: "🏀" },
+  NFL: { sport: "NFL", icon: "🏈" }, CFB: { sport: "NFL", icon: "🏈" },
+  MLB: { sport: "MLB", icon: "⚾" },
+  NHL: { sport: "NHL", icon: "🏒" },
+  NRL: { sport: "NRL", icon: "🏉" }, RUGBY: { sport: "NRL", icon: "🏉" }, AFL: { sport: "NRL", icon: "🏉" },
+  PGA: { sport: "PGA", icon: "⛳" }, GOLF: { sport: "PGA", icon: "⛳" }, LPGA: { sport: "PGA", icon: "⛳" }, MASTERS: { sport: "PGA", icon: "⛳" },
+  ATP: { sport: "Tennis", icon: "🎾" }, WTA: { sport: "Tennis", icon: "🎾" }, TENNIS: { sport: "Tennis", icon: "🎾" },
+  MLS: { sport: "Soccer", icon: "⚽" }, EPL: { sport: "Soccer", icon: "⚽" }, UCL: { sport: "Soccer", icon: "⚽" }, FIFA: { sport: "Soccer", icon: "⚽" },
+  F1: { sport: "Racing", icon: "🏎️" }, NASCAR: { sport: "Racing", icon: "🏎️" },
+  CRICKET: { sport: "Cricket", icon: "🏏" }, IPL: { sport: "Cricket", icon: "🏏" },
 };
 
-function classifyAssetClass(ticker: string, title: string, category: string): { class: string; icon: string } {
+function detectSport(ticker: string, title: string, category: string): { sport: string; icon: string } | null {
   const combined = `${ticker} ${title} ${category}`.toUpperCase();
-  for (const [key, val] of Object.entries(CATEGORY_MAP)) {
+
+  // Direct keyword match
+  for (const [key, val] of Object.entries(SPORT_MAP)) {
     if (combined.includes(key)) return val;
   }
-  if (category.toUpperCase().includes("SPORT")) return { class: "Sports", icon: "🏆" };
-  if (category.toUpperCase().includes("POLITIC")) return { class: "Politics", icon: "🏛️" };
-  if (category.toUpperCase().includes("ECON") || category.toUpperCase().includes("FINANC")) return { class: "Economics", icon: "📈" };
-  return { class: "Other", icon: "📊" };
+
+  // Fuzzy title match
+  const titleLower = title.toLowerCase();
+  if (titleLower.includes("basketball") || titleLower.includes("nba")) return { sport: "NBA", icon: "🏀" };
+  if (titleLower.includes("football") || titleLower.includes("nfl")) return { sport: "NFL", icon: "🏈" };
+  if (titleLower.includes("baseball") || titleLower.includes("mlb")) return { sport: "MLB", icon: "⚾" };
+  if (titleLower.includes("hockey") || titleLower.includes("nhl")) return { sport: "NHL", icon: "🏒" };
+  if (titleLower.includes("rugby") || titleLower.includes("nrl") || titleLower.includes("league")) return { sport: "NRL", icon: "🏉" };
+  if (titleLower.includes("golf") || titleLower.includes("pga") || titleLower.includes("masters")) return { sport: "PGA", icon: "⛳" };
+  if (titleLower.includes("soccer") || titleLower.includes("premier league") || titleLower.includes("mls")) return { sport: "Soccer", icon: "⚽" };
+  if (titleLower.includes("tennis") || titleLower.includes("atp") || titleLower.includes("wta")) return { sport: "Tennis", icon: "🎾" };
+  if (titleLower.includes("f1") || titleLower.includes("nascar") || titleLower.includes("race")) return { sport: "Racing", icon: "🏎️" };
+
+  // Category-based
+  if (category.toUpperCase().includes("SPORT")) return { sport: "Other Sports", icon: "🏆" };
+
+  return null; // Not a sport
 }
 
 function hoursUntilClose(closeTime: string | null): number | null {
@@ -62,307 +58,229 @@ function extractSeriesTicker(eventTicker: string): string {
   if (!eventTicker) return "";
   const match = eventTicker.match(/^([A-Z0-9]+)-\d{2}[A-Z]{3}\d{2}/);
   if (match) return match[1];
-  const parts = eventTicker.split("-");
-  return parts[0] || eventTicker;
+  return eventTicker.split("-")[0] || eventTicker;
+}
+
+// ─── Prop Detection ─────────────────────────────────────────────
+
+function isPlayerProp(title: string): boolean {
+  const propKeywords = [
+    "points", "rebounds", "assists", "touchdowns", "yards", "tries",
+    "try scorer", "goals", "aces", "birdies", "bogeys", "leader",
+    "top ", "over ", "under ", "30+", "20+", "25+", "40+", "50+",
+    "most", "first", "last", "anytime", "mvp", "winner",
+  ];
+  const lower = title.toLowerCase();
+  return propKeywords.some(k => lower.includes(k));
+}
+
+function isSpreadMarket(title: string): boolean {
+  const lower = title.toLowerCase();
+  return lower.includes("+") || lower.includes("spread") || lower.includes("margin") || lower.includes("handicap");
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// FAIR VALUE ESTIMATOR
-// Uses market-structure signals to estimate what the "real" probability is,
-// then compares to Kalshi price to find arbitrage.
+// CATALYST DETECTION ENGINE
+// Hunts for news-driven mispricing, not stale order book math
 // ═══════════════════════════════════════════════════════════════════
 
-function estimateFairValue(m: any, yesPrice: number, vol24h: number, oi: number, hoursLeft: number | null): number {
-  const yesBid = (m.yes_bid || 0) / 100;
-  const yesAsk = (m.yes_ask || 0) / 100;
-
-  // ═══ FIX: Use MIDPOINT as sole baseline — never last_price ═══
-  // last_price creates "stale data traps" where an old pre-game price
-  // makes the engine scream "191% DISCOUNT!" on a falling knife.
-  const midpoint = (yesBid > 0 && yesAsk > 0) ? (yesBid + yesAsk) / 2 : 0;
-
-  // If no two-sided book, FV = current ask price (no edge detectable)
-  if (midpoint <= 0) return yesPrice;
-
-  let fv = midpoint;
-
-  // OI conviction boost: locked-in contracts signal smart money sees value
-  if (oi > 500) fv *= 1.08;
-  else if (oi > 100) fv *= 1.05;
-
-  // Ghost volume premium: high OI + low volume = trapped money
-  if (oi > 50 && vol24h < 20) {
-    fv = Math.max(fv, midpoint * 1.08);
-  }
-
-  // Time decay convergence: near-settlement with mid-range price
-  if (hoursLeft !== null && hoursLeft < 12 && midpoint > 0.3 && midpoint < 0.7) {
-    fv = Math.max(fv, midpoint * 1.06);
-  }
-
-  // Wide spread premium: if spread is wide, real price sits above midpoint
-  const spread = yesAsk - yesBid;
-  if (spread > 0.03) {
-    fv = Math.max(fv, midpoint + spread * 0.15);
-  }
-
-  return Math.min(0.99, Math.max(0.01, +fv.toFixed(3)));
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// EDGE DETECTION ENGINE — Arb-First, Velocity-Prioritized
-// ═══════════════════════════════════════════════════════════════════
-
-interface EdgeResult {
+interface CatalystResult {
   type: string;
   signal: string;
   score: number;
   reasoning: string;
   strategy: string;
-  tier: string | null;
-  recovery_tag: string | null;
+  catalyst_tag: string | null;
   fair_value: number;
-  arb_edge_pct: number;
 }
 
-function detectEdge(m: any, yesPrice: number, noPrice: number, vol24h: number, oi: number, assetClass: string, hoursLeft: number | null): EdgeResult {
+function detectCatalyst(
+  m: any,
+  yesPrice: number,
+  vol24h: number,
+  oi: number,
+  hoursLeft: number | null,
+  sport: string,
+  title: string,
+  allMarkets: any[],
+): CatalystResult {
   const yesBid = (m.yes_bid || 0) / 100;
   const yesAsk = (m.yes_ask || 0) / 100;
-  const noBid = (m.no_bid || 0) / 100;
-  const noAsk = (m.no_ask || 0) / 100;
-  const spread = yesAsk > 0 && yesBid > 0 ? yesAsk - yesBid : 0;
-  const maxROI = yesPrice > 0 ? (1 / yesPrice - 1) : 0;
   const priceCents = Math.round(yesPrice * 100);
-  const title = (m.title || m.subtitle || "").toLowerCase();
-
-  const MAX_HOURS = 168;
-  const within6h = hoursLeft !== null && hoursLeft > 0 && hoursLeft <= 6;
-  const within24h = hoursLeft !== null && hoursLeft > 0 && hoursLeft <= 24;
-  const within48h = hoursLeft !== null && hoursLeft > 0 && hoursLeft <= 48;
-  const within7d = hoursLeft !== null && hoursLeft > 0 && hoursLeft <= MAX_HOURS;
+  const maxROI = yesPrice > 0 ? Math.round((1 / yesPrice - 1) * 100) : 0;
   const cashHours = hoursLeft !== null ? hoursLeft.toFixed(0) : "?";
-  const velocityBonus = within6h ? 0.25 : within24h ? 0.2 : within48h ? 0.15 : within7d ? 0.05 : 0;
+  const midpoint = (yesBid > 0 && yesAsk > 0) ? (yesBid + yesAsk) / 2 : yesPrice;
+  const fv = midpoint; // Clean baseline — no stale inflation
 
-  // Fair value estimation
-  const fairValue = estimateFairValue(m, yesPrice, vol24h, oi, hoursLeft);
-  const arbEdge = yesPrice > 0 ? (fairValue - yesPrice) / yesPrice : 0;
-  const arbEdgePct = Math.round(arbEdge * 100);
-  const noResult = (type: string, reason: string): EdgeResult => ({
-    type, signal: "SKIP", score: 0, reasoning: reason, strategy: "NO TRADE.",
-    tier: null, recovery_tag: null, fair_value: fairValue, arb_edge_pct: arbEdgePct,
+  const noResult = (): CatalystResult => ({
+    type: "SKIP", signal: "SKIP", score: 0,
+    reasoning: "No catalyst detected.", strategy: "NO TRADE.",
+    catalyst_tag: null, fair_value: fv,
   });
 
-  // ── Capital protection first ──
-  if (yesPrice >= 0.85 && hoursLeft !== null && hoursLeft <= 4) {
-    return {
-      type: "BINARY_CLIFF", signal: "IMMEDIATE_LIQUIDATION", score: 0.01,
-      reasoning: `🚨 ${priceCents}¢ with ${hoursLeft.toFixed(1)}h left. SELL 75% NOW.`,
-      strategy: `SELL 75%: Lock gains. Free-roll the rest.`,
-      tier: "FLOOR_DEFENSE", recovery_tag: "FLOOR_DEFENSE",
-      fair_value: fairValue, arb_edge_pct: 0,
-    };
-  }
-  if (yesPrice > 0.95) return noResult("SETTLED", `${priceCents}¢ — settled.`);
-  if (yesPrice <= 0) return noResult("DEAD", "0¢ — dead.");
-  if (yesPrice > 0 && yesPrice <= 0.02 && oi > 0) {
-    return { ...noResult("MATHEMATICAL_DEATH", `${priceCents}¢ / ${oi} OI — dead. Liquidate.`), strategy: "LIQUIDATE at any price." };
-  }
+  // Gate: must be within 48 hours
+  if (hoursLeft === null || hoursLeft > 48 || hoursLeft <= 0) return noResult();
 
-  // Time gate: 7 days max
-  if (hoursLeft !== null && hoursLeft > MAX_HOURS) {
-    return noResult("TOO_FAR_OUT", `${Math.round(hoursLeft / 24)}d out — outside 7d window.`);
-  }
+  // Gate: must have SOME market activity
+  if (oi < 1 && vol24h < 1 && !(yesBid > 0 && yesAsk > 0)) return noResult();
 
-  // Liquidity gate — very relaxed to surface opportunities
-  const hasRealOI = oi >= 1;
-  const hasRealVolume = vol24h >= 1;
-  const hasTwoSidedBook = yesBid > 0 && yesAsk > 0;
-  const hasRealLiquidity = hasRealOI || hasRealVolume || hasTwoSidedBook;
-  if (!hasRealLiquidity) {
-    return noResult("NO_ORDERBOOK", `${priceCents}¢ — OI:${oi}, Vol:${vol24h}. No liquidity.`);
-  }
+  // Dead contracts
+  if (yesPrice > 0.95 || yesPrice <= 0) return noResult();
+
+  const velocityBonus = hoursLeft <= 6 ? 0.25 : hoursLeft <= 12 ? 0.2 : hoursLeft <= 24 ? 0.15 : 0.05;
 
   // ══════════════════════════════════════════════════════════════
-  // TIER 1: GUARANTEED ARB — Buy Yes + No < $1
+  // RULE 1: BINARY CLIFF — Protect existing positions
   // ══════════════════════════════════════════════════════════════
-  if (yesAsk > 0 && noAsk > 0 && (yesAsk + noAsk) < 0.95) {
-    const arb = 1 - (yesAsk + noAsk);
-    const score = Math.min(0.99, arb * 5 + velocityBonus);
+  if (yesPrice >= 0.85 && hoursLeft <= 4) {
     return {
-      type: "GUARANTEED_ARB", signal: "BUY_BOTH", score: +score.toFixed(3),
-      reasoning: `💰 GUARANTEED: Yes ${Math.round(yesAsk*100)}¢ + No ${Math.round(noAsk*100)}¢ = ${Math.round((yesAsk+noAsk)*100)}¢. ${Math.round(arb*100)}¢ risk-free. Cash back in ${cashHours}h.`,
-      strategy: `BUY BOTH SIDES. ${Math.round(arb*100)}¢ guaranteed profit per contract.`,
-      tier: "ACCELERATOR", recovery_tag: "ACCELERATOR",
-      fair_value: fairValue, arb_edge_pct: 100,
+      type: "BINARY_CLIFF", signal: "SELL_NOW", score: 0.01,
+      reasoning: `🚨 ${priceCents}¢ with ${hoursLeft.toFixed(1)}h to settlement. SELL 75% NOW to lock gains.`,
+      strategy: `SELL 75%. Free-roll the rest.`,
+      catalyst_tag: "FLOOR_DEFENSE", fair_value: fv,
     };
   }
 
   // ══════════════════════════════════════════════════════════════
-  // TIER 2: PRICE ARB — Fair Value significantly above Kalshi price
-  // FIX: Require ≥8¢ raw difference to eliminate micro-penny noise
+  // RULE 2: BREAKING NEWS ARB — Volume Velocity Spike
+  // Volume surges 300%+ on a prop/spread under 50¢ = smart money
+  // acting on news before price adjusts
   // ══════════════════════════════════════════════════════════════
-  const rawCentDiff = Math.round((fairValue - yesPrice) * 100);
-  if (arbEdge >= 0.03 && rawCentDiff >= 8 && yesPrice >= 0.03 && yesPrice <= 0.90) {
-    const limitCents = yesBid > 0 ? Math.round((yesBid + 0.01) * 100) : priceCents;
-    const roi = Math.round(maxROI * 100);
+  const isProp = isPlayerProp(title);
+  const isSpread = isSpreadMarket(title);
+  const hasVolumeSpike = vol24h >= 50 && oi > 0 && vol24h > oi * 3;
+  const isUnderpriced = yesPrice < 0.50;
 
-    let score = 0.3 + velocityBonus;
-    if (arbEdge >= 0.50) score += 0.3;      // massive arb like Panthers
-    else if (arbEdge >= 0.25) score += 0.2;  // strong arb like Charlotte
-    else if (arbEdge >= 0.15) score += 0.1;
-    if (oi > 100) score += 0.1;
-    if (vol24h > 20) score += 0.05;
-    if (hasTwoSidedBook) score += 0.05;
-    score = Math.min(0.99, score);
-
-    const arbLabel = arbEdgePct >= 30 ? "🔥 MASSIVE ARB" : arbEdgePct >= 15 ? "💰 STRONG ARB" : arbEdgePct >= 8 ? "📊 VALUE ARB" : "📊 EDGE";
-    const settleLabel = within24h ? "TONIGHT" : within48h ? `${cashHours}h` : `${Math.round((hoursLeft || 0) / 24)}d`;
-
-    return {
-      type: "PRICE_ARB", signal: "ARB_BUY", score: +score.toFixed(3),
-      reasoning: `${arbLabel}: Kalshi has this at ${priceCents}¢ (${priceCents}% implied) but fair value is ${Math.round(fairValue*100)}¢ (${Math.round(fairValue*100)}%). That's a ${arbEdgePct}% discount. ${oi > 0 ? `${oi} OI.` : ''} ${vol24h > 0 ? `${vol24h} vol.` : ''} Settles ${settleLabel}.`,
-      strategy: `LIMIT at ${limitCents}¢. FV=${Math.round(fairValue*100)}¢. ${arbEdgePct}% edge. ${roi}% max ROI. Cash back ${settleLabel}.`,
-      tier: "ACCELERATOR", recovery_tag: "ACCELERATOR",
-      fair_value: fairValue, arb_edge_pct: arbEdgePct,
-    };
-  }
-
-  // ══════════════════════════════════════════════════════════════
-  // TIER 3: WHOLESALE SPREAD — Wide bid/ask = buy at wholesale
-  // ══════════════════════════════════════════════════════════════
-  if (spread >= 0.04 && yesBid > 0 && yesAsk > 0 && yesPrice >= 0.03 && yesPrice <= 0.95) {
-    const limitPrice = yesBid + 0.01;
-    const limitCents = Math.round(limitPrice * 100);
-    const spreadCents = Math.round(spread * 100);
-    const edgeCents = Math.round(((yesAsk + yesBid) / 2 - limitPrice) * 100);
-
-    let score = 0.35 + velocityBonus;
-    if (spread >= 0.25) score += 0.15;
-    if (oi > 100) score += 0.1;
-    if (vol24h < 50 && oi > 50) score += 0.1;
+  if (hasVolumeSpike && isUnderpriced && (isProp || isSpread)) {
+    const volRatio = Math.round(vol24h / Math.max(oi, 1) * 100);
+    let score = 0.65 + velocityBonus;
+    if (vol24h > 200) score += 0.1;
+    if (yesPrice < 0.30) score += 0.1;
     score = Math.min(0.99, score);
 
     return {
-      type: "WHOLESALE_SPREAD", signal: "LIMIT_SNIPE", score: +score.toFixed(3),
-      reasoning: `🏪 WHOLESALE: ${spreadCents}¢ spread (Bid ${Math.round(yesBid*100)}¢ / Ask ${Math.round(yesAsk*100)}¢). Buy at ${limitCents}¢ — ${edgeCents}¢ below mid. ${oi > 50 ? `${oi} OI trapped.` : ''} Settles ${cashHours}h.`,
-      strategy: `LIMIT at ${limitCents}¢. ${edgeCents}¢ instant edge vs midpoint. Cash back ${cashHours}h.`,
-      tier: "ACCELERATOR", recovery_tag: "ACCELERATOR",
-      fair_value: fairValue, arb_edge_pct: arbEdgePct,
+      type: "BREAKING_NEWS_ARB", signal: "NEWS_BUY", score,
+      reasoning: `📰 BREAKING NEWS ARB: Volume spiked ${volRatio}% vs OI (${vol24h} vol / ${oi} OI) but price still at ${priceCents}¢. Smart money loading before price gaps. ${isProp ? "Player prop" : "Spread"} settling in ${cashHours}h.`,
+      strategy: `BUY at ${priceCents}¢. Volume says news is in, price hasn't moved. ${maxROI}% ROI. Cash back ${cashHours}h.`,
+      catalyst_tag: "BREAKING_NEWS", fair_value: Math.min(0.99, fv * 1.15),
     };
   }
 
-  // ══════════════════════════════════════════════════════════════
-  // TIER 4: LIQUIDITY TRAP — High OI, dead volume, name your price
-  // ══════════════════════════════════════════════════════════════
-  if (oi > 30 && vol24h < oi * 0.5 && yesPrice >= 0.02 && yesPrice <= 0.95) {
-    const limitCents = yesBid > 0 ? Math.round((yesBid + 0.01) * 100) : priceCents;
-    const roi = Math.round((1 / (yesBid > 0 ? yesBid + 0.01 : yesPrice) - 1) * 100);
-
-    let score = 0.3 + velocityBonus;
-    if (oi > 500) score += 0.15;
-    else if (oi > 200) score += 0.1;
-    if (vol24h === 0) score += 0.1;
-    if (spread >= 0.10) score += 0.1;
+  // Also flag volume spikes on team-level markets (non-prop)
+  if (hasVolumeSpike && isUnderpriced) {
+    const volRatio = Math.round(vol24h / Math.max(oi, 1) * 100);
+    let score = 0.5 + velocityBonus;
+    if (vol24h > 200) score += 0.1;
     score = Math.min(0.99, score);
 
     return {
-      type: "LIQUIDITY_TRAP", signal: "GHOST_SNIPE", score: +score.toFixed(3),
-      reasoning: `🕳️ TRAP: ${oi} OI locked in but only ${vol24h} traded in 24h. Dead volume = you name the price. Settles ${cashHours}h. ${arbEdgePct > 10 ? `FV ${Math.round(fairValue*100)}¢ vs price ${priceCents}¢ = ${arbEdgePct}% edge.` : ''}`,
-      strategy: `LIMIT SNIPE at ${limitCents}¢. ${oi} contracts trapped. ${roi}% ROI. Cash back ${cashHours}h.`,
-      tier: "ACCELERATOR", recovery_tag: "ACCELERATOR",
-      fair_value: fairValue, arb_edge_pct: arbEdgePct,
+      type: "VOLUME_SURGE", signal: "SURGE_BUY", score,
+      reasoning: `📊 VOLUME SURGE: ${vol24h} contracts traded vs ${oi} OI (${volRatio}% velocity). Price still ${priceCents}¢. Settling ${cashHours}h.`,
+      strategy: `BUY at ${priceCents}¢. Volume leading price. ${maxROI}% ROI.`,
+      catalyst_tag: "VOLUME_CATALYST", fair_value: fv,
     };
   }
 
   // ══════════════════════════════════════════════════════════════
-  // TIER 5: VELOCITY PENNY — Cheap + settles soon
-  // The "Akshay Bhatia" type plays — 2¢ with 50:1 leverage
+  // RULE 3: NARRATIVE MISMATCH — Team favorite vs cheap player prop
+  // If team is 75¢+ but star player's prop is <40¢ = structural mispricing
   // ══════════════════════════════════════════════════════════════
-  if (yesPrice > 0.005 && yesPrice <= 0.15) {
-    const roi = Math.round(maxROI * 100);
-    const hasSmartMoney = oi > 50 && vol24h < 200;
+  if (isProp && yesPrice < 0.40) {
+    // Look for team markets in the same event priced >75¢
+    const eventTicker = m.event_ticker || "";
+    const teamFavorites = allMarkets.filter((other: any) =>
+      other.event_ticker === eventTicker &&
+      other.ticker !== m.ticker &&
+      !isPlayerProp(other.title || other.subtitle || "") &&
+      ((other.yes_ask || other.last_price || 0) / 100) >= 0.75
+    );
 
-    let score = 0.15 + velocityBonus;
-    if (yesPrice <= 0.05) score += 0.15;
-    if (yesPrice <= 0.03) score += 0.1;
-    if (hasSmartMoney) score += 0.15;
-    if (oi > 20) score += 0.05;
-    if (arbEdge > 0.20) score += 0.1;
-    if (spread >= 0.08) score += 0.05;
-    score = Math.min(0.99, score);
+    if (teamFavorites.length > 0) {
+      const teamPrice = Math.round(((teamFavorites[0].yes_ask || teamFavorites[0].last_price || 0) / 100) * 100);
+      let score = 0.6 + velocityBonus;
+      if (yesPrice < 0.25) score += 0.15;
+      if (teamPrice >= 85) score += 0.1;
+      score = Math.min(0.99, score);
 
-    if (score >= 0.15) {
-      const tag = score >= 0.6 ? "🏆 CONVICTION" : score >= 0.4 ? "💎 STRONG" : "🌱 SPECULATIVE";
       return {
-        type: "VELOCITY_PENNY", signal: "PENNY_SNIPE", score: +score.toFixed(3),
-        reasoning: `${tag}: ${priceCents}¢ = $1 risk for $${(maxROI+1).toFixed(0)} payout (${roi}% ROI). ${hasSmartMoney ? `${oi} OI / ${vol24h} vol — ghost volume.` : oi > 0 ? `${oi} OI.` : ''} Settles ${cashHours}h. ${arbEdgePct > 10 ? `FV ${Math.round(fairValue*100)}¢ = ${arbEdgePct}% edge.` : ''}`,
-        strategy: `$1-3 LIMIT at ${priceCents}¢. ${roi}% ROI. Cash back ${cashHours}h.`,
-        tier: "ACCELERATOR", recovery_tag: "ACCELERATOR",
-        fair_value: fairValue, arb_edge_pct: arbEdgePct,
+        type: "NARRATIVE_MISMATCH", signal: "MISMATCH_BUY", score,
+        reasoning: `🎯 NARRATIVE MISMATCH: Team is ${teamPrice}¢ favorite but this player prop is only ${priceCents}¢. If the team blows them out, the star player almost certainly hits their baseline. Structural mispricing.`,
+        strategy: `BUY at ${priceCents}¢. Team @ ${teamPrice}¢ = blowout incoming, prop should be 55-65¢. ${maxROI}% ROI. Cash ${cashHours}h.`,
+        catalyst_tag: "NARRATIVE_MISMATCH", fair_value: Math.min(0.99, fv * 1.3),
       };
     }
   }
 
   // ══════════════════════════════════════════════════════════════
-  // TIER 6: VELOCITY VALUE — 15-85¢ with edge
-  // The "Charlotte spread" type plays
+  // SPREAD VALUE — Spreads with OI conviction
   // ══════════════════════════════════════════════════════════════
-  if (yesPrice >= 0.15 && yesPrice < 0.85) {
-    const roi = Math.round(maxROI * 100);
-    let score = 0.05 + velocityBonus;
-    if (arbEdge >= 0.10) score += 0.15;
-    if (vol24h > 50) score += 0.05;
-    if (oi > 100) score += 0.05;
-    if (spread >= 0.08) score += 0.05;
-    score = Math.min(0.8, score);
-
-    const limitCents = yesBid > 0 ? Math.round((yesBid + 0.01) * 100) : priceCents;
+  if (isSpread && yesPrice >= 0.10 && yesPrice <= 0.65 && oi >= 20) {
+    let score = 0.35 + velocityBonus;
+    if (vol24h > 30) score += 0.1;
+    if (oi > 100) score += 0.1;
+    score = Math.min(0.85, score);
 
     return {
-      type: "VELOCITY_VALUE", signal: "VALUE_BUY", score: +score.toFixed(3),
-      reasoning: `⚡ ${priceCents}¢ (FV ${Math.round(fairValue*100)}¢, ${arbEdgePct > 0 ? '+' : ''}${arbEdgePct}% edge). ${vol24h > 0 ? `${vol24h} vol.` : ''} ${oi > 0 ? `${oi} OI.` : ''} Settles ${cashHours}h.`,
-      strategy: `LIMIT at ${limitCents}¢. ${roi}% ROI. Cash back ${cashHours}h.`,
-      tier: roi > 200 ? "ACCELERATOR" : "VALUE",
-      recovery_tag: roi > 200 ? "ACCELERATOR" : null,
-      fair_value: fairValue, arb_edge_pct: arbEdgePct,
+      type: "SPREAD_VALUE", signal: "SPREAD_BUY", score,
+      reasoning: `📐 SPREAD VALUE: ${priceCents}¢ spread play with ${oi} OI and ${vol24h} vol. ${cashHours}h to settlement. Line hasn't moved but conviction is building.`,
+      strategy: `BUY at ${priceCents}¢. ${maxROI}% ROI. Cash back ${cashHours}h.`,
+      catalyst_tag: "SPREAD_PLAY", fair_value: fv,
     };
   }
 
-  // Favorites
-  if (yesPrice >= 0.85 && yesPrice <= 0.95) {
-    const roi = Math.round(maxROI * 100);
+  // ══════════════════════════════════════════════════════════════
+  // PENNY MOMENTUM — Cheap props with some activity
+  // "Akshay Bhatia" type: 2¢ lotto with real upside
+  // ══════════════════════════════════════════════════════════════
+  if (yesPrice > 0.005 && yesPrice <= 0.12 && (oi > 0 || vol24h > 0)) {
+    let score = 0.2 + velocityBonus;
+    if (isProp) score += 0.15;
+    if (vol24h > 10) score += 0.1;
+    if (oi > 20) score += 0.1;
+    score = Math.min(0.85, score);
+
+    const tag = score >= 0.5 ? "🔥 HOT LOTTO" : "🎲 LOTTO";
+
     return {
-      type: "VELOCITY_SAFE", signal: "SAFE", score: 0.03,
-      reasoning: `${priceCents}¢ — ${roi}% return in ${cashHours}h.`,
-      strategy: `Safe ${roi}% return.`,
-      tier: "FLOOR_DEFENSE", recovery_tag: "FLOOR_DEFENSE",
-      fair_value: fairValue, arb_edge_pct: arbEdgePct,
+      type: "PENNY_CATALYST", signal: "LOTTO_BUY", score,
+      reasoning: `${tag}: ${priceCents}¢ = $1 risk for $${(maxROI / 100 + 1).toFixed(0)} payout. ${isProp ? "Player prop — one hot quarter changes everything." : ""} ${vol24h > 0 ? `${vol24h} vol.` : ""} ${oi > 0 ? `${oi} OI.` : ""} Settles ${cashHours}h.`,
+      strategy: `$1-3 LIMIT at ${priceCents}¢. ${maxROI}% ROI. Cash back ${cashHours}h.`,
+      catalyst_tag: "MOMENTUM_LOTTO", fair_value: fv,
     };
   }
 
-  return {
-    type: "LOW_LIQUIDITY", signal: "SPECULATIVE", score: 0.02,
-    reasoning: `${priceCents}¢ — low liquidity. ${cashHours}h.`,
-    strategy: `SPECULATIVE.`,
-    tier: null, recovery_tag: null,
-    fair_value: fairValue, arb_edge_pct: arbEdgePct,
-  };
+  // ══════════════════════════════════════════════════════════════
+  // GENERAL SPORTS VALUE — Mid-range with market activity
+  // ══════════════════════════════════════════════════════════════
+  if (yesPrice >= 0.12 && yesPrice <= 0.85 && (oi >= 5 || vol24h >= 5)) {
+    let score = 0.15 + velocityBonus;
+    if (isProp) score += 0.1;
+    if (vol24h > 50) score += 0.1;
+    if (oi > 50) score += 0.05;
+    score = Math.min(0.7, score);
+
+    return {
+      type: "SPORTS_VALUE", signal: "VALUE_BUY", score,
+      reasoning: `⚡ ${priceCents}¢ ${isProp ? "player prop" : isSpread ? "spread" : "market"} with ${vol24h} vol / ${oi} OI. Settles ${cashHours}h.`,
+      strategy: `BUY at ${priceCents}¢. ${maxROI}% ROI. Cash back ${cashHours}h.`,
+      catalyst_tag: null, fair_value: fv,
+    };
+  }
+
+  return noResult();
 }
 
 // ─── Bet Sizing ─────────────────────────────────────────────────
 
-function computeBetSize(alphaScore: number, confidence: number, tier: string | null, arbEdgePct: number): number {
-  // Higher arb edge = more conviction = bigger bet
-  if (tier === "ACCELERATOR") {
-    if (arbEdgePct >= 30) return Math.min(15.00, +(5.00 + arbEdgePct * 0.1).toFixed(2));
-    const base = alphaScore >= 0.5 ? 5.00 : alphaScore >= 0.3 ? 3.50 : 2.50;
-    return Math.min(10.00, +(base * Math.min(confidence / 10, 1)).toFixed(2));
-  }
-  const base = alphaScore >= 0.5 ? 5.00 : alphaScore >= 0.3 ? 3.00 : alphaScore >= 0.15 ? 2.00 : 1.00;
-  return Math.min(5.00, +(base * Math.min(confidence / 10, 1)).toFixed(2));
+function computeBetSize(score: number, catalystTag: string | null): number {
+  if (catalystTag === "BREAKING_NEWS") return Math.min(15.00, +(5.00 + score * 10).toFixed(2));
+  if (catalystTag === "NARRATIVE_MISMATCH") return Math.min(12.00, +(4.00 + score * 8).toFixed(2));
+  if (catalystTag === "MOMENTUM_LOTTO") return Math.min(3.00, +(1.00 + score).toFixed(2));
+  if (catalystTag === "SPREAD_PLAY") return Math.min(10.00, +(3.00 + score * 5).toFixed(2));
+  return Math.min(5.00, +(2.00 + score * 3).toFixed(2));
 }
 
-// ─── Paginated Fetchers (rate-limit safe) ───────────────────────
+// ─── Paginated Fetchers ─────────────────────────────────────────
 
 const delay = (ms: number) => new Promise(r => setTimeout(r, ms));
 
@@ -388,8 +306,7 @@ async function fetchAllEvents(): Promise<any[]> {
 async function fetchAllMarkets(): Promise<any[]> {
   const all: any[] = [];
   let cursor: string | null = null;
-  // Only fetch markets closing within 72 hours using Kalshi's max_close_ts filter
-  const maxCloseTs = Math.floor((Date.now() + 72 * 3600 * 1000) / 1000);
+  const maxCloseTs = Math.floor((Date.now() + 48 * 3600 * 1000) / 1000); // 48h window
   for (let page = 0; page < 5; page++) {
     if (page > 0) await delay(350);
     const params = new URLSearchParams({ limit: "200", max_close_ts: String(maxCloseTs) });
@@ -403,7 +320,7 @@ async function fetchAllMarkets(): Promise<any[]> {
     cursor = data.cursor || null;
     if (!cursor || markets.length < 200) break;
   }
-  console.log(`Fetched ${all.length} markets within 72h window (max_close_ts=${maxCloseTs})`);
+  console.log(`Fetched ${all.length} markets within 48h window`);
   return all;
 }
 
@@ -416,178 +333,141 @@ Deno.serve(async (req) => {
 
   try {
     const body = await req.json().catch(() => ({}));
-    const filterClass = body.asset_class || null;
-    const confidence = Math.max(1, Math.min(10, body.confidence || 7));
-    const recoveryGoal = body.recovery_goal || 130.00;
+    const filterSport = body.sport || null;
 
     const events = await fetchAllEvents();
     await delay(500);
-    const markets = await fetchAllMarkets();
+    const rawMarkets = await fetchAllMarkets();
 
-    console.log(`Fetched ${events.length} events, ${markets.length} markets`);
+    console.log(`Fetched ${events.length} events, ${rawMarkets.length} markets`);
 
     const eventMap = new Map<string, any>();
     for (const e of events) eventMap.set(e.event_ticker, e);
 
-    const classified = markets.map((m: any) => {
+    // Classify and filter SPORTS ONLY
+    const sportsMarkets: any[] = [];
+
+    for (const m of rawMarkets) {
       const event = eventMap.get(m.event_ticker) || {};
-      const { class: assetClass, icon } = classifyAssetClass(
+      const title = `${m.title || ""} ${m.subtitle || ""} ${event.title || ""}`;
+      const detected = detectSport(
         m.ticker || "",
-        (m.title || "") + " " + (event.title || ""),
+        title,
         event.category || ""
       );
 
+      if (!detected) continue; // NOT a sport — skip entirely
+
       const yesPrice = (m.yes_ask || m.last_price || 0) / 100;
-      const noPrice = (m.no_ask || (100 - (m.last_price || 50))) / 100;
       const vol24h = m.volume_24h || 0;
       const oi = m.open_interest || 0;
       const closeTime = m.close_time || m.expiration_time || null;
       const hoursLeft = hoursUntilClose(closeTime);
 
-      const edge = detectEdge(m, yesPrice, noPrice, vol24h, oi, assetClass, hoursLeft);
+      // Hard 48h filter
+      if (hoursLeft === null || hoursLeft > 48 || hoursLeft <= 0) continue;
 
-      return {
+      const catalyst = detectCatalyst(m, yesPrice, vol24h, oi, hoursLeft, detected.sport, title, rawMarkets);
+
+      if (catalyst.type === "SKIP") continue;
+
+      sportsMarkets.push({
         ticker: m.ticker,
         event_ticker: m.event_ticker,
         series_ticker: event.series_ticker || m.series_ticker || extractSeriesTicker(m.event_ticker || m.ticker),
         title: m.title || m.subtitle || m.ticker,
         event_title: event.title || "",
-        asset_class: assetClass,
-        icon,
+        sport: detected.sport,
+        icon: detected.icon,
+        is_prop: isPlayerProp(title),
+        is_spread: isSpreadMarket(title),
         yes_price: yesPrice,
-        no_price: noPrice,
+        no_price: (m.no_ask || (100 - (m.last_price || 50))) / 100,
         yes_bid: (m.yes_bid || 0) / 100,
         yes_ask: (m.yes_ask || 0) / 100,
-        no_bid: (m.no_bid || 0) / 100,
-        no_ask: (m.no_ask || 0) / 100,
-        last_price: (m.last_price || 0) / 100,
-        volume: m.volume || 0,
         volume_24h: vol24h,
         open_interest: oi,
         close_time: closeTime,
-        subtitle: m.subtitle || "",
-        alpha_type: edge.type,
-        alpha_signal: edge.signal,
-        alpha_score: edge.score,
-        alpha_reasoning: edge.reasoning,
-        alpha_strategy: edge.strategy,
-        alpha_tier: edge.tier,
-        fair_value: edge.fair_value,
-        arb_edge_pct: edge.arb_edge_pct,
-        suggested_bet: computeBetSize(edge.score, confidence, edge.tier, edge.arb_edge_pct),
         time_to_event_hours: hoursLeft,
-        recovery_tag: edge.recovery_tag,
-      };
-    });
-
-    // Hard cap: only markets settling within 72 hours (3 days)
-    let filtered = classified.filter(m =>
-      m.time_to_event_hours !== null && m.time_to_event_hours <= 72
-    );
-    if (filterClass && filterClass !== "All") {
-      filtered = filtered.filter(m => m.asset_class === filterClass);
+        catalyst_type: catalyst.type,
+        catalyst_signal: catalyst.signal,
+        catalyst_score: catalyst.score,
+        catalyst_reasoning: catalyst.reasoning,
+        catalyst_strategy: catalyst.strategy,
+        catalyst_tag: catalyst.catalyst_tag,
+        fair_value: catalyst.fair_value,
+        suggested_bet: computeBetSize(catalyst.score, catalyst.catalyst_tag),
+      });
     }
 
-    // Sort: Arb edge first, then score, then velocity
+    // Filter by sport if requested
+    let filtered = sportsMarkets;
+    if (filterSport && filterSport !== "All") {
+      filtered = filtered.filter(m => m.sport === filterSport);
+    }
+
+    // Sort: BREAKING_NEWS first, then NARRATIVE_MISMATCH, then by time to event
     filtered.sort((a, b) => {
-      // Priority tiers
-      const tierPrio = (m: any) => {
-        if (m.alpha_type === "GUARANTEED_ARB") return 500;
-        if (m.alpha_type === "PRICE_ARB") return 400;
-        if (m.alpha_type === "WHOLESALE_SPREAD") return 350;
-        if (m.alpha_type === "LIQUIDITY_TRAP") return 300;
-        if (m.alpha_type === "VELOCITY_PENNY") return 250;
-        if (m.alpha_type === "VELOCITY_VALUE") return 100;
-        if (m.alpha_type === "BINARY_CLIFF") return 90;
+      const typePrio = (t: string) => {
+        if (t === "BREAKING_NEWS_ARB") return 500;
+        if (t === "NARRATIVE_MISMATCH") return 400;
+        if (t === "VOLUME_SURGE") return 350;
+        if (t === "SPREAD_VALUE") return 200;
+        if (t === "PENNY_CATALYST") return 180;
+        if (t === "SPORTS_VALUE") return 100;
+        if (t === "BINARY_CLIFF") return 50;
         return 0;
       };
-      const pDiff = tierPrio(b) - tierPrio(a);
+      const pDiff = typePrio(b.catalyst_type) - typePrio(a.catalyst_type);
       if (pDiff !== 0) return pDiff;
-      // Within same tier: sort by arb edge, then score
-      if (b.arb_edge_pct !== a.arb_edge_pct) return b.arb_edge_pct - a.arb_edge_pct;
-      return b.alpha_score - a.alpha_score;
+      // Within same type: sort by time to event (soonest first)
+      return (a.time_to_event_hours || 999) - (b.time_to_event_hours || 999);
     });
 
-    // Build heatmap
-    const heatmap = new Map<string, { count: number; volume: number; totalAlpha: number; topSignal: string | null; icon: string }>();
-    for (const m of classified) {
-      const h = heatmap.get(m.asset_class) || { count: 0, volume: 0, totalAlpha: 0, topSignal: null, icon: m.icon };
-      h.count++;
-      h.volume += m.volume_24h;
-      h.totalAlpha += m.alpha_score;
-      if (!h.topSignal && m.alpha_signal) h.topSignal = m.alpha_signal;
-      heatmap.set(m.asset_class, h);
+    // Build sport summary
+    const sportCounts = new Map<string, { count: number; volume: number; icon: string; topCatalyst: string | null }>();
+    for (const m of sportsMarkets) {
+      const s = sportCounts.get(m.sport) || { count: 0, volume: 0, icon: m.icon, topCatalyst: null };
+      s.count++;
+      s.volume += m.volume_24h;
+      if (!s.topCatalyst && m.catalyst_tag) s.topCatalyst = m.catalyst_tag;
+      sportCounts.set(m.sport, s);
     }
-    const heatmapArr = Array.from(heatmap.entries()).map(([cls, d]) => ({
-      asset_class: cls, icon: d.icon, count: d.count, volume: d.volume,
-      avg_alpha: d.count > 0 ? +(d.totalAlpha / d.count).toFixed(4) : 0,
-      top_signal: d.topSignal,
-    })).sort((a, b) => b.avg_alpha - a.avg_alpha);
+    const sportSummary = Array.from(sportCounts.entries())
+      .map(([sport, d]) => ({ sport, icon: d.icon, count: d.count, volume: d.volume, top_catalyst: d.topCatalyst }))
+      .sort((a, b) => b.count - a.count);
 
-    // Top picks — the "manifest"
-    const actionable = classified.filter(m =>
-      m.alpha_score > 0.01 && m.alpha_type !== "NO_ORDERBOOK" &&
-      m.alpha_type !== "SETTLED" && m.alpha_type !== "DEAD" &&
-      m.time_to_event_hours !== null && m.time_to_event_hours <= 72
-    );
-    const alerts = actionable
-      .sort((a, b) => {
-        if (b.arb_edge_pct !== a.arb_edge_pct) return b.arb_edge_pct - a.arb_edge_pct;
-        return b.alpha_score - a.alpha_score;
-      })
-      .slice(0, 15)
-      .map(m => ({
-        ticker: m.ticker, title: m.title, event_title: m.event_title,
-        asset_class: m.asset_class, icon: m.icon,
-        type: m.alpha_type, signal: m.alpha_signal, score: m.alpha_score,
-        reasoning: m.alpha_reasoning, strategy: m.alpha_strategy,
-        price: m.yes_price, bet: m.suggested_bet,
-        event_ticker: m.event_ticker, series_ticker: m.series_ticker,
-        tier: m.alpha_tier, recovery_tag: m.recovery_tag,
-        time_to_event_hours: m.time_to_event_hours,
-        open_interest: m.open_interest, volume_24h: m.volume_24h,
-        fair_value: m.fair_value, arb_edge_pct: m.arb_edge_pct,
-      }));
-
-    const liquidations = classified
-      .filter(m => m.alpha_type === "MATHEMATICAL_DEATH" || m.alpha_type === "BINARY_CLIFF")
-      .map(m => ({ ticker: m.ticker, title: m.title, price: m.yes_price, open_interest: m.open_interest, reasoning: m.alpha_reasoning, type: m.alpha_type }));
-
-    // Recovery stats
-    const accelerators = classified.filter(m => m.recovery_tag === "ACCELERATOR");
-    const recoveryStats = {
-      goal: recoveryGoal,
-      accelerator_count: accelerators.length,
-      best_arb_pct: accelerators.length > 0 ? Math.max(...accelerators.map(m => m.arb_edge_pct)) : 0,
-      price_arb_count: classified.filter(m => m.alpha_type === "PRICE_ARB").length,
-      wholesale_count: classified.filter(m => m.alpha_type === "WHOLESALE_SPREAD").length,
-      trap_count: classified.filter(m => m.alpha_type === "LIQUIDITY_TRAP").length,
-      penny_count: classified.filter(m => m.alpha_type === "VELOCITY_PENNY").length,
-      guaranteed_arb_count: classified.filter(m => m.alpha_type === "GUARANTEED_ARB").length,
+    // Stats
+    const stats = {
+      totalMarkets: rawMarkets.length,
+      sportsOnly: sportsMarkets.length,
+      filteredMarkets: filtered.length,
+      totalEvents: events.length,
+      sportsCategories: sportSummary.length,
+      breakingNewsCount: sportsMarkets.filter(m => m.catalyst_type === "BREAKING_NEWS_ARB").length,
+      narrativeMismatchCount: sportsMarkets.filter(m => m.catalyst_type === "NARRATIVE_MISMATCH").length,
+      volumeSurgeCount: sportsMarkets.filter(m => m.catalyst_type === "VOLUME_SURGE").length,
+      pennyCount: sportsMarkets.filter(m => m.catalyst_type === "PENNY_CATALYST").length,
     };
 
+    // Kill switch alerts
+    const killAlerts = sportsMarkets
+      .filter(m => m.catalyst_type === "BINARY_CLIFF")
+      .map(m => ({ ticker: m.ticker, title: m.title, price: m.yes_price, hours: m.time_to_event_hours }));
+
     return new Response(JSON.stringify({
-      heatmap: heatmapArr,
-      alerts,
-      liquidations,
-      markets: filtered.slice(0, 200),
-      recovery: recoveryStats,
-      stats: {
-        totalMarkets: classified.length,
-        filteredMarkets: filtered.length,
-        totalEvents: events.length,
-        assetClasses: heatmapArr.length,
-        activeAlerts: alerts.length,
-        confidence,
-      },
-      source: "kalshi_live",
+      markets: filtered.slice(0, 150),
+      sport_summary: sportSummary,
+      kill_alerts: killAlerts,
+      stats,
+      source: "sports_catalyst_engine",
       timestamp: new Date().toISOString(),
     }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (error) {
-    console.error("Universal scanner error:", error);
-    return new Response(JSON.stringify({ error: error.message, source: "kalshi_live" }), {
+    console.error("Sports Catalyst Engine error:", error);
+    return new Response(JSON.stringify({ error: error.message, source: "sports_catalyst_engine" }), {
       status: 500,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
