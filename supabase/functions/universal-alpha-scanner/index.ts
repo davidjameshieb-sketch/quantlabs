@@ -399,9 +399,11 @@ async function fetchAllEvents(): Promise<any[]> {
 async function fetchAllMarkets(): Promise<any[]> {
   const all: any[] = [];
   let cursor: string | null = null;
+  // Only fetch markets closing within 72 hours using Kalshi's max_close_ts filter
+  const maxCloseTs = Math.floor((Date.now() + 72 * 3600 * 1000) / 1000);
   for (let page = 0; page < 5; page++) {
     if (page > 0) await delay(350);
-    const params = new URLSearchParams({ limit: "200", status: "open" });
+    const params = new URLSearchParams({ limit: "200", max_close_ts: String(maxCloseTs) });
     if (cursor) params.set("cursor", cursor);
     const res = await fetch(`${KALSHI_API}/markets?${params}`, { headers: { Accept: "application/json" } });
     if (res.status === 429) { console.warn(`Markets 429 on page ${page}`); break; }
@@ -412,6 +414,7 @@ async function fetchAllMarkets(): Promise<any[]> {
     cursor = data.cursor || null;
     if (!cursor || markets.length < 200) break;
   }
+  console.log(`Fetched ${all.length} markets within 72h window (max_close_ts=${maxCloseTs})`);
   return all;
 }
 
