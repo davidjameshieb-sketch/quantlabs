@@ -413,8 +413,15 @@ export default function UniversalAlpha() {
   const headerClass = "p-1.5 text-left font-bold text-[hsl(var(--nexus-text-muted))] uppercase tracking-wider text-[9px] select-none";
 
   const toggleChart = (ticker: string) => {
-    setExpandedTicker(prev => prev === ticker ? null : ticker);
+    setCollapsedTickers(prev => {
+      const next = new Set(prev);
+      if (next.has(ticker)) next.delete(ticker);
+      else next.add(ticker);
+      return next;
+    });
   };
+
+  const isTickerExpanded = (ticker: string) => allExpanded ? !collapsedTickers.has(ticker) : collapsedTickers.has(ticker);
 
   return (
     <div className="min-h-screen bg-[hsl(var(--nexus-bg))] text-[hsl(var(--nexus-text-primary))] font-mono text-xs">
