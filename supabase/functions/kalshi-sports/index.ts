@@ -53,10 +53,12 @@ function categorizeEvent(event: any): string {
   return category || "Other";
 }
 
+const delay = (ms: number) => new Promise(r => setTimeout(r, ms));
+
 async function fetchAllKalshiEvents() {
   const all: any[] = [];
   let cursor: string | null = null;
-  for (let page = 0; page < 10; page++) {
+  for (let page = 0; page < 3; page++) {
     const params = new URLSearchParams({ limit: "200", status: "open" });
     if (cursor) params.set("cursor", cursor);
     const res = await fetch(`${KALSHI_API}/events?${params}`, {
@@ -68,6 +70,7 @@ async function fetchAllKalshiEvents() {
     all.push(...events);
     cursor = data.cursor || null;
     if (!cursor || events.length < 200) break;
+    await delay(350);
   }
   return all;
 }
@@ -75,7 +78,7 @@ async function fetchAllKalshiEvents() {
 async function fetchAllKalshiMarkets() {
   const all: any[] = [];
   let cursor: string | null = null;
-  for (let page = 0; page < 15; page++) {
+  for (let page = 0; page < 5; page++) {
     const params = new URLSearchParams({ limit: "200", status: "open" });
     if (cursor) params.set("cursor", cursor);
     const res = await fetch(`${KALSHI_API}/markets?${params}`, {
@@ -87,6 +90,7 @@ async function fetchAllKalshiMarkets() {
     all.push(...markets);
     cursor = data.cursor || null;
     if (!cursor || markets.length < 200) break;
+    await delay(350);
   }
   return all;
 }
