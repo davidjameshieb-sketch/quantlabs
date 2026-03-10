@@ -213,7 +213,7 @@ function detectEdge(m: any, yesPrice: number, noPrice: number, vol24h: number, o
   // TIER 2: PRICE ARB — Fair Value significantly above Kalshi price
   // The "Charlotte spread" and "Penrith Panthers" type plays
   // ══════════════════════════════════════════════════════════════
-  if (arbEdge >= 0.10 && yesPrice >= 0.05 && yesPrice <= 0.85) {
+  if (arbEdge >= 0.03 && yesPrice >= 0.03 && yesPrice <= 0.90) {
     const limitCents = yesBid > 0 ? Math.round((yesBid + 0.01) * 100) : priceCents;
     const roi = Math.round(maxROI * 100);
 
