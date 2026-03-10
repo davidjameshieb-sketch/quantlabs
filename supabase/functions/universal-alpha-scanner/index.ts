@@ -21,28 +21,48 @@ const SPORT_MAP: Record<string, { sport: string; icon: string }> = {
   CRICKET: { sport: "Cricket", icon: "🏏" }, IPL: { sport: "Cricket", icon: "🏏" },
 };
 
+// Non-sport keywords to reject before sport detection
+const NON_SPORT_KEYWORDS = [
+  "temperature", "weather", "climate", "nasdaq", "s&p", "bitcoin", "ethereum",
+  "crypto", "treasury", "cpi", "gdp", "inflation", "jobless", "unemployment",
+  "fed ", "fomc", "president", "congress", "senate", "governor", "election",
+  "spotify", "oscar", "emmy", "grammy", "survivor", "bachelor", "reality",
+  "stock", "index", "bond", "yield", "rate ", "tariff", "trade war",
+];
+
 function detectSport(ticker: string, title: string, category: string): { sport: string; icon: string } | null {
   const combined = `${ticker} ${title} ${category}`.toUpperCase();
+  const titleLower = title.toLowerCase();
 
-  // Direct keyword match
+  // Reject non-sport markets first
+  for (const kw of NON_SPORT_KEYWORDS) {
+    if (titleLower.includes(kw)) return null;
+  }
+
+  // Direct keyword match — require word boundary awareness for short keys
   for (const [key, val] of Object.entries(SPORT_MAP)) {
-    if (combined.includes(key)) return val;
+    // For short keys (<=3 chars), check ticker prefix patterns like KXNBA, KXMLB etc.
+    if (key.length <= 3) {
+      if (ticker.toUpperCase().includes(key) || title.toUpperCase().includes(key + " ") || title.toUpperCase().includes(key + "-")) return val;
+    } else {
+      if (combined.includes(key)) return val;
+    }
   }
 
   // Fuzzy title match
-  const titleLower = title.toLowerCase();
-  if (titleLower.includes("basketball") || titleLower.includes("nba")) return { sport: "NBA", icon: "🏀" };
-  if (titleLower.includes("football") || titleLower.includes("nfl")) return { sport: "NFL", icon: "🏈" };
-  if (titleLower.includes("baseball") || titleLower.includes("mlb")) return { sport: "MLB", icon: "⚾" };
-  if (titleLower.includes("hockey") || titleLower.includes("nhl")) return { sport: "NHL", icon: "🏒" };
-  if (titleLower.includes("rugby") || titleLower.includes("nrl") || titleLower.includes("league")) return { sport: "NRL", icon: "🏉" };
-  if (titleLower.includes("golf") || titleLower.includes("pga") || titleLower.includes("masters")) return { sport: "PGA", icon: "⛳" };
-  if (titleLower.includes("soccer") || titleLower.includes("premier league") || titleLower.includes("mls")) return { sport: "Soccer", icon: "⚽" };
-  if (titleLower.includes("tennis") || titleLower.includes("atp") || titleLower.includes("wta")) return { sport: "Tennis", icon: "🎾" };
-  if (titleLower.includes("f1") || titleLower.includes("nascar") || titleLower.includes("race")) return { sport: "Racing", icon: "🏎️" };
+  if (titleLower.includes("basketball") || titleLower.includes(" nba ")) return { sport: "NBA", icon: "🏀" };
+  if (titleLower.includes("football") || titleLower.includes(" nfl ")) return { sport: "NFL", icon: "🏈" };
+  if (titleLower.includes("baseball")) return { sport: "MLB", icon: "⚾" };
+  if (titleLower.includes("hockey")) return { sport: "NHL", icon: "🏒" };
+  if (titleLower.includes("rugby") || titleLower.includes(" nrl ")) return { sport: "NRL", icon: "🏉" };
+  if (titleLower.includes("golf") || titleLower.includes(" pga ")) return { sport: "PGA", icon: "⛳" };
+  if (titleLower.includes("soccer") || titleLower.includes("premier league")) return { sport: "Soccer", icon: "⚽" };
+  if (titleLower.includes("tennis")) return { sport: "Tennis", icon: "🎾" };
+  if (titleLower.includes("nascar") || titleLower.includes("formula 1")) return { sport: "Racing", icon: "🏎️" };
+  if (titleLower.includes("winner?") && (titleLower.includes(" vs ") || titleLower.includes(" v "))) return { sport: "Other Sports", icon: "🏆" };
 
   // Category-based
-  if (category.toUpperCase().includes("SPORT")) return { sport: "Other Sports", icon: "🏆" };
+  if (category.toUpperCase() === "SPORTS") return { sport: "Other Sports", icon: "🏆" };
 
   return null; // Not a sport
 }
