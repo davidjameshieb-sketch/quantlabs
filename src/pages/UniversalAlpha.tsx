@@ -106,13 +106,15 @@ function getVerdict(type: string | null, score: number, price: number): { label:
 
   switch (type) {
     case "CASH_ARBITRAGE":
-      return { label: "💰 Cash Arb", color: "text-emerald-400", emoji: "💰", explanation: `Wide spread = buy wholesale, settle for profit. Same-day cash.` };
+      return { label: "💰 Cash Arb", color: "text-emerald-400", emoji: "💰", explanation: `Wide spread = buy wholesale, settle for profit.` };
     case "LIQUIDITY_TRAP":
-      return { label: "🕳️ Liquidity Trap", color: "text-purple-400", emoji: "🕳️", explanation: `${priceCents}¢ — high OI, zero volume. Name your price with a limit.` };
+      return { label: "🕳️ Liquidity Trap", color: "text-purple-400", emoji: "🕳️", explanation: `High OI, zero volume. Name your price with a limit.` };
     case "VELOCITY_PENNY":
       return { label: "⚡ Velocity Penny", color: "text-yellow-400", emoji: "⚡", explanation: `Cheap + fast settle = rapid cash turnover.` };
     case "SPREAD_ARB":
       return { label: "💰 Guaranteed Arb", color: "text-emerald-400", emoji: "💰", explanation: `Buy both sides for guaranteed profit.` };
+    case "WIDE_SPREAD":
+      return { label: "🎯 Limit Snipe", color: "text-cyan-400", emoji: "🎯", explanation: `Wide spread = free edge. Limit at midpoint.` };
     case "VELOCITY_VALUE":
       return { label: "⚡ Velocity Value", color: "text-cyan-400", emoji: "⚡", explanation: `${priceCents}¢ — settles soon. ${maxROI}% ROI.` };
     case "VELOCITY_SAFE":
