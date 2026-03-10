@@ -162,6 +162,22 @@ function detectEdge(m: any, yesPrice: number, noPrice: number, vol24h: number, o
     };
   }
 
+  // ═══ GLOBAL LIQUIDITY GATE: Skip contracts with NO orderbook ═══
+  // Must have at least SOME open interest OR recent volume to be actionable
+  const hasBid = yesBid > 0 || noBid > 0;
+  const hasAnyLife = oi > 0 || vol24h > 0 || hasBid;
+  if (!hasAnyLife) {
+    return {
+      type: "NO_ORDERBOOK",
+      signal: "SKIP",
+      score: 0,
+      reasoning: `${priceCents}¢ — zero OI, zero volume, no bids. Ghost market with no participants.`,
+      strategy: "SKIP: No orderbook. Cannot trade what doesn't exist.",
+      tier: null,
+      recovery_tag: null,
+    };
+  }
+
   // Helper: is this a high-profile event where underdogs get mispriced?
   const isHighProfile = HIGH_PROFILE_KEYWORDS.some(k => title.includes(k) || (m.event_title || "").toLowerCase().includes(k));
   const eventTitle = (m.event_title || "").toLowerCase();
