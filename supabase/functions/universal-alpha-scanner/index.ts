@@ -408,6 +408,7 @@ Deno.serve(async (req) => {
       wholesale_gaps: filterFn(wholesaleGaps),
       smoke_alarms: filterFn(smokeAlarms),
       narrative_mismatches: filterFn(narrativeMismatches),
+      debug_sample: debugSample,
       stats: {
         totalScanned: rawMarkets.length,
         whitelistedCount,
@@ -416,6 +417,15 @@ Deno.serve(async (req) => {
         narrativeMismatchCount: narrativeMismatches.length,
         totalAnomalies: wholesaleGaps.length + smokeAlarms.length + narrativeMismatches.length,
       },
+      next_catalyst: nearestCloseTime ? {
+        close_time: nearestCloseTime,
+        league: nearestLeague,
+        hours_left: hoursUntilClose(nearestCloseTime),
+      } : null,
+      leagues: ["NBA", "PGA", "NRL"],
+      source: "anomaly_radar_v4",
+      timestamp: new Date().toISOString(),
+    };
       next_catalyst: nearestCloseTime ? {
         close_time: nearestCloseTime,
         league: nearestLeague,
