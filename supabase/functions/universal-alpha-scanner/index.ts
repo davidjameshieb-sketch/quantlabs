@@ -248,6 +248,7 @@ function detectEdge(m: any, yesPrice: number, noPrice: number, vol24h: number, o
         tier: "ACCELERATOR",
         recovery_tag: "ACCELERATOR",
       };
+      }
     }
   }
 
