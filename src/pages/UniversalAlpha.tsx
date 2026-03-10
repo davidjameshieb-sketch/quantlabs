@@ -161,10 +161,9 @@ export default function UniversalAlpha() {
 
   const markets = (data?.markets || []).filter(m => {
     if (!hideJunk) return true;
-    const dominated = ["SETTLED", "DEAD", "TOO_FAR_OUT", "NO_ORDERBOOK", "MATHEMATICAL_DEATH"];
+    const dominated = ["SETTLED", "DEAD", "NO_ORDERBOOK", "MATHEMATICAL_DEATH"];
     if (dominated.includes(m.alpha_type || "")) return false;
-    if (m.recovery_tag === "FLOOR_DEFENSE" && m.alpha_type !== "BINARY_CLIFF") return false;
-    return m.yes_price > 0.01 && m.yes_price < 0.97;
+    return m.yes_price > 0.005 && m.yes_price < 0.99;
   });
 
   const topPicks = markets.filter(m =>
