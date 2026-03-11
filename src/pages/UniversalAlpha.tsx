@@ -655,9 +655,9 @@ export default function UniversalAlpha() {
             momentum: getMomentumArrow(getTape(m.ticker)),
           }));
 
-          const bargains = scored.filter(s => s.vs.rating === "BARGAIN").sort((a, b) => a.market.midpoint - b.market.midpoint);
-          const fair = scored.filter(s => s.vs.rating === "FAIR").sort((a, b) => a.market.midpoint - b.market.midpoint);
-          const overheated = scored.filter(s => s.vs.rating === "OVERHEATED").sort((a, b) => a.market.midpoint - b.market.midpoint);
+          const bargains = scored.filter(s => s.vs.rating === "BARGAIN").sort((a, b) => b.market.oi - a.market.oi);
+          const fair = scored.filter(s => s.vs.rating === "FAIR").sort((a, b) => b.market.oi - a.market.oi);
+          const overheated = scored.filter(s => s.vs.rating === "OVERHEATED").sort((a, b) => b.market.oi - a.market.oi);
 
           const columns: { title: string; emoji: string; items: typeof scored; borderColor: string; bgColor: string; headerBg: string }[] = [
             { title: "Bargain", emoji: "🟢", items: bargains, borderColor: "border-emerald-500/30", bgColor: "bg-emerald-500/5", headerBg: "bg-emerald-500/15" },
