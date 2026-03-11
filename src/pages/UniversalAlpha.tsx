@@ -653,14 +653,14 @@ export default function UniversalAlpha() {
               <tr className="border-b border-[hsl(var(--nexus-border))]">
                 <th className={headerClass} style={{ width: 24 }}></th>
                 <th className={headerClass}>#</th>
+                <th className={headerClass}>Value</th>
                 <th className={headerClass}>Cat</th>
-                <th className={headerClass} style={{ minWidth: 280 }}>Market</th>
-                <th className={headerClass}>Bid</th>
-                <th className={headerClass}>Ask</th>
-                <th className={headerClass}>Mid</th>
+                <th className={headerClass} style={{ minWidth: 260 }}>Market</th>
+                <th className={headerClass}>Price</th>
+                <th className={headerClass}>R:R</th>
                 <th className={headerClass}>Spread</th>
-                <th className={headerClass}>10m Δ</th>
-                <th className={headerClass}>10m Vol</th>
+                <th className={headerClass}>Sprd%</th>
+                <th className={headerClass}>Trend</th>
                 <th className={headerClass}>Vol 24h</th>
                 <th className={headerClass}>OI</th>
                 <th className={headerClass}>Vol/OI</th>
@@ -671,15 +671,18 @@ export default function UniversalAlpha() {
               {activeMarkets.map((m, i) => {
                 const tape = getTape(m.ticker);
                 const isWhale = tape?.isWhale || false;
-                const priceDelta = tape?.priceDelta ?? null;
-                const volSpike = tape?.volSpike ?? null;
                 const isExpanded = isTickerExpanded(m.ticker);
+                const vs = computeValueScore(m, tape);
+                const momentum = getMomentumArrow(tape);
+                const priceColor = getPriceColor(m.midpoint);
+                const valueBg = vs.rating === "BARGAIN" ? "bg-emerald-500/10" 
+                  : vs.rating === "OVERHEATED" ? "bg-red-500/10" : "";
                 return (
                   <>
                     <tr
                       key={m.ticker}
                       onClick={() => toggleChart(m.ticker)}
-                      className={`border-b border-[hsl(var(--nexus-border))]/20 hover:bg-[hsl(var(--nexus-surface))] cursor-pointer transition-colors ${isWhale ? "bg-red-500/10 border-l-2 border-l-red-500" : ""} ${isExpanded ? "bg-[hsl(var(--nexus-surface))]" : ""}`}
+                      className={`border-b border-[hsl(var(--nexus-border))]/20 hover:bg-[hsl(var(--nexus-surface))] cursor-pointer transition-colors ${isWhale ? "border-l-2 border-l-red-500" : ""} ${valueBg} ${isExpanded ? "bg-[hsl(var(--nexus-surface))]" : ""}`}
                     >
                       <td className={cellClass}>
                         {isExpanded
@@ -687,11 +690,27 @@ export default function UniversalAlpha() {
                           : <ChevronRight className="w-3 h-3 text-[hsl(var(--nexus-text-muted))]" />}
                       </td>
                       <td className={`${cellClass} text-[hsl(var(--nexus-text-muted))]`}>{i + 1}</td>
+                      {/* Value Score Badge */}
+                      <td className={cellClass}>
+                        <span
+                          className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[9px] font-bold cursor-help ${
+                            vs.rating === "BARGAIN" ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
+                            : vs.rating === "OVERHEATED" ? "bg-red-500/20 text-red-400 border border-red-500/30"
+                            : "bg-amber-500/15 text-amber-400/80 border border-amber-500/20"
+                          }`}
+                          title={vs.reasons.join(" • ")}
+                        >
+                          {vs.emoji} {vs.label}
+                        </span>
+                        {vs.smartMoney && (
+                          <span className="ml-1 text-[9px]" title="OI accumulating while price flat/falling">🧠</span>
+                        )}
+                      </td>
                       <td className={cellClass} title={m.category}>
                         {m.icon}
                         {isWhale && <Badge className="ml-1 bg-red-600 text-white text-[8px] px-1 py-0 leading-none">🐋</Badge>}
                       </td>
-                      <td className={`${cellClass} max-w-[300px]`}>
+                      <td className={`${cellClass} max-w-[260px]`}>
                         <a href={m.url} target="_blank" rel="noopener noreferrer"
                           className="text-cyan-400 hover:underline truncate block"
                           title={m.title}
@@ -699,24 +718,29 @@ export default function UniversalAlpha() {
                           {m.title}
                         </a>
                       </td>
-                      <td className={cellClass}>{m.yes_bid > 0 ? `${m.yes_bid}¢` : "—"}</td>
-                      <td className={cellClass}>{m.yes_ask > 0 ? `${m.yes_ask}¢` : "—"}</td>
-                      <td className={`${cellClass} font-bold`}>{m.midpoint}¢</td>
+                      {/* Color-coded price */}
+                      <td className={`${cellClass} ${priceColor}`}>
+                        {m.midpoint}¢
+                      </td>
+                      {/* Risk:Reward */}
+                      <td className={`${cellClass} ${
+                        parseFloat(vs.riskReward) >= 3 ? "text-emerald-400 font-bold" 
+                        : parseFloat(vs.riskReward) >= 1 ? "text-[hsl(var(--nexus-text-primary))]" 
+                        : "text-red-400"
+                      }`}>
+                        {vs.riskReward}
+                      </td>
                       <td className={`${cellClass} ${m.spread >= 6 ? "text-amber-400 font-bold" : m.spread >= 4 ? "text-cyan-400" : ""}`}>
                         {m.spread > 0 ? `${m.spread}¢` : "—"}
                       </td>
-                      <td className={cellClass}>
-                        {priceDelta !== null ? (
-                          <span className={`font-bold ${priceDelta > 0 ? "text-emerald-400" : priceDelta < 0 ? "text-red-400" : "text-[hsl(var(--nexus-text-muted))]"}`}>
-                            {priceDelta > 0 ? "+" : ""}{priceDelta}¢
-                          </span>
-                        ) : <span className="text-[hsl(var(--nexus-text-muted))]">…</span>}
+                      {/* Spread efficiency */}
+                      <td className={`${cellClass} ${vs.spreadEfficiency > 20 ? "text-amber-400" : vs.spreadEfficiency < 5 ? "text-[hsl(var(--nexus-text-muted))]" : ""}`}>
+                        {vs.spreadEfficiency > 0 ? `${vs.spreadEfficiency}%` : "—"}
                       </td>
-                      <td className={cellClass}>
-                        {volSpike !== null ? (
-                          <span className={`font-bold ${volSpike >= 500 ? "text-red-400" : volSpike > 0 ? "text-[hsl(var(--nexus-text-primary))]" : "text-[hsl(var(--nexus-text-muted))]"}`}>
-                            {volSpike.toLocaleString()}
-                          </span>
+                      {/* Momentum arrow */}
+                      <td className={`${cellClass} ${momentum.color}`}>
+                        {momentum.arrow ? (
+                          <span className="font-bold">{momentum.arrow}</span>
                         ) : <span className="text-[hsl(var(--nexus-text-muted))]">…</span>}
                       </td>
                       <td className={`${cellClass} font-bold ${m.vol24h >= 1000 ? "text-emerald-400" : m.vol24h >= 100 ? "text-[hsl(var(--nexus-text-primary))]" : "text-[hsl(var(--nexus-text-muted))]"}`}>
