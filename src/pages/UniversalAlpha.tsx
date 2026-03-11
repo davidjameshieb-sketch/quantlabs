@@ -793,6 +793,21 @@ export default function UniversalAlpha() {
                                 {fmtHours(m.hours_left)}
                               </span>
                             </div>
+                            {/* Row 3: Book Health */}
+                            <div className="flex items-center gap-2 mt-1 text-[9px] bg-[hsl(var(--nexus-surface))]/30 rounded px-1.5 py-1">
+                              <span className="text-[hsl(var(--nexus-text-muted))] uppercase text-[8px]">Spread:</span>
+                              <span className={`font-bold ${s.book.spreadColor}`}>{s.book.spreadLabel}</span>
+                              <span className="text-[hsl(var(--nexus-border))]">│</span>
+                              <span className="text-[hsl(var(--nexus-text-muted))] uppercase text-[8px]">Book:</span>
+                              <span className={`font-bold ${s.book.bookColor}`}>{s.book.bookLabel} ({s.book.bookScore})</span>
+                              {s.book.limitZone && (
+                                <>
+                                  <span className="text-[hsl(var(--nexus-border))]">│</span>
+                                  <span className="text-[hsl(var(--nexus-text-muted))] uppercase text-[8px]">Limit:</span>
+                                  <span className="text-cyan-400 font-bold">≤{s.book.limitZone}</span>
+                                </>
+                              )}
+                            </div>
                           </div>
                           {/* Expanded Chart */}
                           {isExpanded && (
