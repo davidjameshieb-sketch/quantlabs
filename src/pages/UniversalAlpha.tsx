@@ -76,6 +76,92 @@ function computeTape(
   return { priceDelta, volSpike: vs, isWhale: Math.abs(priceDelta) >= 3 && vs >= 500 };
 }
 
+// ─── Value Score Engine ─────────────────────────────────────────
+
+type ValueRating = "BARGAIN" | "FAIR" | "OVERHEATED";
+
+interface ValueScore {
+  rating: ValueRating;
+  label: string;
+  emoji: string;
+  reasons: string[];
+  riskReward: string; // e.g. "3.3:1"
+  spreadEfficiency: number; // spread as % of price
+  smartMoney: boolean;
+}
+
+function computeValueScore(m: BoardMarket, tape: TapeMetrics | null): ValueScore {
+  const reasons: string[] = [];
+  let score = 0; // negative = bargain, positive = overheated
+
+  // 1. Price zone (risk/reward)
+  const price = m.midpoint;
+  const payout = 100 - price;
+  const rrRatio = price > 0 ? +(payout / price).toFixed(1) : 0;
+  const riskReward = `${rrRatio}:1`;
+
+  if (price <= 15) { score -= 3; reasons.push(`Penny zone (${rrRatio}:1 R:R)`); }
+  else if (price <= 30) { score -= 2; reasons.push(`Value zone (${rrRatio}:1 R:R)`); }
+  else if (price >= 80) { score += 3; reasons.push(`Ceiling — paying ${price}¢ to win ${payout}¢`); }
+  else if (price >= 65) { score += 2; reasons.push(`Expensive — ${rrRatio}:1 risk/reward`); }
+
+  // 2. Spread efficiency (spread as % of midpoint)
+  const spreadEff = price > 0 ? +((m.spread / price) * 100).toFixed(1) : 0;
+  if (spreadEff > 20) { score -= 1; reasons.push(`Wide spread (${spreadEff}%) — inefficient pricing`); }
+  else if (spreadEff < 5 && m.vol24h > 100) { score += 1; reasons.push("Tight spread — fully discovered"); }
+
+  // 3. Smart Money detection: OI rising but price flat/falling
+  const oiAccumulation = m.oi >= 50 && m.vol_oi_ratio < 0.5;
+  const priceFalling = tape?.priceDelta !== null && tape?.priceDelta !== undefined && tape.priceDelta <= 0;
+  const smartMoney = oiAccumulation && (priceFalling || price <= 30);
+  if (smartMoney) { score -= 2; reasons.push("🧠 Smart money accumulating"); }
+
+  // 4. Momentum
+  if (tape?.priceDelta !== null && tape?.priceDelta !== undefined) {
+    if (tape.priceDelta >= 5) { score += 2; reasons.push(`Surging +${tape.priceDelta}¢ in 10m`); }
+    else if (tape.priceDelta >= 2) { score += 1; reasons.push(`Rising +${tape.priceDelta}¢`); }
+    else if (tape.priceDelta <= -3) { score -= 1; reasons.push(`Dropping ${tape.priceDelta}¢ — dip buy?`); }
+  }
+
+  // 5. Volume spike (churn = late)
+  if (m.vol_oi_ratio > 3) { score += 2; reasons.push("Extreme churn — likely priced in"); }
+  else if (m.vol_oi_ratio > 1.5 && price > 50) { score += 1; reasons.push("High turnover at high price"); }
+
+  // 6. Time decay
+  if (m.hours_left !== null && m.hours_left < 6 && price > 40) {
+    score += 1; reasons.push("Settling soon at high price — limited upside");
+  }
+
+  // Classify
+  let rating: ValueRating;
+  let label: string;
+  let emoji: string;
+  if (score <= -2) { rating = "BARGAIN"; label = "Bargain"; emoji = "🟢"; }
+  else if (score >= 3) { rating = "OVERHEATED"; label = "Overheated"; emoji = "🔴"; }
+  else { rating = "FAIR"; label = "Fair"; emoji = "🟡"; }
+
+  return { rating, label, emoji, reasons, riskReward, spreadEfficiency: spreadEff, smartMoney };
+}
+
+function getPriceColor(midpoint: number): string {
+  if (midpoint <= 15) return "text-emerald-400 font-bold";
+  if (midpoint <= 30) return "text-emerald-300";
+  if (midpoint >= 80) return "text-red-400 font-bold";
+  if (midpoint >= 65) return "text-orange-400";
+  return "text-[hsl(var(--nexus-text-primary))] font-bold";
+}
+
+function getMomentumArrow(tape: TapeMetrics | null): { arrow: string; color: string } {
+  if (!tape || tape.priceDelta === null) return { arrow: "", color: "" };
+  if (tape.priceDelta >= 5) return { arrow: "⬆️", color: "text-emerald-400" };
+  if (tape.priceDelta >= 2) return { arrow: "↗", color: "text-emerald-400" };
+  if (tape.priceDelta > 0) return { arrow: "↗", color: "text-emerald-400/60" };
+  if (tape.priceDelta <= -5) return { arrow: "⬇️", color: "text-red-400" };
+  if (tape.priceDelta <= -2) return { arrow: "↘", color: "text-red-400" };
+  if (tape.priceDelta < 0) return { arrow: "↘", color: "text-red-400/60" };
+  return { arrow: "→", color: "text-[hsl(var(--nexus-text-muted))]" };
+}
+
 // ─── Helpers ────────────────────────────────────────────────────
 
 function fmtTime(iso: string | null): string {
