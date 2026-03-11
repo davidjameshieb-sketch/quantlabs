@@ -711,6 +711,7 @@ export default function UniversalAlpha() {
             tape: getTape(m.ticker),
             vs: computeValueScore(m, getTape(m.ticker)),
             momentum: getMomentumArrow(getTape(m.ticker)),
+            book: computeBookHealth(m),
           }));
 
           const bargains = scored.filter(s => s.vs.rating === "BARGAIN").sort((a, b) => b.market.oi - a.market.oi);
