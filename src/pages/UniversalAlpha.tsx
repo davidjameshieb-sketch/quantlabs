@@ -188,14 +188,16 @@ function MarketChart({ ticker, title }: { ticker: string; title: string }) {
 
     chartRef.current = chart;
 
-    // Format candle data for lightweight-charts
-    const formattedCandles = candles.map(c => ({
-      time: Math.floor(new Date(c.time).getTime() / 1000) as any,
-      open: c.open,
-      high: c.high,
-      low: c.low,
-      close: c.close,
-    }));
+    // Format candle data — filter out entries with null OHLC
+    const formattedCandles = candles
+      .filter(c => c.open != null && c.high != null && c.low != null && c.close != null)
+      .map(c => ({
+        time: Math.floor(new Date(c.time).getTime() / 1000) as any,
+        open: c.open as number,
+        high: c.high as number,
+        low: c.low as number,
+        close: c.close as number,
+      }));
 
     // Dedupe and sort by time
     const seen = new Set<number>();
@@ -205,8 +207,32 @@ function MarketChart({ ticker, title }: { ticker: string; title: string }) {
       return true;
     }).sort((a, b) => a.time - b.time);
 
+    // If no valid OHLC data, try OI-based line chart as fallback
+    if (deduped.length === 0) {
+      const oiData = candles
+        .filter(c => c.oi != null && c.oi > 0)
+        .map(c => ({
+          time: Math.floor(new Date(c.time).getTime() / 1000) as any,
+          value: c.oi as number,
+        }));
+      const seenOi = new Set<number>();
+      const dedupedOi = oiData.filter(v => {
+        if (seenOi.has(v.time)) return false;
+        seenOi.add(v.time);
+        return true;
+      }).sort((a, b) => a.time - b.time);
+
+      if (dedupedOi.length > 1) {
+        const lineSeries = chart.addSeries(LineSeries, {
+          color: "#6366f1",
+          lineWidth: 2,
+          title: "Open Interest",
+        });
+        lineSeries.setData(dedupedOi);
+      }
+    }
+
     if (deduped.length > 0) {
-      // Decide: use candlestick if we have OHLC variance, else line
       const hasOHLC = deduped.some(c => c.high !== c.low);
 
       if (hasOHLC) {
@@ -226,31 +252,33 @@ function MarketChart({ ticker, title }: { ticker: string; title: string }) {
         });
         lineSeries.setData(deduped.map(c => ({ time: c.time, value: c.close })));
       }
+    }
 
-      // Volume histogram
-      const volumeData = candles.map(c => ({
+    // Volume histogram — always show if available
+    const volumeData = candles
+      .filter(c => c.volume != null && c.volume > 0)
+      .map(c => ({
         time: Math.floor(new Date(c.time).getTime() / 1000) as any,
-        value: c.volume,
-        color: c.close >= c.open ? "rgba(16,185,129,0.3)" : "rgba(239,68,68,0.3)",
+        value: c.volume as number,
+        color: (c.close ?? 0) >= (c.open ?? 0) ? "rgba(16,185,129,0.3)" : "rgba(239,68,68,0.3)",
       }));
 
-      const seenVol = new Set<number>();
-      const dedupedVol = volumeData.filter(v => {
-        if (seenVol.has(v.time)) return false;
-        seenVol.add(v.time);
-        return true;
-      }).sort((a, b) => a.time - b.time);
+    const seenVol = new Set<number>();
+    const dedupedVol = volumeData.filter(v => {
+      if (seenVol.has(v.time)) return false;
+      seenVol.add(v.time);
+      return true;
+    }).sort((a, b) => a.time - b.time);
 
-      if (dedupedVol.some(v => v.value > 0)) {
-        const volSeries = chart.addSeries(HistogramSeries, {
-          priceFormat: { type: "volume" },
-          priceScaleId: "vol",
-        });
-        volSeries.setData(dedupedVol);
-        chart.priceScale("vol").applyOptions({
-          scaleMargins: { top: 0.8, bottom: 0 },
-        });
-      }
+    if (dedupedVol.length > 0) {
+      const volSeries = chart.addSeries(HistogramSeries, {
+        priceFormat: { type: "volume" },
+        priceScaleId: "vol",
+      });
+      volSeries.setData(dedupedVol);
+      chart.priceScale("vol").applyOptions({
+        scaleMargins: { top: 0.8, bottom: 0 },
+      });
     }
 
     chart.timeScale().fitContent();
