@@ -90,6 +90,64 @@ interface ValueScore {
   smartMoney: boolean;
 }
 
+interface BookHealth {
+  spreadGrade: "TIGHT" | "FAIR" | "WIDE" | "TOXIC";
+  spreadColor: string;
+  spreadLabel: string;
+  bookScore: number; // 0-100
+  bookLabel: string;
+  bookColor: string;
+  limitZone: string | null; // suggested limit price zone for overheated/fair
+}
+
+function computeBookHealth(m: BoardMarket): BookHealth {
+  const price = m.midpoint;
+  const spreadPct = price > 0 ? (m.spread / price) * 100 : 100;
+
+  // Spread grade
+  let spreadGrade: BookHealth["spreadGrade"];
+  let spreadColor: string;
+  let spreadLabel: string;
+  if (spreadPct <= 3) { spreadGrade = "TIGHT"; spreadColor = "text-emerald-400"; spreadLabel = `${spreadPct.toFixed(1)}% — Tight`; }
+  else if (spreadPct <= 8) { spreadGrade = "FAIR"; spreadColor = "text-amber-400"; spreadLabel = `${spreadPct.toFixed(1)}% — Fair`; }
+  else if (spreadPct <= 20) { spreadGrade = "WIDE"; spreadColor = "text-orange-400"; spreadLabel = `${spreadPct.toFixed(1)}% — Wide`; }
+  else { spreadGrade = "TOXIC"; spreadColor = "text-red-400"; spreadLabel = `${spreadPct.toFixed(1)}% — Toxic`; }
+
+  // Book score: composite of OI depth, volume activity, spread tightness
+  let bookScore = 0;
+  // OI depth (max 40pts)
+  if (m.oi >= 100000) bookScore += 40;
+  else if (m.oi >= 10000) bookScore += 30;
+  else if (m.oi >= 1000) bookScore += 20;
+  else if (m.oi >= 100) bookScore += 10;
+  // Volume activity (max 30pts)
+  if (m.vol24h >= 50000) bookScore += 30;
+  else if (m.vol24h >= 10000) bookScore += 25;
+  else if (m.vol24h >= 1000) bookScore += 15;
+  else if (m.vol24h >= 100) bookScore += 5;
+  // Spread tightness (max 30pts)
+  if (spreadPct <= 2) bookScore += 30;
+  else if (spreadPct <= 5) bookScore += 25;
+  else if (spreadPct <= 10) bookScore += 15;
+  else if (spreadPct <= 20) bookScore += 5;
+
+  let bookLabel: string;
+  let bookColor: string;
+  if (bookScore >= 80) { bookLabel = "Deep"; bookColor = "text-emerald-400"; }
+  else if (bookScore >= 55) { bookLabel = "Healthy"; bookColor = "text-emerald-300"; }
+  else if (bookScore >= 30) { bookLabel = "Thin"; bookColor = "text-amber-400"; }
+  else { bookLabel = "Ghost"; bookColor = "text-red-400"; }
+
+  // Limit zone suggestion for overheated / fair markets
+  let limitZone: string | null = null;
+  if (price > 0 && m.yes_bid > 0) {
+    const lowLimit = Math.max(1, m.yes_bid - Math.ceil(m.spread * 0.5));
+    limitZone = `${lowLimit}¢`;
+  }
+
+  return { spreadGrade, spreadColor, spreadLabel, bookScore, bookLabel, bookColor, limitZone };
+}
+
 function computeValueScore(m: BoardMarket, tape: TapeMetrics | null): ValueScore {
   const reasons: string[] = [];
   let score = 0; // negative = bargain, positive = overheated
