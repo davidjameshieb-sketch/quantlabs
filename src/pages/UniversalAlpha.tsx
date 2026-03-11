@@ -646,136 +646,110 @@ export default function UniversalAlpha() {
           ))}
         </div>
 
-        {/* ─── MAIN TABLE ─── */}
-        <div className="overflow-x-auto">
-          <table className="w-full border-collapse">
-            <thead>
-              <tr className="border-b border-[hsl(var(--nexus-border))]">
-                <th className={headerClass} style={{ width: 24 }}></th>
-                <th className={headerClass}>#</th>
-                <th className={headerClass}>Value</th>
-                <th className={headerClass}>Cat</th>
-                <th className={headerClass} style={{ minWidth: 260 }}>Market</th>
-                <th className={headerClass}>Price</th>
-                <th className={headerClass}>R:R</th>
-                <th className={headerClass}>Spread</th>
-                <th className={headerClass}>Sprd%</th>
-                <th className={headerClass}>Trend</th>
-                <th className={headerClass}>Vol 24h</th>
-                <th className={headerClass}>OI</th>
-                <th className={headerClass}>Vol/OI</th>
-                <th className={headerClass}>Settles</th>
-              </tr>
-            </thead>
-            <tbody>
-              {activeMarkets.map((m, i) => {
-                const tape = getTape(m.ticker);
-                const isWhale = tape?.isWhale || false;
-                const isExpanded = isTickerExpanded(m.ticker);
-                const vs = computeValueScore(m, tape);
-                const momentum = getMomentumArrow(tape);
-                const priceColor = getPriceColor(m.midpoint);
-                const valueBg = vs.rating === "BARGAIN" ? "bg-emerald-500/10" 
-                  : vs.rating === "OVERHEATED" ? "bg-red-500/10" : "";
-                return (
-                  <>
-                    <tr
-                      key={m.ticker}
-                      onClick={() => toggleChart(m.ticker)}
-                      className={`border-b border-[hsl(var(--nexus-border))]/20 hover:bg-[hsl(var(--nexus-surface))] cursor-pointer transition-colors ${isWhale ? "border-l-2 border-l-red-500" : ""} ${valueBg} ${isExpanded ? "bg-[hsl(var(--nexus-surface))]" : ""}`}
-                    >
-                      <td className={cellClass}>
-                        {isExpanded
-                          ? <ChevronDown className="w-3 h-3 text-emerald-400" />
-                          : <ChevronRight className="w-3 h-3 text-[hsl(var(--nexus-text-muted))]" />}
-                      </td>
-                      <td className={`${cellClass} text-[hsl(var(--nexus-text-muted))]`}>{i + 1}</td>
-                      {/* Value Score Badge */}
-                      <td className={cellClass}>
-                        <span
-                          className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[9px] font-bold cursor-help ${
-                            vs.rating === "BARGAIN" ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
-                            : vs.rating === "OVERHEATED" ? "bg-red-500/20 text-red-400 border border-red-500/30"
-                            : "bg-amber-500/15 text-amber-400/80 border border-amber-500/20"
-                          }`}
-                          title={vs.reasons.join(" • ")}
-                        >
-                          {vs.emoji} {vs.label}
-                        </span>
-                        {vs.smartMoney && (
-                          <span className="ml-1 text-[9px]" title="OI accumulating while price flat/falling">🧠</span>
-                        )}
-                      </td>
-                      <td className={cellClass} title={m.category}>
-                        {m.icon}
-                        {isWhale && <Badge className="ml-1 bg-red-600 text-white text-[8px] px-1 py-0 leading-none">🐋</Badge>}
-                      </td>
-                      <td className={`${cellClass} max-w-[260px]`}>
-                        <a href={m.url} target="_blank" rel="noopener noreferrer"
-                          className="text-cyan-400 hover:underline truncate block"
-                          title={m.title}
-                          onClick={(e) => e.stopPropagation()}>
-                          {m.title}
-                        </a>
-                      </td>
-                      {/* Color-coded price */}
-                      <td className={`${cellClass} ${priceColor}`}>
-                        {m.midpoint}¢
-                      </td>
-                      {/* Risk:Reward */}
-                      <td className={`${cellClass} ${
-                        parseFloat(vs.riskReward) >= 3 ? "text-emerald-400 font-bold" 
-                        : parseFloat(vs.riskReward) >= 1 ? "text-[hsl(var(--nexus-text-primary))]" 
-                        : "text-red-400"
-                      }`}>
-                        {vs.riskReward}
-                      </td>
-                      <td className={`${cellClass} ${m.spread >= 6 ? "text-amber-400 font-bold" : m.spread >= 4 ? "text-cyan-400" : ""}`}>
-                        {m.spread > 0 ? `${m.spread}¢` : "—"}
-                      </td>
-                      {/* Spread efficiency */}
-                      <td className={`${cellClass} ${vs.spreadEfficiency > 20 ? "text-amber-400" : vs.spreadEfficiency < 5 ? "text-[hsl(var(--nexus-text-muted))]" : ""}`}>
-                        {vs.spreadEfficiency > 0 ? `${vs.spreadEfficiency}%` : "—"}
-                      </td>
-                      {/* Momentum arrow */}
-                      <td className={`${cellClass} ${momentum.color}`}>
-                        {momentum.arrow ? (
-                          <span className="font-bold">{momentum.arrow}</span>
-                        ) : <span className="text-[hsl(var(--nexus-text-muted))]">…</span>}
-                      </td>
-                      <td className={`${cellClass} font-bold ${m.vol24h >= 1000 ? "text-emerald-400" : m.vol24h >= 100 ? "text-[hsl(var(--nexus-text-primary))]" : "text-[hsl(var(--nexus-text-muted))]"}`}>
-                        {m.vol24h.toLocaleString()}
-                      </td>
-                      <td className={`${cellClass} ${m.oi >= 5000 ? "text-amber-400 font-bold" : ""}`}>
-                        {m.oi.toLocaleString()}
-                      </td>
-                      <td className={`${cellClass} ${m.vol_oi_ratio > 2 ? "text-red-400 font-bold" : m.vol_oi_ratio > 1 ? "text-amber-400" : ""}`}>
-                        {m.vol_oi_ratio > 0 ? `${m.vol_oi_ratio}x` : "—"}
-                      </td>
-                      <td className={`${cellClass} ${(m.hours_left ?? 999) < 24 ? "text-amber-400" : ""}`}>
-                        {fmtHours(m.hours_left)}
-                      </td>
-                    </tr>
-                    {isExpanded && (
-                      <tr key={`${m.ticker}-chart`}>
-                        <td colSpan={14} className="p-2">
-                          <MarketChart ticker={m.ticker} title={m.title} />
-                        </td>
-                      </tr>
+        {/* ─── VALUE GRID ─── */}
+        {(() => {
+          const scored = activeMarkets.map(m => ({
+            market: m,
+            tape: getTape(m.ticker),
+            vs: computeValueScore(m, getTape(m.ticker)),
+            momentum: getMomentumArrow(getTape(m.ticker)),
+          }));
+
+          const bargains = scored.filter(s => s.vs.rating === "BARGAIN").sort((a, b) => a.market.midpoint - b.market.midpoint);
+          const fair = scored.filter(s => s.vs.rating === "FAIR").sort((a, b) => a.market.midpoint - b.market.midpoint);
+          const overheated = scored.filter(s => s.vs.rating === "OVERHEATED").sort((a, b) => a.market.midpoint - b.market.midpoint);
+
+          const columns: { title: string; emoji: string; items: typeof scored; borderColor: string; bgColor: string; headerBg: string }[] = [
+            { title: "Bargain", emoji: "🟢", items: bargains, borderColor: "border-emerald-500/30", bgColor: "bg-emerald-500/5", headerBg: "bg-emerald-500/15" },
+            { title: "Fair Value", emoji: "🟡", items: fair, borderColor: "border-amber-500/30", bgColor: "bg-amber-500/5", headerBg: "bg-amber-500/15" },
+            { title: "Overheated", emoji: "🔴", items: overheated, borderColor: "border-red-500/30", bgColor: "bg-red-500/5", headerBg: "bg-red-500/15" },
+          ];
+
+          return (
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+              {columns.map(col => (
+                <div key={col.title} className={`border ${col.borderColor} rounded-lg overflow-hidden`}>
+                  {/* Column Header */}
+                  <div className={`${col.headerBg} px-3 py-2 flex items-center justify-between`}>
+                    <span className="text-xs font-bold">{col.emoji} {col.title}</span>
+                    <Badge className="bg-[hsl(var(--nexus-surface))] text-[hsl(var(--nexus-text-muted))] text-[9px] border-none">
+                      {col.items.length}
+                    </Badge>
+                  </div>
+                  {/* Cards */}
+                  <div className={`${col.bgColor} divide-y divide-[hsl(var(--nexus-border))]/20 max-h-[70vh] overflow-y-auto`}>
+                    {col.items.length === 0 && (
+                      <div className="p-4 text-center text-[10px] text-[hsl(var(--nexus-text-muted))]">
+                        No markets in this category
+                      </div>
                     )}
-                  </>
-                );
-              })}
-              {activeMarkets.length === 0 && (
-                <tr>
-                  <td colSpan={14} className="p-4 text-center text-[hsl(var(--nexus-text-muted))]">
-                    No markets in this view. Try a different category or tab.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+                    {col.items.map((s, i) => {
+                      const m = s.market;
+                      const isExpanded = isTickerExpanded(m.ticker);
+                      const isWhale = s.tape?.isWhale || false;
+                      const priceColor = getPriceColor(m.midpoint);
+                      return (
+                        <div key={m.ticker}>
+                          <div
+                            onClick={() => toggleChart(m.ticker)}
+                            className={`px-3 py-2 cursor-pointer hover:bg-[hsl(var(--nexus-surface))]/50 transition-colors ${isWhale ? "border-l-2 border-l-red-500" : ""}`}
+                          >
+                            {/* Row 1: Price + Title */}
+                            <div className="flex items-start gap-2">
+                              <div className={`text-lg font-black tabular-nums leading-none ${priceColor}`}>
+                                {m.midpoint}¢
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <a href={m.url} target="_blank" rel="noopener noreferrer"
+                                  className="text-cyan-400 hover:underline text-[10px] font-medium truncate block leading-tight"
+                                  title={m.title}
+                                  onClick={(e) => e.stopPropagation()}>
+                                  {m.icon} {m.title}
+                                </a>
+                                <div className="text-[9px] text-[hsl(var(--nexus-text-muted))] mt-0.5 truncate" title={s.vs.reasons.join(" • ")}>
+                                  {s.vs.reasons[0] || "—"}
+                                </div>
+                              </div>
+                              {s.momentum.arrow && (
+                                <span className={`text-sm ${s.momentum.color}`}>{s.momentum.arrow}</span>
+                              )}
+                            </div>
+                            {/* Row 2: Stats */}
+                            <div className="flex items-center gap-3 mt-1.5 text-[9px]">
+                              <span className={`font-bold ${parseFloat(s.vs.riskReward) >= 3 ? "text-emerald-400" : parseFloat(s.vs.riskReward) >= 1 ? "text-[hsl(var(--nexus-text-primary))]" : "text-red-400"}`}>
+                                R:R {s.vs.riskReward}
+                              </span>
+                              <span className="text-[hsl(var(--nexus-text-muted))]">
+                                Sprd {m.spread > 0 ? `${m.spread}¢` : "—"}
+                              </span>
+                              <span className={`${m.vol24h >= 1000 ? "text-emerald-400 font-bold" : "text-[hsl(var(--nexus-text-muted))]"}`}>
+                                Vol {m.vol24h.toLocaleString()}
+                              </span>
+                              <span className={`${m.oi >= 5000 ? "text-amber-400 font-bold" : "text-[hsl(var(--nexus-text-muted))]"}`}>
+                                OI {m.oi.toLocaleString()}
+                              </span>
+                              {s.vs.smartMoney && <span title="Smart money accumulating">🧠</span>}
+                              {isWhale && <span>🐋</span>}
+                              <span className={`ml-auto ${(m.hours_left ?? 999) < 24 ? "text-amber-400" : "text-[hsl(var(--nexus-text-muted))]"}`}>
+                                {fmtHours(m.hours_left)}
+                              </span>
+                            </div>
+                          </div>
+                          {/* Expanded Chart */}
+                          {isExpanded && (
+                            <div className="px-2 pb-2">
+                              <MarketChart ticker={m.ticker} title={m.title} />
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          );
+        })()}
 
         <div className="text-[10px] text-[hsl(var(--nexus-text-muted))] text-right">
           Showing {activeMarkets.length} markets • Total on board: {stats?.totalBoard || 0}
