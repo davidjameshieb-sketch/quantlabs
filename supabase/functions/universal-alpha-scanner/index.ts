@@ -158,6 +158,12 @@ Deno.serve(async (req) => {
     const rawMarkets = await fetchAllMarkets();
 
     console.log(`Fetched ${events.length} events, ${rawMarkets.length} markets`);
+    // Debug: log first market's raw fields to understand API shape
+    if (rawMarkets.length > 0) {
+      const sample = rawMarkets[0];
+      console.log(`Sample market keys: ${Object.keys(sample).join(", ")}`);
+      console.log(`Sample: bid=${sample.yes_bid} ask=${sample.yes_ask} last=${sample.last_price} vol=${sample.volume_24h} oi=${sample.open_interest} status=${sample.status}`);
+    }
 
     const eventMap = new Map<string, any>();
     for (const e of events) eventMap.set(e.event_ticker, e);
