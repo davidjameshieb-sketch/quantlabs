@@ -185,15 +185,15 @@ function extractOrderBook(market: any): {
 
   // Simulate depth from available data (Kalshi doesn't expose full L2)
   const bids = [
-    { price: yesBid, depth: market.open_interest || 0 },
-    { price: +(yesBid - 0.01).toFixed(2), depth: Math.round((market.volume || 0) * 0.3) },
-    { price: +(yesBid - 0.02).toFixed(2), depth: Math.round((market.volume || 0) * 0.2) },
+    { price: yesBid, depth: Number(market.open_interest_fp ?? market.open_interest ?? 0) || 0 },
+    { price: +(yesBid - 0.01).toFixed(2), depth: Math.round((Number(market.volume_fp ?? market.volume ?? 0) || 0) * 0.3) },
+    { price: +(yesBid - 0.02).toFixed(2), depth: Math.round((Number(market.volume_fp ?? market.volume ?? 0) || 0) * 0.2) },
   ].filter(b => b.price > 0);
 
   const asks = [
-    { price: yesAsk, depth: market.open_interest || 0 },
-    { price: +(yesAsk + 0.01).toFixed(2), depth: Math.round((market.volume || 0) * 0.3) },
-    { price: +(yesAsk + 0.02).toFixed(2), depth: Math.round((market.volume || 0) * 0.2) },
+    { price: yesAsk, depth: Number(market.open_interest_fp ?? market.open_interest ?? 0) || 0 },
+    { price: +(yesAsk + 0.01).toFixed(2), depth: Math.round((Number(market.volume_fp ?? market.volume ?? 0) || 0) * 0.3) },
+    { price: +(yesAsk + 0.02).toFixed(2), depth: Math.round((Number(market.volume_fp ?? market.volume ?? 0) || 0) * 0.2) },
   ].filter(a => a.price <= 1);
 
   return { bids, asks, spread: +spread.toFixed(4), midpoint: +midpoint.toFixed(4) };
