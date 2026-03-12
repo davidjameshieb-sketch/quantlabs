@@ -206,8 +206,8 @@ Deno.serve(async (req) => {
       const lastPrice = Math.round((m.last_price_dollars ?? m.last_price ?? 0) * 100);
       const midpoint = (yesBid > 0 && yesAsk > 0) ? Math.round((yesBid + yesAsk) / 2) : lastPrice;
       const spread = (yesBid > 0 && yesAsk > 0) ? yesAsk - yesBid : 0;
-      const vol24h = m.volume_24h_fp ?? m.volume_24h ?? 0;
-      const oi = m.open_interest_fp ?? m.open_interest ?? 0;
+      const vol24h = Number(m.volume_24h_fp ?? m.volume_24h ?? 0) || 0;
+      const oi = Number(m.open_interest_fp ?? m.open_interest ?? 0) || 0;
 
       // Liquidity classification
       const hasOrderbook = (oi >= 5 || vol24h >= 5 || (spread > 0 && spread < 15 && oi > 0));
