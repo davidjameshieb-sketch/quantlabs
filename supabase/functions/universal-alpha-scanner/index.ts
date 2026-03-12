@@ -197,17 +197,18 @@ Deno.serve(async (req) => {
       const yesBid = Math.round(m.yes_bid || 0);
       const yesAsk = Math.round(m.yes_ask || 0);
       const lastPrice = Math.round(m.last_price || 0);
-      const midpoint = (yesBid > 0 && yesAsk > 0) ? Math.round((yesBid + yesAsk) / 2) : lastPrice;
+      // Use yes_sub_title price hint or floor_strike if available
+      const inferredPrice = m.floor_strike || m.strike_price || 0;
+      const midpoint = (yesBid > 0 && yesAsk > 0) ? Math.round((yesBid + yesAsk) / 2) : (lastPrice > 0 ? lastPrice : inferredPrice);
       const spread = (yesBid > 0 && yesAsk > 0) ? yesAsk - yesBid : 0;
       const vol24h = m.volume_24h || 0;
       const oi = m.open_interest || 0;
 
-      // Minimum liquidity gate: must have SOME activity
+      // Liquidity classification
       const hasOrderbook = (oi >= 5 || vol24h >= 5 || (spread > 0 && spread < 15 && oi > 0));
-      if (!hasOrderbook && vol24h === 0 && oi === 0) continue; // skip completely dead markets
 
-      // Skip penny/ceiling contracts
-      if (midpoint <= 1 || midpoint >= 99) continue;
+      // Only skip if midpoint is known AND at extreme penny/ceiling levels
+      if (midpoint > 0 && (midpoint <= 1 || midpoint >= 99)) continue;
 
       const st = event.series_ticker || m.series_ticker || extractSeriesTicker(m.event_ticker || m.ticker);
 
