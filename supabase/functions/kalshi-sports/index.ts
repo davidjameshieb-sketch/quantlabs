@@ -128,9 +128,14 @@ Deno.serve(async (req) => {
       const event = eventMap.get(mkt.event_ticker) || {};
       const sport = event.sport_category || categorizeEvent({ ...mkt, title: mkt.title || mkt.subtitle });
 
-      // Calculate implied probabilities from yes/no prices
-      const yesPrice = (mkt.yes_ask || mkt.last_price || 0) / 100;
-      const noPrice = (mkt.no_ask || (100 - (mkt.last_price || 50))) / 100;
+      // Kalshi API v2 uses _dollars/_fp suffixed fields
+      const yesBid = (mkt.yes_bid_dollars ?? mkt.yes_bid ?? 0);
+      const yesAsk = (mkt.yes_ask_dollars ?? mkt.yes_ask ?? 0);
+      const noBid = (mkt.no_bid_dollars ?? mkt.no_bid ?? 0);
+      const noAsk = (mkt.no_ask_dollars ?? mkt.no_ask ?? 0);
+      const lastPriceRaw = (mkt.last_price_dollars ?? mkt.last_price ?? 0);
+      const yesPrice = yesAsk > 0 ? yesAsk : lastPriceRaw;
+      const noPrice = noAsk > 0 ? noAsk : (1 - lastPriceRaw);
 
       return {
         ticker: mkt.ticker,
@@ -141,14 +146,14 @@ Deno.serve(async (req) => {
         status: mkt.status,
         yes_price: yesPrice,
         no_price: noPrice,
-        yes_bid: (mkt.yes_bid || 0) / 100,
-        yes_ask: (mkt.yes_ask || 0) / 100,
-        no_bid: (mkt.no_bid || 0) / 100,
-        no_ask: (mkt.no_ask || 0) / 100,
-        last_price: (mkt.last_price || 0) / 100,
-        volume: mkt.volume || 0,
-        volume_24h: mkt.volume_24h || 0,
-        open_interest: mkt.open_interest || 0,
+        yes_bid: yesBid,
+        yes_ask: yesAsk,
+        no_bid: noBid,
+        no_ask: noAsk,
+        last_price: lastPriceRaw,
+        volume: mkt.volume_fp ?? mkt.volume ?? 0,
+        volume_24h: mkt.volume_24h_fp ?? mkt.volume_24h ?? 0,
+        open_interest: mkt.open_interest_fp ?? mkt.open_interest ?? 0,
         close_time: mkt.close_time || mkt.expiration_time,
         result: mkt.result,
         category: event.category || "",
