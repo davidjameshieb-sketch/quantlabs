@@ -176,10 +176,10 @@ function extractOrderBook(market: any): {
   spread: number;
   midpoint: number;
 } {
-  const yesBid = (market.yes_bid || 0) / 100;
-  const yesAsk = (market.yes_ask || 0) / 100;
-  const noBid = (market.no_bid || 0) / 100;
-  const noAsk = (market.no_ask || 0) / 100;
+  const yesBid = (market.yes_bid_dollars ?? market.yes_bid ?? 0) * 1;
+  const yesAsk = (market.yes_ask_dollars ?? market.yes_ask ?? 0) * 1;
+  const noBid = (market.no_bid_dollars ?? market.no_bid ?? 0) * 1;
+  const noAsk = (market.no_ask_dollars ?? market.no_ask ?? 0) * 1;
   const spread = yesAsk - yesBid;
   const midpoint = (yesAsk + yesBid) / 2;
 
