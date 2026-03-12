@@ -249,10 +249,14 @@ Deno.serve(async (req) => {
     };
     filtered.sort(sortFns[sortBy] || sortFns.volume);
 
-    // ─── Hot Markets: volume > 0, sorted by 24h volume ────────────
-    const hotMarkets = filtered
+    // ─── Hot Markets: volume > 0 preferred, fallback to all if none ──
+    let hotMarkets = filtered
       .filter(m => m.vol24h > 0 && m.has_orderbook)
       .slice(0, 200);
+    // If no markets have volume, show the top markets anyway
+    if (hotMarkets.length === 0) {
+      hotMarkets = filtered.slice(0, 200);
+    }
 
     // ─── Wide Spreads: spread >= 4, has OI ────────────────────────
     const wideSpreads = filtered
