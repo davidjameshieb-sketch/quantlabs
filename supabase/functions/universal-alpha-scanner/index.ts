@@ -200,15 +200,14 @@ Deno.serve(async (req) => {
       const closeTime = m.close_time || m.expiration_time || null;
       const hoursLeft = hoursUntilClose(closeTime);
 
-      const yesBid = Math.round(m.yes_bid || 0);
-      const yesAsk = Math.round(m.yes_ask || 0);
-      const lastPrice = Math.round(m.last_price || 0);
-      // Use yes_sub_title price hint or floor_strike if available
-      const inferredPrice = m.floor_strike || m.strike_price || 0;
-      const midpoint = (yesBid > 0 && yesAsk > 0) ? Math.round((yesBid + yesAsk) / 2) : (lastPrice > 0 ? lastPrice : inferredPrice);
+      // Kalshi API v2 uses _dollars/_fp suffixed fields
+      const yesBid = Math.round((m.yes_bid_dollars ?? m.yes_bid ?? 0) * 100);
+      const yesAsk = Math.round((m.yes_ask_dollars ?? m.yes_ask ?? 0) * 100);
+      const lastPrice = Math.round((m.last_price_dollars ?? m.last_price ?? 0) * 100);
+      const midpoint = (yesBid > 0 && yesAsk > 0) ? Math.round((yesBid + yesAsk) / 2) : lastPrice;
       const spread = (yesBid > 0 && yesAsk > 0) ? yesAsk - yesBid : 0;
-      const vol24h = m.volume_24h || 0;
-      const oi = m.open_interest || 0;
+      const vol24h = m.volume_24h_fp ?? m.volume_24h ?? 0;
+      const oi = m.open_interest_fp ?? m.open_interest ?? 0;
 
       // Liquidity classification
       const hasOrderbook = (oi >= 5 || vol24h >= 5 || (spread > 0 && spread < 15 && oi > 0));
