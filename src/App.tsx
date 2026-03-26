@@ -10,6 +10,7 @@ import KalshiGolf from "./pages/KalshiGolf";
 import KalshiSports from "./pages/KalshiSports";
 import UniversalAlpha from "./pages/UniversalAlpha";
 import CommandCenter from "./pages/CommandCenter";
+import PennyStocks from "./pages/PennyStocks";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
