@@ -514,6 +514,62 @@ export default function PennyStocks() {
                           </div>
                         </div>
 
+                        {/* Market Following */}
+                        {(stock.institutional_following || stock.retail_sentiment) && (
+                          <div className="grid grid-cols-2 gap-2 mb-2">
+                            <div className="bg-blue-500/10 rounded p-1.5">
+                              <p className="text-[9px] font-semibold text-blue-400">🏛️ INSTITUTIONAL</p>
+                              <p className="text-[10px] font-bold">{stock.institutional_following || '—'} {stock.institutional_ownership_pct != null ? `(${stock.institutional_ownership_pct}%)` : ''}</p>
+                              {stock.top_institutional_holders && <p className="text-[9px] text-muted-foreground">{stock.top_institutional_holders}</p>}
+                            </div>
+                            <div className={`rounded p-1.5 ${
+                              stock.retail_sentiment === 'STRONG_BULL' ? 'bg-green-500/10' :
+                              stock.retail_sentiment === 'UNDER_RADAR' ? 'bg-yellow-500/10' :
+                              'bg-muted/30'
+                            }`}>
+                              <p className="text-[9px] font-semibold text-cyan-400">👥 RETAIL</p>
+                              <p className="text-[10px] font-bold">{
+                                stock.retail_sentiment === 'STRONG_BULL' ? '🔥 Strong Bull' :
+                                stock.retail_sentiment === 'MODERATE' ? '📊 Moderate' :
+                                stock.retail_sentiment === 'UNDER_RADAR' ? '🔍 Under Radar' :
+                                stock.retail_sentiment === 'CONTRARIAN' ? '🔄 Contrarian' :
+                                stock.retail_sentiment || '—'
+                              }</p>
+                              {stock.social_buzz_score != null && <p className="text-[9px] text-muted-foreground">Social Buzz: {stock.social_buzz_score}/100</p>}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Analyst & Short Interest Row */}
+                        {(stock.analyst_coverage || stock.short_interest_pct != null) && (
+                          <div className="flex gap-2 mb-2 flex-wrap">
+                            {stock.analyst_coverage && (
+                              <Badge className={`text-[9px] px-1.5 ${
+                                stock.analyst_coverage === 'WELL_COVERED' ? 'bg-blue-500/20 text-blue-300 border-blue-500/30' :
+                                stock.analyst_coverage === 'SPARSE' ? 'bg-yellow-500/20 text-yellow-300 border-yellow-500/30' :
+                                'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
+                              }`}>
+                                {stock.analyst_coverage === 'NONE' ? '💎 Zero Coverage' :
+                                 stock.analyst_coverage === 'SPARSE' ? '📋 Sparse Coverage' :
+                                 '📊 Well Covered'}
+                              </Badge>
+                            )}
+                            {stock.short_interest_pct != null && (
+                              <Badge className={`text-[9px] px-1.5 ${
+                                stock.short_interest_pct > 15 ? 'bg-red-500/20 text-red-300 border-red-500/30' :
+                                'bg-muted text-muted-foreground'
+                              }`}>
+                                🩳 SI: {stock.short_interest_pct}%
+                              </Badge>
+                            )}
+                            {stock.insider_buying_signal && (
+                              <Badge className="text-[9px] px-1.5 bg-green-500/20 text-green-300 border-green-500/30">
+                                🟢 Insider Buying
+                              </Badge>
+                            )}
+                          </div>
+                        )}
+
                         {/* Why volatile / why solid */}
                         <div className="grid grid-cols-2 gap-2">
                           <div className="bg-orange-500/10 rounded p-1.5">
