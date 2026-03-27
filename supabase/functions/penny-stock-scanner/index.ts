@@ -107,16 +107,27 @@ SCANNING DEPTH: You must mentally scan through AT LEAST 1000 publicly traded com
 
 Return EXACTLY 50 stocks as a JSON array. EVERY pick must have a REAL AI product and identifiable leadership. ZERO pharma/biotech.`;
 
-const USER_PROMPT = `Scan the market for AI-focused small-cap stocks with ELITE LEADERSHIP and BULLETPROOF fundamentals. Today is ${new Date().toISOString().slice(0, 10)}.
+const USER_PROMPT = `You are scanning the ENTIRE publicly traded AI ecosystem — cast a net across 1000+ companies, then distill to the TOP 50 absolute best. Today is ${new Date().toISOString().slice(0, 10)}.
 
-I want 50 AI hidden gems — companies where:
-- The CEO has a PROVEN track record in AI/tech (prior exits, notable companies, technical depth)
-- The engineering team includes talent from top AI labs (DeepMind, OpenAI, Google Brain, Meta AI, Stanford, MIT, CMU)
-- They have a REAL AI product in PRODUCTION generating real revenue
-- Their AI gives them a defensible moat (proprietary models, unique data, patents)
+SCANNING MANDATE: Do NOT just pick the first 50 AI companies that come to mind. You must mentally catalog companies across ALL 12 AI sub-sectors, across ALL major exchanges, at ALL market cap levels under $1B. Think about:
+- Companies that just IPO'd in the last 2 years with AI products
+- Companies that pivoted to AI from adjacent tech sectors
+- Companies with government/defense AI contracts flying under the radar
+- Companies building AI infrastructure (compute, networking, cooling, power)
+- Companies with AI patents that haven't been noticed by the market yet
+- International companies listed on US exchanges doing AI work
+- Companies where insider buying is accelerating
+- Companies with AI products generating real recurring revenue
+
+After scanning 1000+, give me ONLY the 50 that have:
+- The BEST CEO with PROVEN track record in AI/tech (prior exits, notable companies, technical depth)
+- The MOST ELITE engineering team (talent from DeepMind, OpenAI, Google Brain, Meta AI, Stanford, MIT, CMU)
+- A REAL AI product in PRODUCTION generating real revenue
+- A DEFENSIBLE AI moat (proprietary models, unique data, patents)
+- CLEAN dilution history (no serial diluters)
 
 HARD FLOORS — reject anything that fails:
-- Market cap UNDER $500M (sweet spot $15M-$500M)
+- Market cap UNDER $1 BILLION (sweet spot $15M-$1B)
 - ADV > 100,000 shares
 - TTM Revenue > $3M from AI products/services
 - Positive gross margins
@@ -129,14 +140,15 @@ For EVERY stock:
 2. Score AI Product Strength 0-100 (maturity + moat + revenue % + innovation)
 3. Score Financial Health 0-100 with component breakdown
 4. Score Sector Growth Potential 0-100
-5. Name the CEO and their background
-6. Describe the specific AI product
-7. Explain WHY the leadership team is elite
-8. Give specific entry strategy
+5. Score Dilution Protection 0-100
+6. Name the CEO and their background
+7. Describe the specific AI product
+8. Explain WHY the leadership team is elite
+9. Give specific entry strategy
 
-I want these organized by AI sub-sector, with the strongest leadership + AI scores on top.
+Organize by AI sub-sector, with the strongest leadership + AI scores on top within each sector.
 
-Return EXACTLY 50 results as JSON array. Real tickers, real companies, real AI products, real leadership. ZERO pharma.`;
+Return EXACTLY 50 results as JSON array. These must be the CREAM OF THE CROP from your 1000+ stock scan. Real tickers, real companies, real AI products, real leadership. ZERO pharma.`;
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
