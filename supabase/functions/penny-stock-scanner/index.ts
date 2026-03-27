@@ -238,7 +238,8 @@ Deno.serve(async (req) => {
                         "ceo_name", "ceo_background", "ai_product_description",
                         "volatility_tag", "why_volatile", "why_solid",
                         "setup_type", "the_thesis", "catalyst",
-                        "bull_case", "bear_case", "entry_strategy", "why_not_zero"
+                        "bull_case", "bear_case", "entry_strategy", "why_not_zero",
+                        "dilution_risk_score", "dilution_history", "dilution_note"
                       ],
                     },
                   },
