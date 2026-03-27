@@ -446,8 +446,12 @@ export default function PennyStocks() {
         {loading && (
           <div className="text-center py-20 space-y-4">
             <Loader2 className="w-12 h-12 animate-spin mx-auto text-primary" />
-            <p className="text-lg font-semibold">Scanning for AI hidden gems...</p>
-            <p className="text-sm text-muted-foreground">Finding 50 AI stocks with elite teams and real products</p>
+            <p className="text-lg font-semibold">Scanning 1000+ AI stocks...</p>
+            <p className="text-sm text-muted-foreground">Finding the top 50 cream of the crop</p>
+            <div className="max-w-xs mx-auto space-y-1">
+              <Progress value={scanProgress} className="h-2" />
+              <p className="text-xs text-muted-foreground">{scanProgress}% — {scanProgress < 50 ? "AI analyzing..." : scanProgress < 80 ? "Processing results..." : "Finalizing..."}</p>
+            </div>
           </div>
         )}
 
