@@ -70,6 +70,14 @@ interface VolatileStock {
   dilution_history?: string;
   shares_outstanding?: string;
   dilution_note?: string;
+  institutional_ownership_pct?: number;
+  institutional_following?: string;
+  top_institutional_holders?: string;
+  retail_sentiment?: string;
+  social_buzz_score?: number;
+  analyst_coverage?: string;
+  short_interest_pct?: number;
+  insider_buying_signal?: boolean;
 }
 
 interface SectorRanking {
