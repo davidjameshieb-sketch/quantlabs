@@ -560,7 +560,42 @@ export default function PennyStocks() {
                             </div>
                           </div>
 
-                          {/* Raw financials */}
+                          {/* Dilution Protection Breakdown */}
+                          <div>
+                            <p className="text-xs font-bold mb-2">🛡️ Dilution Protection</p>
+                            <div className="space-y-1.5">
+                              {stock.dilution_risk_score != null && <ScoreBar label="Dilution Safety" score={stock.dilution_risk_score} icon={<Shield className="w-2.5 h-2.5" />} />}
+                              {stock.share_stability_score != null && <ScoreBar label="Share Count Stability" score={stock.share_stability_score} />}
+                              {stock.shelf_registration_risk != null && <ScoreBar label="No Shelf Registration" score={stock.shelf_registration_risk} />}
+                            </div>
+                            <div className="grid grid-cols-3 gap-2 mt-2">
+                              {stock.insider_ownership_pct != null && (
+                                <div className="bg-muted/30 rounded p-2 text-center">
+                                  <p className="text-[9px] text-muted-foreground">Insider Own %</p>
+                                  <p className="text-xs font-bold">{stock.insider_ownership_pct}%</p>
+                                </div>
+                              )}
+                              {stock.shares_outstanding && (
+                                <div className="bg-muted/30 rounded p-2 text-center">
+                                  <p className="text-[9px] text-muted-foreground">Shares Out</p>
+                                  <p className="text-xs font-bold">{stock.shares_outstanding}</p>
+                                </div>
+                              )}
+                              {stock.dilution_history && (
+                                <div className={`rounded p-2 text-center ${
+                                  stock.dilution_history === 'CLEAN' ? 'bg-emerald-500/10' :
+                                  stock.dilution_history === 'MINOR' ? 'bg-green-500/10' :
+                                  'bg-red-500/10'
+                                }`}>
+                                  <p className="text-[9px] text-muted-foreground">History</p>
+                                  <p className="text-xs font-bold">{stock.dilution_history}</p>
+                                </div>
+                              )}
+                            </div>
+                            {stock.dilution_note && (
+                              <p className="text-[10px] text-muted-foreground mt-1.5 italic">💉 {stock.dilution_note}</p>
+                            )}
+                          </div>
                           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                             {stock.ttm_revenue && <div className="bg-muted/30 rounded p-2 text-center"><p className="text-[9px] text-muted-foreground">TTM Rev</p><p className="text-xs font-bold">{stock.ttm_revenue}</p></div>}
                             {stock.gross_margin_pct && <div className="bg-muted/30 rounded p-2 text-center"><p className="text-[9px] text-muted-foreground">Gross Margin</p><p className="text-xs font-bold">{stock.gross_margin_pct}</p></div>}
