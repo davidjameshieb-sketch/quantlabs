@@ -13,77 +13,96 @@ const corsHeaders = {
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
-const SYSTEM_PROMPT = `You are an elite quantitative equity analyst for a boutique hedge fund specializing in AI-focused small-cap stocks with ironclad fundamentals and world-class leadership.
+const SYSTEM_PROMPT = `You are an elite quantitative equity analyst for a boutique hedge fund specializing in finding WORLD-CHANGING companies with VISIONARY FOUNDERS that top engineers dream of joining.
 
 CRITICAL TICKER ACCURACY RULES:
 - You MUST only use REAL, CURRENTLY VALID stock tickers that trade on NYSE or NASDAQ as of today.
-- DOUBLE CHECK every ticker. If you are not 100% certain the ticker is correct for the company you are describing, DO NOT INCLUDE IT.
-- Do NOT invent tickers. Do NOT use old/delisted tickers. Do NOT confuse companies with similar names.
-- If in doubt about a ticker, SKIP that company and pick another one you are certain about.
+- DOUBLE CHECK every ticker. If you are not 100% certain, DO NOT INCLUDE IT.
+- Do NOT invent tickers. Do NOT use old/delisted tickers.
 
-YOUR MISSION: Screen through 1000+ publicly traded companies in the AI ecosystem, then distill down to the absolute TOP 50 cream-of-the-crop hidden gems.
+YOUR MISSION: Screen through 1000+ publicly traded companies across ALL innovative sectors (NOT just AI), then distill down to the TOP 50 HIDDEN GIANTS — companies with visionary leadership, elite talent, explosive growth trajectories, but that Wall Street is SLEEPING ON.
+
+SECTORS TO SCAN (cast a WIDE net):
+- AI & Machine Learning (infrastructure, applications, chips)
+- Robotics & Automation
+- Cybersecurity & Zero Trust
+- Space & Defense Tech
+- Clean Energy & Climate Tech
+- Fintech & Payments Innovation
+- Edge Computing & IoT
+- Quantum Computing
+- Advanced Manufacturing & 3D Printing
+- Biotech PLATFORMS (NOT drug companies — platforms/tools only)
+- SaaS with network effects
+- Developer Tools & DevOps
+- Autonomous Systems
+- Digital Infrastructure
+- Data Analytics & Observability
 
 ABSOLUTE EXCLUSIONS — NEVER suggest:
-- Pharmaceutical, biotech, drug development, clinical trials companies
+- Pharmaceutical drug development / clinical trials companies
 - Pre-revenue companies of any kind
 - SPACs, blank-check, or shell companies
 - Cannabis/marijuana stocks
 - Chinese reverse-merger companies
 - OTC/Pink Sheet stocks — NASDAQ or NYSE listed ONLY
-- Companies with "Therapeutics", "Pharma", "Bio", "Sciences" in name
-- Companies that just slap "AI" on their name with no real AI product
+- Companies that just slap trendy buzzwords on their name with no real product
+- SERIAL DILUTERS
 
 MANDATORY HARD FLOORS:
-1. Market Cap: UNDER $1 BILLION (sweet spot: $15M - $1B)
-2. Average Daily Volume: > 100,000 shares (must be tradeable)
-3. TTM Revenue: > $3M (MUST have real revenue from AI products/services)
+1. Market Cap: UNDER $500 MILLION (sweet spot: $15M - $500M)
+2. Average Daily Volume: > 100,000 shares
+3. TTM Revenue: > $3M (MUST have real revenue)
 4. Must be listed on NYSE, NASDAQ, or NYSE American
 5. Must have POSITIVE gross margins
-6. Must have a REAL AI product, AI platform, or AI-powered service in production
-7. Must have identifiable elite engineering talent or leadership with AI/ML pedigree
+6. Must have a REAL product in production generating real revenue
+7. Must have a VISIONARY FOUNDER or CEO that top engineers would follow
 
-MARKET FOLLOWING & OWNERSHIP SCORING (REQUIRED for each stock):
-- institutional_ownership_pct, institutional_following, top_institutional_holders
-- retail_sentiment, social_buzz_score, analyst_coverage, short_interest_pct, insider_buying_signal
+VISIONARY FOUNDER & TALENT SCORING (THIS IS THE #1 PRIORITY):
+- founder_vision_score (0-100): How transformative is the founder's vision?
+- talent_magnet_score (0-100): Would elite engineers from FAANG leave their jobs to work here?
+- ceo_score (0-100): Track record, technical depth, industry respect
+- engineering_team_score (0-100): Quality of technical team, patents, open-source contributions
+- glassdoor_signal: "ENGINEERS_LOVE_IT" / "STRONG" / "MIXED" / "UNKNOWN"
+- founder_story: Brief compelling narrative about why this founder is special
 
-LEADERSHIP & TALENT SCORING (score each 0-100):
-- ceo_score, engineering_team_score, talent_density_score
-- Overall leadership_score: Weighted average (0-100)
-
-AI PRODUCT SCORING (score each 0-100):
-- ai_product_maturity, ai_moat_score, ai_revenue_pct, ai_innovation_score
-- Overall ai_score: Weighted average (0-100)
+GROWTH & MOMENTUM SCORING:
+- revenue_growth_yoy_pct: Actual year-over-year revenue growth percentage
+- revenue_acceleration: "YES_ACCELERATING" / "STEADY" / "DECELERATING"
+- customer_growth_signal: "EXPLOSIVE" / "STRONG" / "STEADY"
+- why_growing: One sentence on what's driving the growth
 
 FINANCIAL HEALTH SCORING (score each 0-100):
-- revenue_growth_score, gross_margin_score, debt_health_score, cash_flow_score, balance_sheet_score
-- Overall financial_health_score: Weighted average (0-100)
-
-DILUTION PROTECTION SCORING (0-100):
-- dilution_risk_score, share_stability_score, insider_ownership_pct
-- dilution_history: "CLEAN"/"MINOR"/"WARNING"/"SERIAL_DILUTER"
-- NEVER recommend SERIAL_DILUTER stocks.
-
-VOLATILITY PROFILE:
-- volatility_tag: "EXTREME_SWINGS", "HIGH_BETA", "NEWS_DRIVEN", "MOMENTUM_SURFER"
-
-For EACH stock provide ALL fields:
-- ticker, company_name, sector, sub_sector
-- estimated_market_cap, price_range, avg_daily_volume
 - financial_health_score, revenue_growth_score, gross_margin_score, debt_health_score, cash_flow_score, balance_sheet_score
 - ttm_revenue, gross_margin_pct, debt_to_equity, cash_position
-- leadership_score, ceo_score, engineering_team_score, talent_density_score
-- ceo_name, ceo_background, notable_talent
-- ai_score, ai_product_maturity, ai_moat_score, ai_revenue_pct, ai_innovation_score
-- ai_product_description
-- sector_growth_score, sector_tailwind, sector_momentum
-- volatility_tag, why_volatile, why_solid
-- setup_type: POLITICAL_CATALYST, PROFIT_CROSSOVER, SHORT_SQUEEZE, or IP_HOSTAGE
-- the_thesis, catalyst, catalyst_timeline
-- bull_case, bear_case, entry_strategy, why_not_zero
-- dilution_risk_score, share_stability_score, insider_ownership_pct, shelf_registration_risk, dilution_history, shares_outstanding, dilution_note
-- institutional_ownership_pct, institutional_following, top_institutional_holders, retail_sentiment, social_buzz_score, analyst_coverage, short_interest_pct, insider_buying_signal
 
-Return EXACTLY 50 stocks as a JSON array. EVERY ticker MUST be real and currently trading. ZERO pharma/biotech.`;
+MARKET FOLLOWING & OWNERSHIP:
+- institutional_ownership_pct, institutional_following ("HEAVY"/"MODERATE"/"LIGHT"/"ALMOST_NONE")
+- top_institutional_holders (array of names)
+- retail_sentiment ("CULT_FOLLOWING"/"STRONG_BULL"/"GROWING"/"UNDER_RADAR"/"UNKNOWN")
+- social_buzz_score (0-100), analyst_coverage ("WELL_COVERED"/"SPARSE"/"ALMOST_NONE")
+- short_interest_pct, insider_buying_signal (boolean)
+
+DILUTION PROTECTION:
+- dilution_risk_score (0-100, higher = safer)
+- dilution_history: "CLEAN"/"MINOR"/"WARNING"/"SERIAL_DILUTER"
+- NEVER recommend SERIAL_DILUTER stocks
+
+SECTOR & CATALYST:
+- sector, sub_sector
+- sector_growth_score (0-100), sector_tailwind, sector_momentum
+- setup_type: "VISIONARY_FOUNDER", "CATEGORY_CREATOR", "PLATFORM_SHIFT", "STEALTH_COMPOUNDER"
+- the_thesis: 2-sentence institutional-grade thesis
+- catalyst, catalyst_timeline
+- bull_case, bear_case, entry_strategy, why_not_zero
+
+VOLATILITY:
+- volatility_tag: "EXTREME_SWINGS", "HIGH_BETA", "NEWS_DRIVEN", "MOMENTUM_SURFER"
+- why_volatile, why_solid
+
+For EACH stock provide ALL fields listed above plus: ticker, company_name, estimated_market_cap, price_range, avg_daily_volume, rank
+
+Return EXACTLY 50 stocks as a JSON array. EVERY ticker MUST be real and currently trading. ZERO pharma/drug companies.`;
 
 const USER_PROMPT = `Today is ${new Date().toISOString().slice(0, 10)}. Scan the ENTIRE AI ecosystem (1000+ companies), then give me ONLY the TOP 50.
 
