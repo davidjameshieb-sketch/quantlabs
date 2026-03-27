@@ -617,6 +617,39 @@ export type Database = {
         }
         Relationships: []
       }
+      penny_scan_jobs: {
+        Row: {
+          completed_at: string | null
+          created_at: string
+          error: string | null
+          id: string
+          progress: number
+          result: Json | null
+          sector: string
+          status: string
+        }
+        Insert: {
+          completed_at?: string | null
+          created_at?: string
+          error?: string | null
+          id?: string
+          progress?: number
+          result?: Json | null
+          sector?: string
+          status?: string
+        }
+        Update: {
+          completed_at?: string | null
+          created_at?: string
+          error?: string | null
+          id?: string
+          progress?: number
+          result?: Json | null
+          sector?: string
+          status?: string
+        }
+        Relationships: []
+      }
       profiles: {
         Row: {
           created_at: string
