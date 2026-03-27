@@ -453,24 +453,45 @@ export default function PennyStocks() {
                         </div>
 
                         {/* 4-Score Row */}
-                        <div className="grid grid-cols-4 gap-1.5 mb-2">
+                        <div className="grid grid-cols-5 gap-1.5 mb-2">
                           <div className="bg-purple-500/10 rounded px-1.5 py-1.5 text-center">
-                            <p className="text-[8px] text-purple-300">🧠 AI Score</p>
+                            <p className="text-[8px] text-purple-300">🧠 AI</p>
                             <p className={`text-base font-black ${getScoreColor(stock.ai_score)}`}>{stock.ai_score}</p>
                           </div>
                           <div className="bg-amber-500/10 rounded px-1.5 py-1.5 text-center">
-                            <p className="text-[8px] text-amber-300">👑 Leadership</p>
+                            <p className="text-[8px] text-amber-300">👑 Lead</p>
                             <p className={`text-base font-black ${getScoreColor(stock.leadership_score)}`}>{stock.leadership_score}</p>
                           </div>
                           <div className="bg-muted/30 rounded px-1.5 py-1.5 text-center">
-                            <p className="text-[8px] text-muted-foreground">💰 Financial</p>
+                            <p className="text-[8px] text-muted-foreground">💰 Finance</p>
                             <p className={`text-base font-black ${getScoreColor(stock.financial_health_score)}`}>{stock.financial_health_score}</p>
                           </div>
                           <div className="bg-muted/30 rounded px-1.5 py-1.5 text-center">
                             <p className="text-[8px] text-muted-foreground">🚀 Sector</p>
                             <p className={`text-base font-black ${getScoreColor(stock.sector_growth_score)}`}>{stock.sector_growth_score}</p>
                           </div>
+                          <div className={`rounded px-1.5 py-1.5 text-center ${(stock.dilution_risk_score ?? 50) >= 70 ? 'bg-emerald-500/10' : (stock.dilution_risk_score ?? 50) >= 40 ? 'bg-yellow-500/10' : 'bg-red-500/10'}`}>
+                            <p className="text-[8px] text-muted-foreground">🛡️ Dilution</p>
+                            <p className={`text-base font-black ${getScoreColor(stock.dilution_risk_score ?? 50)}`}>{stock.dilution_risk_score ?? '—'}</p>
+                          </div>
                         </div>
+
+                        {/* Dilution Badge */}
+                        {stock.dilution_history && (
+                          <div className="mb-2">
+                            <Badge className={`text-[9px] px-1.5 ${
+                              stock.dilution_history === 'CLEAN' ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' :
+                              stock.dilution_history === 'MINOR' ? 'bg-green-500/20 text-green-300 border-green-500/30' :
+                              stock.dilution_history === 'WARNING' ? 'bg-red-500/20 text-red-300 border-red-500/30' :
+                              'bg-red-500/30 text-red-200 border-red-500/50'
+                            }`}>
+                              {stock.dilution_history === 'CLEAN' ? '✅ No Dilution' :
+                               stock.dilution_history === 'MINOR' ? '🟡 Minor Dilution' :
+                               stock.dilution_history === 'WARNING' ? '⚠️ Dilution Warning' :
+                               '🚫 Serial Diluter'}
+                            </Badge>
+                          </div>
+                        )
 
                         {/* CEO & AI Product */}
                         <div className="grid grid-cols-2 gap-2 mb-2">
