@@ -340,6 +340,13 @@ export default function PennyStocks() {
                         </div>
                       </div>
 
+                      {stock.why_not_zero && (
+                        <div className="bg-emerald-500/10 rounded p-2 border border-emerald-500/20">
+                          <p className="text-[10px] font-semibold text-emerald-400 mb-0.5">🛡️ WHY IT WON'T GO TO ZERO</p>
+                          <p className="text-[10px] leading-relaxed">{stock.why_not_zero}</p>
+                        </div>
+                      )}
+
                       <div className="bg-primary/10 rounded p-2 border border-primary/20">
                         <p className="text-xs font-semibold text-primary mb-0.5">💰 STRATEGY</p>
                         <p className="text-xs leading-relaxed">{stock.strategy}</p>
