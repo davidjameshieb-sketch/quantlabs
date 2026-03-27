@@ -220,18 +220,51 @@ export default function PennyStocks() {
   const [expandedCards, setExpandedCards] = useState<Set<string>>(new Set());
   const [scanError, setScanError] = useState<{ title: string; message: string; retryLabel: string } | null>(null);
 
+  const [scanProgress, setScanProgress] = useState(0);
+
   const runScan = useCallback(async () => {
     setLoading(true);
     setScanError(null);
+    setScanProgress(0);
     try {
-      const { data: result, error } = await supabase.functions.invoke("penny-stock-scanner", {
-        body: { sector: selectedSector },
+      // Start the background job
+      const { data: startResult, error: startError } = await supabase.functions.invoke("penny-stock-scanner", {
+        body: { sector: selectedSector, action: "start" },
       });
-      if (error) throw error;
-      if (result?.error) throw new Error(result.error);
-      setData(result);
-      saveScanToCache(result);
-      toast.success(`Found ${result.total_picks} AI gems!`);
+      if (startError) throw startError;
+      if (startResult?.error) throw new Error(startResult.error);
+      if (!startResult?.job_id) throw new Error("No job ID returned");
+
+      const jobId = startResult.job_id;
+      toast.info("AI scan started — analyzing 1000+ stocks...");
+
+      // Poll for results
+      let attempts = 0;
+      const maxAttempts = 120; // 4 minutes max
+      while (attempts < maxAttempts) {
+        await new Promise((r) => setTimeout(r, 2000));
+        attempts++;
+
+        const { data: pollResult, error: pollError } = await supabase.functions.invoke("penny-stock-scanner", {
+          body: { action: "poll", job_id: jobId },
+        });
+
+        if (pollError) throw pollError;
+
+        if (pollResult?.status === "completed") {
+          const result = pollResult as ScanResult;
+          setData(result);
+          saveScanToCache(result);
+          setScanProgress(100);
+          toast.success(`Found ${result.total_picks} AI gems!`);
+          return;
+        } else if (pollResult?.status === "failed") {
+          throw new Error(pollResult.error || "Scan failed");
+        } else if (pollResult?.status === "processing") {
+          setScanProgress(pollResult.progress || Math.min(attempts * 2, 90));
+        }
+      }
+      throw new Error("Scan timed out — please try again");
     } catch (err) {
       console.error("Scan failed:", err);
       const e = await parseScanError(err);
@@ -239,6 +272,7 @@ export default function PennyStocks() {
       toast.error(e.title);
     } finally {
       setLoading(false);
+      setScanProgress(0);
     }
   }, [selectedSector]);
 
