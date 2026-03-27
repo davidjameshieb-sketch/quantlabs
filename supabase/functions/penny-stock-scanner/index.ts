@@ -224,6 +224,13 @@ Deno.serve(async (req) => {
                         bear_case: { type: "string" },
                         entry_strategy: { type: "string" },
                         why_not_zero: { type: "string" },
+                        dilution_risk_score: { type: "number", description: "0-100, higher = safer from dilution" },
+                        share_stability_score: { type: "number", description: "0-100, share count stability" },
+                        insider_ownership_pct: { type: "number", description: "Insider ownership percentage" },
+                        shelf_registration_risk: { type: "number", description: "0-100, 100 = no shelf registration" },
+                        dilution_history: { type: "string", enum: ["CLEAN", "MINOR", "WARNING", "SERIAL_DILUTER"] },
+                        shares_outstanding: { type: "string" },
+                        dilution_note: { type: "string" },
                       },
                       required: [
                         "ticker", "company_name", "sector", "estimated_market_cap",
