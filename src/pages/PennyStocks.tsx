@@ -385,7 +385,7 @@ export default function PennyStocks() {
             <h2 className="text-xl font-bold">AI Hidden Gems Scanner</h2>
             <p className="text-muted-foreground max-w-lg mx-auto">
               Find 50 AI stocks with ELITE engineering teams, visionary CEOs, and real AI products.
-              Under $500M cap, scored by AI strength, leadership quality, and financial health.
+              Under $1B cap, scored by AI strength, leadership quality, and financial health.
             </p>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 max-w-2xl mx-auto text-xs">
               <Card className="p-3 text-center">
