@@ -6,7 +6,8 @@ import { Card } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import {
   RefreshCw, Loader2, Target, AlertTriangle, DollarSign, Clock,
-  ChevronDown, ChevronRight, TrendingUp, Shield, Flame, BarChart3
+  ChevronDown, ChevronRight, TrendingUp, Shield, Flame, BarChart3,
+  Brain, Users, Cpu, Star
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
@@ -30,6 +31,19 @@ interface VolatileStock {
   gross_margin_pct?: string;
   debt_to_equity?: string;
   cash_position?: string;
+  leadership_score: number;
+  ceo_score?: number;
+  engineering_team_score?: number;
+  talent_density_score?: number;
+  ceo_name: string;
+  ceo_background: string;
+  notable_talent?: string;
+  ai_score: number;
+  ai_product_maturity?: number;
+  ai_moat_score?: number;
+  ai_revenue_pct?: number;
+  ai_innovation_score?: number;
+  ai_product_description: string;
   sector_growth_score: number;
   sector_tailwind?: string;
   sector_momentum?: string;
@@ -81,19 +95,19 @@ const VOL_LABELS: Record<string, { label: string; emoji: string; color: string }
   MOMENTUM_SURFER: { label: "Momentum Surfer", emoji: "🏄", color: "bg-indigo-500/20 text-indigo-300" },
 };
 
-const SECTORS = [
-  { id: "all", label: "All Sectors", emoji: "🔥" },
-  { id: "defense", label: "Defense", emoji: "🛡️" },
-  { id: "energy", label: "Energy", emoji: "⚡" },
-  { id: "ai", label: "AI Infra", emoji: "🤖" },
-  { id: "space", label: "Space", emoji: "🚀" },
-  { id: "cybersecurity", label: "Cyber", emoji: "🔒" },
-  { id: "fintech", label: "Fintech", emoji: "💳" },
-  { id: "manufacturing", label: "Mfg", emoji: "🏭" },
-  { id: "agriculture", label: "AgTech", emoji: "🌾" },
-  { id: "infrastructure", label: "Infra", emoji: "🏗️" },
-  { id: "logistics", label: "Logistics", emoji: "🚛" },
-  { id: "clean energy", label: "Clean", emoji: "☀️" },
+const AI_SECTORS = [
+  { id: "all", label: "All AI", emoji: "🤖" },
+  { id: "ai infrastructure", label: "AI Infra", emoji: "🖥️" },
+  { id: "cybersecurity", label: "AI Cyber", emoji: "🔒" },
+  { id: "defense", label: "AI Defense", emoji: "🛡️" },
+  { id: "edge ai", label: "Edge AI", emoji: "📡" },
+  { id: "fintech", label: "AI Fintech", emoji: "💳" },
+  { id: "computer vision", label: "Vision/Robotics", emoji: "👁️" },
+  { id: "nlp", label: "NLP/Chat", emoji: "💬" },
+  { id: "data", label: "AI Data", emoji: "📊" },
+  { id: "vertical", label: "Vertical AI", emoji: "🏢" },
+  { id: "developer tools", label: "Dev Tools", emoji: "🛠️" },
+  { id: "generative", label: "GenAI", emoji: "🎨" },
 ];
 
 const getScoreColor = (score: number) => {
@@ -117,6 +131,16 @@ const getGradeColor = (grade: string) => {
   if (grade?.startsWith("B")) return "text-green-400 bg-green-500/20 border-green-500/30";
   if (grade?.startsWith("C")) return "text-yellow-400 bg-yellow-500/20 border-yellow-500/30";
   return "text-red-400 bg-red-500/20 border-red-500/30";
+};
+
+const getGrade = (score: number): string => {
+  if (score >= 85) return "A+";
+  if (score >= 75) return "A";
+  if (score >= 65) return "B+";
+  if (score >= 55) return "B";
+  if (score >= 45) return "C+";
+  if (score >= 35) return "C";
+  return "D";
 };
 
 const getMomentumEmoji = (m: string) => {
@@ -192,7 +216,7 @@ export default function PennyStocks() {
       if (result?.error) throw new Error(result.error);
       setData(result);
       saveScanToCache(result);
-      toast.success(`Found ${result.total_picks} volatile gems!`);
+      toast.success(`Found ${result.total_picks} AI gems!`);
     } catch (err) {
       console.error("Scan failed:", err);
       const e = await parseScanError(err);
@@ -211,7 +235,6 @@ export default function PennyStocks() {
     });
   };
 
-  // Group stocks by sector, sorted by sector_growth_score desc, then by financial_health_score desc within
   const sectorGroups = useMemo(() => {
     if (!data?.stocks) return [];
     const groups: Record<string, VolatileStock[]> = {};
@@ -220,11 +243,9 @@ export default function PennyStocks() {
       if (!groups[key]) groups[key] = [];
       groups[key].push(s);
     }
-    // Sort stocks within each sector by financial_health_score desc
     for (const key of Object.keys(groups)) {
-      groups[key].sort((a, b) => (b.financial_health_score || 0) - (a.financial_health_score || 0));
+      groups[key].sort((a, b) => (b.ai_score || 0) - (a.ai_score || 0));
     }
-    // Sort sectors by avg sector_growth_score desc
     const entries = Object.entries(groups);
     entries.sort((a, b) => {
       const avgA = a[1].reduce((sum, s) => sum + (s.sector_growth_score || 0), 0) / a[1].length;
@@ -240,10 +261,10 @@ export default function PennyStocks() {
       <div className="border-b border-border bg-card/50 backdrop-blur-sm sticky top-0 z-50">
         <div className="max-w-[1800px] mx-auto px-4 py-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <span className="text-2xl">🔥</span>
+            <span className="text-2xl">🧠</span>
             <div>
-              <h1 className="text-lg font-bold tracking-tight">Volatile Gems Scanner</h1>
-              <p className="text-xs text-muted-foreground">High Volatility • Solid Fundamentals • Cap &lt; $100M • Scored by Financial Health</p>
+              <h1 className="text-lg font-bold tracking-tight">AI Hidden Gems Scanner</h1>
+              <p className="text-xs text-muted-foreground">50 AI Stocks • Elite Leadership • Cap &lt; $500M • Scored by AI Strength + Leadership + Financials</p>
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -256,15 +277,20 @@ export default function PennyStocks() {
       <div className="max-w-[1800px] mx-auto px-4 py-4 space-y-4">
         {/* Sector selector */}
         <div className="flex flex-wrap items-center gap-2">
-          {SECTORS.map((s) => (
+          {AI_SECTORS.map((s) => (
             <Button key={s.id} size="sm" variant={selectedSector === s.id ? "default" : "outline"} onClick={() => setSelectedSector(s.id)} className="text-xs">
               {s.emoji} {s.label}
             </Button>
           ))}
-          <div className="ml-auto">
+          <div className="ml-auto flex items-center gap-2">
+            {data && (
+              <Button variant="outline" size="sm" onClick={() => { localStorage.removeItem(STORAGE_KEY); setData(null); toast.info("Cache cleared"); }}>
+                Clear Cache
+              </Button>
+            )}
             <Button onClick={runScan} disabled={loading} className="gap-2">
-              {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Flame className="w-4 h-4" />}
-              {loading ? "Scanning..." : "🔥 Find Volatile Gems"}
+              {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Brain className="w-4 h-4" />}
+              {loading ? "Scanning..." : "🧠 Find AI Gems"}
             </Button>
           </div>
         </div>
@@ -282,23 +308,21 @@ export default function PennyStocks() {
           </Card>
         )}
 
-        {/* Market Context */}
         {data?.market_context && (
           <Card className="p-4 bg-primary/5 border-primary/20">
             <div className="flex items-start gap-2">
               <Target className="w-5 h-5 text-primary mt-0.5 shrink-0" />
               <div>
-                <p className="text-sm font-semibold text-primary mb-1">Macro Intelligence</p>
+                <p className="text-sm font-semibold text-primary mb-1">AI Market Intelligence</p>
                 <p className="text-sm text-muted-foreground leading-relaxed">{data.market_context}</p>
               </div>
             </div>
           </Card>
         )}
 
-        {/* Sector Growth Rankings */}
         {data?.sector_rankings && data.sector_rankings.length > 0 && (
           <div className="space-y-2">
-            <p className="text-sm font-bold flex items-center gap-2"><BarChart3 className="w-4 h-4" /> Sector Explosive Growth Rankings</p>
+            <p className="text-sm font-bold flex items-center gap-2"><BarChart3 className="w-4 h-4" /> AI Sector Growth Rankings</p>
             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-2">
               {data.sector_rankings
                 .sort((a, b) => b.growth_score - a.growth_score)
@@ -321,60 +345,77 @@ export default function PennyStocks() {
           </div>
         )}
 
-        {/* Hard Floors */}
         {data && (
           <div className="flex flex-wrap gap-2">
-            <Badge variant="outline" className="text-[10px] border-green-500/30 text-green-400">✅ Cap &lt; $100M</Badge>
-            <Badge variant="outline" className="text-[10px] border-green-500/30 text-green-400">✅ ADV &gt; 200K</Badge>
-            <Badge variant="outline" className="text-[10px] border-green-500/30 text-green-400">✅ Revenue &gt; $5M</Badge>
-            <Badge variant="outline" className="text-[10px] border-green-500/30 text-green-400">✅ Positive Margins</Badge>
+            <Badge variant="outline" className="text-[10px] border-green-500/30 text-green-400">✅ AI Product Required</Badge>
+            <Badge variant="outline" className="text-[10px] border-green-500/30 text-green-400">✅ Cap &lt; $500M</Badge>
+            <Badge variant="outline" className="text-[10px] border-green-500/30 text-green-400">✅ Elite Leadership</Badge>
+            <Badge variant="outline" className="text-[10px] border-green-500/30 text-green-400">✅ Revenue &gt; $3M</Badge>
             <Badge variant="outline" className="text-[10px] border-green-500/30 text-green-400">✅ NYSE/NASDAQ</Badge>
             <Badge variant="outline" className="text-[10px] border-green-500/30 text-green-400">✅ Zero Pharma</Badge>
-            <Badge variant="outline" className="text-[10px] border-primary/30 text-primary ml-auto">{data.total_picks} Gems Found</Badge>
+            <Badge variant="outline" className="text-[10px] border-primary/30 text-primary ml-auto">{data.total_picks} AI Gems Found</Badge>
+            {data.scan_timestamp && (
+              <Badge variant="outline" className="text-[10px] border-muted-foreground/30 text-muted-foreground">
+                <Clock className="w-3 h-3 mr-1" />
+                {new Date(data.scan_timestamp).toLocaleString()}
+              </Badge>
+            )}
           </div>
         )}
 
-        {/* Empty state */}
         {!data && !loading && !scanError && (
           <div className="text-center py-20 space-y-4">
-            <div className="text-6xl">🔥</div>
-            <h2 className="text-xl font-bold">Volatile Gems Scanner</h2>
+            <div className="text-6xl">🧠</div>
+            <h2 className="text-xl font-bold">AI Hidden Gems Scanner</h2>
             <p className="text-muted-foreground max-w-lg mx-auto">
-              Find stocks that SWING HARD but have BULLETPROOF fundamentals.
-              Under $100M cap, real revenue, scored by financial health & sector growth.
+              Find 50 AI stocks with ELITE engineering teams, visionary CEOs, and real AI products.
+              Under $500M cap, scored by AI strength, leadership quality, and financial health.
             </p>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 max-w-2xl mx-auto text-xs">
-              {Object.entries(VOL_LABELS).map(([key, val]) => (
-                <Card key={key} className="p-3 text-center">
-                  <div className="text-2xl mb-1">{val.emoji}</div>
-                  <p className="font-semibold text-[11px]">{val.label}</p>
-                </Card>
-              ))}
+              <Card className="p-3 text-center">
+                <div className="text-2xl mb-1">🧠</div>
+                <p className="font-semibold text-[11px]">AI Product Score</p>
+              </Card>
+              <Card className="p-3 text-center">
+                <div className="text-2xl mb-1">👑</div>
+                <p className="font-semibold text-[11px]">Leadership Score</p>
+              </Card>
+              <Card className="p-3 text-center">
+                <div className="text-2xl mb-1">💰</div>
+                <p className="font-semibold text-[11px]">Financial Health</p>
+              </Card>
+              <Card className="p-3 text-center">
+                <div className="text-2xl mb-1">🚀</div>
+                <p className="font-semibold text-[11px]">Sector Growth</p>
+              </Card>
             </div>
-            <p className="text-xs text-muted-foreground">Select a sector focus, then hit "Find Volatile Gems"</p>
+            <p className="text-xs text-muted-foreground">Select an AI sub-sector, then hit "Find AI Gems"</p>
           </div>
         )}
 
         {loading && (
           <div className="text-center py-20 space-y-4">
             <Loader2 className="w-12 h-12 animate-spin mx-auto text-primary" />
-            <p className="text-lg font-semibold">Scanning for volatile gems...</p>
-            <p className="text-sm text-muted-foreground">Finding stocks under $100M with explosive volatility and rock-solid fundamentals</p>
+            <p className="text-lg font-semibold">Scanning for AI hidden gems...</p>
+            <p className="text-sm text-muted-foreground">Finding 50 AI stocks with elite teams and real products</p>
           </div>
         )}
 
-        {/* Sector-Grouped Stock Cards */}
         {sectorGroups.map(([sectorName, stocks]) => {
+          const avgAI = Math.round(stocks.reduce((s, st) => s + (st.ai_score || 0), 0) / stocks.length);
+          const avgLeadership = Math.round(stocks.reduce((s, st) => s + (st.leadership_score || 0), 0) / stocks.length);
           const avgHealth = Math.round(stocks.reduce((s, st) => s + (st.financial_health_score || 0), 0) / stocks.length);
-          const avgGrowth = Math.round(stocks.reduce((s, st) => s + (st.sector_growth_score || 0), 0) / stocks.length);
           return (
             <div key={sectorName} className="space-y-2">
-              <div className="flex items-center gap-3 py-2 border-b border-border">
+              <div className="flex items-center gap-3 py-2 border-b border-border flex-wrap">
                 <h2 className="text-base font-bold">{sectorName}</h2>
-                <Badge className={`${getGradeColor("A")} text-[10px]`}>
-                  <TrendingUp className="w-3 h-3 mr-1" /> Growth: {avgGrowth}/100
+                <Badge className="bg-purple-500/20 text-purple-300 border-purple-500/30 text-[10px]">
+                  <Brain className="w-3 h-3 mr-1" /> AI: {avgAI}/100
                 </Badge>
-                <Badge className={`${getGradeColor("B")} text-[10px]`}>
+                <Badge className="bg-amber-500/20 text-amber-300 border-amber-500/30 text-[10px]">
+                  <Users className="w-3 h-3 mr-1" /> Leadership: {avgLeadership}/100
+                </Badge>
+                <Badge className={`${getGradeColor(getGrade(avgHealth))} text-[10px]`}>
                   <Shield className="w-3 h-3 mr-1" /> Health: {avgHealth}/100
                 </Badge>
                 <span className="text-xs text-muted-foreground ml-auto">{stocks.length} stocks</span>
@@ -387,7 +428,6 @@ export default function PennyStocks() {
                   const vol = VOL_LABELS[stock.volatility_tag] || { label: stock.volatility_tag, emoji: "⚡", color: "bg-muted" };
                   return (
                     <Card key={stock.ticker} className="p-0 overflow-hidden border-border/50 hover:border-primary/30 transition-colors">
-                      {/* Header row */}
                       <div className="p-3 cursor-pointer" onClick={() => toggleExpand(stock.ticker)}>
                         <div className="flex items-start justify-between gap-2 mb-2">
                           <div className="flex-1 min-w-0">
@@ -405,22 +445,35 @@ export default function PennyStocks() {
                           </div>
                         </div>
 
-                        {/* Score Row */}
-                        <div className="grid grid-cols-3 gap-2 mb-2">
-                          <div className="bg-muted/30 rounded px-2 py-1.5 text-center">
-                            <p className="text-[9px] text-muted-foreground">Financial Health</p>
+                        {/* 4-Score Row */}
+                        <div className="grid grid-cols-4 gap-1.5 mb-2">
+                          <div className="bg-purple-500/10 rounded px-1.5 py-1.5 text-center">
+                            <p className="text-[8px] text-purple-300">🧠 AI Score</p>
+                            <p className={`text-base font-black ${getScoreColor(stock.ai_score)}`}>{stock.ai_score}</p>
+                          </div>
+                          <div className="bg-amber-500/10 rounded px-1.5 py-1.5 text-center">
+                            <p className="text-[8px] text-amber-300">👑 Leadership</p>
+                            <p className={`text-base font-black ${getScoreColor(stock.leadership_score)}`}>{stock.leadership_score}</p>
+                          </div>
+                          <div className="bg-muted/30 rounded px-1.5 py-1.5 text-center">
+                            <p className="text-[8px] text-muted-foreground">💰 Financial</p>
                             <p className={`text-base font-black ${getScoreColor(stock.financial_health_score)}`}>{stock.financial_health_score}</p>
-                            <Badge className={`${getGradeColor(stock.health_grade || "C")} text-[8px] px-1 mt-0.5`}>{stock.health_grade}</Badge>
                           </div>
-                          <div className="bg-muted/30 rounded px-2 py-1.5 text-center">
-                            <p className="text-[9px] text-muted-foreground">Sector Growth</p>
+                          <div className="bg-muted/30 rounded px-1.5 py-1.5 text-center">
+                            <p className="text-[8px] text-muted-foreground">🚀 Sector</p>
                             <p className={`text-base font-black ${getScoreColor(stock.sector_growth_score)}`}>{stock.sector_growth_score}</p>
-                            <Badge className={`${getGradeColor(stock.sector_grade || "C")} text-[8px] px-1 mt-0.5`}>{stock.sector_grade}</Badge>
                           </div>
-                          <div className="bg-muted/30 rounded px-2 py-1.5 text-center">
-                            <p className="text-[9px] text-muted-foreground">Volatility</p>
-                            <p className="text-base font-black text-orange-400">{stock.avg_weekly_range_pct || "High"}</p>
-                            <Badge className={`${setup.color} text-[8px] px-1 mt-0.5`}>{setup.emoji}</Badge>
+                        </div>
+
+                        {/* CEO & AI Product */}
+                        <div className="grid grid-cols-2 gap-2 mb-2">
+                          <div className="bg-amber-500/10 rounded p-1.5">
+                            <p className="text-[9px] font-semibold text-amber-400">👑 CEO: {stock.ceo_name}</p>
+                            <p className="text-[10px] leading-tight">{stock.ceo_background}</p>
+                          </div>
+                          <div className="bg-purple-500/10 rounded p-1.5">
+                            <p className="text-[9px] font-semibold text-purple-400">🧠 AI PRODUCT</p>
+                            <p className="text-[10px] leading-tight">{stock.ai_product_description}</p>
                           </div>
                         </div>
 
@@ -437,13 +490,36 @@ export default function PennyStocks() {
                         </div>
                       </div>
 
-                      {/* Thesis always visible */}
                       <div className="px-3 pb-2">
                         <p className="text-[10px] leading-relaxed text-muted-foreground italic">"{stock.the_thesis}"</p>
                       </div>
 
                       {expanded && (
                         <div className="border-t border-border/50 p-3 space-y-3 bg-muted/20 text-sm">
+                          {/* AI Product Breakdown */}
+                          <div>
+                            <p className="text-xs font-bold mb-2">🧠 AI Product Breakdown</p>
+                            <div className="space-y-1.5">
+                              {stock.ai_product_maturity != null && <ScoreBar label="Product Maturity" score={stock.ai_product_maturity} icon={<Cpu className="w-2.5 h-2.5" />} />}
+                              {stock.ai_moat_score != null && <ScoreBar label="AI Moat" score={stock.ai_moat_score} icon={<Shield className="w-2.5 h-2.5" />} />}
+                              {stock.ai_revenue_pct != null && <ScoreBar label="AI Revenue %" score={stock.ai_revenue_pct} />}
+                              {stock.ai_innovation_score != null && <ScoreBar label="Innovation" score={stock.ai_innovation_score} icon={<Star className="w-2.5 h-2.5" />} />}
+                            </div>
+                          </div>
+
+                          {/* Leadership Breakdown */}
+                          <div>
+                            <p className="text-xs font-bold mb-2">👑 Leadership Breakdown</p>
+                            <div className="space-y-1.5">
+                              {stock.ceo_score != null && <ScoreBar label="CEO Quality" score={stock.ceo_score} icon={<Users className="w-2.5 h-2.5" />} />}
+                              {stock.engineering_team_score != null && <ScoreBar label="Engineering Team" score={stock.engineering_team_score} icon={<Brain className="w-2.5 h-2.5" />} />}
+                              {stock.talent_density_score != null && <ScoreBar label="Talent Density" score={stock.talent_density_score} />}
+                            </div>
+                            {stock.notable_talent && (
+                              <p className="text-[10px] text-muted-foreground mt-1.5">🌟 <strong>Notable:</strong> {stock.notable_talent}</p>
+                            )}
+                          </div>
+
                           {/* Financial Health Breakdown */}
                           <div>
                             <p className="text-xs font-bold mb-2">📊 Financial Health Breakdown</p>
@@ -464,14 +540,12 @@ export default function PennyStocks() {
                             {stock.cash_position && <div className="bg-muted/30 rounded p-2 text-center"><p className="text-[9px] text-muted-foreground">Cash</p><p className="text-xs font-bold">{stock.cash_position}</p></div>}
                           </div>
 
-                          {/* Catalyst */}
                           <div>
                             <p className="text-xs font-semibold text-muted-foreground mb-1">🎯 CATALYST</p>
                             <p className="text-xs leading-relaxed">{stock.catalyst}</p>
                             {stock.catalyst_timeline && <p className="text-[10px] text-muted-foreground mt-0.5">Timeline: {stock.catalyst_timeline}</p>}
                           </div>
 
-                          {/* Bull / Bear */}
                           <div className="grid grid-cols-2 gap-2">
                             <div className="bg-green-500/10 rounded p-2">
                               <p className="text-[10px] font-semibold text-green-400 mb-0.5">🐂 BULL</p>
@@ -483,13 +557,11 @@ export default function PennyStocks() {
                             </div>
                           </div>
 
-                          {/* Why not zero */}
                           <div className="bg-emerald-500/10 rounded p-2 border border-emerald-500/20">
                             <p className="text-[10px] font-semibold text-emerald-400 mb-0.5">🛡️ WHY IT WON'T GO TO ZERO</p>
                             <p className="text-[10px] leading-relaxed">{stock.why_not_zero}</p>
                           </div>
 
-                          {/* Entry Strategy */}
                           <div className="bg-primary/10 rounded p-2 border border-primary/20">
                             <p className="text-xs font-semibold text-primary mb-0.5">💰 ENTRY STRATEGY</p>
                             <p className="text-xs leading-relaxed">{stock.entry_strategy}</p>
@@ -508,7 +580,7 @@ export default function PennyStocks() {
           <div className="text-center py-4">
             <p className="text-[10px] text-muted-foreground max-w-2xl mx-auto">
               ⚠️ AI-generated analysis for research only. Not financial advice. Small-cap stocks carry significant risk.
-              All picks: cap &lt;$100M, real revenue &gt;$5M, positive margins, NYSE/NASDAQ only, zero pharma.
+              All picks: cap &lt;$500M, real AI products, elite leadership, positive margins, NYSE/NASDAQ only, zero pharma.
             </p>
           </div>
         )}
