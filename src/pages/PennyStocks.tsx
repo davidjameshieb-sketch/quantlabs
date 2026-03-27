@@ -159,9 +159,23 @@ function ScoreBar({ label, score, icon }: { label: string; score: number; icon?:
   );
 }
 
+const STORAGE_KEY = "volatile-gems-scan-cache";
+
+function loadCachedScan(): ScanResult | null {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw) as ScanResult;
+  } catch { return null; }
+}
+
+function saveScanToCache(result: ScanResult) {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(result)); } catch {}
+}
+
 export default function PennyStocks() {
   const navigate = useNavigate();
-  const [data, setData] = useState<ScanResult | null>(null);
+  const [data, setData] = useState<ScanResult | null>(() => loadCachedScan());
   const [loading, setLoading] = useState(false);
   const [selectedSector, setSelectedSector] = useState("all");
   const [expandedCards, setExpandedCards] = useState<Set<string>>(new Set());
@@ -177,6 +191,7 @@ export default function PennyStocks() {
       if (error) throw error;
       if (result?.error) throw new Error(result.error);
       setData(result);
+      saveScanToCache(result);
       toast.success(`Found ${result.total_picks} volatile gems!`);
     } catch (err) {
       console.error("Scan failed:", err);
