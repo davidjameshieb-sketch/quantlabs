@@ -1,7 +1,7 @@
 // ═══════════════════════════════════════════════════════════════
-// PENNY STOCK JACKPOT SCANNER — AI-Powered Political Catalyst Finder
-// Uses Gemini AI to identify small-cap stocks with real products,
-// social buzz, and political tailwinds that institutions can't ignore
+// VOLATILE GEMS SCANNER — High Volatility + Solid Fundamentals
+// Finds stocks with explosive price action backed by real financials,
+// scored by financial health and sector growth potential
 // ═══════════════════════════════════════════════════════════════
 
 const corsHeaders = {
@@ -12,117 +12,125 @@ const corsHeaders = {
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
-const SYSTEM_PROMPT = `You are an institutional-grade quantitative analyst AI built for a boutique hedge fund. Your objective is to identify highly asymmetrical, high-conviction small-cap equities that are primed for explosive institutional repricing.
+const SYSTEM_PROMPT = `You are an elite quantitative equity analyst for a boutique hedge fund specializing in volatile small-cap stocks with ironclad fundamentals.
 
-ABSOLUTE EXCLUSIONS — Never suggest ANY of these:
-- Pharmaceutical companies, biotech, drug development, clinical trials
+YOUR MISSION: Find stocks that are KNOWN to be highly volatile in price action — big swings, high beta, dramatic intraday/weekly moves — but whose UNDERLYING BUSINESS is rock-solid with strong financials and a sector outlook that promises explosive growth.
+
+These are the hidden gems: stocks that scare away passive investors with their volatility, creating mispriced entry opportunities for sophisticated traders who understand the fundamentals are bulletproof.
+
+ABSOLUTE EXCLUSIONS — NEVER suggest:
+- Pharmaceutical, biotech, drug development, clinical trials companies
 - Pre-revenue companies of any kind
-- SPACs, blank-check companies, or shell companies
+- SPACs, blank-check, or shell companies
 - Cannabis/marijuana stocks
 - Chinese reverse-merger companies
-- Any company with "Therapeutics", "Pharma", "Bio", "Sciences" in its name
 - OTC/Pink Sheet stocks — NASDAQ or NYSE listed ONLY
+- Companies with "Therapeutics", "Pharma", "Bio", "Sciences" in name
 
-You are hunting for REAL businesses with REAL revenue, REAL products that customers already buy, and structural tailwinds that make institutional repricing inevitable.
+MANDATORY HARD FLOORS:
+1. Market Cap: UNDER $100M (micro-cap sweet spot: $15M - $100M)
+2. Average Daily Volume: > 200,000 shares (must be tradeable)
+3. TTM Revenue: > $5M (MUST have real revenue)
+4. Must be listed on NYSE, NASDAQ, or NYSE American
+5. Must have POSITIVE gross margins (makes money on what it sells)
+6. Beta > 1.5 or known for high price volatility
 
-MANDATORY HARD FLOORS (Do not suggest any ticker that violates these):
-1. Market Capitalization: Must be between $75M and $500M.
-2. Liquidity: Average Daily Volume (ADV) must be strictly greater than 500,000 shares.
-3. Institutional Footprint: Institutional ownership must be between 2% and 20%.
-4. Operational Reality: Trailing Twelve Month (TTM) Revenue must be strictly greater than $15M.
-5. Exchange: Must be listed on NYSE, NASDAQ, or NYSE American. No OTC.
-6. Sector: Must NOT be Biotech, Pharma, or Healthcare R&D.
+FINANCIAL HEALTH SCORING (score each 0-100):
+Evaluate these components and give an overall Financial Health Score:
+- revenue_growth_score: Revenue trajectory (growing = higher score)
+- gross_margin_score: Gross margin quality (higher margins = higher score)
+- debt_health_score: Debt-to-equity and cash position (lower debt = higher score)
+- cash_flow_score: Operating cash flow trend (positive/improving = higher score)
+- balance_sheet_score: Current ratio, assets vs liabilities
+- Overall financial_health_score: Weighted average of above (0-100)
 
-PRIORITY SECTORS (focus here):
-- Defense contractors & military tech suppliers
-- Domestic energy: oil services, uranium, nuclear, rare earth miners
-- Border/homeland security technology
-- American manufacturing & reshoring beneficiaries
-- Infrastructure, construction, building materials
-- AI infrastructure picks-and-shovels (data centers, cooling, chips)
-- Satellite, space defense, communications
-- Fintech & crypto infrastructure (exchanges, custody, compliance)
-- Agriculture technology & food security
-- Cybersecurity for critical infrastructure
-- Logistics, shipping, supply chain tech
+SECTOR GROWTH SCORING (score each sector 0-100):
+- sector_growth_score: How explosive is this sector's outlook in the next 12-24 months?
+- sector_tailwind: What specific macro/political/structural force is driving growth?
+- sector_momentum: Current momentum (accelerating, steady, emerging)
 
-If a stock passes the hard floors, categorize it into one of these "Shark Setups":
-- POLITICAL_CATALYST: First-movers benefiting directly from shifting government policies, tariffs, border security, defense spending, or domestic energy mandates.
-- PROFIT_CROSSOVER: Companies crossing from negative to positive cash flow on a structural tailwind, catching algorithmic screeners off guard.
-- SHORT_SQUEEZE: Low float stocks with High Short Interest (>15%) that have a legitimate fundamental catalyst capable of triggering margin calls.
-- IP_HOSTAGE: Companies holding Tier-1 patents, contracts, assets, or technology that makes them an immediate acquisition target for a larger player.
+VOLATILITY PROFILE:
+- volatility_tag: "EXTREME_SWINGS", "HIGH_BETA", "NEWS_DRIVEN", "MOMENTUM_SURFER"
+- avg_weekly_range_pct: Estimated average weekly price range as percentage
+- why_volatile: 1-sentence explanation of what causes the wild swings
+- why_solid: 1-sentence explanation of why fundamentals are bulletproof despite volatility
 
-For each stock provide:
-- ticker: Stock symbol
-- company_name: Full company name
-- estimated_market_cap: Approximate market cap (e.g. "$125M")
-- price_range: Current approximate price range
-- sector: Industry sector (NEVER pharma/biotech)
-- setup_type: One of POLITICAL_CATALYST, PROFIT_CROSSOVER, SHORT_SQUEEZE, IP_HOSTAGE
-- political_theme: The specific current political/structural catalyst
-- the_thesis: A 2-sentence aggressive, institutional-grade explanation
-- adv_estimate: Estimated average daily volume
-- institutional_ownership_pct: Estimated institutional ownership percentage
-- ttm_revenue: Estimated trailing twelve month revenue
-- short_interest_pct: Estimated short interest percentage (if applicable)
-- risk_profile: MEDIUM or HIGH only (no EXTREME — we excluded those sectors)
-- catalyst: The specific near-term catalyst
-- catalyst_timeline: When the catalyst hits
-- bull_case: Best case scenario (1 sentence)
-- bear_case: Worst case scenario (1 sentence)
-- strategy: Specific entry strategy
-- why_not_zero: One sentence on why this company won't go to zero (real revenue, real contracts, real assets)
+SECTORS TO SCAN (real businesses, real products):
+1. Defense & Military Tech (drones, cybersecurity, munitions, surveillance)
+2. Energy Independence (oil services, uranium, nuclear, rare earth, lithium)
+3. AI Infrastructure (data centers, cooling systems, edge computing, chips)
+4. Space & Satellite (communications, launch services, earth observation)
+5. Cybersecurity (endpoint, OT security, zero trust)
+6. Fintech & Crypto Infrastructure (exchanges, custody, compliance, DeFi)
+7. American Manufacturing & Reshoring (automation, robotics, materials)
+8. Agriculture Tech & Food Security (precision ag, vertical farming, inputs)
+9. Infrastructure & Construction (building materials, heavy equipment, IoT)
+10. Border Security & Homeland Tech (sensors, drones, surveillance)
+11. Logistics & Supply Chain (automation, last-mile, freight tech)
+12. Clean Energy Tech (solar, wind components, grid storage, hydrogen)
 
-Return EXACTLY 15-20 stocks as a JSON array. Every pick MUST pass ALL hard floors. ZERO pharma/biotech. No exceptions.`;
+For EACH stock provide ALL of these fields:
+- ticker, company_name, sector, sub_sector
+- estimated_market_cap, price_range, avg_daily_volume
+- financial_health_score (0-100 overall)
+- revenue_growth_score, gross_margin_score, debt_health_score, cash_flow_score, balance_sheet_score (each 0-100)
+- ttm_revenue, gross_margin_pct, debt_to_equity, cash_position
+- sector_growth_score (0-100)
+- sector_tailwind, sector_momentum
+- volatility_tag, avg_weekly_range_pct, why_volatile, why_solid
+- setup_type: POLITICAL_CATALYST, PROFIT_CROSSOVER, SHORT_SQUEEZE, or IP_HOSTAGE
+- the_thesis (2-sentence aggressive institutional thesis)
+- catalyst, catalyst_timeline
+- bull_case, bear_case
+- entry_strategy
+- why_not_zero (1 sentence — real revenue, contracts, or assets that create a floor)
 
-const USER_PROMPT = `Scan the current market for institutional-grade small-cap shark setups. Today's date is ${new Date().toISOString().slice(0, 10)}.
+Return 20-25 stocks as a JSON array. Group mentally by sector. Every pick MUST be under $100M market cap with real revenue. ZERO pharma/biotech.`;
+
+const USER_PROMPT = `Scan the market for VOLATILE small-cap stocks with BULLETPROOF fundamentals. Today is ${new Date().toISOString().slice(0, 10)}.
+
+I want stocks that SWING HARD but won't go to zero because:
+- They have REAL revenue (>$5M TTM)
+- REAL products customers already buy
+- Strong or improving gross margins
+- Manageable debt or net cash positions
+- Sector tailwinds that make growth inevitable
 
 HARD FLOORS — reject anything that fails:
-- Market cap $75M-$500M
-- ADV > 500,000 shares
-- Institutional ownership 2%-20%
-- TTM Revenue > $15M
-- Listed on NYSE or NASDAQ ONLY
-- ZERO pharma, biotech, therapeutics, drug companies
+- Market cap UNDER $100M (sweet spot $15M-$100M)
+- ADV > 200,000 shares
+- TTM Revenue > $5M
+- Positive gross margins
+- NYSE or NASDAQ listed ONLY
+- ZERO pharma, biotech, therapeutics
 
-PRIORITY SECTORS (real businesses with real products):
-1. Defense contractors & military tech suppliers
-2. Energy independence — oil services, uranium, nuclear, rare earth mining
-3. Border security & homeland security technology
-4. American manufacturing reshoring / tariff beneficiaries
-5. Infrastructure, construction, building materials
-6. AI infrastructure picks-and-shovels (data centers, cooling, power)
-7. Space, satellite, communications defense
-8. Fintech, crypto infrastructure, digital asset compliance
-9. Agriculture technology & food security
-10. Cybersecurity for critical infrastructure
-11. Logistics, shipping, supply chain automation
-12. Deregulation plays in banking & energy
+For EVERY stock:
+1. Score Financial Health 0-100 with component breakdown
+2. Score Sector Growth Potential 0-100
+3. Explain WHY it's volatile (what causes swings)
+4. Explain WHY fundamentals are solid (what creates the floor)
+5. Give specific entry strategy for volatile names
 
-Categorize each into: POLITICAL_CATALYST, PROFIT_CROSSOVER, SHORT_SQUEEZE, or IP_HOSTAGE.
+I want to see these organized by sector, with the strongest financial health scores on top within each sector.
 
-For EVERY pick explain why it won't go to zero (real revenue, real contracts, real assets).
-
-Return 15-20 results as a JSON array with real ticker symbols and real companies. Every pick must be defensible. ZERO pharma.`;
+Return 20-25 results as JSON array. Real tickers, real companies, real financials. ZERO pharma.`;
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
 
   try {
     const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
-    if (!LOVABLE_API_KEY) {
-      return json({ error: "LOVABLE_API_KEY not configured" }, 500);
-    }
+    if (!LOVABLE_API_KEY) return json({ error: "LOVABLE_API_KEY not configured" }, 500);
 
     const body = await req.json().catch(() => ({}));
-    const focusTheme = body.theme || "all";
+    const focusSector = body.sector || "all";
 
     let userPrompt = USER_PROMPT;
-    if (focusTheme !== "all") {
-      userPrompt += `\n\nPRIORITY FOCUS: Give extra weight to stocks in the "${focusTheme}" political theme. At least 5 of your picks should be in this category.`;
+    if (focusSector !== "all") {
+      userPrompt += `\n\nPRIORITY FOCUS: Give extra weight to the "${focusSector}" sector. At least 8 picks should be from this sector.`;
     }
 
-    console.log("[PENNY-SCANNER] Calling Gemini AI for penny stock analysis...");
+    console.log("[VOLATILE-GEMS] Scanning for volatile stocks with solid fundamentals...");
 
     const aiResponse = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
       method: "POST",
@@ -140,8 +148,8 @@ Deno.serve(async (req) => {
           {
             type: "function",
             function: {
-              name: "report_shark_setups",
-              description: "Report institutional-grade small-cap shark setups",
+              name: "report_volatile_gems",
+              description: "Report volatile small-cap stocks with solid fundamentals, scored by financial health and sector growth",
               parameters: {
                 type: "object",
                 properties: {
@@ -152,48 +160,78 @@ Deno.serve(async (req) => {
                       properties: {
                         ticker: { type: "string" },
                         company_name: { type: "string" },
+                        sector: { type: "string" },
+                        sub_sector: { type: "string" },
                         estimated_market_cap: { type: "string" },
                         price_range: { type: "string" },
-                        sector: { type: "string" },
-                        setup_type: { type: "string", enum: ["POLITICAL_CATALYST", "PROFIT_CROSSOVER", "SHORT_SQUEEZE", "IP_HOSTAGE"] },
-                        political_theme: { type: "string" },
-                        the_thesis: { type: "string" },
-                        adv_estimate: { type: "string" },
-                        institutional_ownership_pct: { type: "string" },
+                        avg_daily_volume: { type: "string" },
+                        financial_health_score: { type: "number", description: "Overall 0-100" },
+                        revenue_growth_score: { type: "number" },
+                        gross_margin_score: { type: "number" },
+                        debt_health_score: { type: "number" },
+                        cash_flow_score: { type: "number" },
+                        balance_sheet_score: { type: "number" },
                         ttm_revenue: { type: "string" },
-                        short_interest_pct: { type: "string" },
-                        risk_profile: { type: "string", enum: ["MEDIUM", "HIGH"] },
+                        gross_margin_pct: { type: "string" },
+                        debt_to_equity: { type: "string" },
+                        cash_position: { type: "string" },
+                        sector_growth_score: { type: "number", description: "0-100 sector explosive growth potential" },
+                        sector_tailwind: { type: "string" },
+                        sector_momentum: { type: "string", enum: ["accelerating", "steady", "emerging"] },
+                        volatility_tag: { type: "string", enum: ["EXTREME_SWINGS", "HIGH_BETA", "NEWS_DRIVEN", "MOMENTUM_SURFER"] },
+                        avg_weekly_range_pct: { type: "string" },
+                        why_volatile: { type: "string" },
+                        why_solid: { type: "string" },
+                        setup_type: { type: "string", enum: ["POLITICAL_CATALYST", "PROFIT_CROSSOVER", "SHORT_SQUEEZE", "IP_HOSTAGE"] },
+                        the_thesis: { type: "string" },
                         catalyst: { type: "string" },
                         catalyst_timeline: { type: "string" },
                         bull_case: { type: "string" },
                         bear_case: { type: "string" },
-                        strategy: { type: "string" },
-                        why_not_zero: { type: "string", description: "Why this company won't go to zero - real revenue, contracts, or assets" },
+                        entry_strategy: { type: "string" },
+                        why_not_zero: { type: "string" },
                       },
-                      required: ["ticker", "company_name", "estimated_market_cap", "setup_type", "political_theme", "the_thesis", "risk_profile", "catalyst", "bull_case", "bear_case", "strategy", "why_not_zero"],
+                      required: [
+                        "ticker", "company_name", "sector", "estimated_market_cap",
+                        "financial_health_score", "sector_growth_score",
+                        "volatility_tag", "why_volatile", "why_solid",
+                        "setup_type", "the_thesis", "catalyst",
+                        "bull_case", "bear_case", "entry_strategy", "why_not_zero"
+                      ],
                     },
                   },
-                  market_context: { type: "string", description: "Brief overview of current macro environment for small-cap shark setups" },
+                  sector_rankings: {
+                    type: "array",
+                    description: "Sectors ranked by explosive growth potential",
+                    items: {
+                      type: "object",
+                      properties: {
+                        sector: { type: "string" },
+                        growth_score: { type: "number" },
+                        tailwind: { type: "string" },
+                        momentum: { type: "string" },
+                        stock_count: { type: "number" },
+                      },
+                      required: ["sector", "growth_score", "tailwind", "momentum", "stock_count"],
+                    },
+                  },
+                  market_context: { type: "string" },
                 },
-                required: ["stocks", "market_context"],
+                required: ["stocks", "sector_rankings", "market_context"],
                 additionalProperties: false,
               },
             },
           },
         ],
-        tool_choice: { type: "function", function: { name: "report_shark_setups" } },
+        tool_choice: { type: "function", function: { name: "report_volatile_gems" } },
       }),
     });
 
     if (!aiResponse.ok) {
       const errText = await aiResponse.text();
-      console.error("[PENNY-SCANNER] AI error:", aiResponse.status, errText);
-      if (aiResponse.status === 429) {
-        return json({ error: "Rate limited — try again in 30 seconds" }, 429);
-      }
-      if (aiResponse.status === 402) {
-        return json({ error: "AI credits exhausted" }, 402);
-      }
+      console.error("[VOLATILE-GEMS] AI error:", aiResponse.status, errText);
+      if (aiResponse.status === 429) return json({ error: "Rate limited — try again in 30 seconds" }, 429);
+      if (aiResponse.status === 402) return json({ error: "AI credits exhausted" }, 402);
       return json({ error: "AI analysis failed" }, 500);
     }
 
@@ -201,12 +239,20 @@ Deno.serve(async (req) => {
     const toolCall = aiData.choices?.[0]?.message?.tool_calls?.[0];
 
     if (!toolCall?.function?.arguments) {
-      console.error("[PENNY-SCANNER] No tool call in response");
+      console.error("[VOLATILE-GEMS] No tool call in response");
       return json({ error: "AI did not return structured data" }, 500);
     }
 
     const result = JSON.parse(toolCall.function.arguments);
-    console.log(`[PENNY-SCANNER] Found ${result.stocks?.length || 0} shark setups`);
+    console.log(`[VOLATILE-GEMS] Found ${result.stocks?.length || 0} volatile gems`);
+
+    // Enrich with UI helpers
+    const volEmoji: Record<string, string> = {
+      EXTREME_SWINGS: "🌊",
+      HIGH_BETA: "⚡",
+      NEWS_DRIVEN: "📰",
+      MOMENTUM_SURFER: "🏄",
+    };
 
     const setupEmoji: Record<string, string> = {
       POLITICAL_CATALYST: "🏛️",
@@ -218,36 +264,31 @@ Deno.serve(async (req) => {
     const enrichedStocks = (result.stocks || []).map((s: any, i: number) => ({
       ...s,
       rank: i + 1,
+      vol_emoji: volEmoji[s.volatility_tag] || "⚡",
       setup_emoji: setupEmoji[s.setup_type] || "💰",
-      risk_color: s.risk_profile === "MEDIUM" ? "yellow" : s.risk_profile === "HIGH" ? "orange" : "red",
-      theme_emoji: getThemeEmoji(s.political_theme),
+      health_grade: getHealthGrade(s.financial_health_score),
+      sector_grade: getHealthGrade(s.sector_growth_score),
     }));
 
     return json({
       stocks: enrichedStocks,
+      sector_rankings: result.sector_rankings || [],
       market_context: result.market_context || "",
       scan_timestamp: new Date().toISOString(),
       total_picks: enrichedStocks.length,
-      setups_covered: [...new Set(enrichedStocks.map((s: any) => s.setup_type))],
     });
   } catch (err) {
-    console.error("[PENNY-SCANNER] Error:", err);
+    console.error("[VOLATILE-GEMS] Error:", err);
     return json({ error: (err as Error).message || "Scanner failed" }, 500);
   }
 });
 
-function getThemeEmoji(theme: string): string {
-  const t = (theme || "").toLowerCase();
-  if (t.includes("defense") || t.includes("military")) return "🛡️";
-  if (t.includes("energy") || t.includes("oil") || t.includes("nuclear") || t.includes("uranium")) return "⚡";
-  if (t.includes("border") || t.includes("security")) return "🔒";
-  if (t.includes("manufactur") || t.includes("reshoring")) return "🏭";
-  if (t.includes("infra")) return "🏗️";
-  if (t.includes("crypto") || t.includes("blockchain")) return "₿";
-  if (t.includes("ai") || t.includes("artificial")) return "🤖";
-  if (t.includes("space") || t.includes("satellite")) return "🚀";
-  if (t.includes("tariff")) return "🇺🇸";
-  if (t.includes("dereg")) return "📜";
-  if (t.includes("agri") || t.includes("food")) return "🌾";
-  return "💰";
+function getHealthGrade(score: number): string {
+  if (score >= 85) return "A+";
+  if (score >= 75) return "A";
+  if (score >= 65) return "B+";
+  if (score >= 55) return "B";
+  if (score >= 45) return "C+";
+  if (score >= 35) return "C";
+  return "D";
 }
