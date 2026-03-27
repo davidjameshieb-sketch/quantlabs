@@ -32,6 +32,7 @@ interface SharkStock {
   bull_case: string;
   bear_case: string;
   strategy: string;
+  why_not_zero?: string;
   theme_emoji?: string;
 }
 
