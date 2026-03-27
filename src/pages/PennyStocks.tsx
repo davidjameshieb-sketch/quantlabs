@@ -707,8 +707,8 @@ export default function PennyStocks() {
         {data && (
           <div className="text-center py-4">
             <p className="text-[10px] text-muted-foreground max-w-2xl mx-auto">
-              ⚠️ AI-generated analysis for research only. Not financial advice. Small-cap stocks carry significant risk.
-              All picks: cap &lt;$500M, real AI products, elite leadership, positive margins, NYSE/NASDAQ only, zero pharma.
+               ⚠️ AI-generated analysis for research only. Not financial advice. Small-cap stocks carry significant risk.
+               All picks: cap &lt;$1B, real AI products, elite leadership, positive margins, NYSE/NASDAQ only, zero pharma.
             </p>
           </div>
         )}
