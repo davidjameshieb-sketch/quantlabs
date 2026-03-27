@@ -53,6 +53,18 @@ FINANCIAL HEALTH SCORING (score each 0-100):
 - revenue_growth_score, gross_margin_score, debt_health_score, cash_flow_score, balance_sheet_score
 - Overall financial_health_score: Weighted average (0-100)
 
+DILUTION PROTECTION SCORING (CRITICAL — score each 0-100):
+- dilution_risk_score: 0 = extreme dilution risk, 100 = zero dilution risk (HIGHER IS BETTER/SAFER)
+- share_stability_score: How stable has the share count been over 12-24 months? (100 = no change, 0 = doubled+)
+- insider_ownership_pct: What % do insiders/founders own? Higher = aligned incentives, less likely to dilute
+- shelf_registration_risk: Does the company have an active shelf registration / ATM offering? (100 = no shelf, 0 = active ATM)
+- dilution_history: "CLEAN" (no dilution in 2+ years), "MINOR" (small raise, <10% dilution), "WARNING" (recent significant dilution), "SERIAL_DILUTER" (repeated offerings — AVOID)
+- shares_outstanding: Approximate current shares outstanding
+- dilution_note: 1-sentence explanation of dilution risk or safety
+
+CRITICAL DILUTION RULE: Do NOT recommend any stock with dilution_history = "SERIAL_DILUTER". 
+Prefer stocks with "CLEAN" or "MINOR" dilution history. Flag any "WARNING" stocks prominently.
+
 AI SUB-SECTORS TO SCAN:
 1. AI Infrastructure (GPU cloud, model serving, MLOps, data pipelines, vector databases)
 2. AI-Powered Cybersecurity (threat detection, autonomous SOC, zero-trust AI)
