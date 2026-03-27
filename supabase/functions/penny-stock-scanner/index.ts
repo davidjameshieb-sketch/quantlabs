@@ -91,33 +91,36 @@ For EACH stock provide ALL fields:
 
 Return EXACTLY 50 stocks as a JSON array. EVERY pick must have a REAL AI product and identifiable leadership. ZERO pharma/biotech.`;
 
-const USER_PROMPT = `Scan the market for VOLATILE small-cap stocks with BULLETPROOF fundamentals. Today is ${new Date().toISOString().slice(0, 10)}.
+const USER_PROMPT = `Scan the market for AI-focused small-cap stocks with ELITE LEADERSHIP and BULLETPROOF fundamentals. Today is ${new Date().toISOString().slice(0, 10)}.
 
-I want stocks that SWING HARD but won't go to zero because:
-- They have REAL revenue (>$5M TTM)
-- REAL products customers already buy
-- Strong or improving gross margins
-- Manageable debt or net cash positions
-- Sector tailwinds that make growth inevitable
+I want 50 AI hidden gems — companies where:
+- The CEO has a PROVEN track record in AI/tech (prior exits, notable companies, technical depth)
+- The engineering team includes talent from top AI labs (DeepMind, OpenAI, Google Brain, Meta AI, Stanford, MIT, CMU)
+- They have a REAL AI product in PRODUCTION generating real revenue
+- Their AI gives them a defensible moat (proprietary models, unique data, patents)
 
 HARD FLOORS — reject anything that fails:
-- Market cap UNDER $100M (sweet spot $15M-$100M)
-- ADV > 200,000 shares
-- TTM Revenue > $5M
+- Market cap UNDER $500M (sweet spot $15M-$500M)
+- ADV > 100,000 shares
+- TTM Revenue > $3M from AI products/services
 - Positive gross margins
 - NYSE or NASDAQ listed ONLY
 - ZERO pharma, biotech, therapeutics
+- Must have identifiable AI product and leadership
 
 For EVERY stock:
-1. Score Financial Health 0-100 with component breakdown
-2. Score Sector Growth Potential 0-100
-3. Explain WHY it's volatile (what causes swings)
-4. Explain WHY fundamentals are solid (what creates the floor)
-5. Give specific entry strategy for volatile names
+1. Score Leadership Quality 0-100 (CEO + engineering team + talent density)
+2. Score AI Product Strength 0-100 (maturity + moat + revenue % + innovation)
+3. Score Financial Health 0-100 with component breakdown
+4. Score Sector Growth Potential 0-100
+5. Name the CEO and their background
+6. Describe the specific AI product
+7. Explain WHY the leadership team is elite
+8. Give specific entry strategy
 
-I want to see these organized by sector, with the strongest financial health scores on top within each sector.
+I want these organized by AI sub-sector, with the strongest leadership + AI scores on top.
 
-Return 20-25 results as JSON array. Real tickers, real companies, real financials. ZERO pharma.`;
+Return EXACTLY 50 results as JSON array. Real tickers, real companies, real AI products, real leadership. ZERO pharma.`;
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
