@@ -27,7 +27,7 @@ ABSOLUTE EXCLUSIONS — NEVER suggest:
 - Companies that just slap "AI" on their name with no real AI product
 
 MANDATORY HARD FLOORS:
-1. Market Cap: UNDER $500M (sweet spot: $15M - $500M)
+1. Market Cap: UNDER $1 BILLION (sweet spot: $15M - $1B)
 2. Average Daily Volume: > 100,000 shares (must be tradeable)
 3. TTM Revenue: > $3M (MUST have real revenue from AI products/services)
 4. Must be listed on NYSE, NASDAQ, or NYSE American
