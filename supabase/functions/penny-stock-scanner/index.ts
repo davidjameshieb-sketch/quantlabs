@@ -78,26 +78,32 @@ Return EXACTLY 15-20 stocks as a JSON array. Every pick MUST pass ALL hard floor
 const USER_PROMPT = `Scan the current market for institutional-grade small-cap shark setups. Today's date is ${new Date().toISOString().slice(0, 10)}.
 
 HARD FLOORS — reject anything that fails:
-- Market cap $75M-$300M
-- ADV > 750,000 shares
-- Institutional ownership 2%-15%
-- TTM Revenue > $10M
+- Market cap $75M-$500M
+- ADV > 500,000 shares
+- Institutional ownership 2%-20%
+- TTM Revenue > $15M
+- Listed on NYSE or NASDAQ ONLY
+- ZERO pharma, biotech, therapeutics, drug companies
 
-Focus on these current catalysts:
-1. Defense/military spending surges and global tensions
-2. Energy independence — domestic oil, gas, nuclear, uranium, rare earth
-3. Border security technology
+PRIORITY SECTORS (real businesses with real products):
+1. Defense contractors & military tech suppliers
+2. Energy independence — oil services, uranium, nuclear, rare earth mining
+3. Border security & homeland security technology
 4. American manufacturing reshoring / tariff beneficiaries
-5. Infrastructure & construction
-6. Crypto/blockchain regulatory clarity
-7. AI infrastructure picks-and-shovels
-8. Space & satellite defense
-9. Deregulation plays in banking, energy, pharma
-10. Companies crossing from negative to positive earnings on political tailwinds
+5. Infrastructure, construction, building materials
+6. AI infrastructure picks-and-shovels (data centers, cooling, power)
+7. Space, satellite, communications defense
+8. Fintech, crypto infrastructure, digital asset compliance
+9. Agriculture technology & food security
+10. Cybersecurity for critical infrastructure
+11. Logistics, shipping, supply chain automation
+12. Deregulation plays in banking & energy
 
 Categorize each into: POLITICAL_CATALYST, PROFIT_CROSSOVER, SHORT_SQUEEZE, or IP_HOSTAGE.
 
-Return results as a JSON array with real ticker symbols and real companies. Every pick must be defensible.`;
+For EVERY pick explain why it won't go to zero (real revenue, real contracts, real assets).
+
+Return 15-20 results as a JSON array with real ticker symbols and real companies. Every pick must be defensible. ZERO pharma.`;
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
