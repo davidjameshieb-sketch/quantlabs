@@ -156,7 +156,7 @@ Deno.serve(async (req) => {
             type: "function",
             function: {
               name: "report_volatile_gems",
-              description: "Report volatile small-cap stocks with solid fundamentals, scored by financial health and sector growth",
+              description: "Report AI-focused small-cap stocks with elite leadership, scored by AI product strength, leadership quality, and financial health",
               parameters: {
                 type: "object",
                 properties: {
@@ -182,6 +182,19 @@ Deno.serve(async (req) => {
                         gross_margin_pct: { type: "string" },
                         debt_to_equity: { type: "string" },
                         cash_position: { type: "string" },
+                        leadership_score: { type: "number", description: "0-100 leadership quality" },
+                        ceo_score: { type: "number" },
+                        engineering_team_score: { type: "number" },
+                        talent_density_score: { type: "number" },
+                        ceo_name: { type: "string" },
+                        ceo_background: { type: "string" },
+                        notable_talent: { type: "string" },
+                        ai_score: { type: "number", description: "0-100 AI product strength" },
+                        ai_product_maturity: { type: "number" },
+                        ai_moat_score: { type: "number" },
+                        ai_revenue_pct: { type: "number" },
+                        ai_innovation_score: { type: "number" },
+                        ai_product_description: { type: "string" },
                         sector_growth_score: { type: "number", description: "0-100 sector explosive growth potential" },
                         sector_tailwind: { type: "string" },
                         sector_momentum: { type: "string", enum: ["accelerating", "steady", "emerging"] },
@@ -200,7 +213,8 @@ Deno.serve(async (req) => {
                       },
                       required: [
                         "ticker", "company_name", "sector", "estimated_market_cap",
-                        "financial_health_score", "sector_growth_score",
+                        "financial_health_score", "leadership_score", "ai_score", "sector_growth_score",
+                        "ceo_name", "ceo_background", "ai_product_description",
                         "volatility_tag", "why_volatile", "why_solid",
                         "setup_type", "the_thesis", "catalyst",
                         "bull_case", "bear_case", "entry_strategy", "why_not_zero"
