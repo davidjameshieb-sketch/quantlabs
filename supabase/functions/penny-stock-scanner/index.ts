@@ -137,7 +137,7 @@ Deno.serve(async (req) => {
       userPrompt += `\n\nPRIORITY FOCUS: Give extra weight to the "${focusSector}" sector. At least 8 picks should be from this sector.`;
     }
 
-    console.log("[VOLATILE-GEMS] Scanning for volatile stocks with solid fundamentals...");
+    console.log("[AI-GEMS] Scanning for AI stocks with elite leadership...");
 
     const aiResponse = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
       method: "POST",
