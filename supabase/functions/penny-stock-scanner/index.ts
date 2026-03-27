@@ -193,14 +193,14 @@ Deno.serve(async (req) => {
     }
 
     const aiData = await aiResponse.json();
-    const toolCall = aiData.choices?.[0]?.message?.tool_calls?.[0];
+    const content = aiData.choices?.[0]?.message?.content;
 
-    if (!toolCall?.function?.arguments) {
-      console.error("[VOLATILE-GEMS] No tool call in response");
-      return json({ error: "AI did not return structured data" }, 500);
+    if (!content) {
+      console.error("[VOLATILE-GEMS] No content in response");
+      return json({ error: "AI did not return data" }, 500);
     }
 
-    const result = JSON.parse(toolCall.function.arguments);
+    const result = JSON.parse(content);
     console.log(`[VOLATILE-GEMS] Found ${result.stocks?.length || 0} volatile gems`);
 
     // Enrich with UI helpers
