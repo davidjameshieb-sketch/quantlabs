@@ -104,16 +104,19 @@ For EACH stock provide ALL fields listed above plus: ticker, company_name, estim
 
 Return EXACTLY 50 stocks as a JSON array. EVERY ticker MUST be real and currently trading. ZERO pharma/drug companies.`;
 
-const USER_PROMPT = `Today is ${new Date().toISOString().slice(0, 10)}. Scan the ENTIRE AI ecosystem (1000+ companies), then give me ONLY the TOP 50.
+const USER_PROMPT = `Today is ${new Date().toISOString().slice(0, 10)}. Scan the ENTIRE public market (1000+ companies across ALL innovative sectors), then give me ONLY the TOP 50 HIDDEN GIANTS.
 
-After scanning, give me ONLY the 50 that have:
-- The BEST CEO with PROVEN track record
-- The MOST ELITE engineering team
-- A REAL AI product in PRODUCTION generating real revenue
-- A DEFENSIBLE AI moat
-- CLEAN dilution history
+I want VISIONARY FOUNDERS building WORLD-CHANGING companies. These are the companies every elite engineer dreams of joining. Market cap UNDER $500 MILLION. NOT just AI — scan robotics, cybersecurity, space tech, clean energy, fintech, quantum, advanced manufacturing, developer tools, and more.
 
-Return EXACTLY 50 results as JSON array inside a JSON object with keys: stocks, sector_rankings, market_context. ZERO pharma.`;
+Find me the companies that are GROWING FAST but Wall Street is SLEEPING ON. The ones with:
+- A founder with a VISION that makes you want to quit your job and join them
+- Elite engineering talent that chose THIS company over Google/Meta/Apple
+- Real products, real revenue, real growth — but under the radar
+- Clean balance sheets, no dilution games
+
+These should be the kind of stocks where in 3 years people say "How did we miss this at $200M market cap?"
+
+Return EXACTLY 50 results as JSON object with keys: stocks (array of 50 stock objects), sector_rankings (array), market_context (string). ZERO pharma. ZERO drug companies.`;
 
 function getHealthGrade(score: number): string {
   if (score >= 85) return "A+";
