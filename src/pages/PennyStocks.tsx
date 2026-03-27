@@ -40,6 +40,12 @@ interface ScanResult {
   themes_covered: string[];
 }
 
+interface ScanErrorState {
+  title: string;
+  message: string;
+  retryLabel: string;
+}
+
 const THEMES = [
   { id: "all", label: "All Themes", emoji: "🎯" },
   { id: "defense", label: "Defense", emoji: "🛡️" },
@@ -68,6 +74,62 @@ const socialColors = (score: number) => {
   return "bg-muted text-muted-foreground";
 };
 
+const parseScanError = async (err: unknown): Promise<ScanErrorState> => {
+  let status: number | undefined;
+  const messages = new Set<string>();
+
+  if (err instanceof Error && err.message) {
+    messages.add(err.message);
+  }
+
+  if (err && typeof err === "object") {
+    const candidate = err as { message?: string; error?: string; status?: number; context?: Response };
+
+    if (typeof candidate.message === "string") messages.add(candidate.message);
+    if (typeof candidate.error === "string") messages.add(candidate.error);
+    if (typeof candidate.status === "number") status = candidate.status;
+
+    if (candidate.context instanceof Response) {
+      status = candidate.context.status;
+      try {
+        const payload = await candidate.context.clone().json();
+        if (typeof payload?.error === "string") messages.add(payload.error);
+      } catch {
+        try {
+          const text = await candidate.context.clone().text();
+          if (text) messages.add(text);
+        } catch {
+          // no-op
+        }
+      }
+    }
+  }
+
+  const combined = Array.from(messages).join(" ").toLowerCase();
+
+  if (status === 402 || combined.includes("ai credits exhausted")) {
+    return {
+      title: "AI credits exhausted",
+      message: "This scanner uses Lovable AI and your workspace has run out of credits. Add more credits in Settings → Workspace → Usage, then run the scan again.",
+      retryLabel: "Re-run after top-up",
+    };
+  }
+
+  if (status === 429 || combined.includes("rate limited")) {
+    return {
+      title: "Scanner is rate limited",
+      message: "Too many scan requests were sent in a short window. Wait a bit, then run the scanner again.",
+      retryLabel: "Try again shortly",
+    };
+  }
+
+  return {
+    title: "Scanner unavailable",
+    message: Array.from(messages)[0] || "The scan failed before results came back. Please retry in a moment.",
+    retryLabel: "Try scan again",
+  };
+};
+
 export default function PennyStocks() {
   const navigate = useNavigate();
   const [data, setData] = useState<ScanResult | null>(null);
@@ -75,20 +137,28 @@ export default function PennyStocks() {
   const [selectedTheme, setSelectedTheme] = useState("all");
   const [expandedCards, setExpandedCards] = useState<Set<string>>(new Set());
   const [filterTheme, setFilterTheme] = useState<string | null>(null);
+  const [scanError, setScanError] = useState<ScanErrorState | null>(null);
 
   const runScan = useCallback(async () => {
     setLoading(true);
+    setScanError(null);
+
     try {
       const { data: result, error } = await supabase.functions.invoke("penny-stock-scanner", {
         body: { theme: selectedTheme },
       });
+
       if (error) throw error;
       if (result?.error) throw new Error(result.error);
+
       setData(result);
+      setScanError(null);
       toast.success(`Found ${result.total_picks} jackpot candidates!`);
-    } catch (err: any) {
+    } catch (err) {
       console.error("Scan failed:", err);
-      toast.error(err.message || "Scanner failed");
+      const nextError = await parseScanError(err);
+      setScanError(nextError);
+      toast.error(nextError.title);
     } finally {
       setLoading(false);
     }
@@ -148,6 +218,26 @@ export default function PennyStocks() {
           </div>
         </div>
 
+        {scanError && (
+          <Card className="border-destructive/30 bg-destructive/5 p-4">
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-destructive" />
+              <div className="space-y-2">
+                <div>
+                  <p className="text-sm font-semibold text-foreground">{scanError.title}</p>
+                  <p className="text-sm text-muted-foreground">{scanError.message}</p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button size="sm" variant="outline" onClick={runScan} disabled={loading}>
+                    {scanError.retryLabel}
+                  </Button>
+                  <p className="text-xs text-muted-foreground">Your last successful results stay visible until a new scan succeeds.</p>
+                </div>
+              </div>
+            </div>
+          </Card>
+        )}
+
         {/* Market Context */}
         {data?.market_context && (
           <Card className="p-4 bg-primary/5 border-primary/20">
@@ -184,7 +274,7 @@ export default function PennyStocks() {
         )}
 
         {/* Empty state */}
-        {!data && !loading && (
+        {!data && !loading && !scanError && (
           <div className="text-center py-20 space-y-4">
             <div className="text-6xl">💎</div>
             <h2 className="text-xl font-bold">Penny Stock Jackpot Scanner</h2>
