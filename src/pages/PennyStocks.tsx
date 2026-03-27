@@ -63,6 +63,13 @@ interface VolatileStock {
   bear_case: string;
   entry_strategy: string;
   why_not_zero: string;
+  dilution_risk_score?: number;
+  share_stability_score?: number;
+  insider_ownership_pct?: number;
+  shelf_registration_risk?: number;
+  dilution_history?: string;
+  shares_outstanding?: string;
+  dilution_note?: string;
 }
 
 interface SectorRanking {
