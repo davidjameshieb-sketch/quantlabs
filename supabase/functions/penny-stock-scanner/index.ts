@@ -103,6 +103,8 @@ For EACH stock provide ALL fields:
 - dilution_risk_score (0-100, higher = safer), share_stability_score, insider_ownership_pct
 - shelf_registration_risk, dilution_history, shares_outstanding, dilution_note
 
+SCANNING DEPTH: You must mentally scan through AT LEAST 1000 publicly traded companies across ALL exchanges (NYSE, NASDAQ, NYSE American) before selecting your final 50. Consider companies from EVERY AI sub-sector listed above. The final 50 must represent the absolute best risk/reward opportunities you can find — the cream of the crop from your 1000+ stock universe.
+
 Return EXACTLY 50 stocks as a JSON array. EVERY pick must have a REAL AI product and identifiable leadership. ZERO pharma/biotech.`;
 
 const USER_PROMPT = `Scan the market for AI-focused small-cap stocks with ELITE LEADERSHIP and BULLETPROOF fundamentals. Today is ${new Date().toISOString().slice(0, 10)}.
