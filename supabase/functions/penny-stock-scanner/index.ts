@@ -109,8 +109,8 @@ Deno.serve(async (req) => {
           {
             type: "function",
             function: {
-              name: "report_penny_stocks",
-              description: "Report the curated list of penny stock jackpot opportunities",
+              name: "report_shark_setups",
+              description: "Report institutional-grade small-cap shark setups",
               parameters: {
                 type: "object",
                 properties: {
@@ -120,26 +120,28 @@ Deno.serve(async (req) => {
                       type: "object",
                       properties: {
                         ticker: { type: "string" },
-                        company: { type: "string" },
+                        company_name: { type: "string" },
+                        estimated_market_cap: { type: "string" },
                         price_range: { type: "string" },
-                        market_cap: { type: "string" },
                         sector: { type: "string" },
+                        setup_type: { type: "string", enum: ["POLITICAL_CATALYST", "PROFIT_CROSSOVER", "SHORT_SQUEEZE", "IP_HOSTAGE"] },
                         political_theme: { type: "string" },
-                        product_description: { type: "string" },
-                        social_score: { type: "number" },
+                        the_thesis: { type: "string" },
+                        adv_estimate: { type: "string" },
+                        institutional_ownership_pct: { type: "string" },
+                        ttm_revenue: { type: "string" },
+                        short_interest_pct: { type: "string" },
+                        risk_profile: { type: "string", enum: ["MEDIUM", "HIGH", "EXTREME"] },
                         catalyst: { type: "string" },
                         catalyst_timeline: { type: "string" },
-                        risk_level: { type: "string", enum: ["LOW", "MEDIUM", "HIGH", "EXTREME"] },
                         bull_case: { type: "string" },
                         bear_case: { type: "string" },
-                        institutional_interest: { type: "string" },
                         strategy: { type: "string" },
                       },
-                      required: ["ticker", "company", "price_range", "sector", "political_theme", "product_description", "social_score", "catalyst", "risk_level", "bull_case", "bear_case", "strategy"],
+                      required: ["ticker", "company_name", "estimated_market_cap", "setup_type", "political_theme", "the_thesis", "risk_profile", "catalyst", "bull_case", "bear_case", "strategy"],
                     },
                   },
-                  market_context: { type: "string", description: "Brief overview of current political/market environment affecting penny stocks" },
-                  scan_timestamp: { type: "string" },
+                  market_context: { type: "string", description: "Brief overview of current macro environment for small-cap shark setups" },
                 },
                 required: ["stocks", "market_context"],
                 additionalProperties: false,
@@ -147,7 +149,7 @@ Deno.serve(async (req) => {
             },
           },
         ],
-        tool_choice: { type: "function", function: { name: "report_penny_stocks" } },
+        tool_choice: { type: "function", function: { name: "report_shark_setups" } },
       }),
     });
 
@@ -172,14 +174,20 @@ Deno.serve(async (req) => {
     }
 
     const result = JSON.parse(toolCall.function.arguments);
-    console.log(`[PENNY-SCANNER] Found ${result.stocks?.length || 0} penny stock picks`);
+    console.log(`[PENNY-SCANNER] Found ${result.stocks?.length || 0} shark setups`);
 
-    // Enrich with computed fields
+    const setupEmoji: Record<string, string> = {
+      POLITICAL_CATALYST: "🏛️",
+      PROFIT_CROSSOVER: "📈",
+      SHORT_SQUEEZE: "🩳🔥",
+      IP_HOSTAGE: "🔐",
+    };
+
     const enrichedStocks = (result.stocks || []).map((s: any, i: number) => ({
       ...s,
       rank: i + 1,
-      social_label: s.social_score >= 8 ? "🔥 VIRAL" : s.social_score >= 6 ? "📈 TRENDING" : s.social_score >= 4 ? "👀 WATCHED" : "🔍 UNDER RADAR",
-      risk_color: s.risk_level === "LOW" ? "green" : s.risk_level === "MEDIUM" ? "yellow" : s.risk_level === "HIGH" ? "orange" : "red",
+      setup_emoji: setupEmoji[s.setup_type] || "💰",
+      risk_color: s.risk_profile === "MEDIUM" ? "yellow" : s.risk_profile === "HIGH" ? "orange" : "red",
       theme_emoji: getThemeEmoji(s.political_theme),
     }));
 
@@ -188,7 +196,7 @@ Deno.serve(async (req) => {
       market_context: result.market_context || "",
       scan_timestamp: new Date().toISOString(),
       total_picks: enrichedStocks.length,
-      themes_covered: [...new Set(enrichedStocks.map((s: any) => s.political_theme))],
+      setups_covered: [...new Set(enrichedStocks.map((s: any) => s.setup_type))],
     });
   } catch (err) {
     console.error("[PENNY-SCANNER] Error:", err);
