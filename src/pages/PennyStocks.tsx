@@ -363,7 +363,7 @@ export default function PennyStocks() {
         {data && (
           <div className="flex flex-wrap gap-2">
             <Badge variant="outline" className="text-[10px] border-green-500/30 text-green-400">✅ AI Product Required</Badge>
-            <Badge variant="outline" className="text-[10px] border-green-500/30 text-green-400">✅ Cap &lt; $500M</Badge>
+            <Badge variant="outline" className="text-[10px] border-green-500/30 text-green-400">✅ Cap &lt; $1B</Badge>
             <Badge variant="outline" className="text-[10px] border-green-500/30 text-green-400">✅ Elite Leadership</Badge>
             <Badge variant="outline" className="text-[10px] border-green-500/30 text-green-400">✅ Revenue &gt; $3M</Badge>
             <Badge variant="outline" className="text-[10px] border-green-500/30 text-green-400">✅ NYSE/NASDAQ</Badge>
