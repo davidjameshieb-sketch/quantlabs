@@ -50,28 +50,29 @@ For each stock provide:
 
 Return EXACTLY 10-15 stocks as a JSON array. Every pick MUST pass ALL hard floors. No exceptions.`;
 
-const USER_PROMPT = `Scan the current market for penny stock jackpot opportunities. Today's date is ${new Date().toISOString().slice(0, 10)}.
+const USER_PROMPT = `Scan the current market for institutional-grade small-cap shark setups. Today's date is ${new Date().toISOString().slice(0, 10)}.
 
-Focus heavily on these current political money flows:
-1. Defense stocks benefiting from increased military budgets and global tensions
-2. Energy independence plays — domestic oil, gas, nuclear, uranium, rare earth miners
-3. Border security technology companies
-4. American manufacturing reshoring beneficiaries  
-5. Infrastructure & construction material companies
-6. Crypto/blockchain companies benefiting from regulatory clarity
-7. AI infrastructure (small companies providing picks-and-shovels to the AI boom)
-8. Space & satellite defense contractors
-9. Tariff winners — domestic producers replacing Chinese imports
-10. Deregulation beneficiaries in banking, energy, or pharma
+HARD FLOORS — reject anything that fails:
+- Market cap $75M-$300M
+- ADV > 750,000 shares
+- Institutional ownership 2%-15%
+- TTM Revenue > $10M
 
-For each stock, verify:
-- It has REAL revenue (not pre-revenue)
-- It has growing social media following (Reddit, Twitter/X, StockTwits)
-- It's under $10/share
-- Market cap is too small for major ETFs but growing
-- There's a specific catalyst in the next 1-3 months
+Focus on these current catalysts:
+1. Defense/military spending surges and global tensions
+2. Energy independence — domestic oil, gas, nuclear, uranium, rare earth
+3. Border security technology
+4. American manufacturing reshoring / tariff beneficiaries
+5. Infrastructure & construction
+6. Crypto/blockchain regulatory clarity
+7. AI infrastructure picks-and-shovels
+8. Space & satellite defense
+9. Deregulation plays in banking, energy, pharma
+10. Companies crossing from negative to positive earnings on political tailwinds
 
-Return the results as a JSON array with the schema specified. Be specific with real ticker symbols and real companies.`;
+Categorize each into: POLITICAL_CATALYST, PROFIT_CROSSOVER, SHORT_SQUEEZE, or IP_HOSTAGE.
+
+Return results as a JSON array with real ticker symbols and real companies. Every pick must be defensible.`;
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
