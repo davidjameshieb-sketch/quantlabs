@@ -53,6 +53,18 @@ FINANCIAL HEALTH SCORING (score each 0-100):
 - revenue_growth_score, gross_margin_score, debt_health_score, cash_flow_score, balance_sheet_score
 - Overall financial_health_score: Weighted average (0-100)
 
+DILUTION PROTECTION SCORING (CRITICAL — score each 0-100):
+- dilution_risk_score: 0 = extreme dilution risk, 100 = zero dilution risk (HIGHER IS BETTER/SAFER)
+- share_stability_score: How stable has the share count been over 12-24 months? (100 = no change, 0 = doubled+)
+- insider_ownership_pct: What % do insiders/founders own? Higher = aligned incentives, less likely to dilute
+- shelf_registration_risk: Does the company have an active shelf registration / ATM offering? (100 = no shelf, 0 = active ATM)
+- dilution_history: "CLEAN" (no dilution in 2+ years), "MINOR" (small raise, <10% dilution), "WARNING" (recent significant dilution), "SERIAL_DILUTER" (repeated offerings — AVOID)
+- shares_outstanding: Approximate current shares outstanding
+- dilution_note: 1-sentence explanation of dilution risk or safety
+
+CRITICAL DILUTION RULE: Do NOT recommend any stock with dilution_history = "SERIAL_DILUTER". 
+Prefer stocks with "CLEAN" or "MINOR" dilution history. Flag any "WARNING" stocks prominently.
+
 AI SUB-SECTORS TO SCAN:
 1. AI Infrastructure (GPU cloud, model serving, MLOps, data pipelines, vector databases)
 2. AI-Powered Cybersecurity (threat detection, autonomous SOC, zero-trust AI)
@@ -88,6 +100,8 @@ For EACH stock provide ALL fields:
 - catalyst, catalyst_timeline
 - bull_case, bear_case, entry_strategy
 - why_not_zero (1 sentence — real AI revenue, contracts, or IP that creates a floor)
+- dilution_risk_score (0-100, higher = safer), share_stability_score, insider_ownership_pct
+- shelf_registration_risk, dilution_history, shares_outstanding, dilution_note
 
 Return EXACTLY 50 stocks as a JSON array. EVERY pick must have a REAL AI product and identifiable leadership. ZERO pharma/biotech.`;
 
@@ -210,6 +224,13 @@ Deno.serve(async (req) => {
                         bear_case: { type: "string" },
                         entry_strategy: { type: "string" },
                         why_not_zero: { type: "string" },
+                        dilution_risk_score: { type: "number", description: "0-100, higher = safer from dilution" },
+                        share_stability_score: { type: "number", description: "0-100, share count stability" },
+                        insider_ownership_pct: { type: "number", description: "Insider ownership percentage" },
+                        shelf_registration_risk: { type: "number", description: "0-100, 100 = no shelf registration" },
+                        dilution_history: { type: "string", enum: ["CLEAN", "MINOR", "WARNING", "SERIAL_DILUTER"] },
+                        shares_outstanding: { type: "string" },
+                        dilution_note: { type: "string" },
                       },
                       required: [
                         "ticker", "company_name", "sector", "estimated_market_cap",
@@ -217,7 +238,8 @@ Deno.serve(async (req) => {
                         "ceo_name", "ceo_background", "ai_product_description",
                         "volatility_tag", "why_volatile", "why_solid",
                         "setup_type", "the_thesis", "catalyst",
-                        "bull_case", "bear_case", "entry_strategy", "why_not_zero"
+                        "bull_case", "bear_case", "entry_strategy", "why_not_zero",
+                        "dilution_risk_score", "dilution_history", "dilution_note"
                       ],
                     },
                   },

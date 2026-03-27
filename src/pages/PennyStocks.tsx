@@ -63,6 +63,13 @@ interface VolatileStock {
   bear_case: string;
   entry_strategy: string;
   why_not_zero: string;
+  dilution_risk_score?: number;
+  share_stability_score?: number;
+  insider_ownership_pct?: number;
+  shelf_registration_risk?: number;
+  dilution_history?: string;
+  shares_outstanding?: string;
+  dilution_note?: string;
 }
 
 interface SectorRanking {
@@ -353,6 +360,7 @@ export default function PennyStocks() {
             <Badge variant="outline" className="text-[10px] border-green-500/30 text-green-400">✅ Revenue &gt; $3M</Badge>
             <Badge variant="outline" className="text-[10px] border-green-500/30 text-green-400">✅ NYSE/NASDAQ</Badge>
             <Badge variant="outline" className="text-[10px] border-green-500/30 text-green-400">✅ Zero Pharma</Badge>
+            <Badge variant="outline" className="text-[10px] border-green-500/30 text-green-400">✅ Anti-Dilution</Badge>
             <Badge variant="outline" className="text-[10px] border-primary/30 text-primary ml-auto">{data.total_picks} AI Gems Found</Badge>
             {data.scan_timestamp && (
               <Badge variant="outline" className="text-[10px] border-muted-foreground/30 text-muted-foreground">
@@ -446,24 +454,45 @@ export default function PennyStocks() {
                         </div>
 
                         {/* 4-Score Row */}
-                        <div className="grid grid-cols-4 gap-1.5 mb-2">
+                        <div className="grid grid-cols-5 gap-1.5 mb-2">
                           <div className="bg-purple-500/10 rounded px-1.5 py-1.5 text-center">
-                            <p className="text-[8px] text-purple-300">🧠 AI Score</p>
+                            <p className="text-[8px] text-purple-300">🧠 AI</p>
                             <p className={`text-base font-black ${getScoreColor(stock.ai_score)}`}>{stock.ai_score}</p>
                           </div>
                           <div className="bg-amber-500/10 rounded px-1.5 py-1.5 text-center">
-                            <p className="text-[8px] text-amber-300">👑 Leadership</p>
+                            <p className="text-[8px] text-amber-300">👑 Lead</p>
                             <p className={`text-base font-black ${getScoreColor(stock.leadership_score)}`}>{stock.leadership_score}</p>
                           </div>
                           <div className="bg-muted/30 rounded px-1.5 py-1.5 text-center">
-                            <p className="text-[8px] text-muted-foreground">💰 Financial</p>
+                            <p className="text-[8px] text-muted-foreground">💰 Finance</p>
                             <p className={`text-base font-black ${getScoreColor(stock.financial_health_score)}`}>{stock.financial_health_score}</p>
                           </div>
                           <div className="bg-muted/30 rounded px-1.5 py-1.5 text-center">
                             <p className="text-[8px] text-muted-foreground">🚀 Sector</p>
                             <p className={`text-base font-black ${getScoreColor(stock.sector_growth_score)}`}>{stock.sector_growth_score}</p>
                           </div>
+                          <div className={`rounded px-1.5 py-1.5 text-center ${(stock.dilution_risk_score ?? 50) >= 70 ? 'bg-emerald-500/10' : (stock.dilution_risk_score ?? 50) >= 40 ? 'bg-yellow-500/10' : 'bg-red-500/10'}`}>
+                            <p className="text-[8px] text-muted-foreground">🛡️ Dilution</p>
+                            <p className={`text-base font-black ${getScoreColor(stock.dilution_risk_score ?? 50)}`}>{stock.dilution_risk_score ?? '—'}</p>
+                          </div>
                         </div>
+
+                        {/* Dilution Badge */}
+                        {stock.dilution_history && (
+                          <div className="mb-2">
+                            <Badge className={`text-[9px] px-1.5 ${
+                              stock.dilution_history === 'CLEAN' ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' :
+                              stock.dilution_history === 'MINOR' ? 'bg-green-500/20 text-green-300 border-green-500/30' :
+                              stock.dilution_history === 'WARNING' ? 'bg-red-500/20 text-red-300 border-red-500/30' :
+                              'bg-red-500/30 text-red-200 border-red-500/50'
+                            }`}>
+                              {stock.dilution_history === 'CLEAN' ? '✅ No Dilution' :
+                               stock.dilution_history === 'MINOR' ? '🟡 Minor Dilution' :
+                               stock.dilution_history === 'WARNING' ? '⚠️ Dilution Warning' :
+                               '🚫 Serial Diluter'}
+                            </Badge>
+                          </div>
+                        )}
 
                         {/* CEO & AI Product */}
                         <div className="grid grid-cols-2 gap-2 mb-2">
@@ -532,7 +561,42 @@ export default function PennyStocks() {
                             </div>
                           </div>
 
-                          {/* Raw financials */}
+                          {/* Dilution Protection Breakdown */}
+                          <div>
+                            <p className="text-xs font-bold mb-2">🛡️ Dilution Protection</p>
+                            <div className="space-y-1.5">
+                              {stock.dilution_risk_score != null && <ScoreBar label="Dilution Safety" score={stock.dilution_risk_score} icon={<Shield className="w-2.5 h-2.5" />} />}
+                              {stock.share_stability_score != null && <ScoreBar label="Share Count Stability" score={stock.share_stability_score} />}
+                              {stock.shelf_registration_risk != null && <ScoreBar label="No Shelf Registration" score={stock.shelf_registration_risk} />}
+                            </div>
+                            <div className="grid grid-cols-3 gap-2 mt-2">
+                              {stock.insider_ownership_pct != null && (
+                                <div className="bg-muted/30 rounded p-2 text-center">
+                                  <p className="text-[9px] text-muted-foreground">Insider Own %</p>
+                                  <p className="text-xs font-bold">{stock.insider_ownership_pct}%</p>
+                                </div>
+                              )}
+                              {stock.shares_outstanding && (
+                                <div className="bg-muted/30 rounded p-2 text-center">
+                                  <p className="text-[9px] text-muted-foreground">Shares Out</p>
+                                  <p className="text-xs font-bold">{stock.shares_outstanding}</p>
+                                </div>
+                              )}
+                              {stock.dilution_history && (
+                                <div className={`rounded p-2 text-center ${
+                                  stock.dilution_history === 'CLEAN' ? 'bg-emerald-500/10' :
+                                  stock.dilution_history === 'MINOR' ? 'bg-green-500/10' :
+                                  'bg-red-500/10'
+                                }`}>
+                                  <p className="text-[9px] text-muted-foreground">History</p>
+                                  <p className="text-xs font-bold">{stock.dilution_history}</p>
+                                </div>
+                              )}
+                            </div>
+                            {stock.dilution_note && (
+                              <p className="text-[10px] text-muted-foreground mt-1.5 italic">💉 {stock.dilution_note}</p>
+                            )}
+                          </div>
                           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                             {stock.ttm_revenue && <div className="bg-muted/30 rounded p-2 text-center"><p className="text-[9px] text-muted-foreground">TTM Rev</p><p className="text-xs font-bold">{stock.ttm_revenue}</p></div>}
                             {stock.gross_margin_pct && <div className="bg-muted/30 rounded p-2 text-center"><p className="text-[9px] text-muted-foreground">Gross Margin</p><p className="text-xs font-bold">{stock.gross_margin_pct}</p></div>}
