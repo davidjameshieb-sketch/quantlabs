@@ -491,7 +491,7 @@ export default function PennyStocks() {
                                '🚫 Serial Diluter'}
                             </Badge>
                           </div>
-                        )
+                        )}
 
                         {/* CEO & AI Product */}
                         <div className="grid grid-cols-2 gap-2 mb-2">
