@@ -70,6 +70,14 @@ interface VolatileStock {
   dilution_history?: string;
   shares_outstanding?: string;
   dilution_note?: string;
+  institutional_ownership_pct?: number;
+  institutional_following?: string;
+  top_institutional_holders?: string;
+  retail_sentiment?: string;
+  social_buzz_score?: number;
+  analyst_coverage?: string;
+  short_interest_pct?: number;
+  insider_buying_signal?: boolean;
 }
 
 interface SectorRanking {
@@ -355,7 +363,7 @@ export default function PennyStocks() {
         {data && (
           <div className="flex flex-wrap gap-2">
             <Badge variant="outline" className="text-[10px] border-green-500/30 text-green-400">✅ AI Product Required</Badge>
-            <Badge variant="outline" className="text-[10px] border-green-500/30 text-green-400">✅ Cap &lt; $500M</Badge>
+            <Badge variant="outline" className="text-[10px] border-green-500/30 text-green-400">✅ Cap &lt; $1B</Badge>
             <Badge variant="outline" className="text-[10px] border-green-500/30 text-green-400">✅ Elite Leadership</Badge>
             <Badge variant="outline" className="text-[10px] border-green-500/30 text-green-400">✅ Revenue &gt; $3M</Badge>
             <Badge variant="outline" className="text-[10px] border-green-500/30 text-green-400">✅ NYSE/NASDAQ</Badge>
@@ -377,7 +385,7 @@ export default function PennyStocks() {
             <h2 className="text-xl font-bold">AI Hidden Gems Scanner</h2>
             <p className="text-muted-foreground max-w-lg mx-auto">
               Find 50 AI stocks with ELITE engineering teams, visionary CEOs, and real AI products.
-              Under $500M cap, scored by AI strength, leadership quality, and financial health.
+              Under $1B cap, scored by AI strength, leadership quality, and financial health.
             </p>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 max-w-2xl mx-auto text-xs">
               <Card className="p-3 text-center">
@@ -505,6 +513,62 @@ export default function PennyStocks() {
                             <p className="text-[10px] leading-tight">{stock.ai_product_description}</p>
                           </div>
                         </div>
+
+                        {/* Market Following */}
+                        {(stock.institutional_following || stock.retail_sentiment) && (
+                          <div className="grid grid-cols-2 gap-2 mb-2">
+                            <div className="bg-blue-500/10 rounded p-1.5">
+                              <p className="text-[9px] font-semibold text-blue-400">🏛️ INSTITUTIONAL</p>
+                              <p className="text-[10px] font-bold">{stock.institutional_following || '—'} {stock.institutional_ownership_pct != null ? `(${stock.institutional_ownership_pct}%)` : ''}</p>
+                              {stock.top_institutional_holders && <p className="text-[9px] text-muted-foreground">{stock.top_institutional_holders}</p>}
+                            </div>
+                            <div className={`rounded p-1.5 ${
+                              stock.retail_sentiment === 'STRONG_BULL' ? 'bg-green-500/10' :
+                              stock.retail_sentiment === 'UNDER_RADAR' ? 'bg-yellow-500/10' :
+                              'bg-muted/30'
+                            }`}>
+                              <p className="text-[9px] font-semibold text-cyan-400">👥 RETAIL</p>
+                              <p className="text-[10px] font-bold">{
+                                stock.retail_sentiment === 'STRONG_BULL' ? '🔥 Strong Bull' :
+                                stock.retail_sentiment === 'MODERATE' ? '📊 Moderate' :
+                                stock.retail_sentiment === 'UNDER_RADAR' ? '🔍 Under Radar' :
+                                stock.retail_sentiment === 'CONTRARIAN' ? '🔄 Contrarian' :
+                                stock.retail_sentiment || '—'
+                              }</p>
+                              {stock.social_buzz_score != null && <p className="text-[9px] text-muted-foreground">Social Buzz: {stock.social_buzz_score}/100</p>}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Analyst & Short Interest Row */}
+                        {(stock.analyst_coverage || stock.short_interest_pct != null) && (
+                          <div className="flex gap-2 mb-2 flex-wrap">
+                            {stock.analyst_coverage && (
+                              <Badge className={`text-[9px] px-1.5 ${
+                                stock.analyst_coverage === 'WELL_COVERED' ? 'bg-blue-500/20 text-blue-300 border-blue-500/30' :
+                                stock.analyst_coverage === 'SPARSE' ? 'bg-yellow-500/20 text-yellow-300 border-yellow-500/30' :
+                                'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
+                              }`}>
+                                {stock.analyst_coverage === 'NONE' ? '💎 Zero Coverage' :
+                                 stock.analyst_coverage === 'SPARSE' ? '📋 Sparse Coverage' :
+                                 '📊 Well Covered'}
+                              </Badge>
+                            )}
+                            {stock.short_interest_pct != null && (
+                              <Badge className={`text-[9px] px-1.5 ${
+                                stock.short_interest_pct > 15 ? 'bg-red-500/20 text-red-300 border-red-500/30' :
+                                'bg-muted text-muted-foreground'
+                              }`}>
+                                🩳 SI: {stock.short_interest_pct}%
+                              </Badge>
+                            )}
+                            {stock.insider_buying_signal && (
+                              <Badge className="text-[9px] px-1.5 bg-green-500/20 text-green-300 border-green-500/30">
+                                🟢 Insider Buying
+                              </Badge>
+                            )}
+                          </div>
+                        )}
 
                         {/* Why volatile / why solid */}
                         <div className="grid grid-cols-2 gap-2">
@@ -643,8 +707,8 @@ export default function PennyStocks() {
         {data && (
           <div className="text-center py-4">
             <p className="text-[10px] text-muted-foreground max-w-2xl mx-auto">
-              ⚠️ AI-generated analysis for research only. Not financial advice. Small-cap stocks carry significant risk.
-              All picks: cap &lt;$500M, real AI products, elite leadership, positive margins, NYSE/NASDAQ only, zero pharma.
+               ⚠️ AI-generated analysis for research only. Not financial advice. Small-cap stocks carry significant risk.
+               All picks: cap &lt;$1B, real AI products, elite leadership, positive margins, NYSE/NASDAQ only, zero pharma.
             </p>
           </div>
         )}
