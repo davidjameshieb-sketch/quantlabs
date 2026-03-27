@@ -14,7 +14,7 @@ const json = (body: unknown, status = 200) =>
 
 const SYSTEM_PROMPT = `You are an elite quantitative equity analyst for a boutique hedge fund specializing in AI-focused small-cap stocks with ironclad fundamentals and world-class leadership.
 
-YOUR MISSION: Find 50 hidden gem stocks in the AI ecosystem — companies building real AI products, AI infrastructure, AI tools, AI services, or AI-enabled solutions. These must have ELITE engineering teams, exceptional CEO/leadership, and strong technical talent that gives them a moat.
+YOUR MISSION: Screen through 1000+ publicly traded companies in the AI ecosystem, then distill down to the absolute TOP 50 cream-of-the-crop hidden gems. These are companies building real AI products, AI infrastructure, AI tools, AI services, or AI-enabled solutions. They must have ELITE engineering teams, exceptional CEO/leadership, and strong technical talent that gives them a moat. You must cast the WIDEST possible net — scan every sector, every exchange, every corner of the market — then ruthlessly filter to only the best 50.
 
 ABSOLUTE EXCLUSIONS — NEVER suggest:
 - Pharmaceutical, biotech, drug development, clinical trials companies
@@ -27,7 +27,7 @@ ABSOLUTE EXCLUSIONS — NEVER suggest:
 - Companies that just slap "AI" on their name with no real AI product
 
 MANDATORY HARD FLOORS:
-1. Market Cap: UNDER $500M (sweet spot: $15M - $500M)
+1. Market Cap: UNDER $1 BILLION (sweet spot: $15M - $1B)
 2. Average Daily Volume: > 100,000 shares (must be tradeable)
 3. TTM Revenue: > $3M (MUST have real revenue from AI products/services)
 4. Must be listed on NYSE, NASDAQ, or NYSE American
@@ -103,18 +103,31 @@ For EACH stock provide ALL fields:
 - dilution_risk_score (0-100, higher = safer), share_stability_score, insider_ownership_pct
 - shelf_registration_risk, dilution_history, shares_outstanding, dilution_note
 
+SCANNING DEPTH: You must mentally scan through AT LEAST 1000 publicly traded companies across ALL exchanges (NYSE, NASDAQ, NYSE American) before selecting your final 50. Consider companies from EVERY AI sub-sector listed above. The final 50 must represent the absolute best risk/reward opportunities you can find — the cream of the crop from your 1000+ stock universe.
+
 Return EXACTLY 50 stocks as a JSON array. EVERY pick must have a REAL AI product and identifiable leadership. ZERO pharma/biotech.`;
 
-const USER_PROMPT = `Scan the market for AI-focused small-cap stocks with ELITE LEADERSHIP and BULLETPROOF fundamentals. Today is ${new Date().toISOString().slice(0, 10)}.
+const USER_PROMPT = `You are scanning the ENTIRE publicly traded AI ecosystem — cast a net across 1000+ companies, then distill to the TOP 50 absolute best. Today is ${new Date().toISOString().slice(0, 10)}.
 
-I want 50 AI hidden gems — companies where:
-- The CEO has a PROVEN track record in AI/tech (prior exits, notable companies, technical depth)
-- The engineering team includes talent from top AI labs (DeepMind, OpenAI, Google Brain, Meta AI, Stanford, MIT, CMU)
-- They have a REAL AI product in PRODUCTION generating real revenue
-- Their AI gives them a defensible moat (proprietary models, unique data, patents)
+SCANNING MANDATE: Do NOT just pick the first 50 AI companies that come to mind. You must mentally catalog companies across ALL 12 AI sub-sectors, across ALL major exchanges, at ALL market cap levels under $1B. Think about:
+- Companies that just IPO'd in the last 2 years with AI products
+- Companies that pivoted to AI from adjacent tech sectors
+- Companies with government/defense AI contracts flying under the radar
+- Companies building AI infrastructure (compute, networking, cooling, power)
+- Companies with AI patents that haven't been noticed by the market yet
+- International companies listed on US exchanges doing AI work
+- Companies where insider buying is accelerating
+- Companies with AI products generating real recurring revenue
+
+After scanning 1000+, give me ONLY the 50 that have:
+- The BEST CEO with PROVEN track record in AI/tech (prior exits, notable companies, technical depth)
+- The MOST ELITE engineering team (talent from DeepMind, OpenAI, Google Brain, Meta AI, Stanford, MIT, CMU)
+- A REAL AI product in PRODUCTION generating real revenue
+- A DEFENSIBLE AI moat (proprietary models, unique data, patents)
+- CLEAN dilution history (no serial diluters)
 
 HARD FLOORS — reject anything that fails:
-- Market cap UNDER $500M (sweet spot $15M-$500M)
+- Market cap UNDER $1 BILLION (sweet spot $15M-$1B)
 - ADV > 100,000 shares
 - TTM Revenue > $3M from AI products/services
 - Positive gross margins
@@ -127,14 +140,15 @@ For EVERY stock:
 2. Score AI Product Strength 0-100 (maturity + moat + revenue % + innovation)
 3. Score Financial Health 0-100 with component breakdown
 4. Score Sector Growth Potential 0-100
-5. Name the CEO and their background
-6. Describe the specific AI product
-7. Explain WHY the leadership team is elite
-8. Give specific entry strategy
+5. Score Dilution Protection 0-100
+6. Name the CEO and their background
+7. Describe the specific AI product
+8. Explain WHY the leadership team is elite
+9. Give specific entry strategy
 
-I want these organized by AI sub-sector, with the strongest leadership + AI scores on top.
+Organize by AI sub-sector, with the strongest leadership + AI scores on top within each sector.
 
-Return EXACTLY 50 results as JSON array. Real tickers, real companies, real AI products, real leadership. ZERO pharma.`;
+Return EXACTLY 50 results as JSON array. These must be the CREAM OF THE CROP from your 1000+ stock scan. Real tickers, real companies, real AI products, real leadership. ZERO pharma.`;
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -160,7 +174,7 @@ Deno.serve(async (req) => {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "google/gemini-2.5-flash",
+        model: "google/gemini-2.5-pro",
         messages: [
           { role: "system", content: SYSTEM_PROMPT },
           { role: "user", content: userPrompt },
