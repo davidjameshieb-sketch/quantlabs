@@ -100,6 +100,8 @@ For EACH stock provide ALL fields:
 - catalyst, catalyst_timeline
 - bull_case, bear_case, entry_strategy
 - why_not_zero (1 sentence — real AI revenue, contracts, or IP that creates a floor)
+- dilution_risk_score (0-100, higher = safer), share_stability_score, insider_ownership_pct
+- shelf_registration_risk, dilution_history, shares_outstanding, dilution_note
 
 Return EXACTLY 50 stocks as a JSON array. EVERY pick must have a REAL AI product and identifiable leadership. ZERO pharma/biotech.`;
 
