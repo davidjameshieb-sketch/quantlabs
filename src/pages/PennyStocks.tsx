@@ -360,6 +360,7 @@ export default function PennyStocks() {
             <Badge variant="outline" className="text-[10px] border-green-500/30 text-green-400">✅ Revenue &gt; $3M</Badge>
             <Badge variant="outline" className="text-[10px] border-green-500/30 text-green-400">✅ NYSE/NASDAQ</Badge>
             <Badge variant="outline" className="text-[10px] border-green-500/30 text-green-400">✅ Zero Pharma</Badge>
+            <Badge variant="outline" className="text-[10px] border-green-500/30 text-green-400">✅ Anti-Dilution</Badge>
             <Badge variant="outline" className="text-[10px] border-primary/30 text-primary ml-auto">{data.total_picks} AI Gems Found</Badge>
             {data.scan_timestamp && (
               <Badge variant="outline" className="text-[10px] border-muted-foreground/30 text-muted-foreground">
