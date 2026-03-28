@@ -117,19 +117,31 @@ For EACH stock provide ALL fields listed above plus: ticker, company_name, estim
 
 Return EXACTLY 50 stocks as a JSON array. EVERY ticker MUST be real and currently trading. ZERO pharma/drug companies. ZERO serial diluters. FOCUS on near-term catalysts and cash-flow-positive companies.`;
 
-const USER_PROMPT = `Today is ${new Date().toISOString().slice(0, 10)}. Scan the ENTIRE public market (1000+ companies across ALL innovative sectors), then give me ONLY the TOP 50 HIDDEN GIANTS.
+const USER_PROMPT = `Today is ${new Date().toISOString().slice(0, 10)}. Scan 1000+ publicly traded companies and find me the TOP 50 that are CRIMINALLY UNDERVALUED with REAL CASH FLOW and SHORT-TERM CATALYSTS.
 
-I want VISIONARY FOUNDERS building WORLD-CHANGING companies. These are the companies every elite engineer dreams of joining. Market cap UNDER $500 MILLION. NOT just AI — scan robotics, cybersecurity, space tech, clean energy, fintech, quantum, advanced manufacturing, developer tools, and more.
+I want stocks that will make Reddit go INSANE when they discover them. The "how is nobody talking about this?!" plays.
 
-Find me the companies that are GROWING FAST but Wall Street is SLEEPING ON. The ones with:
-- A founder with a VISION that makes you want to quit your job and join them
-- Elite engineering talent that chose THIS company over Google/Meta/Apple
-- Real products, real revenue, real growth — but under the radar
-- Clean balance sheets, no dilution games
+FOCUS SECTORS (where the BUZZ is):
+- AI infrastructure & picks-and-shovels plays (NOT the hype — the companies BUILDING the infrastructure)
+- Data centers, cooling, power infrastructure for AI
+- Cybersecurity (zero trust, endpoint, cloud security)
+- Edge computing, IoT platforms
+- Semiconductors & chip equipment (small players feeding the giants)
+- Defense tech & autonomous systems
+- Energy infrastructure (grid modernization, nuclear services)
+- SaaS platforms with sticky revenue & network effects
+- Developer tools & DevOps
+- Robotics & industrial automation
 
-These should be the kind of stocks where in 3 years people say "How did we miss this at $200M market cap?"
+REQUIREMENTS:
+1. CASH FLOW POSITIVE or within 1-2 quarters — NO cash burners
+2. Stock price near 52-week lows or massively undervalued vs peers
+3. SHORT-TERM CATALYST within 1-3 months (earnings, contract, product launch, etc.)
+4. ZERO DILUTION — clean share count, no recent offerings, insider aligned
+5. Real products, real customers, real revenue growth
+6. The kind of DD that gets 10,000 upvotes on Reddit
 
-Return EXACTLY 50 results as JSON object with keys: stocks (array of 50 stock objects), sector_rankings (array), market_context (string). ZERO pharma. ZERO drug companies.`;
+Return EXACTLY 50 results as JSON object with keys: stocks (array of 50 stock objects), sector_rankings (array), market_context (string). ZERO pharma. ZERO drug companies. ZERO serial diluters.`;
 
 function getHealthGrade(score: number): string {
   if (score >= 85) return "A+";
