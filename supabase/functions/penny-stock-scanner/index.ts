@@ -211,7 +211,35 @@ async function processInBackground(jobId: string, focusSector: string) {
 
     await sb.from("penny_scan_jobs").update({ progress: 80 }).eq("id", jobId);
 
-    const result = JSON.parse(content);
+    let result: any;
+    try {
+      result = JSON.parse(content);
+    } catch (parseErr) {
+      // AI response was truncated — try to salvage partial JSON
+      console.warn("[DEEP-VALUE] JSON truncated, attempting repair...");
+      let fixed = content;
+      // Close any unterminated strings
+      const quoteCount = (fixed.match(/"/g) || []).length;
+      if (quoteCount % 2 !== 0) fixed += '"';
+      // Try to close the stocks array and outer object
+      if (!fixed.includes('"sector_breakdown"')) {
+        // Truncated inside the stocks array
+        // Remove the last partial object
+        const lastComplete = fixed.lastIndexOf("},");
+        if (lastComplete > 0) {
+          fixed = fixed.substring(0, lastComplete + 1);
+        }
+        fixed += '], "sector_breakdown": [], "market_context": "Partial scan — response was truncated"}';
+      }
+      try {
+        result = JSON.parse(fixed);
+      } catch {
+        // Last resort: extract stock objects with regex
+        const stockMatches = content.match(/\{[^{}]*"ticker"\s*:\s*"[A-Z]+?"[^{}]*\}/g) || [];
+        const stocks = stockMatches.map((m: string) => { try { return JSON.parse(m); } catch { return null; } }).filter(Boolean);
+        result = { stocks, sector_breakdown: [], market_context: "Partial scan — only complete stock entries recovered" };
+      }
+    }
     console.log(`[DEEP-VALUE] Found ${result.stocks?.length || 0} gems for job ${jobId}`);
 
     const setupEmoji: Record<string, string> = {
