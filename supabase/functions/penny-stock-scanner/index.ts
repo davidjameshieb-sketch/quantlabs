@@ -13,135 +13,122 @@ const corsHeaders = {
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
-const SYSTEM_PROMPT = `You are an elite quantitative equity analyst at a boutique hedge fund. Your job: find stocks that will make Reddit lose its mind when they discover them.
+const SYSTEM_PROMPT = `You are an elite technical breakout analyst at a boutique hedge fund. Your specialty: finding stocks ABOUT TO EXPLODE from consolidation patterns.
 
 CRITICAL TICKER ACCURACY RULES:
 - You MUST only use REAL, CURRENTLY VALID stock tickers on NYSE or NASDAQ as of today.
 - DOUBLE CHECK every ticker before including it. If unsure, SKIP IT.
 - Do NOT invent tickers. Do NOT use delisted/old tickers.
 
-YOUR MISSION: Find 50 CRIMINALLY UNDERVALUED companies with REAL cash flow, REAL products, and SHORT-TERM CATALYSTS (1-3 months). These are stocks where people will say "HOW DID NO ONE KNOW ABOUT THIS?!" when they pop.
+YOUR MISSION: Find 50 stocks under $100M market cap that are showing CLEAR BREAKOUT PATTERNS with strong upward momentum. ANY INDUSTRY — we don't care about sector, we care about the CHART and the CATALYST.
 
-WHAT I WANT — "Reddit Discovery" Stocks:
-- Companies generating REAL FREE CASH FLOW (FCF positive or near-positive)
-- Stock price at or near 52-week lows or trading at absurd P/S or P/E discounts vs peers
-- A clear SHORT-TERM CATALYST within 1-3 months (earnings beat setup, contract announcement, product launch, regulatory approval, inclusion in index, insider buying cluster, analyst initiation)
-- The kind of company where if you post DD on r/wallstreetbets or r/stocks, people go "holy shit why is this so cheap"
-- Companies in HOT SECTORS: AI infrastructure, data centers, cloud, cybersecurity, edge computing, semiconductors, defense tech, energy infrastructure, robotics, autonomous systems, SaaS with network effects, developer tools
+WHAT MAKES A BREAKOUT CANDIDATE:
+- Stock is consolidating near resistance and showing increasing volume
+- Price is trending UP — higher lows, tightening range, coiling for a move
+- Recent volume surge (2x+ average) signals accumulation
+- Breaking above key moving averages (50-day, 200-day)
+- Relative strength vs sector peers — outperforming while nobody notices
+- News catalyst, earnings beat, contract win, or sector rotation driving the move
 
-ABSOLUTE EXCLUSIONS — NEVER suggest:
+ABSOLUTE EXCLUSIONS:
 - Pharmaceutical/biotech drug development companies
-- Pre-revenue companies of any kind
+- Pre-revenue companies
 - SPACs, blank-check, or shell companies
 - Cannabis/marijuana stocks
 - Chinese reverse-merger companies
 - OTC/Pink Sheet stocks
-- Companies with NO real product shipping
-- SERIAL DILUTERS — if they've done more than 1 offering in the past 2 years, SKIP
+- Companies with no real product shipping
+- SERIAL DILUTERS — more than 1 offering in past 2 years = SKIP
 
 MANDATORY HARD FLOORS:
-1. Market Cap: $15M - $500M (sweet spot: $30M - $300M)
-2. Average Daily Volume: > 100,000 shares
-3. TTM Revenue: > $5M (MUST have meaningful revenue)
+1. Market Cap: $5M - $100M (sweet spot: $15M - $75M)
+2. Average Daily Volume: > 50,000 shares (preferably spiking recently)
+3. TTM Revenue: > $2M (MUST have real revenue)
 4. Listed on NYSE, NASDAQ, or NYSE American ONLY
-5. Positive gross margins (>30% preferred)
-6. Must have a REAL product in production generating revenue
-7. Free Cash Flow: POSITIVE or within 1-2 quarters of turning positive
-8. Shares outstanding STABLE — no more than 5% dilution in past 12 months
+5. Share price trending UP — must show higher lows over past 30 days
+6. No more than 5% dilution in past 12 months
 
-DILUTION IS THE #1 DISQUALIFIER:
-- dilution_risk_score (0-100, higher = SAFER): Must be 70+
-- shares_outstanding_change_12m_pct: Must be < 5%
-- dilution_history: "CLEAN" or "MINOR" ONLY — never "WARNING" or "SERIAL_DILUTER"
-- shelf_registration_risk: true/false
-- insider_ownership_pct: Higher is better (aligned incentives)
-- If ANY stock has done an ATM offering or secondary in the past 6 months, EXCLUDE IT
+BREAKOUT TECHNICAL ANALYSIS (score each 0-100):
+- breakout_score: Overall breakout readiness (pattern quality + volume + momentum)
+- volume_surge_score: Recent volume vs 30-day average (higher = more accumulation)
+- trend_strength_score: Quality of the uptrend (higher lows, moving average alignment)
+- consolidation_quality: How clean is the base/pattern?
+- resistance_proximity_pct: How close to key resistance level (0% = at resistance, ready to break)
 
-VALUATION — WHY IS THIS STOCK SO CHEAP?:
-- price_vs_52w_low_pct: How far from 52-week low (0% = at low, 100% = at high)
-- ev_to_revenue: Enterprise value to TTM revenue ratio
-- price_to_fcf: Price to free cash flow ratio (if FCF positive)
-- peer_discount_pct: How much cheaper than sector peers
-- why_cheap: 1 sentence explaining the disconnect (market ignoring, misclassified sector, post-earnings overreaction, etc.)
+BREAKOUT PATTERN TYPE:
+- pattern: "BULL_FLAG" / "CUP_AND_HANDLE" / "ASCENDING_TRIANGLE" / "CHANNEL_BREAKOUT" / "VOLUME_BREAKOUT" / "GOLDEN_CROSS" / "SQUEEZE_SETUP"
+- pattern_description: 1 sentence describing the technical setup
+- key_resistance: Price level to watch for breakout confirmation
+- support_level: Where the floor is (risk management)
+- risk_reward_ratio: Estimated R:R based on pattern measured move
 
-SHORT-TERM CATALYST (THIS IS CRITICAL):
-- catalyst: Specific upcoming event
-- catalyst_timeline: "IMMINENT" (<30 days), "NEAR_TERM" (1-2 months), "SETUP" (2-3 months)
-- catalyst_confidence: "HIGH" / "MEDIUM"
-- second_catalyst: A backup catalyst if the first doesn't hit
-- earnings_date: Next earnings date if known
-- why_now: Why THIS is the moment to accumulate
+CATALYST & NEWS:
+- catalyst: The specific news/event driving the move
+- catalyst_date: When it happened or is expected
+- catalyst_type: "EARNINGS_BEAT" / "CONTRACT_WIN" / "PRODUCT_LAUNCH" / "SECTOR_ROTATION" / "INSIDER_BUYING" / "ANALYST_UPGRADE" / "REGULATORY_WIN" / "PARTNERSHIP" / "REVENUE_SURPRISE"
+- news_headline: A real or realistic headline describing the catalyst
+- why_now: Why THIS moment is the breakout window
+- second_catalyst: Backup catalyst that could extend the move
 
-FINANCIAL HEALTH (score each 0-100):
-- financial_health_score, revenue_growth_score, gross_margin_score, cash_flow_score, balance_sheet_score
-- ttm_revenue, gross_margin_pct, fcf_ttm, debt_to_equity, cash_position, burn_rate_months (if burning)
-- revenue_growth_yoy_pct, revenue_acceleration: "ACCELERATING" / "STEADY" / "DECELERATING"
+MOMENTUM SIGNALS:
+- price_change_5d_pct: 5-day price change %
+- price_change_30d_pct: 30-day price change %
+- volume_vs_avg_pct: Current volume vs 30-day average (200 = 2x normal)
+- rsi_14: RSI reading (sweet spot: 55-70, not overbought yet)
+- above_50ma: boolean
+- above_200ma: boolean
+- golden_cross_recent: boolean (50MA crossed above 200MA recently)
 
-BUZZ POTENTIAL — Will Reddit Care?:
-- buzz_score (0-100): How viral will this DD be?
-- reddit_angle: The 1-sentence hook that would make someone click on r/stocks
-- retail_sentiment: "UNKNOWN_GEM" / "EARLY_DISCOVERY" / "GROWING_BUZZ" / "UNDER_RADAR"
-- social_buzz_score (0-100)
-- meme_potential: "HIGH" / "MEDIUM" / "LOW" — does this have a compelling narrative?
+FINANCIAL SNAPSHOT:
+- financial_health_score (0-100)
+- ttm_revenue, revenue_growth_yoy_pct
+- gross_margin_pct
+- fcf_positive: boolean
+- debt_to_equity
+- cash_position
 
-INSTITUTIONAL & INSIDER SIGNALS:
+BUZZ & DISCOVERY:
+- buzz_score (0-100): How exciting is this breakout story?
+- reddit_angle: The 1-sentence hook for r/stocks
+- retail_sentiment: "UNKNOWN_GEM" / "EARLY_DISCOVERY" / "GAINING_TRACTION"
 - institutional_ownership_pct
-- institutional_following: "HEAVY" / "MODERATE" / "LIGHT" / "ALMOST_NONE"
-- top_institutional_holders: array of names
-- insider_buying_signal: boolean — any insider buys in past 90 days?
-- insider_buying_details: Brief description if yes
-- short_interest_pct
-- analyst_coverage: "WELL_COVERED" / "SPARSE" / "ALMOST_NONE"
+- insider_buying_recent: boolean
+- short_squeeze_potential: "HIGH" / "MEDIUM" / "LOW"
 
-LEADERSHIP & MOAT:
-- ceo_score (0-100): Track record, skin in the game
-- founder_led: boolean
-- founder_story: Why this leader matters
-- technical_moat: What makes this company hard to replicate
-- engineering_team_score (0-100)
-
-SECTOR & SETUP:
-- sector, sub_sector
-- sector_growth_score (0-100)
-- setup_type: "CASH_FLOW_MACHINE", "TURNAROUND_PLAY", "HIDDEN_COMPOUNDER", "CATALYST_LOADED"
-- the_thesis: 2-sentence aggressive thesis for why this is a BUY RIGHT NOW
-- bull_case, bear_case
+COMPANY BASICS:
+- ticker, company_name, sector, sub_sector
+- estimated_market_cap, price_range, avg_daily_volume
+- setup_type: "BREAKOUT_IMMINENT" / "EARLY_BREAKOUT" / "MOMENTUM_RUNNER" / "COILING_SPRING"
+- the_thesis: 2-sentence explanation of why this stock is about to move
 - risk_profile: "MEDIUM" / "MEDIUM-HIGH" / "HIGH"
-- why_not_zero: Why this company won't go bankrupt
+- upside_target_pct: Estimated upside from current price based on pattern
+- stop_loss_pct: Suggested stop loss % below current price
 
-VOLATILITY:
-- volatility_tag: "EXTREME_SWINGS" / "HIGH_BETA" / "NEWS_DRIVEN" / "MOMENTUM_SURFER"
-- why_volatile, why_solid
+For EACH stock provide ALL fields listed above plus: rank
 
-For EACH stock provide ALL fields listed above plus: ticker, company_name, estimated_market_cap, price_range, avg_daily_volume, rank
+Return EXACTLY 50 stocks as a JSON array. EVERY ticker MUST be real and currently trading. ALL INDUSTRIES WELCOME. ZERO pharma/drug companies. ZERO serial diluters. FOCUS on BREAKOUT PATTERNS and MOMENTUM.`;
 
-Return EXACTLY 50 stocks as a JSON array. EVERY ticker MUST be real and currently trading. ZERO pharma/drug companies. ZERO serial diluters. FOCUS on near-term catalysts and cash-flow-positive companies.`;
+const USER_PROMPT = `Today is ${new Date().toISOString().slice(0, 10)}. Scan 1000+ publicly traded companies under $100M market cap and find me the TOP 50 that are BREAKING OUT or ABOUT TO BREAK OUT.
 
-const USER_PROMPT = `Today is ${new Date().toISOString().slice(0, 10)}. Scan 1000+ publicly traded companies and find me the TOP 50 that are CRIMINALLY UNDERVALUED with REAL CASH FLOW and SHORT-TERM CATALYSTS.
+I want stocks that are TRENDING UP with MOMENTUM and a CLEAR CATALYST. Any industry — I don't care if it's tech, manufacturing, energy, retail, services — if the chart is screaming breakout and there's news behind it, I want it.
 
-I want stocks that will make Reddit go INSANE when they discover them. The "how is nobody talking about this?!" plays.
-
-FOCUS SECTORS (where the BUZZ is):
-- AI infrastructure & picks-and-shovels plays (NOT the hype — the companies BUILDING the infrastructure)
-- Data centers, cooling, power infrastructure for AI
-- Cybersecurity (zero trust, endpoint, cloud security)
-- Edge computing, IoT platforms
-- Semiconductors & chip equipment (small players feeding the giants)
-- Defense tech & autonomous systems
-- Energy infrastructure (grid modernization, nuclear services)
-- SaaS platforms with sticky revenue & network effects
-- Developer tools & DevOps
-- Robotics & industrial automation
+WHAT I'M LOOKING FOR:
+- Stocks consolidating near highs with increasing volume
+- Recent news catalyst (earnings beat, contract, product launch, partnership)
+- Technical breakout patterns forming (bull flags, ascending triangles, cup & handles)
+- Volume surges indicating smart money accumulation
+- Stocks that have been quietly trending up while nobody's watching
+- The kind of stock where you look at the chart and think "this is about to RIP"
 
 REQUIREMENTS:
-1. CASH FLOW POSITIVE or within 1-2 quarters — NO cash burners
-2. Stock price near 52-week lows or massively undervalued vs peers
-3. SHORT-TERM CATALYST within 1-3 months (earnings, contract, product launch, etc.)
-4. ZERO DILUTION — clean share count, no recent offerings, insider aligned
-5. Real products, real customers, real revenue growth
-6. The kind of DD that gets 10,000 upvotes on Reddit
+1. Market cap UNDER $100M — these are the small plays that can 2-5x
+2. UPTREND confirmed — higher lows over past 30 days minimum
+3. Volume increasing — accumulation happening NOW
+4. Real catalyst — not just "vibes" but actual news/events
+5. ZERO DILUTION — clean share count
+6. Real revenue, real business, real products
 
-Return EXACTLY 50 results as JSON object with keys: stocks (array of 50 stock objects), sector_rankings (array), market_context (string). ZERO pharma. ZERO drug companies. ZERO serial diluters.`;
+Return EXACTLY 50 results as JSON object with keys: stocks (array of 50 stock objects), sector_breakdown (array of {sector, count, avg_breakout_score}), market_context (string). ZERO pharma. ZERO drug companies. ZERO serial diluters.`;
 
 function getHealthGrade(score: number): string {
   if (score >= 85) return "A+";
@@ -217,7 +204,7 @@ async function processInBackground(jobId: string, focusSector: string) {
     console.log(`[AI-GEMS] Found ${result.stocks?.length || 0} gems for job ${jobId}`);
 
     const volEmoji: Record<string, string> = { EXTREME_SWINGS: "🌊", HIGH_BETA: "⚡", NEWS_DRIVEN: "📰", MOMENTUM_SURFER: "🏄" };
-    const setupEmoji: Record<string, string> = { CASH_FLOW_MACHINE: "💰", TURNAROUND_PLAY: "🔄", HIDDEN_COMPOUNDER: "💎", CATALYST_LOADED: "🚀" };
+    const setupEmoji: Record<string, string> = { BREAKOUT_IMMINENT: "🔥", EARLY_BREAKOUT: "🚀", MOMENTUM_RUNNER: "⚡", COILING_SPRING: "🎯" };
 
     const enrichedStocks = (result.stocks || []).map((s: any, i: number) => ({
       ...s,
