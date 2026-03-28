@@ -108,31 +108,27 @@ For EACH stock provide ALL fields listed above plus: rank
 
 Return EXACTLY 50 stocks as a JSON array. EVERY ticker MUST be real and currently trading. ALL INDUSTRIES WELCOME. ZERO pharma/drug companies. ZERO serial diluters. FOCUS on BREAKOUT PATTERNS and MOMENTUM.`;
 
-const USER_PROMPT = `Today is ${new Date().toISOString().slice(0, 10)}. Scan 1000+ publicly traded companies and find me the TOP 50 that are CRIMINALLY UNDERVALUED with REAL CASH FLOW and SHORT-TERM CATALYSTS.
+const USER_PROMPT = `Today is ${new Date().toISOString().slice(0, 10)}. Scan 1000+ publicly traded companies under $100M market cap and find me the TOP 50 that are BREAKING OUT or ABOUT TO BREAK OUT.
 
-I want stocks that will make Reddit go INSANE when they discover them. The "how is nobody talking about this?!" plays.
+I want stocks that are TRENDING UP with MOMENTUM and a CLEAR CATALYST. Any industry — I don't care if it's tech, manufacturing, energy, retail, services — if the chart is screaming breakout and there's news behind it, I want it.
 
-FOCUS SECTORS (where the BUZZ is):
-- AI infrastructure & picks-and-shovels plays (NOT the hype — the companies BUILDING the infrastructure)
-- Data centers, cooling, power infrastructure for AI
-- Cybersecurity (zero trust, endpoint, cloud security)
-- Edge computing, IoT platforms
-- Semiconductors & chip equipment (small players feeding the giants)
-- Defense tech & autonomous systems
-- Energy infrastructure (grid modernization, nuclear services)
-- SaaS platforms with sticky revenue & network effects
-- Developer tools & DevOps
-- Robotics & industrial automation
+WHAT I'M LOOKING FOR:
+- Stocks consolidating near highs with increasing volume
+- Recent news catalyst (earnings beat, contract, product launch, partnership)
+- Technical breakout patterns forming (bull flags, ascending triangles, cup & handles)
+- Volume surges indicating smart money accumulation
+- Stocks that have been quietly trending up while nobody's watching
+- The kind of stock where you look at the chart and think "this is about to RIP"
 
 REQUIREMENTS:
-1. CASH FLOW POSITIVE or within 1-2 quarters — NO cash burners
-2. Stock price near 52-week lows or massively undervalued vs peers
-3. SHORT-TERM CATALYST within 1-3 months (earnings, contract, product launch, etc.)
-4. ZERO DILUTION — clean share count, no recent offerings, insider aligned
-5. Real products, real customers, real revenue growth
-6. The kind of DD that gets 10,000 upvotes on Reddit
+1. Market cap UNDER $100M — these are the small plays that can 2-5x
+2. UPTREND confirmed — higher lows over past 30 days minimum
+3. Volume increasing — accumulation happening NOW
+4. Real catalyst — not just "vibes" but actual news/events
+5. ZERO DILUTION — clean share count
+6. Real revenue, real business, real products
 
-Return EXACTLY 50 results as JSON object with keys: stocks (array of 50 stock objects), sector_rankings (array), market_context (string). ZERO pharma. ZERO drug companies. ZERO serial diluters.`;
+Return EXACTLY 50 results as JSON object with keys: stocks (array of 50 stock objects), sector_breakdown (array of {sector, count, avg_breakout_score}), market_context (string). ZERO pharma. ZERO drug companies. ZERO serial diluters.`;
 
 function getHealthGrade(score: number): string {
   if (score >= 85) return "A+";
