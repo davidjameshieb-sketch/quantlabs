@@ -250,7 +250,17 @@ async function processInBackground(jobId: string, focusSector: string) {
       CATALYST_LOADED: "⚡",
     };
 
-    const enrichedStocks = (result.stocks || []).map((s: any, i: number) => ({
+    // Deduplicate by ticker — keep first occurrence only
+    const seenTickers = new Set<string>();
+    const dedupedStocks: any[] = [];
+    for (const s of (result.stocks || [])) {
+      const t = (s.ticker || "").toUpperCase().trim();
+      if (!t || seenTickers.has(t)) continue;
+      seenTickers.add(t);
+      dedupedStocks.push(s);
+    }
+
+    const enrichedStocks = dedupedStocks.map((s: any, i: number) => ({
       ...s,
       rank: i + 1,
       setup_emoji: setupEmoji[s.setup_type] || "📊",
