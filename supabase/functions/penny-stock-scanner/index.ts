@@ -181,7 +181,7 @@ async function processInBackground(jobId: string, focusSector: string) {
       body: JSON.stringify({
         model: "google/gemini-2.5-flash",
         messages: [
-          { role: "system", content: SYSTEM_PROMPT + "\n\nIMPORTANT: Return your response as a valid JSON object with keys: stocks (array of 50 stock objects), sector_breakdown (array), market_context (string). Do NOT truncate — you MUST return all 50 stocks." },
+          { role: "system", content: SYSTEM_PROMPT + "\n\nIMPORTANT: Return your response as a valid JSON object with keys: stocks (array of 50 stock objects), sector_breakdown (array), market_context (string). Do NOT truncate — you MUST return all 50 stocks. CRITICAL: Every ticker MUST be unique — absolutely ZERO duplicate tickers." },
           { role: "user", content: userPrompt },
         ],
         response_format: { type: "json_object" },
@@ -250,7 +250,17 @@ async function processInBackground(jobId: string, focusSector: string) {
       CATALYST_LOADED: "⚡",
     };
 
-    const enrichedStocks = (result.stocks || []).map((s: any, i: number) => ({
+    // Deduplicate by ticker — keep first occurrence only
+    const seenTickers = new Set<string>();
+    const dedupedStocks: any[] = [];
+    for (const s of (result.stocks || [])) {
+      const t = (s.ticker || "").toUpperCase().trim();
+      if (!t || seenTickers.has(t)) continue;
+      seenTickers.add(t);
+      dedupedStocks.push(s);
+    }
+
+    const enrichedStocks = dedupedStocks.map((s: any, i: number) => ({
       ...s,
       rank: i + 1,
       setup_emoji: setupEmoji[s.setup_type] || "📊",
