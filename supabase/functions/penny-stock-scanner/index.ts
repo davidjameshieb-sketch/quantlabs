@@ -217,7 +217,7 @@ async function processInBackground(jobId: string, focusSector: string) {
     console.log(`[AI-GEMS] Found ${result.stocks?.length || 0} gems for job ${jobId}`);
 
     const volEmoji: Record<string, string> = { EXTREME_SWINGS: "🌊", HIGH_BETA: "⚡", NEWS_DRIVEN: "📰", MOMENTUM_SURFER: "🏄" };
-    const setupEmoji: Record<string, string> = { VISIONARY_FOUNDER: "🔮", CATEGORY_CREATOR: "🚀", PLATFORM_SHIFT: "🌊", STEALTH_COMPOUNDER: "💎" };
+    const setupEmoji: Record<string, string> = { CASH_FLOW_MACHINE: "💰", TURNAROUND_PLAY: "🔄", HIDDEN_COMPOUNDER: "💎", CATALYST_LOADED: "🚀" };
 
     const enrichedStocks = (result.stocks || []).map((s: any, i: number) => ({
       ...s,
