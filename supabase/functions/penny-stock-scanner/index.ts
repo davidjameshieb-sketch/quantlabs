@@ -1,6 +1,5 @@
 // ═══════════════════════════════════════════════════════════════
-// AI HIDDEN GEMS SCANNER — Background Processing Edition
-// Returns job ID immediately, processes in background via waitUntil
+// INSTITUTIONAL DEEP VALUE SCANNER — PLAB/POWI Style Analysis
 // ═══════════════════════════════════════════════════════════════
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
@@ -13,122 +12,135 @@ const corsHeaders = {
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
-const SYSTEM_PROMPT = `You are an elite technical breakout analyst at a boutique hedge fund. Your specialty: finding stocks ABOUT TO EXPLODE from consolidation patterns.
+const SYSTEM_PROMPT = `You are a senior equity research analyst at a top-tier institutional fund. You produce deep-dive, PLAB/POWI-caliber stock reports — the kind that compare Value vs Growth, show real financial metrics, and give investors clear thesis + risk + catalyst breakdowns.
 
 CRITICAL TICKER ACCURACY RULES:
-- You MUST only use REAL, CURRENTLY VALID stock tickers on NYSE or NASDAQ as of today.
-- DOUBLE CHECK every ticker before including it. If unsure, SKIP IT.
+- ONLY use REAL, CURRENTLY VALID stock tickers on NYSE or NASDAQ as of today.
+- DOUBLE CHECK every ticker. If unsure, SKIP IT.
 - Do NOT invent tickers. Do NOT use delisted/old tickers.
 
-YOUR MISSION: Find 50 stocks under $100M market cap that are showing CLEAR BREAKOUT PATTERNS with strong upward momentum. ANY INDUSTRY — we don't care about sector, we care about the CHART and the CATALYST.
+YOUR MISSION: Find 50 stocks under $5B market cap that institutional investors are MISSING. These are companies with:
+1. REAL revenue, REAL profits, REAL products shipping to REAL customers
+2. Strong or improving balance sheets (cash > debt preferred)
+3. A clear catalyst within 1-6 months (earnings beat, contract, product cycle, sector rotation)
+4. Technical momentum confirming the fundamental story
 
-WHAT MAKES A BREAKOUT CANDIDATE:
-- Stock is consolidating near resistance and showing increasing volume
-- Price is trending UP — higher lows, tightening range, coiling for a move
-- Recent volume surge (2x+ average) signals accumulation
-- Breaking above key moving averages (50-day, 200-day)
-- Relative strength vs sector peers — outperforming while nobody notices
-- News catalyst, earnings beat, contract win, or sector rotation driving the move
+THINK LIKE THIS — For each stock, imagine writing a 2-stock comparison like "PLAB vs POWI" where you explain:
+- Why a Value investor would love it (low P/E, cash-rich, profitable)
+- Why a Growth investor would love it (revenue acceleration, TAM expansion, tech moat)
+- The specific near-term catalyst that makes NOW the time to buy
+
+INVESTOR STYLE TAGS (assign one per stock):
+- "DEEP_VALUE" — P/E under 20, cash-rich, profitable, market ignoring it
+- "QUALITY_COMPOUNDER" — Strong margins, growing steadily, best-in-class operations
+- "RECOVERY_PLAY" — Stock beaten down but fundamentals improving, restructuring working
+- "GROWTH_INFLECTION" — Revenue accelerating, new product/market about to inflect earnings
+- "CATALYST_LOADED" — Specific near-term event (earnings, FDA, contract) about to reprice stock
 
 ABSOLUTE EXCLUSIONS:
-- Pharmaceutical/biotech drug development companies
 - Pre-revenue companies
+- Pharmaceutical drug development / biotech clinical trials
 - SPACs, blank-check, or shell companies
 - Cannabis/marijuana stocks
 - Chinese reverse-merger companies
 - OTC/Pink Sheet stocks
-- Companies with no real product shipping
-- SERIAL DILUTERS — more than 1 offering in past 2 years = SKIP
+- SERIAL DILUTERS — more than 1 offering or >5% share increase in past 2 years = SKIP
 
 MANDATORY HARD FLOORS:
-1. Market Cap: $5M - $100M (sweet spot: $15M - $75M)
-2. Average Daily Volume: > 50,000 shares (preferably spiking recently)
-3. TTM Revenue: > $2M (MUST have real revenue)
+1. Market Cap: $100M - $5B (sweet spot: $300M - $3B)
+2. Average Daily Volume: > 100,000 shares
+3. TTM Revenue: > $50M (MUST have substantial real revenue)
 4. Listed on NYSE, NASDAQ, or NYSE American ONLY
-5. Share price trending UP — must show higher lows over past 30 days
+5. Positive gross margins (> 25%)
 6. No more than 5% dilution in past 12 months
 
-BREAKOUT TECHNICAL ANALYSIS (score each 0-100):
-- breakout_score: Overall breakout readiness (pattern quality + volume + momentum)
-- volume_surge_score: Recent volume vs 30-day average (higher = more accumulation)
-- trend_strength_score: Quality of the uptrend (higher lows, moving average alignment)
-- consolidation_quality: How clean is the base/pattern?
-- resistance_proximity_pct: How close to key resistance level (0% = at resistance, ready to break)
+FOR EACH STOCK PROVIDE:
 
-BREAKOUT PATTERN TYPE:
-- pattern: "BULL_FLAG" / "CUP_AND_HANDLE" / "ASCENDING_TRIANGLE" / "CHANNEL_BREAKOUT" / "VOLUME_BREAKOUT" / "GOLDEN_CROSS" / "SQUEEZE_SETUP"
-- pattern_description: 1 sentence describing the technical setup
-- key_resistance: Price level to watch for breakout confirmation
-- support_level: Where the floor is (risk management)
-- risk_reward_ratio: Estimated R:R based on pattern measured move
+FINANCIAL DEEP DIVE:
+- ticker, company_name, sector, sub_sector
+- estimated_market_cap (string like "$1.2B")
+- price_range (string like "$28-$32")
+- pe_ratio: Current P/E ratio (number)
+- forward_pe: Forward P/E based on estimates
+- ttm_revenue (string like "$862M")
+- revenue_growth_yoy_pct: Year-over-year revenue growth %
+- net_profit_margin_pct: Net profit margin %
+- gross_margin_pct: Gross margin %
+- debt_to_equity: D/E ratio
+- cash_position (string like "$637M")
+- fcf_positive: boolean
+- dividend_yield_pct: Dividend yield % (0 if none)
+- financial_health_score: 0-100 overall financial health
 
-CATALYST & NEWS:
-- catalyst: The specific news/event driving the move
-- catalyst_date: When it happened or is expected
-- catalyst_type: "EARNINGS_BEAT" / "CONTRACT_WIN" / "PRODUCT_LAUNCH" / "SECTOR_ROTATION" / "INSIDER_BUYING" / "ANALYST_UPGRADE" / "REGULATORY_WIN" / "PARTNERSHIP" / "REVENUE_SURPRISE"
-- news_headline: A real or realistic headline describing the catalyst
-- why_now: Why THIS moment is the breakout window
-- second_catalyst: Backup catalyst that could extend the move
+QUALITY METRICS:
+- quality_score: 0-100 (balance sheet strength, margin consistency, management quality)
+- moat_description: 1-sentence competitive advantage
+- management_grade: "A+" / "A" / "B+" / "B" / "C"
+- insider_buying_recent: boolean
 
-MOMENTUM SIGNALS:
-- price_change_5d_pct: 5-day price change %
-- price_change_30d_pct: 30-day price change %
-- volume_vs_avg_pct: Current volume vs 30-day average (200 = 2x normal)
-- rsi_14: RSI reading (sweet spot: 55-70, not overbought yet)
+CATALYST & TIMING:
+- catalyst: The specific near-term catalyst
+- catalyst_date: When it happens or expected date
+- catalyst_type: "EARNINGS_BEAT" / "CONTRACT_WIN" / "PRODUCT_LAUNCH" / "SECTOR_ROTATION" / "RESTRUCTURING" / "ANALYST_UPGRADE" / "REGULATORY_WIN" / "PARTNERSHIP" / "BUYBACK" / "MARGIN_EXPANSION"
+- catalyst_timeline: "IMMINENT" (< 1 month) / "NEAR_TERM" (1-3 months) / "SETUP" (3-6 months)
+- why_now: Why THIS moment is the entry window
+
+TECHNICAL CONFIRMATION:
+- ytd_performance_pct: Year-to-date performance %
+- breakout_score: 0-100 technical breakout readiness
 - above_50ma: boolean
 - above_200ma: boolean
-- golden_cross_recent: boolean (50MA crossed above 200MA recently)
+- rsi_14: RSI reading
+- volume_vs_avg_pct: Current volume vs 30-day average
 
-FINANCIAL SNAPSHOT:
-- financial_health_score (0-100)
-- ttm_revenue, revenue_growth_yoy_pct
-- gross_margin_pct
-- fcf_positive: boolean
-- debt_to_equity
-- cash_position
+INVESTOR THESIS:
+- setup_type: One of the 5 investor style tags above
+- the_thesis: 2-3 sentence institutional-grade thesis (like the PLAB/POWI writeups)
+- bull_case: 1-sentence best-case scenario
+- bear_case: 1-sentence worst-case risk
+- risk_profile: "LOW-MEDIUM" / "MEDIUM" / "MEDIUM-HIGH" / "HIGH"
+- upside_target_pct: Estimated upside from current price
+- stop_loss_pct: Suggested stop loss % below current price
+- verdict: 1-sentence "Choose this stock if..." recommendation
 
 BUZZ & DISCOVERY:
-- buzz_score (0-100): How exciting is this breakout story?
+- buzz_score: 0-100 (how much attention is this getting?)
 - reddit_angle: The 1-sentence hook for r/stocks
-- retail_sentiment: "UNKNOWN_GEM" / "EARLY_DISCOVERY" / "GAINING_TRACTION"
-- institutional_ownership_pct
-- insider_buying_recent: boolean
-- short_squeeze_potential: "HIGH" / "MEDIUM" / "LOW"
+- institutional_ownership_pct: Approximate institutional ownership
+- retail_sentiment: "UNKNOWN_GEM" / "EARLY_DISCOVERY" / "GAINING_TRACTION" / "WELL_KNOWN"
+- short_interest_pct: Short interest as % of float
 
-COMPANY BASICS:
-- ticker, company_name, sector, sub_sector
-- estimated_market_cap, price_range, avg_daily_volume
-- setup_type: "BREAKOUT_IMMINENT" / "EARLY_BREAKOUT" / "MOMENTUM_RUNNER" / "COILING_SPRING"
-- the_thesis: 2-sentence explanation of why this stock is about to move
-- risk_profile: "MEDIUM" / "MEDIUM-HIGH" / "HIGH"
-- upside_target_pct: Estimated upside from current price based on pattern
-- stop_loss_pct: Suggested stop loss % below current price
+RANKING:
+- rank: 1-50 (your conviction ranking)
+- conviction_score: 0-100 (how confident are you in this pick?)
 
-For EACH stock provide ALL fields listed above plus: rank
+Return EXACTLY 50 stocks as a JSON array. EVERY ticker MUST be real and currently trading. ALL INDUSTRIES WELCOME — tech, industrials, energy, consumer, fintech, defense, infrastructure. ZERO pharma drug plays. ZERO serial diluters. Focus on QUALITY companies with REAL catalysts.`;
 
-Return EXACTLY 50 stocks as a JSON array. EVERY ticker MUST be real and currently trading. ALL INDUSTRIES WELCOME. ZERO pharma/drug companies. ZERO serial diluters. FOCUS on BREAKOUT PATTERNS and MOMENTUM.`;
+const USER_PROMPT = `Today is ${new Date().toISOString().slice(0, 10)}. 
 
-const USER_PROMPT = `Today is ${new Date().toISOString().slice(0, 10)}. Scan 1000+ publicly traded companies under $100M market cap and find me the TOP 50 that are BREAKING OUT or ABOUT TO BREAK OUT.
+I need you to do DEEP institutional research across 1000+ publicly traded companies under $5B market cap. Find me the TOP 50 that match this profile:
 
-I want stocks that are TRENDING UP with MOMENTUM and a CLEAR CATALYST. Any industry — I don't care if it's tech, manufacturing, energy, retail, services — if the chart is screaming breakout and there's news behind it, I want it.
+THE PLAB/POWI STANDARD:
+Think about stocks like Photronics (PLAB) — a deep value play with $637M cash, zero debt, 15.8% margins, and a P/E of 15.5x. Or Power Integrations (POWI) — a quality recovery play with GaN technology moat and 30%+ YTD performance. I want stocks at THIS caliber.
 
-WHAT I'M LOOKING FOR:
-- Stocks consolidating near highs with increasing volume
-- Recent news catalyst (earnings beat, contract, product launch, partnership)
-- Technical breakout patterns forming (bull flags, ascending triangles, cup & handles)
-- Volume surges indicating smart money accumulation
-- Stocks that have been quietly trending up while nobody's watching
-- The kind of stock where you look at the chart and think "this is about to RIP"
+WHAT I'M HUNTING:
+1. DEEP VALUE: Companies trading at absurdly low P/E ratios relative to their cash position and profitability. The market is sleeping on them.
+2. QUALITY COMPOUNDERS: Best-in-class operators with expanding margins, growing revenue, and competitive moats that make them acquisition targets.
+3. RECOVERY PLAYS: Beaten-down stocks where restructuring is WORKING and the turnaround is about to show up in earnings.
+4. GROWTH INFLECTIONS: Companies where a new product, market, or technology is about to inflect their revenue trajectory.
+5. CATALYST LOADED: Stocks with specific upcoming events (earnings, contracts, partnerships) that will force the market to reprice them.
 
-REQUIREMENTS:
-1. Market cap UNDER $100M — these are the small plays that can 2-5x
-2. UPTREND confirmed — higher lows over past 30 days minimum
-3. Volume increasing — accumulation happening NOW
-4. Real catalyst — not just "vibes" but actual news/events
-5. ZERO DILUTION — clean share count
-6. Real revenue, real business, real products
+SECTOR DIVERSITY: Give me picks across ALL sectors — semiconductors, defense/aerospace, industrial tech, cybersecurity, energy infrastructure, fintech, robotics, data centers, consumer brands, enterprise software. I want the BEST from EVERY corner of the market.
 
-Return EXACTLY 50 results as JSON object with keys: stocks (array of 50 stock objects), sector_breakdown (array of {sector, count, avg_breakout_score}), market_context (string). ZERO pharma. ZERO drug companies. ZERO serial diluters.`;
+NON-NEGOTIABLE:
+- Real revenue (>$50M TTM)
+- Real profits or clear path to profitability
+- Clean balance sheet (low debt, cash-rich preferred)
+- ZERO dilution risk
+- Near-term catalyst (1-6 months)
+- The kind of stock where when you tell someone about it, they say "HOW did I not know about this?"
+
+Return EXACTLY 50 results as JSON object with keys: stocks (array of 50 stock objects), sector_breakdown (array of {sector, count, avg_conviction_score}), market_context (string with current market thesis).`;
 
 function getHealthGrade(score: number): string {
   if (score >= 85) return "A+";
@@ -154,12 +166,11 @@ async function processInBackground(jobId: string, focusSector: string) {
 
     let userPrompt = USER_PROMPT;
     if (focusSector !== "all") {
-      userPrompt += `\n\nPRIORITY FOCUS: Give extra weight to "${focusSector}". At least 8 picks from this sector.`;
+      userPrompt += `\n\nPRIORITY FOCUS: Give extra weight to "${focusSector}". At least 10 picks from this sector.`;
     }
 
     await sb.from("penny_scan_jobs").update({ progress: 10 }).eq("id", jobId);
-
-    console.log("[AI-GEMS] Background scan started for job:", jobId);
+    console.log("[DEEP-VALUE] Background scan started for job:", jobId);
 
     const aiResponse = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
       method: "POST",
@@ -170,7 +181,7 @@ async function processInBackground(jobId: string, focusSector: string) {
       body: JSON.stringify({
         model: "google/gemini-2.5-flash",
         messages: [
-          { role: "system", content: SYSTEM_PROMPT + "\n\nIMPORTANT: Return your response as a valid JSON object with keys: stocks (array of 50 stock objects), sector_rankings (array), market_context (string). Do NOT truncate — you MUST return all 50 stocks." },
+          { role: "system", content: SYSTEM_PROMPT + "\n\nIMPORTANT: Return your response as a valid JSON object with keys: stocks (array of 50 stock objects), sector_breakdown (array), market_context (string). Do NOT truncate — you MUST return all 50 stocks." },
           { role: "user", content: userPrompt },
         ],
         response_format: { type: "json_object" },
@@ -182,9 +193,9 @@ async function processInBackground(jobId: string, focusSector: string) {
 
     if (!aiResponse.ok) {
       const errText = await aiResponse.text();
-      console.error("[AI-GEMS] AI error:", aiResponse.status, errText);
+      console.error("[DEEP-VALUE] AI error:", aiResponse.status, errText);
       const errorMsg = aiResponse.status === 429 ? "Rate limited — try again in 30 seconds"
-        : aiResponse.status === 402 ? "AI credits exhausted"
+        : aiResponse.status === 402 ? "AI credits exhausted — add funds at Settings > Workspace > Usage"
         : "AI analysis failed";
       await sb.from("penny_scan_jobs").update({ status: "failed", error: errorMsg, completed_at: new Date().toISOString() }).eq("id", jobId);
       return;
@@ -201,23 +212,27 @@ async function processInBackground(jobId: string, focusSector: string) {
     await sb.from("penny_scan_jobs").update({ progress: 80 }).eq("id", jobId);
 
     const result = JSON.parse(content);
-    console.log(`[AI-GEMS] Found ${result.stocks?.length || 0} gems for job ${jobId}`);
+    console.log(`[DEEP-VALUE] Found ${result.stocks?.length || 0} gems for job ${jobId}`);
 
-    const volEmoji: Record<string, string> = { EXTREME_SWINGS: "🌊", HIGH_BETA: "⚡", NEWS_DRIVEN: "📰", MOMENTUM_SURFER: "🏄" };
-    const setupEmoji: Record<string, string> = { BREAKOUT_IMMINENT: "🔥", EARLY_BREAKOUT: "🚀", MOMENTUM_RUNNER: "⚡", COILING_SPRING: "🎯" };
+    const setupEmoji: Record<string, string> = {
+      DEEP_VALUE: "💰",
+      QUALITY_COMPOUNDER: "💎",
+      RECOVERY_PLAY: "🔄",
+      GROWTH_INFLECTION: "🚀",
+      CATALYST_LOADED: "⚡",
+    };
 
     const enrichedStocks = (result.stocks || []).map((s: any, i: number) => ({
       ...s,
       rank: i + 1,
-      vol_emoji: volEmoji[s.volatility_tag] || "⚡",
-      setup_emoji: setupEmoji[s.setup_type] || "💰",
+      setup_emoji: setupEmoji[s.setup_type] || "📊",
       health_grade: getHealthGrade(s.financial_health_score),
-      sector_grade: getHealthGrade(s.sector_growth_score),
+      quality_grade: getHealthGrade(s.quality_score),
     }));
 
     const finalResult = {
       stocks: enrichedStocks,
-      sector_rankings: result.sector_rankings || [],
+      sector_breakdown: result.sector_breakdown || [],
       market_context: result.market_context || "",
       scan_timestamp: new Date().toISOString(),
       total_picks: enrichedStocks.length,
@@ -230,9 +245,9 @@ async function processInBackground(jobId: string, focusSector: string) {
       completed_at: new Date().toISOString(),
     }).eq("id", jobId);
 
-    console.log(`[AI-GEMS] Job ${jobId} completed with ${enrichedStocks.length} stocks`);
+    console.log(`[DEEP-VALUE] Job ${jobId} completed with ${enrichedStocks.length} stocks`);
   } catch (err) {
-    console.error("[AI-GEMS] Background error:", err);
+    console.error("[DEEP-VALUE] Background error:", err);
     await sb.from("penny_scan_jobs").update({
       status: "failed",
       error: (err as Error).message || "Scanner failed",
@@ -248,7 +263,6 @@ Deno.serve(async (req) => {
     const body = await req.json().catch(() => ({}));
     const action = body.action || "start";
 
-    // Poll for job status
     if (action === "poll" && body.job_id) {
       const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
       const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -271,7 +285,6 @@ Deno.serve(async (req) => {
       }
     }
 
-    // Start new scan job
     const focusSector = body.sector || "all";
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -285,13 +298,12 @@ Deno.serve(async (req) => {
 
     if (insertErr || !job) return json({ error: "Failed to create scan job" }, 500);
 
-    // Process in background
     (globalThis as any).EdgeRuntime?.waitUntil?.(processInBackground(job.id, focusSector))
       ?? processInBackground(job.id, focusSector);
 
     return json({ status: "started", job_id: job.id });
   } catch (err) {
-    console.error("[AI-GEMS] Error:", err);
+    console.error("[DEEP-VALUE] Error:", err);
     return json({ error: (err as Error).message || "Scanner failed" }, 500);
   }
 });
